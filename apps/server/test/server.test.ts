@@ -462,6 +462,11 @@ describe('tandem server', () => {
       const path = `/api/projects/${project.id}/media/asset_0001`;
 
       expect((await api.fetch(path, { method: 'HEAD', token: editor })).status).toBe(404);
+      // An uploader's probe gets "start at 0" instead of an error.
+      const probe = await api.fetch(`${path}?probe`, { method: 'HEAD', token: editor });
+      expect(probe.status).toBe(200);
+      expect(probe.headers.get('upload-offset')).toBe('0');
+      expect(probe.headers.get('upload-complete')).toBe('0');
       expect((await api.fetch(path, { token: editor })).status).toBe(404);
 
       // Chunk 1

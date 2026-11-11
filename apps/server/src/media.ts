@@ -135,7 +135,9 @@ export class MediaStore {
     const key = `${projectId}/${assetId}`;
     switch (req.method) {
       case 'HEAD':
-        return this.head(res, paths);
+        // `?probe` is how an uploader asks "where do I resume from?": nothing stored yet is then
+        // an answer (offset 0), not an error.
+        return this.head(res, paths, new URL(req.url ?? '/', 'http://localhost').searchParams.has('probe'));
       case 'GET':
         return this.get(req, res, paths);
       case 'PUT':
@@ -161,7 +163,7 @@ export class MediaStore {
   }
 
   /** Upload progress. It changes from one request to the next, hence `no-store`. */
-  private async head(res: ServerResponse, paths: AssetPaths): Promise<void> {
+  private async head(res: ServerResponse, paths: AssetPaths, probe = false): Promise<void> {
     const size = await fileSize(paths.file);
     if (size !== null) {
       sendEmpty(res, 200, {
@@ -175,8 +177,8 @@ export class MediaStore {
       return;
     }
     const partial = await fileSize(paths.part);
-    if (partial === null) throw new HttpError(404, 'asset not found');
-    sendEmpty(res, 200, { 'Upload-Offset': partial, 'Upload-Complete': '0', 'Cache-Control': 'no-store' });
+    if (partial === null && !probe) throw new HttpError(404, 'asset not found');
+    sendEmpty(res, 200, { 'Upload-Offset': partial ?? 0, 'Upload-Complete': '0', 'Cache-Control': 'no-store' });
   }
 
   private async get(req: IncomingMessage, res: ServerResponse, paths: AssetPaths): Promise<void> {

@@ -174,7 +174,7 @@ export class MediaStore {
     try {
       this.patch(assetId, { uploading: 0, error: null });
       let offset = 0;
-      const head = await fetch(url, { method: 'HEAD', headers: auth, signal: ctrl.signal });
+      const head = await fetch(`${url}?probe`, { method: 'HEAD', headers: auth, signal: ctrl.signal });
       if (head.ok) {
         if (head.headers.get('Upload-Complete') === '1') {
           this.patch(assetId, { uploading: null });

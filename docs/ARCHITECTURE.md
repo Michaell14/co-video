@@ -175,6 +175,13 @@ land before the next one starts so fast scrubbing always shows *something*. Reve
 decodes a short run forwards and steps back through it. Clips that are about to start are warmed up
 a second ahead so cuts play cleanly.
 
+Preview resolution follows the viewer: `auto` quality renders only as many pixels as the viewer
+shows. While playing, if animation frames arrive well below the timeline's rate the player halves
+the internal buffers (the canvas keeps its size and the present pass scales up), checks that the
+step really helped, and returns to full preview size the moment playback stops. Shaders for the
+effects and transitions a project uses are compiled during idle time, so the first frame that needs
+one does not stall.
+
 The compositor is synchronous and draws whatever is ready. The exporter calls `prepare(exact)`
 first, which resolves only when every layer has precisely the right frame — so the export is
 identical on a fast and a slow machine.

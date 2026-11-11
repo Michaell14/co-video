@@ -123,6 +123,29 @@ export function transitionProgram(glx: Glx, def: TransitionDef): Program | null 
   }
 }
 
+/**
+ * Compile the next not-yet-compiled program among the given effects and transitions. Returns false
+ * when there was nothing left to do. Called from idle time so that the first frame which uses an
+ * effect does not pay for its shader compile in the middle of playback.
+ */
+export function warmNext(glx: Glx, effects: Iterable<EffectDef>, transitions: Iterable<TransitionDef>): boolean {
+  for (const e of effects) {
+    for (let i = 0; i < e.passes.length; i++) {
+      const key = `fx:${e.id}:${i}`;
+      if (failed.has(key) || glx.hasProgram(key)) continue;
+      effectProgram(glx, e, i);
+      return true;
+    }
+  }
+  for (const t of transitions) {
+    const key = `tr:${t.id}`;
+    if (failed.has(key) || glx.hasProgram(key)) continue;
+    transitionProgram(glx, t);
+    return true;
+  }
+  return false;
+}
+
 /** Compile every effect and transition; returns the ids that failed. Used by the test harness. */
 export function compileAll(glx: Glx, effects: EffectDef[], transitions: TransitionDef[]): string[] {
   const bad: string[] = [];

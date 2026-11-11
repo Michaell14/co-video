@@ -87,7 +87,8 @@ never pruned.
 **Media.** `PUT` appends the body to `<assetId>.part` if `Upload-Offset` equals the bytes already stored
 (otherwise `409` with the real offset), and renames it to `<assetId>` once `Upload-Length` bytes are there.
 Each chunk is fsynced before the `204`. If a connection dies mid-chunk, the bytes that arrived are kept;
-`HEAD` reports where to resume. A new `PUT` for an asset supersedes one that is still open for it.
+`HEAD` reports where to resume (`HEAD …?probe` answers offset 0 instead of `404` when nothing is stored yet).
+A new `PUT` for an asset supersedes one that is still open for it.
 
 Only one server process may use a data directory at a time.
 

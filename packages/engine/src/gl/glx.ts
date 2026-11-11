@@ -220,6 +220,10 @@ export class Glx {
     return p;
   }
 
+  hasProgram(key: string): boolean {
+    return this.programs.has(key);
+  }
+
   /** Take a render target from the pool. Contents are undefined until drawn or cleared. */
   acquire(width: number, height: number): RenderTarget {
     const w = Math.max(1, Math.round(width));

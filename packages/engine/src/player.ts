@@ -7,16 +7,21 @@
  */
 import {
   clipsOnTrack,
+  getEffectDef,
+  getTransitionDef,
   resolveFrame,
   secondsToFrames,
   sequenceEnd,
   tracksOf,
   framesToSeconds,
   type ClipLayer,
+  type EffectDef,
   type Project,
+  type TransitionDef,
 } from '@tandem/core';
 import { AudioGraph } from './audio/graph';
 import { Compositor, type RenderOptions } from './gl/compositor';
+import { warmNext } from './gl/effectRunner';
 import { MediaLibrary, type MediaResolver } from './media/library';
 import { SourceManager } from './media/sources';
 
@@ -83,6 +88,18 @@ export class Player {
   private viewport = { w: 1280, h: 720, dpr: 1 };
   private fpsWindow: number[] = [];
   private tickCount = 0;
+  /** Extra down-scale applied by `auto` quality while the display cannot keep up with playback. */
+  private adaptive = 1;
+  private tickTimes: number[] = [];
+  /** Animation-frame rate the display reaches when nothing is playing. */
+  private refresh = 0;
+  private adaptSince = 0;
+  private warmTimer: ReturnType<typeof setTimeout> | null = null;
+  private warmedFor: Project['clips'] | null = null;
+  /** Tick rate before the step being evaluated; 0 = no step pending. */
+  private adaptTrial = 0;
+  /** After a step that did not help, do not probe again until this time. */
+  private adaptBlockedUntil = 0;
 
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas, project: Project, resolver: MediaResolver) {
     this.project = project;
@@ -100,6 +117,7 @@ export class Player {
     }
     this.applySize();
     this.raf = requestAnimationFrame(this.tick);
+    this.scheduleWarm();
   }
 
   // ─────────────────────────────────────────────────────────────── state ──
@@ -141,6 +159,35 @@ export class Player {
     }
     const end = sequenceEnd(project);
     if (!this.state.playing && this.frame > end) this.seek(end);
+    this.scheduleWarm();
+  }
+
+  /**
+   * Compile the shaders this project uses ahead of time, one per idle slice, so that the first frame
+   * with a given effect or transition does not stall playback while its program links.
+   */
+  private scheduleWarm(): void {
+    if (this.warmTimer || this.disposed || this.warmedFor === this.project.clips) return;
+    this.warmTimer = setTimeout(() => {
+      this.warmTimer = null;
+      if (this.disposed) return;
+      const clips = this.project.clips;
+      const effects = new Set<EffectDef>();
+      const transitions = new Set<TransitionDef>();
+      for (const id in clips) {
+        const clip = clips[id];
+        for (const inst of clip.effects) {
+          const def = getEffectDef(inst.type);
+          if (def) effects.add(def);
+        }
+        for (const t of [clip.transIn, clip.transOut]) {
+          const def = t ? getTransitionDef(t.type) : undefined;
+          if (def) transitions.add(def);
+        }
+      }
+      if (warmNext(this.compositor.glx, effects, transitions)) this.scheduleWarm();
+      else this.warmedFor = clips;
+    }, 40);
   }
 
   /** The media behind an asset changed location (e.g. finished downloading). */
@@ -165,19 +212,24 @@ export class Player {
 
   private applySize(): void {
     const { width, height } = this.project.settings;
+    const max = this.compositor.glx.caps.maxTextureSize;
+    const even = (v: number): number => Math.max(2, Math.round(v / 2) * 2);
     let scale: number;
     if (this.state.quality === 'auto') {
       const fit = Math.min((this.viewport.w * this.viewport.dpr) / width, (this.viewport.h * this.viewport.dpr) / height);
       // Never render more pixels than the project has; quantise so small layout jitters do not
       // reallocate every buffer.
-      scale = Math.min(1, Math.max(0.1, Math.ceil(fit * 8) / 8));
+      scale = Math.max(0.1, Math.min(1, Math.ceil(fit * 8) / 8));
     } else scale = this.state.quality;
-    const max = this.compositor.glx.caps.maxTextureSize;
     scale = Math.min(scale, max / width, max / height);
-    const w = Math.max(2, Math.round((width * scale) / 2) * 2);
-    const h = Math.max(2, Math.round((height * scale) / 2) * 2);
-    if (w !== this.compositor.width || h !== this.compositor.height) {
-      this.compositor.setSize(w, h);
+    // The canvas keeps its size while playback adapts; only the buffers behind it shrink.
+    const cw = even(width * scale);
+    const ch = even(height * scale);
+    const render = this.state.quality === 'auto' ? Math.max(0.1, scale * this.adaptive) : scale;
+    const w = even(width * render);
+    const h = even(height * render);
+    if (w !== this.compositor.width || h !== this.compositor.height || cw !== this.compositor.canvas.width || ch !== this.compositor.canvas.height) {
+      this.compositor.setSize(w, h, cw, ch);
       this.dirty = true;
     }
     this.stats.renderWidth = w;
@@ -222,6 +274,8 @@ export class Player {
     this.ensureAudio();
     void this.audioCtx?.resume().catch(() => {});
     this.setState({ playing: true, rate });
+    this.adaptSince = performance.now();
+    this.lastDrawn = -1;
     this.reanchor();
     this.restartAudio();
   }
@@ -263,6 +317,8 @@ export class Player {
     const f = Math.max(0, Math.min(Math.round(frame), Math.max(end, 0)));
     this.frame = f;
     this.dirty = true;
+    // A jump is not a run of dropped frames.
+    this.lastDrawn = -1;
     if (this.state.playing) {
       this.reanchor();
       this.restartAudio();
@@ -390,6 +446,7 @@ export class Player {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.tick);
     this.tickCount++;
+    this.adapt(performance.now());
 
     if (this.state.playing) {
       this.syncFrameToClock();
@@ -398,6 +455,7 @@ export class Player {
       if (forward ? this.frame >= end : this.frame <= start) {
         if (this.state.loop && end > start) {
           this.frame = forward ? start : end - 1;
+          this.lastDrawn = -1;
           this.reanchor();
           this.restartAudio();
         } else {
@@ -436,6 +494,52 @@ export class Player {
     }
     if (advanced) this.emitFrame();
   };
+
+  /**
+   * Dynamic playback resolution. Animation frames arrive only as fast as the GPU can present them,
+   * so a tick rate well under the timeline's frame rate means the preview is too heavy for this
+   * machine: halve it (down to a quarter) until playback stops, then draw the paused frame at the
+   * full preview size again. If a step down does not buy a clearly better rate, resolution was not
+   * the bottleneck, so the step is undone and not retried for a minute. Only `auto` quality adapts;
+   * an explicit choice is respected.
+   */
+  private adapt(now: number): void {
+    const times = this.tickTimes;
+    times.push(now);
+    while (now - times[0] > 1000) times.shift();
+    if (!this.state.playing) {
+      this.refresh = Math.max(times.length, this.refresh * 0.999);
+      this.adaptTrial = 0;
+      if (this.adaptive !== 1) {
+        this.adaptive = 1;
+        this.applySize();
+      }
+      return;
+    }
+    if (this.state.quality !== 'auto' || now < this.adaptBlockedUntil || this.refresh < 10) return;
+    // Judge only on a full second measured at the current size.
+    if (now - this.adaptSince < 1300) return;
+    const rate = times.length;
+    const fps = this.project.settings.fpsNum / this.project.settings.fpsDen;
+    const enough = rate >= Math.min(fps, this.refresh) * 0.7;
+    if (this.adaptTrial > 0 && !enough && rate < this.adaptTrial * 1.25) {
+      // The last step did not help: put the pixels back and leave it alone for a while.
+      this.adaptive = Math.min(1, this.adaptive * 2);
+      this.adaptTrial = 0;
+      this.adaptBlockedUntil = now + 60_000;
+      this.applySize();
+      return;
+    }
+    if (enough || this.adaptive <= 0.25) {
+      this.adaptTrial = 0;
+      this.adaptSince = now;
+      return;
+    }
+    this.adaptTrial = Math.max(1, rate);
+    this.adaptive /= 2;
+    this.adaptSince = now;
+    this.applySize();
+  }
 
   /** Start decoders for clips that begin within the next second so cuts play without a hitch. */
   private prewarm(frame: number): void {
@@ -477,6 +581,7 @@ export class Player {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     if (this.pumpTimer) clearInterval(this.pumpTimer);
+    if (this.warmTimer) clearTimeout(this.warmTimer);
     this.graph?.dispose();
     void this.audioCtx?.close().catch(() => {});
     this.sources.dispose();

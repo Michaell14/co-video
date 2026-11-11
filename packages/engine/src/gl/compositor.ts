@@ -182,15 +182,21 @@ export class Compositor {
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   }
 
-  /** Set the render resolution (also the canvas backing-store size). */
-  setSize(width: number, height: number): void {
+  /**
+   * Set the render resolution. The canvas backing store normally matches it; pass a separate canvas
+   * size to render smaller than the canvas and let the present pass scale up (used for dynamic
+   * playback resolution, where resizing the canvas itself every time would be the expensive part).
+   */
+  setSize(width: number, height: number, canvasWidth = width, canvasHeight = height): void {
     const w = Math.max(2, Math.round(width));
     const h = Math.max(2, Math.round(height));
-    if (w === this.width && h === this.height && this.canvas.width === w && this.canvas.height === h) return;
+    const cw = Math.max(2, Math.round(canvasWidth));
+    const ch = Math.max(2, Math.round(canvasHeight));
+    if (this.canvas.width !== cw) this.canvas.width = cw;
+    if (this.canvas.height !== ch) this.canvas.height = ch;
+    if (w === this.width && h === this.height) return;
     this.width = w;
     this.height = h;
-    this.canvas.width = w;
-    this.canvas.height = h;
     this.glx.release(this.last);
     this.last = null;
     this.glx.trimPool();
