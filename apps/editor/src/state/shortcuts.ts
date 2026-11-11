@@ -53,6 +53,7 @@ export const COMMANDS: Command[] = [
 
   // Timeline
   { id: 'split', title: 'Split at playhead', group: 'Timeline', keys: ['mod+b', 's'], run: () => cmd.split() },
+  { id: 'freeze-frame', title: 'Freeze frame at playhead', group: 'Timeline', keys: ['shift+f'], run: () => cmd.freezeFrame() },
   { id: 'trim-start', title: 'Ripple trim start to playhead', group: 'Timeline', keys: ['q'], run: () => cmd.trimToPlayhead('start') },
   { id: 'trim-end', title: 'Ripple trim end to playhead', group: 'Timeline', keys: ['w'], run: () => cmd.trimToPlayhead('end') },
   { id: 'close-gap', title: 'Close gap at playhead', group: 'Timeline', keys: ['shift+g'], run: () => cmd.closeGapAtPlayhead() },

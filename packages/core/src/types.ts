@@ -309,6 +309,8 @@ export interface Clip {
   sourceIn: number;
   speed: number;
   reverse: boolean;
+  /** Hold the frame at `sourceIn` for the whole clip (a freeze frame). Video clips only. */
+  freeze: boolean;
   name: string;
   /** Label colour (hex) or null for the type default. */
   label: string | null;

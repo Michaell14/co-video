@@ -1,8 +1,9 @@
-import { AudioLines, Blend, Film, Gauge, Image as ImageIcon, Layers, Link2, Shapes, Sparkles, Square, Type } from 'lucide-react';
+import { AudioLines, Blend, Film, Gauge, Image as ImageIcon, Layers, Link2, Shapes, Snowflake, Sparkles, Square, Type } from 'lucide-react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   addAssetToTimeline,
   addGenerator,
+  addTrack,
   adjacentPrev,
   applyEdits,
   clamp,
@@ -37,7 +38,7 @@ import { useUI } from '../../state/ui';
 import { openContextMenu, type MenuEntry } from '../../ui/core';
 import { insideRect, onDrop, useDrag, type DragPayload } from '../../ui/dnd';
 import { drawLane } from './laneCanvas';
-import { laneAt, type Lane } from './layout';
+import { LANE_GAP, laneAt, type Lane } from './layout';
 
 const ICONS: Record<ClipType, typeof Film> = {
   video: Film,
@@ -50,7 +51,18 @@ const ICONS: Record<ClipType, typeof Film> = {
 };
 
 type Drag =
-  | { kind: 'move'; ids: ID[]; anchor: ID; f0: number; x0: number; y0: number; moved: boolean; reselect: boolean }
+  | {
+      kind: 'move';
+      ids: ID[];
+      anchor: ID;
+      f0: number;
+      x0: number;
+      y0: number;
+      moved: boolean;
+      reselect: boolean;
+      /** A track created by dragging past the outermost lane; kept for the rest of the drag. */
+      newTrack?: { edits: Edit[]; trackId: ID };
+    }
   | { kind: 'trim'; ids: ID[]; edge: Edge; f0: number; restore: number; roll: [ID, ID] | null; ripple: boolean }
   | { kind: 'slip'; ids: ID[]; x0: number; restore: number }
   | { kind: 'fade'; id: ID; side: 'in' | 'out'; f0: number; base: number }
@@ -110,42 +122,69 @@ export function Lanes({ lanes, height, width, live }: Props) {
 
   // ─────────────────────────────────────────────────────── move planning ──
   const planMove = (d: Extract<Drag, { kind: 'move' }>, e: { clientX: number; clientY: number; altKey: boolean; shiftKey: boolean }) => {
-    const p = store();
+    const base = store();
     const moving = new Set(d.ids);
-    const clips = d.ids.map((id) => p.clips[id]).filter(Boolean);
-    if (!clips.length) return { edits: [] as Edit[], line: null as number | null, placements: [] };
+    const clips = d.ids.map((id) => base.clips[id]).filter(Boolean);
+    if (!clips.length) return { edits: [] as Edit[], commit: [] as Edit[], project: base, line: null as number | null, placements: [] };
     let delta = Math.round(toFrame(e.clientX) - d.f0);
     const minStart = Math.min(...clips.map((c) => c.start));
     delta = Math.max(delta, -minStart);
     const edges = clips.flatMap((c) => [c.start + delta, clipEnd(c) + delta]);
-    const s = snap(p, moving, edges, e.shiftKey);
+    const s = snap(base, moving, edges, e.shiftKey);
     delta = Math.max(Math.round(delta + s.adjust), -minStart);
 
     // Vertical: move clips of the grabbed clip's kind by the same number of lanes.
-    const anchor = p.clips[d.anchor];
+    const anchor = base.clips[d.anchor];
     const kind = anchor ? trackKindFor(anchor.type) : 'video';
-    const sameKind = lanes.filter((l) => l.track.kind === kind);
-    const fromIdx = sameKind.findIndex((l) => l.track.id === anchor?.trackId);
-    const over = laneAt(lanes, toY(e.clientY));
-    let toIdx = over && over.track.kind === kind ? sameKind.indexOf(over) : fromIdx;
-    if (!over) toIdx = toY(e.clientY) < (sameKind[0]?.top ?? 0) ? 0 : toIdx;
+    const kindLanes = lanes.filter((l) => l.track.kind === kind);
+    const y = toY(e.clientY);
+    const first = kindLanes[0];
+    const last = kindLanes[kindLanes.length - 1];
+    // Picture stacks upwards and sound downwards, so "past the edge" is above the top video lane
+    // or below the bottom audio lane. Dragging there makes a new track.
+    const beyond = kind === 'video' ? !!first && y < first.top - LANE_GAP : !!last && y > last.top + last.height + LANE_GAP;
+    if (beyond && !d.newTrack) d.newTrack = addTrack(base, kind);
+    const p = d.newTrack ? applyEdits(base, d.newTrack.edits) : base;
+    let tracks = kindLanes.map((l) => l.track);
+    if (d.newTrack && !tracks.some((t) => t.id === d.newTrack!.trackId)) {
+      // The preview has not been laid out with the new lane yet.
+      const t = p.tracks[d.newTrack.trackId];
+      tracks = kind === 'video' ? [t, ...tracks] : [...tracks, t];
+    }
+    const fromIdx = tracks.findIndex((t) => t.id === anchor?.trackId);
+    const over = laneAt(lanes, y);
+    let toIdx = fromIdx;
+    if (beyond) toIdx = kind === 'video' ? 0 : tracks.length - 1;
+    else if (over && over.track.kind === kind) toIdx = tracks.findIndex((t) => t.id === over.track.id);
+    else if (!over && y < (first?.top ?? 0)) toIdx = 0;
     let shift = toIdx - fromIdx;
     // Keep every moving clip of that kind on an existing, unlocked track.
     for (const c of clips) {
       if (trackKindFor(c.type) !== kind) continue;
-      const i = sameKind.findIndex((l) => l.track.id === c.trackId);
-      shift = clamp(shift, -i, sameKind.length - 1 - i);
+      const i = tracks.findIndex((t) => t.id === c.trackId);
+      shift = clamp(shift, -i, tracks.length - 1 - i);
     }
     const placements = clips.map((c) => {
       let trackId = c.trackId;
       if (trackKindFor(c.type) === kind && shift !== 0) {
-        const i = sameKind.findIndex((l) => l.track.id === c.trackId);
-        const target = sameKind[i + shift]?.track;
+        const i = tracks.findIndex((t) => t.id === c.trackId);
+        const target = tracks[i + shift];
         if (target && !target.locked) trackId = target.id;
       }
       return { id: c.id, start: c.start + delta, trackId };
     });
-    return { edits: placeClips(p, placements), line: s.line, placements };
+    const usesNew = !!d.newTrack && placements.some((m) => m.trackId === d.newTrack!.trackId);
+    const placed = placeClips(p, placements);
+    return {
+      // The preview keeps the new lane for as long as the drag lasts, so the layout under the
+      // pointer never jumps; the commit only creates it if something actually landed there.
+      edits: d.newTrack ? [...d.newTrack.edits, ...placed] : placed,
+      commit: usesNew ? [...d.newTrack!.edits, ...placed] : d.newTrack ? placeClips(base, placements) : placed,
+      project: usesNew ? p : base,
+      prefix: usesNew ? d.newTrack!.edits : [],
+      line: s.line,
+      placements,
+    };
   };
 
   // ─────────────────────────────────────────────────────────── pointer ──
@@ -346,10 +385,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
           if (e.altKey) {
             // Alt-drop duplicates instead of moving.
             const copies = plan.placements.map((m) => ({ ...p.clips[m.id], start: m.start, trackId: m.trackId }));
-            const r = pasteClips(p, copies, Math.min(...copies.map((c) => c.start)));
-            commit(r.edits);
+            const r = pasteClips(plan.project, copies, Math.min(...copies.map((c) => c.start)));
+            commit([...(plan.prefix ?? []), ...r.edits]);
             ui().select(r.created);
-          } else commit(plan.edits);
+          } else commit(plan.commit);
         }
         session.setPresence({ dragging: null });
         break;
@@ -603,7 +642,7 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
   const c = p.clips[id];
   if (!c) return [];
   const ui = useUI.getState();
-  const timed = c.type === 'video' || c.type === 'audio';
+  const timed = (c.type === 'video' || c.type === 'audio') && !c.freeze;
   return [
     { label: 'Cut', keys: 'mod+x', onSelect: cmd.cut },
     { label: 'Copy', keys: 'mod+c', onSelect: cmd.copy },
@@ -611,6 +650,7 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
     { label: 'Duplicate', keys: 'mod+d', onSelect: cmd.duplicate },
     'separator',
     { label: 'Split at playhead', keys: 'mod+b', onSelect: cmd.split },
+    c.type === 'video' && !c.freeze ? { label: 'Freeze frame at playhead', keys: 'shift+f', onSelect: cmd.freezeFrame } : null,
     { label: 'Delete', keys: 'delete', onSelect: () => cmd.delete(false) },
     { label: 'Ripple delete', keys: 'shift+delete', onSelect: () => cmd.delete(true) },
     'separator',
@@ -732,7 +772,13 @@ const ClipView = memo(function ClipView({ clip, ppf, height, selected, transSel,
           <Icon />
           <span className="clip__name">{label}</span>
           {clip.linkId && <Link2 className="clip__flag" />}
-          {(clip.speed !== 1 || clip.reverse) && (
+          {clip.freeze && (
+            <span className="clip__chip">
+              <Snowflake />
+              Freeze
+            </span>
+          )}
+          {!clip.freeze && (clip.speed !== 1 || clip.reverse) && (
             <span className="clip__chip">
               <Gauge />
               {clip.reverse ? '−' : ''}

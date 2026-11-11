@@ -105,9 +105,9 @@ export function withLinked(p: Project, ids: Iterable<ID>): ID[] {
   return Array.from(out);
 }
 
-/** Seconds of source media consumed per timeline frame. */
+/** Seconds of source media consumed per timeline frame (zero for a freeze frame). */
 export const sourcePerFrame = (clip: Clip, p: Project): number =>
-  (clip.speed * p.settings.fpsDen) / p.settings.fpsNum;
+  clip.freeze ? 0 : (clip.speed * p.settings.fpsDen) / p.settings.fpsNum;
 
 /**
  * Source media time (seconds) shown at a clip-local frame. Local frames outside 0…duration are
@@ -115,13 +115,14 @@ export const sourcePerFrame = (clip: Clip, p: Project): number =>
  */
 export function sourceTimeAt(clip: Clip, localFrame: number, p: Project): number {
   const per = sourcePerFrame(clip, p);
+  if (per === 0) return clip.sourceIn;
   if (clip.reverse) return clip.sourceIn + (clip.duration - 1 - localFrame) * per;
   return clip.sourceIn + localFrame * per;
 }
 
 /** How many extra frames a clip could be extended by at its head and tail given its source media. */
 export function handles(clip: Clip, asset: Asset | undefined, p: Project): { head: number; tail: number } {
-  if (!hasSourceTime(clip.type) || !asset || asset.duration <= 0) return { head: Infinity, tail: Infinity };
+  if (!hasSourceTime(clip.type) || clip.freeze || !asset || asset.duration <= 0) return { head: Infinity, tail: Infinity };
   const per = sourcePerFrame(clip, p);
   const used = clip.duration * per;
   const before = Math.max(0, clip.sourceIn);

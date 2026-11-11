@@ -35,6 +35,7 @@ import {
   setSpeed,
   setTransition,
   splitClips,
+  freezeFrame,
   toSrt,
   tracksOf,
   trimClips,
@@ -227,6 +228,32 @@ export const cmd = {
   },
 
   // ───────────────────────────────────────────────────────────── editing ──
+  /** Hold the frame under the playhead for two seconds (on the selected clip, else the top-most video). */
+  freezeFrame(): void {
+    editing((s, p) => {
+      const f = frame();
+      const under = (id: string): boolean => {
+        const c = p.clips[id];
+        return !!c && c.type === 'video' && !!c.assetId && c.start <= f && f < clipEnd(c);
+      };
+      const order = new Map(tracksOf(p).video.map((t, i) => [t.id, i]));
+      const pick =
+        ui().selection.find(under) ??
+        clipsUnderFrame(p, f)
+          .filter(under)
+          .sort((a, b) => (order.get(p.clips[b].trackId) ?? 0) - (order.get(p.clips[a].trackId) ?? 0))[0];
+      if (!pick) {
+        toast('Put the playhead on a video clip to freeze a frame.');
+        return;
+      }
+      const fps = p.settings.fpsNum / p.settings.fpsDen;
+      const r = freezeFrame(p, pick, f, Math.round(fps * 2));
+      if (!r.edits.length) return;
+      s.store.commit(r.edits);
+      ui().select(r.created);
+    });
+  },
+
   split(): void {
     editing((s, p) => {
       const f = frame();
@@ -558,6 +585,18 @@ export const cmd = {
   },
 
   // ───────────────────────────────────────────────────────────────── files ──
+  /** Pick a file to stand in for an asset: relink offline media or drop in a new version. */
+  async replaceMedia(assetId: string): Promise<void> {
+    const s = session();
+    const asset = s?.store.get().assets[assetId];
+    if (!s || !asset) return;
+    const accept = asset.kind === 'video' ? 'video/*,.mkv,.mov,.ts' : asset.kind === 'audio' ? 'audio/*' : asset.kind === 'image' ? 'image/*' : '.cube';
+    const [file] = await pickFiles(accept, false);
+    if (!file) return;
+    const next = await s.replaceAsset(assetId, file);
+    if (next) toast(`Replaced "${asset.name}" with "${next.name}".`);
+  },
+
   async importMedia(): Promise<void> {
     const s = session();
     if (!s) return;

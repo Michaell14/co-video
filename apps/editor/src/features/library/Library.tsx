@@ -11,6 +11,7 @@ import {
   Layers,
   MonitorPlay,
   Plus,
+  RefreshCw,
   Search,
   Sparkles,
   Square,
@@ -182,6 +183,7 @@ function AssetCard({ asset }: { asset: Asset }) {
             : { label: 'Add to timeline', icon: <Plus />, onSelect: () => cmd.addAsset(asset) },
           asset.kind !== 'lut' ? { label: 'Open in source monitor', icon: <MonitorPlay />, onSelect: () => useUI.getState().set({ sourceAsset: asset.id }) } : null,
           asset.kind === 'video' && asset.hasAudio ? { label: 'Add video only', onSelect: () => cmd.addAsset(asset) } : null,
+          { label: available ? 'Replace media…' : 'Relink media…', icon: <RefreshCw />, onSelect: () => void cmd.replaceMedia(asset.id) },
           'separator',
           { label: used ? 'Remove (and its clips)' : 'Remove from project', icon: <Trash2 />, danger: true, onSelect: remove },
         ])

@@ -14,6 +14,7 @@ import {
   ReviewStore,
   sequenceEnd,
   type Asset,
+  type Edit,
   type PresenceState,
   type PresenceUser,
   type Project,
@@ -94,7 +95,8 @@ export class Session {
     this.token = urlToken ?? entry?.token ?? null;
     if (urlToken && urlToken !== entry?.token) registry.upsert({ id: this.id, token: urlToken });
 
-    await this.media.init(Object.keys(this.store.get().assets));
+    // Only a document we know (loaded from this device, with content) may decide what is orphaned.
+    await this.media.init(Object.keys(this.store.get().assets), !this.store.isEmpty());
     this.media.onUploaded = (assetId) => {
       if (this.store.get().assets[assetId]) {
         this.store.commit([{ op: 'updateAsset', id: assetId, patch: { uploaded: true } }], { undoable: false });
@@ -344,6 +346,53 @@ export class Session {
       this.scheduleMediaSync();
     }
     return created;
+  }
+
+  /**
+   * Swap the file behind an asset (relink offline media, or replace a shot with a new version).
+   * The new file becomes a new asset and every clip is repointed in the same undo step, so
+   * collaborators fetch the new media instead of keeping a stale copy under the old id.
+   */
+  async replaceAsset(assetId: string, file: File): Promise<Asset | null> {
+    const old = this.store.get().assets[assetId];
+    if (!old) return null;
+    if (!this.canEdit) {
+      toast('You have view-only access to this project.', 'error');
+      return null;
+    }
+    try {
+      const probe = await probeFile(file);
+      if (probe.asset.kind !== old.kind) {
+        toast(`"${file.name}" is ${probe.asset.kind}, but "${old.name}" is ${old.kind}.`, 'error');
+        return null;
+      }
+      const asset: Asset = {
+        ...probe.asset,
+        id: newId(),
+        folderId: old.folderId,
+        createdAt: Date.now(),
+        createdBy: this.meta.user.name,
+        uploaded: false,
+      };
+      await this.media.import(asset.id, file);
+      const p = this.store.get();
+      const edits: Edit[] = [{ op: 'addAsset', asset }];
+      for (const c of Object.values(p.clips)) {
+        if (c.assetId === assetId) edits.push({ op: 'updateClip', id: c.id, patch: { assetId: asset.id } });
+        else if (c.grade?.lutId === assetId) edits.push({ op: 'updateClip', id: c.id, patch: { grade: { ...c.grade, lutId: asset.id } } });
+      }
+      edits.push({ op: 'removeAsset', id: assetId });
+      this.store.commit(edits);
+      this.scheduleMediaSync();
+      for (const w of probe.warnings) toast(w, 'error');
+      if (old.duration > 0 && asset.duration > 0 && asset.duration < old.duration - 0.05) {
+        toast('The new file is shorter than the old one; clips that run past its end will hold the last frame.');
+      }
+      return asset;
+    } catch (err) {
+      toast(err instanceof Error ? err.message : `Could not import ${file.name}`, 'error');
+      return null;
+    }
   }
 
   private scheduleMediaSync(): void {

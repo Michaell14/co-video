@@ -125,7 +125,7 @@ function ClipInspector({ project, clips }: { project: Project; clips: Clip[] }) 
   const visual = clips.filter((c) => c.type !== 'audio');
   const media = clips.filter((c) => c.type === 'video' || c.type === 'image');
   const audio = clips.filter((c) => c.type === 'audio');
-  const timed = clips.filter((c) => c.type === 'video' || c.type === 'audio');
+  const timed = clips.filter((c) => (c.type === 'video' || c.type === 'audio') && !c.freeze);
   const transformable = visual.filter((c) => c.type !== 'adjustment');
   const first = clips[0];
   const s = project.settings;

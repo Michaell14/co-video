@@ -9,6 +9,9 @@ import {
   closeGap,
   deleteClips,
   deleteRange,
+  freezeFrame,
+  handles,
+  sourceTimeAt,
   makeTransition,
   openGap,
   pasteClips,
@@ -309,6 +312,58 @@ describe('split & delete', () => {
       [0, 40],
       [70, 60],
     ]);
+  });
+});
+
+describe('freeze frame', () => {
+  it('holds the frame under the playhead and ripples everything after it', () => {
+    const { p, asset, v2 } = fixture();
+    let q = applyEdits(p, addAssetToTimeline(p, asset, { frame: 0 }).edits);
+    const video = Object.values(q.clips).find((c) => c.type === 'video')!;
+    const audio = Object.values(q.clips).find((c) => c.type === 'audio')!;
+    // Something on another track that starts after the freeze point must move too.
+    const other = addClip(q, v2.id, 400, 60);
+    q = other.p;
+    const end = sequenceEnd(q);
+
+    const r = freezeFrame(q, video.id, 300, 90);
+    const out = applyEdits(q, r.edits);
+    const still = out.clips[r.created[0]];
+    expect(still.freeze).toBe(true);
+    expect(still.start).toBe(300);
+    expect(still.duration).toBe(90);
+    expect(still.sourceIn).toBeCloseTo(10);
+    expect(still.linkId).toBeNull();
+    // The hold never advances through the source, and can be trimmed without limit.
+    expect(sourceTimeAt(still, 0, out)).toBeCloseTo(10);
+    expect(sourceTimeAt(still, 89, out)).toBeCloseTo(10);
+    expect(handles(still, asset, out)).toEqual({ head: Infinity, tail: Infinity });
+
+    expect(out.clips[video.id].duration).toBe(300);
+    expect(out.clips[audio.id].duration).toBe(300);
+    const rights = Object.values(out.clips).filter((c) => c.start === 390);
+    expect(rights.map((c) => c.type).sort()).toEqual(['audio', 'video']);
+    // The halves after the hold continue where the picture stopped, and are still linked.
+    for (const c of rights) expect(c.sourceIn).toBeCloseTo(10);
+    expect(rights[0].linkId).toBeTruthy();
+    expect(rights[0].linkId).toBe(rights[1].linkId);
+    expect(out.clips[other.clip.id].start).toBe(490);
+    expect(sequenceEnd(out)).toBe(end + 90);
+    expect(overlaps(out)).toEqual([]);
+  });
+
+  it('bakes animated values into the hold and ignores speed changes', () => {
+    const f = fixture();
+    const { p, clip } = addClip(f.p, f.v1.id, 0, 100, {
+      keyframes: { opacity: [{ t: 0, v: 0, e: 'linear' }, { t: 100, v: 1, e: 'linear' }] },
+    });
+    const r = freezeFrame(p, clip.id, 50, 30);
+    const out = applyEdits(p, r.edits);
+    const still = out.clips[r.created[0]];
+    expect(still.opacity).toBeCloseTo(0.5);
+    expect(still.keyframes).toEqual({});
+    expect(setSpeed(out, [still.id], 2)).toEqual([]);
+    expect(freezeFrame(p, clip.id, 500, 30).edits).toEqual([]);
   });
 });
 

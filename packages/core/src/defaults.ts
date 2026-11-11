@@ -161,6 +161,7 @@ export const CLIP_DEFAULTS: Omit<Clip, 'id' | 'trackId' | 'type'> = {
   sourceIn: 0,
   speed: 1,
   reverse: false,
+  freeze: false,
   name: '',
   label: null,
   enabled: true,

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { clips, ffprobe, hasFfprobe, importFixtures, newProject, trackErrors } from './helpers';
+import { join } from 'node:path';
+import { clips, FIXTURES, ffprobe, hasFfprobe, importFixtures, newProject, trackErrors } from './helpers';
 
 
 
@@ -108,6 +109,77 @@ test.describe('editor', () => {
     expect(await clips(page)).toEqual(before);
     await page.keyboard.press('Control+Shift+z');
     expect(await clips(page)).toEqual(trimmed);
+  });
+
+  test('freeze frame, drag to a new track, and replace media', async ({ page }) => {
+    const errors = trackErrors(page);
+    await newProject(page);
+    await importFixtures(page, ['testsrc.mp4']);
+    await page.evaluate(() => {
+      const { session, cmd } = (window as any).tandem;
+      cmd.seek(0);
+      cmd.addAsset(Object.values(session.store.get().assets)[0]);
+    });
+    await page.keyboard.press('Shift+z');
+    const frameHash = (f: number) =>
+      page.evaluate(async (frame) => {
+        const { cmd, session } = (window as any).tandem;
+        cmd.seek(frame);
+        // Wait until the decoder has delivered this frame and it has been drawn.
+        await new Promise((r) => setTimeout(r, 900));
+        const d: Uint8Array = session.player.compositor.readPixels();
+        let h = 0;
+        for (let i = 0; i < d.length; i += 97) h = (h * 31 + d[i]) >>> 0;
+        return h;
+      }, f);
+
+    // Freeze: two seconds of hold at the playhead, everything after ripples right.
+    await page.evaluate(() => (window as any).tandem.cmd.seek(45));
+    await page.keyboard.press('Shift+f');
+    expect(await clips(page)).toEqual(['audio@0+45', 'audio@105+75', 'video@0+45', 'video@105+75', 'video@45+60']);
+    const [at, mid, end, after] = [await frameHash(45), await frameHash(70), await frameHash(104), await frameHash(120)];
+    expect(mid).toBe(at);
+    expect(end).toBe(at);
+    expect(after).not.toBe(at);
+    await page.keyboard.press('Control+z');
+    expect(await clips(page)).toEqual(['audio@0+120', 'video@0+120']);
+
+    // Dragging a clip above the top lane creates a track for it.
+    const videoTracks = () =>
+      page.evaluate(() => Object.values((window as any).tandem.session.store.get().tracks).filter((t: any) => t.kind === 'video').length);
+    const before = await videoTracks();
+    const box = (await page.locator('.clip[data-type="video"]').first().boundingBox())!;
+    const ruler = (await page.locator('.ruler').first().boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y - 10, { steps: 4 });
+    await page.mouse.move(box.x + box.width / 2, ruler.y + ruler.height / 2, { steps: 6 });
+    await page.mouse.up();
+    expect(await videoTracks()).toBe(before + 1);
+    const onTop = await page.evaluate(() => {
+      const p = (window as any).tandem.session.store.get();
+      const top = Object.values(p.tracks).filter((t: any) => t.kind === 'video').sort((a: any, b: any) => b.order - a.order)[0] as any;
+      return Object.values(p.clips).filter((c: any) => c.type === 'video').every((c: any) => c.trackId === top.id);
+    });
+    expect(onTop).toBe(true);
+
+    // Replace media: the clips follow the new file, in one undoable step.
+    const oldId = await page.evaluate(() => Object.keys((window as any).tandem.session.store.get().assets)[0]);
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.evaluate((id) => void (window as any).tandem.cmd.replaceMedia(id), oldId),
+    ]);
+    await chooser.setFiles(join(FIXTURES, 'testsrc.webm'));
+    await page.waitForFunction((id) => !(window as any).tandem.session.store.get().assets[id], oldId);
+    const repointed = await page.evaluate(() => {
+      const p = (window as any).tandem.session.store.get();
+      const [asset] = Object.values(p.assets) as any[];
+      return { name: asset.name, all: Object.values(p.clips).every((c: any) => c.assetId === asset.id) };
+    });
+    expect(repointed).toEqual({ name: 'testsrc.webm', all: true });
+    await page.keyboard.press('Control+z');
+    expect(await page.evaluate((id) => !!(window as any).tandem.session.store.get().assets[id], oldId)).toBe(true);
+    expect(errors).toEqual([]);
   });
 
   test('feature sweep produces no runtime or GL errors', async ({ page }) => {

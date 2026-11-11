@@ -7,7 +7,7 @@
  */
 import { CLIP_TYPE_COLORS, DEFAULT_SHAPE, DEFAULT_TEXT, hasSourceTime, makeClip, makeTrack } from './defaults';
 import { newId } from './ids';
-import { scaleKeyframes, shiftKeyframes, upsertKeyframe } from './keyframes';
+import { evalKeyframes, scaleKeyframes, shiftKeyframes, upsertKeyframe } from './keyframes';
 import {
   clipEnd,
   clipsOnTrack,
@@ -15,6 +15,7 @@ import {
   isRegionFree,
   neighbors,
   sourcePerFrame,
+  sourceTimeAt,
   tracksOf,
 } from './query';
 import { applyEdits } from './store';
@@ -202,6 +203,8 @@ export function rippleShift(
  */
 export function openGap(p: Project, trackIds: Iterable<ID>, frame: number, length: number): Edit[] {
   const edits: Edit[] = [];
+  // Right halves of clips that were linked stay linked to each other.
+  const linkMap = new Map<ID, ID>();
   for (const trackId of new Set(trackIds)) {
     for (const c of clipsOnTrack(p, trackId)) {
       const end = clipEnd(c);
@@ -209,11 +212,16 @@ export function openGap(p: Project, trackIds: Iterable<ID>, frame: number, lengt
       if (c.start >= frame) {
         edits.push({ op: 'updateClip', id: c.id, patch: { start: c.start + length } });
       } else {
+        let linkId: ID | null = null;
+        if (c.linkId) {
+          linkId = linkMap.get(c.linkId) ?? newId();
+          linkMap.set(c.linkId, linkId);
+        }
         const right: Clip = {
           ...c,
           ...retime(c, frame, end, p),
           id: newId(),
-          linkId: null,
+          linkId,
           transIn: null,
           fadeIn: 0,
         };
@@ -564,7 +572,7 @@ export function setSpeed(p: Project, ids: ID[], speed: number, reverse?: boolean
   const set = new Set(ids);
   for (const id of ids) {
     const c = p.clips[id];
-    if (!c || !hasSourceTime(c.type)) continue;
+    if (!c || !hasSourceTime(c.type) || c.freeze) continue;
     let duration = Math.max(1, Math.round((c.duration * c.speed) / sp));
     const { next } = neighbors(p, c);
     if (next && !set.has(next.id)) duration = Math.min(duration, Math.max(1, next.start - c.start));
@@ -579,6 +587,60 @@ export function setSpeed(p: Project, ids: ID[], speed: number, reverse?: boolean
 }
 
 // ───────────────────────────────────────────────────────── copy & paste ──
+
+/**
+ * Freeze frame: hold the picture under `frame` for `hold` frames. Everything from `frame` onwards
+ * ripples right on every unlocked track (so sync is kept), and a still copy of the clip — same
+ * look, no motion, no sound — fills the gap.
+ */
+export function freezeFrame(p: Project, clipId: ID, frame: number, hold: number): OpResult {
+  const c = p.clips[clipId];
+  const length = Math.max(1, Math.round(hold));
+  if (!c || c.type !== 'video' || !c.assetId || frame < c.start || frame >= clipEnd(c)) return { edits: [], created: [] };
+  const sourceIn = sourceTimeAt(c, frame - c.start, p);
+  const unlocked = Object.values(p.tracks)
+    .filter((t) => !t.locked)
+    .map((t) => t.id);
+  const edits = openGap(p, unlocked, frame, length);
+  const still: Clip = {
+    ...c,
+    id: newId(),
+    start: frame,
+    duration: length,
+    sourceIn,
+    freeze: true,
+    reverse: false,
+    speed: 1,
+    linkId: null,
+    transIn: null,
+    transOut: null,
+    fadeIn: 0,
+    fadeOut: 0,
+    // The hold shows the clip exactly as it looked at that instant.
+    keyframes: {},
+    ...frozenValues(c, frame - c.start),
+  };
+  edits.push({ op: 'addClip', clip: still });
+  return { edits, created: [still.id] };
+}
+
+/** Every animated property of `clip` (its own and its effects'), evaluated at `localFrame`. */
+function frozenValues(clip: Clip, localFrame: number): Partial<Clip> {
+  const out: Record<string, unknown> = {};
+  let effects: EffectInstance[] | null = null;
+  for (const path in clip.keyframes) {
+    const kfs = clip.keyframes[path];
+    if (!kfs.length || baseValue(clip, path) === undefined) continue;
+    const v = evalKeyframes(kfs, localFrame);
+    if (path.startsWith('fx:')) {
+      const [, fxId, key] = path.split(':');
+      effects ??= clip.effects;
+      effects = effects.map((e) => (e.id === fxId ? { ...e, params: { ...e.params, [key]: v } } : e));
+    } else out[path] = v;
+  }
+  if (effects) out.effects = effects;
+  return out as Partial<Clip>;
+}
 
 export function pasteClips(p: Project, items: Clip[], frame: number): OpResult {
   if (!items.length) return { edits: [], created: [] };

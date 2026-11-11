@@ -54,12 +54,13 @@ with projects stored in your browser.
   audio / video; markers; in / out ranges; J-K-L shuttle; frame-accurate stepping
 - **Keyframes on every numeric property** — transform, opacity, crop, volume, pan and every effect
   parameter — with hold, linear, ease and custom bezier interpolation
-- Speed changes from 5 % to 10 000 % and reverse playback
+- Speed changes from 5 % to 10 000 %, reverse playback and freeze frames
 - Titles with 13 bundled open-source typefaces, outlines, shadows, gradients, backgrounds and
   animated in / out presets; shapes, solids and **adjustment layers**
 - Subtitles: import `.srt` / `.vtt` as editable captions, export `.srt`
 - 18 blend modes, rectangular and elliptical masks with feathering, on-canvas transform handles
 - A source monitor with in / out marking, insert and overwrite
+- Replace or relink the file behind any asset; every clip follows, in one undo step
 - Per-user undo and redo, a command palette, and a complete keyboard workflow
 
 ### Effects

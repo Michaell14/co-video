@@ -106,10 +106,31 @@ export class MediaStore {
     }
   }
 
-  /** Scan OPFS so `local` flags are right before anything asks. */
-  async init(assetIds: string[]): Promise<void> {
+  /**
+   * Scan OPFS so `local` flags are right before anything asks. With `prune`, files that belong to no
+   * asset (removed in an earlier session, or a download that never finished) are deleted so removed
+   * footage does not keep occupying the disk.
+   */
+  async init(assetIds: string[], prune = false): Promise<void> {
     await Promise.all(assetIds.map((id) => this.readLocal(id)));
     void navigator.storage?.persist?.().catch(() => false);
+    if (prune) void this.prune(new Set(assetIds));
+  }
+
+  private async prune(keep: ReadonlySet<string>): Promise<void> {
+    const dir = await this.directory();
+    if (!dir) return;
+    try {
+      const stale: string[] = [];
+      const entries = (dir as unknown as { keys(): AsyncIterable<string> }).keys();
+      for await (const name of entries) {
+        const assetId = name.endsWith('.part') ? name.slice(0, -5) : name;
+        if (!keep.has(assetId) || (name.endsWith('.part') && !this.downloads.has(assetId))) stale.push(name);
+      }
+      for (const name of stale) await dir.removeEntry(name).catch(() => {});
+    } catch {
+      // Listing is best-effort; nothing depends on it.
+    }
   }
 
   /** Store a freshly imported file. Usable immediately; the durable copy is written in the background. */
