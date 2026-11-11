@@ -118,6 +118,7 @@ export class Player {
     this.applySize();
     this.raf = requestAnimationFrame(this.tick);
     this.scheduleWarm();
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisibility);
   }
 
   // ─────────────────────────────────────────────────────────────── state ──
@@ -503,8 +504,21 @@ export class Player {
    * the bottleneck, so the step is undone and not retried for a minute. Only `auto` quality adapts;
    * an explicit choice is respected.
    */
+  private resetAdaptWindow(now: number): void {
+    this.tickTimes.length = 0;
+    this.adaptSince = now;
+  }
+
+  /** Animation frames stop in a hidden tab; coming back must not look like a slow machine. */
+  private readonly onVisibility = (): void => {
+    this.resetAdaptWindow(performance.now());
+  };
+
   private adapt(now: number): void {
     const times = this.tickTimes;
+    // A gap of seconds is not slow rendering (the machine slept, a debugger paused us): start
+    // measuring afresh. Background tabs are handled by `onVisibility`.
+    if (times.length && now - times[times.length - 1] > 2000) this.resetAdaptWindow(now);
     times.push(now);
     while (now - times[0] > 1000) times.shift();
     if (!this.state.playing) {
@@ -582,6 +596,7 @@ export class Player {
     cancelAnimationFrame(this.raf);
     if (this.pumpTimer) clearInterval(this.pumpTimer);
     if (this.warmTimer) clearTimeout(this.warmTimer);
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisibility);
     this.graph?.dispose();
     void this.audioCtx?.close().catch(() => {});
     this.sources.dispose();
