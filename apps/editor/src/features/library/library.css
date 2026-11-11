@@ -382,3 +382,28 @@
 .fx:hover span {
   color: var(--fg-1);
 }
+
+.lib__sample {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--violet-soft);
+  color: #c9c2ff;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  transition:
+    background var(--dur-1) ease,
+    transform var(--dur-2) var(--ease-out);
+}
+.lib__sample:hover {
+  background: rgba(139, 124, 255, 0.28);
+  transform: translateY(-1px);
+}
+.lib__sample svg {
+  width: 13px !important;
+  height: 13px !important;
+  color: currentColor !important;
+}

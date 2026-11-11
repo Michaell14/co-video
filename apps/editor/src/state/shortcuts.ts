@@ -104,6 +104,7 @@ export const COMMANDS: Command[] = [
 
   // File
   { id: 'import', title: 'Import media…', group: 'File', keys: ['mod+i'], run: () => void cmd.importMedia() },
+  { id: 'sample', title: 'Load sample project', group: 'File', run: () => void cmd.loadSample() },
   { id: 'export', title: 'Export…', group: 'File', keys: ['mod+e'], run: () => ui().set({ dialog: 'export' }) },
   { id: 'share', title: 'Share…', group: 'File', run: () => ui().set({ dialog: 'share' }) },
   { id: 'save-file', title: 'Save project file', group: 'File', keys: ['mod+s'], run: () => cmd.saveProjectFile() },

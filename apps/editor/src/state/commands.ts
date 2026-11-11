@@ -42,6 +42,7 @@ import {
   withLinked,
   framesToSeconds,
   DEFAULT_TEXT,
+  type AddAssetOptions,
   type Asset,
   type Clip,
   type Edit,
@@ -573,6 +574,74 @@ export const cmd = {
     const assets = await s.importFiles(media);
     if (assets.length) toast(`Imported ${assets.length} file${assets.length > 1 ? 's' : ''}`, 'success');
     return assets;
+  },
+  /** Fetch the bundled sample media and assemble a short demo edit from it. */
+  async loadSample(): Promise<void> {
+    const s = session();
+    if (!s) return;
+    if (!canEdit(s.getMeta().role)) {
+      toast('You have view-only access to this project.', 'info');
+      return;
+    }
+    const names = ['dusk.mp4', 'fractal.mp4', 'aurora.mp4', 'pulse.ogg'];
+    let files: File[];
+    try {
+      files = await Promise.all(
+        names.map(async (name) => {
+          const res = await fetch(`${import.meta.env.BASE_URL}samples/${name}`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          return new File([blob], name, { type: name.endsWith('.ogg') ? 'audio/ogg' : 'video/mp4' });
+        }),
+      );
+    } catch {
+      toast('Could not load the sample media.', 'error');
+      return;
+    }
+    const assets = await s.importFiles(files);
+    const by = (n: string) => assets.find((a) => a.name === n);
+    const [a, b, c, music] = [by('dusk.mp4'), by('fractal.mp4'), by('aurora.mp4'), by('pulse.ogg')];
+    if (!a || !b || !c) return;
+    let p = s.store.get();
+    if (sequenceEnd(p) > 0) {
+      toast('Sample media added to the pool', 'success');
+      return;
+    }
+    const fps = p.settings.fpsNum / p.settings.fpsDen;
+    const { video, audio } = tracksOf(p);
+    const edits: Edit[] = [];
+    const place = (asset: Asset, start: number, track: ID | undefined, extra: Partial<AddAssetOptions> = {}) => {
+      const r = addAssetToTimeline(p, asset, { frame: start, videoTrackId: track, audioTrackId: audio[0]?.id, ...extra });
+      edits.push(...r.edits);
+      p = applyPreview(p, r.edits);
+      return r.created;
+    };
+    const len = Math.round(4 * fps);
+    const [ca] = place(a, 0, video[0]?.id, { sourceOut: 4 });
+    const [cb] = place(b, len, video[0]?.id, { sourceIn: 1, sourceOut: 5 });
+    const [cc] = place(c, len * 2, video[0]?.id, { sourceOut: 4 });
+    if (music) place(music, 0, undefined, { sourceOut: 12 });
+    const dur = Math.round(0.8 * fps);
+    edits.push(
+      { op: 'updateClip', id: cb, patch: { transIn: makeTransition('crossZoom', dur) } },
+      { op: 'updateClip', id: cc, patch: { transIn: makeTransition('lumaFade', dur), transOut: makeTransition('dipToBlack', dur) } },
+      { op: 'updateClip', id: ca, patch: { transIn: makeTransition('dipToBlack', Math.round(0.5 * fps)), effects: [makeEffect('filmGrain')] } },
+    );
+    p = applyPreview(p, edits.slice(-3));
+    const musicClip = Object.values(p.clips).find((x) => x.type === 'audio');
+    if (musicClip) edits.push({ op: 'updateClip', id: musicClip.id, patch: { fadeIn: Math.round(0.5 * fps), fadeOut: Math.round(1.5 * fps), volume: -4 } });
+    const title = addGenerator(p, 'text', {
+      frame: Math.round(0.6 * fps),
+      duration: Math.round(3 * fps),
+      trackId: video[1]?.id,
+      text: { ...DEFAULT_TEXT, content: 'Edit in tandem', size: 0.13, weight: 800, letterSpacing: -0.02, animIn: { type: 'slideUp', duration: Math.round(0.5 * fps) }, animOut: { type: 'fade', duration: Math.round(0.4 * fps) }, shadow: { ...DEFAULT_TEXT.shadow, enabled: true } },
+    });
+    edits.push(...title.edits);
+    edits.push({ op: 'setMarker', marker: { id: newId(8), frame: len, name: 'First cut', color: MARKER_COLORS[0], note: '' } });
+    s.store.commit(edits);
+    cmd.seek(Math.round(1.5 * fps));
+    cmd.zoomFit();
+    toast('Sample project loaded — press Space to play', 'success');
   },
   importSubtitles(text: string): void {
     editing((s, p) => {

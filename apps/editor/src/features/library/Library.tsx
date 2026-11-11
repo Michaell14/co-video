@@ -104,6 +104,9 @@ function MediaPool() {
           Import media
         </Button>
         <span style={{ fontSize: 11, color: 'var(--fg-4)', marginTop: 4 }}>Video · audio · images · .cube LUTs · .srt captions</span>
+        <button className="lib__sample" onClick={() => void cmd.loadSample()} disabled={!session.canEdit}>
+          <Sparkles /> No footage handy? Load a sample project
+        </button>
       </div>
     );
   }

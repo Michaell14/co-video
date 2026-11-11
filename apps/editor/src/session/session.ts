@@ -10,7 +10,6 @@ import {
   canEdit,
   framesToSeconds,
   newId,
-  newProjectId,
   ProjectStore,
   ReviewStore,
   sequenceEnd,
@@ -18,7 +17,6 @@ import {
   type PresenceState,
   type PresenceUser,
   type Project,
-  type ProjectSettings,
   type Role,
 } from '@tandem/core';
 import { Player, probeFile } from '@tandem/engine';
@@ -26,7 +24,8 @@ import { useUI } from '../state/ui';
 import { toast } from '../ui/core';
 import { api, serverAvailable, wsBase } from './api';
 import { TimelineMedia } from '../features/timeline/mediaCache';
-import { deleteProjectMedia, MediaStore, moveProjectMedia } from './mediaStore';
+import { MediaStore, moveProjectMedia } from './mediaStore';
+import { idbName, whenSynced } from './projects';
 import { getUser, registry, setUser } from './registry';
 import { SyncProvider, type SyncStatus } from './sync';
 
@@ -44,18 +43,6 @@ export interface SessionMeta {
   player: Player | null;
   user: PresenceUser;
   denied: boolean;
-}
-
-const idbName = (id: string, doc: string) => `tandem:${id}:${doc}`;
-
-function whenSynced(p: IndexeddbPersistence, timeoutMs = 4000): Promise<void> {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, timeoutMs);
-    void p.whenSynced.then(() => {
-      clearTimeout(t);
-      resolve();
-    });
-  });
 }
 
 export class Session {
@@ -90,34 +77,6 @@ export class Session {
   }
 
   // ───────────────────────────────────────────────────────────── lifecycle ──
-
-  /** Create a brand-new project and return its id. Registers on the server when one is reachable. */
-  static async create(settings: Partial<ProjectSettings>): Promise<string> {
-    let id = newProjectId();
-    let token: string | null = null;
-    if (await serverAvailable()) {
-      try {
-        const res = await api.createProject(settings.name ?? 'Untitled project');
-        id = res.id;
-        token = res.token;
-      } catch (err) {
-        console.warn('[session] server project creation failed; staying local', err);
-      }
-    }
-    const doc = new Y.Doc();
-    const store = new ProjectStore(doc);
-    store.initIfEmpty(settings);
-    const idb = new IndexeddbPersistence(idbName(id, 'project'), doc);
-    await whenSynced(idb);
-    // y-indexeddb writes asynchronously; give the initial state a beat to land before navigating.
-    await new Promise((r) => setTimeout(r, 60));
-    await idb.destroy();
-    const s = store.get().settings;
-    registry.upsert({ id, name: s.name, token, width: s.width, height: s.height, fps: s.fpsNum / s.fpsDen });
-    store.destroy();
-    doc.destroy();
-    return id;
-  }
 
   static async open(id: string, urlToken: string | null): Promise<Session> {
     const session = new Session(id);
@@ -435,18 +394,6 @@ export class Session {
       thumb: firstThumb,
       updatedAt: Date.now(),
       token: this.token,
-    });
-  }
-}
-
-/** Remove a project and its media from this device. */
-export async function deleteLocalProject(id: string): Promise<void> {
-  registry.remove(id);
-  await deleteProjectMedia(id);
-  for (const name of ['project', 'review']) {
-    await new Promise<void>((resolve) => {
-      const req = indexedDB.deleteDatabase(idbName(id, name));
-      req.onsuccess = req.onerror = req.onblocked = () => resolve();
     });
   }
 }

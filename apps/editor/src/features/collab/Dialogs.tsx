@@ -5,7 +5,7 @@ import { initials, ProjectStore, USER_COLORS, type Role, type VersionInfo } from
 import { navigate } from '../../App';
 import { api } from '../../session/api';
 import { usePeers, useSession, useSessionMeta } from '../../session/hooks';
-import { deleteLocalProject } from '../../session/session';
+import { deleteLocalProject } from '../../session/projects';
 import { Button, Dialog, Segmented, TextField, toast } from '../../ui/core';
 import './collab.css';
 

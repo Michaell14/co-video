@@ -4,7 +4,7 @@ import { describeFps, FRAME_RATE_PRESETS, formatClock, RESOLUTION_PRESETS, type 
 import { Logo, navigate } from '../../App';
 import { serverAvailable } from '../../session/api';
 import { getUser, registry, setUser, type ProjectEntry } from '../../session/registry';
-import { deleteLocalProject, Session } from '../../session/session';
+import { createProject, deleteLocalProject } from '../../session/projects';
 import { Button, Dialog, MenuButton, NumberField, Select, TextField, toast } from '../../ui/core';
 import './home.css';
 
@@ -36,13 +36,16 @@ export function Home() {
   useEffect(() => {
     document.title = 'Tandem';
     void serverAvailable(true).then(setOnline);
+    // Warm the editor bundle while the user decides what to open, so opening a project is instant.
+    const idle = window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 600));
+    idle(() => void import('../editor/Editor'));
   }, []);
 
   const create = async (settings: Partial<ProjectSettings>) => {
     if (creating) return;
     setCreating(true);
     try {
-      const id = await Session.create({ name: 'Untitled project', ...settings });
+      const id = await createProject({ name: 'Untitled project', ...settings });
       navigate(id);
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not create the project', 'error');
