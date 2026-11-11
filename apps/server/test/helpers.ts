@@ -1,0 +1,240 @@
+/** Test utilities: temp data dirs, a tiny HTTP wrapper and a minimal Yjs WebSocket client. */
+import { mkdtemp, rm } from 'node:fs/promises';
+import { request } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as decoding from 'lib0/decoding';
+import * as encoding from 'lib0/encoding';
+import WebSocket from 'ws';
+import * as awarenessProtocol from 'y-protocols/awareness';
+import * as syncProtocol from 'y-protocols/sync';
+import * as Y from 'yjs';
+import { WS_MSG_AWARENESS, WS_MSG_CONTROL, WS_MSG_SYNC } from '@tandem/core';
+import type { ControlMessage, DocKind, Role } from '@tandem/core';
+
+const tempDirs: string[] = [];
+
+export async function tempDir(prefix = 'tandem-test-'): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
+export async function removeTempDirs(): Promise<void> {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+}
+
+export async function waitFor(condition: () => boolean, what = 'condition', timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/**
+ * Plain-data view of the shared types the tests use. (`doc.toJSON()` would not do: it only sees
+ * root types that were already instantiated on that particular Y.Doc.)
+ */
+export function content(doc: Y.Doc): Record<string, unknown> {
+  return {
+    test: doc.getMap('test').toJSON(),
+    clips: doc.getArray('clips').toJSON(),
+    track: doc.getArray('track').toJSON(),
+    script: doc.getText('script').toString(),
+  };
+}
+
+export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+export interface Project {
+  id: string;
+  token: string;
+}
+
+/** Thin wrapper around fetch for one server. */
+export class Api {
+  constructor(readonly base: string) {}
+
+  fetch(path: string, init: RequestInit & { token?: string } = {}): Promise<Response> {
+    const headers = new Headers(init.headers);
+    if (init.token) headers.set('Authorization', `Bearer ${init.token}`);
+    return fetch(this.base + path, { ...init, headers });
+  }
+
+  json(path: string, body: unknown, token?: string): Promise<Response> {
+    return this.fetch(path, {
+      method: 'POST',
+      token,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async createProject(name?: string): Promise<Project> {
+    const res = await this.json('/api/projects', name === undefined ? {} : { name });
+    if (res.status !== 200) throw new Error(`create project failed: ${res.status} ${await res.text()}`);
+    return (await res.json()) as Project;
+  }
+
+  async invite(project: Project, role: Role, token = project.token): Promise<string> {
+    const res = await this.json(`/api/projects/${project.id}/invites`, { role }, token);
+    if (res.status !== 200) throw new Error(`invite failed: ${res.status} ${await res.text()}`);
+    return ((await res.json()) as { token: string }).token;
+  }
+
+  wsUrl(projectId: string, doc: DocKind | string, token: string): string {
+    return `${this.base.replace(/^http/, 'ws')}/ws/${projectId}/${doc}?t=${encodeURIComponent(token)}`;
+  }
+}
+
+/** A request whose path is sent exactly as given (fetch would normalise `..` away). */
+export function rawGet(
+  base: string,
+  path: string,
+): Promise<{ status: number; headers: Record<string, unknown>; body: string }> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(base);
+    const req = request({ host: url.hostname, port: url.port, path, method: 'GET' }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () =>
+        resolve({
+          status: res.statusCode ?? 0,
+          headers: res.headers,
+          body: Buffer.concat(chunks).toString('utf8'),
+        }),
+      );
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/**
+ * The client half of the wire protocol, as small as it gets: answer sync messages, forward local
+ * document and awareness changes, record control frames.
+ */
+export class TestClient {
+  readonly doc = new Y.Doc();
+  readonly awareness = new awarenessProtocol.Awareness(this.doc);
+  readonly controls: ControlMessage[] = [];
+  /** True once the server answered our sync step 1, i.e. we hold the server's state. */
+  synced = false;
+  closed = false;
+  private readonly ws: WebSocket;
+  private readonly ready: Promise<void>;
+
+  constructor(url: string) {
+    this.awareness.setLocalState(null);
+    this.ws = new WebSocket(url);
+    this.ready = new Promise((resolve, reject) => {
+      this.ws.once('open', () => resolve());
+      this.ws.once('error', reject);
+    });
+    this.ready.catch(() => undefined);
+
+    this.ws.on('open', () => {
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, WS_MSG_SYNC);
+      syncProtocol.writeSyncStep1(encoder, this.doc);
+      this.ws.send(encoding.toUint8Array(encoder));
+    });
+    this.ws.on('close', () => {
+      this.closed = true;
+    });
+    this.ws.on('message', (data: Buffer) => this.onMessage(new Uint8Array(data)));
+
+    this.doc.on('update', (update: Uint8Array, origin: unknown) => {
+      if (origin === this) return; // came from the server
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, WS_MSG_SYNC);
+      syncProtocol.writeUpdate(encoder, update);
+      this.send(encoding.toUint8Array(encoder));
+    });
+    this.awareness.on(
+      'update',
+      (
+        { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
+        origin: unknown,
+      ) => {
+        if (origin === this) return;
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, WS_MSG_AWARENESS);
+        encoding.writeVarUint8Array(
+          encoder,
+          awarenessProtocol.encodeAwarenessUpdate(this.awareness, [...added, ...updated, ...removed]),
+        );
+        this.send(encoding.toUint8Array(encoder));
+      },
+    );
+  }
+
+  private onMessage(message: Uint8Array): void {
+    const decoder = decoding.createDecoder(message);
+    switch (decoding.readVarUint(decoder)) {
+      case WS_MSG_SYNC: {
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, WS_MSG_SYNC);
+        const type = syncProtocol.readSyncMessage(decoder, encoder, this.doc, this);
+        if (encoding.length(encoder) > 1) this.send(encoding.toUint8Array(encoder));
+        if (type === syncProtocol.messageYjsSyncStep2) this.synced = true;
+        break;
+      }
+      case WS_MSG_AWARENESS:
+        awarenessProtocol.applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(decoder), this);
+        break;
+      case WS_MSG_CONTROL:
+        this.controls.push(JSON.parse(decoding.readVarString(decoder)) as ControlMessage);
+        break;
+      default:
+        throw new Error('unexpected frame type');
+    }
+  }
+
+  send(frame: Uint8Array | string): void {
+    if (this.ws.readyState === WebSocket.OPEN) this.ws.send(frame);
+  }
+
+  /** Resolves when connected and in sync with the server. */
+  async whenSynced(): Promise<this> {
+    await this.ready;
+    await waitFor(() => this.synced, 'initial sync');
+    return this;
+  }
+
+  get map(): Y.Map<unknown> {
+    return this.doc.getMap('test');
+  }
+
+  hasControl(type: ControlMessage['type']): boolean {
+    return this.controls.some((message) => message.type === type);
+  }
+
+  async close(): Promise<void> {
+    if (!this.closed && this.ws.readyState !== WebSocket.CLOSED) {
+      const done = new Promise((resolve) => this.ws.once('close', resolve));
+      this.ws.close();
+      await done;
+    }
+    this.awareness.destroy();
+    this.doc.destroy();
+  }
+}
+
+/** Attempt a WebSocket connection that is expected to be refused; resolves with the HTTP status. */
+export function upgradeStatus(url: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    ws.on('unexpected-response', (_req, res) => {
+      resolve(res.statusCode ?? 0);
+      res.resume();
+      ws.terminate();
+    });
+    ws.on('open', () => {
+      ws.terminate();
+      reject(new Error('connection was accepted'));
+    });
+    ws.on('error', () => undefined);
+  });
+}
