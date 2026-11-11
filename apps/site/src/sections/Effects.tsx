@@ -252,7 +252,7 @@ export function Effects() {
           id="effects-title"
           title={
             <>
-              45 effects. <em>None of them</em> wait for a render.
+              50 effects. <em>None of them</em> wait for a render.
             </>
           }
           lead="Every effect and transition is a shader running on your GPU, stacked and keyframed on the clip or on an adjustment layer. What you scrub through is the finished frame."

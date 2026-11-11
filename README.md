@@ -64,7 +64,7 @@ with projects stored in your browser.
 - Per-user undo and redo, a command palette, and a complete keyboard workflow
 
 ### Effects
-- **45 GPU effects** — blurs, glow, sharpen, clarity, chroma and luma keys, film grain, VHS, CRT,
+- **50 GPU effects** — blurs, glow, sharpen, clarity, chroma and luma keys, film grain, VHS, CRT,
   glitch, halftone, lens distortion, kaleidoscope, drop shadow, outline and more
 - **25 transitions** — dissolves, wipes, pushes, cross zoom, whip pan, film burn, glitch…
 - Effects and transitions are plain data (a parameter schema plus GLSL), so adding one is a single
