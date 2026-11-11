@@ -1,0 +1,292 @@
+.arch {
+  display: grid;
+  gap: 1.5rem;
+}
+
+/* ---------- The tab: where pixels live ---------- */
+
+.arch__tab {
+  position: relative;
+  padding: clamp(1rem, 2.4vw, 1.75rem);
+  padding-top: 3.25rem;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xl);
+  background: radial-gradient(60% 120% at 50% 0%, rgba(198, 248, 79, 0.05), transparent 70%), var(--bg-1);
+  box-shadow: var(--card-inset);
+}
+
+.arch__legend {
+  position: absolute;
+  inset: 0 0 auto 0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  height: 2.5rem;
+  padding: 0 1rem;
+  border-bottom: 1px solid var(--line-1);
+  color: var(--fg-2);
+  font-size: var(--fs-small);
+  font-weight: 550;
+  white-space: nowrap;
+}
+.arch__dots {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+.arch__dots i {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--bg-6);
+}
+
+.arch__tag {
+  padding: 0.15rem 0.6rem;
+  border-radius: var(--r-full);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.arch__tag--pixels {
+  margin-left: auto;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.arch__tag--edits {
+  margin-left: auto;
+  background: var(--violet-soft);
+  color: #b3a8ff;
+}
+
+/* ---------- The network: where edits travel ---------- */
+
+.arch__net {
+  position: relative;
+  padding: clamp(1rem, 2.4vw, 1.75rem);
+  padding-top: 3.25rem;
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-xl);
+}
+.arch__net .arch__legend {
+  border-bottom-style: dashed;
+}
+/* The Yjs document belongs to the tab above: a short stem ties the two frames together. */
+.arch__net::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: clamp(2.5rem, 6vw, 4.75rem);
+  width: 1.5px;
+  height: 1.5rem;
+  background: repeating-linear-gradient(180deg, var(--violet) 0 3px, transparent 3px 7px);
+}
+
+/* ---------- Rows of nodes and wires ---------- */
+
+.pipe,
+.sync {
+  display: flex;
+  align-items: stretch;
+}
+
+.node {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 0.3rem;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  background: var(--bg-2);
+  box-shadow: var(--card-inset);
+  transition:
+    border-color var(--dur-3) var(--ease-out),
+    transform var(--dur-4) var(--ease-out);
+}
+.node:hover {
+  border-color: var(--line-3);
+  transform: translateY(-2px);
+}
+
+.node__icon {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  margin-bottom: 0.5rem;
+  border-radius: 0.5rem;
+  background: var(--bg-4);
+  color: var(--fg-2);
+}
+.node__icon:empty {
+  display: none;
+}
+.node__title {
+  color: var(--fg-1);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.node__detail {
+  color: var(--fg-3);
+  font-size: var(--fs-micro);
+  line-height: 1.45;
+}
+.node__people {
+  display: flex;
+  order: -1;
+  margin-bottom: 0.5rem;
+  padding: 0.25rem 0 0.25rem 0.25rem;
+}
+.node__people .avatar {
+  --avatar-ring: var(--bg-2);
+  margin-left: -0.25rem;
+}
+
+.node--core {
+  border-color: var(--accent-line);
+  background: linear-gradient(180deg, rgba(198, 248, 79, 0.1), rgba(198, 248, 79, 0.02)), var(--bg-2);
+  box-shadow:
+    var(--card-inset),
+    0 0 2.5rem -0.5rem rgba(198, 248, 79, 0.25);
+}
+.node--core .node__icon {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.node--edits .node__icon {
+  background: var(--violet-soft);
+  color: #b3a8ff;
+}
+
+.wire {
+  --wire: var(--accent);
+  position: relative;
+  flex: 0 0 clamp(1.25rem, 3.5vw, 3.25rem);
+  align-self: center;
+  height: 1.25rem;
+  overflow: hidden;
+}
+.wire--edits {
+  --wire: var(--violet);
+  flex-basis: clamp(1.5rem, 6vw, 5rem);
+}
+
+/* A strip of dashes one period longer than the wire, slid by exactly one period: seamless. */
+.wire__lane {
+  position: absolute;
+  top: 50%;
+  left: -8px;
+  right: 0;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 1px;
+  background: repeating-linear-gradient(90deg, var(--wire) 0 4px, transparent 4px 8px);
+  animation: wire-x 0.7s linear infinite;
+}
+.wire__lane--back {
+  animation-direction: reverse;
+}
+.wire--edits .wire__lane {
+  margin-top: -4px;
+}
+.wire--edits .wire__lane--back {
+  margin-top: 2.5px;
+}
+[data-active='false'] .wire__lane {
+  animation-play-state: paused;
+}
+@keyframes wire-x {
+  to {
+    transform: translate3d(8px, 0, 0);
+  }
+}
+@keyframes wire-y {
+  to {
+    transform: translate3d(0, 8px, 0);
+  }
+}
+
+/* ---------- Notes ---------- */
+
+.arch-notes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: clamp(1.5rem, 3vw, 3rem);
+  margin-top: clamp(2.5rem, 5vw, 4rem);
+}
+.arch-notes li {
+  display: grid;
+  align-content: start;
+  gap: 0.6rem;
+}
+.arch-notes p {
+  color: var(--fg-3);
+  font-size: var(--fs-small);
+  line-height: 1.6;
+}
+
+/* ---------- Stacked layout ---------- */
+
+@media (max-width: 960px) {
+  .pipe,
+  .sync {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .node {
+    flex: none;
+    grid-template-columns: auto 1fr;
+    column-gap: 0.85rem;
+    align-items: center;
+  }
+  .node__icon,
+  .node__people {
+    grid-row: 1 / span 2;
+    margin-bottom: 0;
+  }
+  .node__detail {
+    grid-column: 2;
+  }
+  .node__icon:empty + .node__title,
+  .node__icon:empty ~ .node__detail {
+    grid-column: 2;
+  }
+  .wire,
+  .wire--edits {
+    flex-basis: 1.75rem;
+    width: 2rem;
+    height: 1.75rem;
+    margin-left: 1rem;
+    align-self: flex-start;
+  }
+  .wire__lane {
+    top: -8px;
+    bottom: 0;
+    left: 50%;
+    right: auto;
+    width: 2px;
+    height: auto;
+    margin: 0 0 0 -1px;
+    background: repeating-linear-gradient(180deg, var(--wire) 0 4px, transparent 4px 8px);
+    animation-name: wire-y;
+  }
+  .wire--edits .wire__lane {
+    margin: 0 0 0 -4px;
+  }
+  .wire--edits .wire__lane--back {
+    margin: 0 0 0 2.5px;
+  }
+  .arch-notes {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 400px) {
+  .arch__dots {
+    display: none;
+  }
+}

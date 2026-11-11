@@ -1,0 +1,11 @@
+.logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.logo__word {
+  font-size: 1.125rem;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}

@@ -1,0 +1,535 @@
+.mp {
+  --lane-h: clamp(3rem, 5.2vw, 4.25rem);
+  --lane-gap: 0.25rem;
+  --label-w: 2.75rem;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xl);
+  background: var(--bg-1);
+  box-shadow:
+    var(--card-inset),
+    0 2.5rem 5rem -2rem rgba(0, 0, 0, 0.8);
+}
+
+/* ---------- Presence bar ---------- */
+
+.mp__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line-1);
+  background: var(--bg-2);
+}
+
+.mp__people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.mp__person {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.2rem 0.7rem 0.2rem 0.2rem;
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-full);
+  background: var(--bg-3);
+  color: var(--fg-1);
+  font-size: var(--fs-small);
+  font-weight: 550;
+  line-height: 1;
+}
+.mp__person .avatar {
+  --avatar-ring: transparent;
+}
+.mp__person--quiet {
+  color: var(--fg-2);
+}
+.mp__person--button {
+  transition:
+    border-color var(--dur-2) var(--ease-out),
+    background-color var(--dur-2) var(--ease-out);
+}
+.mp__person--button:hover {
+  border-color: var(--line-3);
+  background: var(--bg-4);
+}
+.mp__person--button[aria-pressed='true'] {
+  border-color: var(--c-maya);
+  background: color-mix(in srgb, var(--c-maya) 14%, var(--bg-3));
+}
+.mp__role {
+  color: var(--fg-4);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+}
+
+.mp__follow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  height: 2rem;
+  padding: 0 0.85rem;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-full);
+  color: var(--fg-2);
+  font-size: var(--fs-small);
+  font-weight: 550;
+  transition:
+    color var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out),
+    background-color var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-out);
+}
+.mp__follow:hover {
+  border-color: var(--line-3);
+  color: var(--fg-1);
+}
+.mp__follow:active {
+  transform: scale(0.97);
+}
+.mp__follow[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--c-maya);
+  color: #0a0a0c;
+}
+
+/* ---------- Stage ---------- */
+
+.mp__stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 17rem;
+  touch-action: pan-y;
+}
+.mp__timeline {
+  min-width: 0;
+  padding: 0 1rem 1.25rem 0;
+}
+/* Follow mode: your view is framed in the colour of the person you are following. */
+.mp__stage::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  border: 2px solid var(--c-maya);
+  border-radius: 0 0 calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-3) var(--ease-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  .mp__stage,
+  .mp__stage button {
+    cursor: none;
+  }
+}
+.mp[data-following='true'] .mp__stage::after {
+  opacity: 1;
+}
+
+.mp__ruler {
+  position: relative;
+  height: 2rem;
+  margin-left: var(--label-w);
+  border-bottom: 1px solid var(--line-1);
+  background: repeating-linear-gradient(90deg, var(--line-2) 0 1px, transparent 1px 5%) 0 100% / 100% 0.35rem
+    no-repeat;
+}
+.mp__ruler > .mono {
+  position: absolute;
+  top: 0.35rem;
+  padding-left: 0.35rem;
+  color: var(--fg-4);
+  font-size: 0.6875rem;
+}
+.mp__pin {
+  position: absolute;
+  bottom: 0.15rem;
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-left: -0.625rem;
+  border-radius: 50% 50% 50% 0.15rem;
+  background: var(--c-aiko);
+  color: #0a0a0c;
+  font-size: 1rem;
+  transition: background-color var(--dur-3) var(--ease-out);
+}
+.mp__pin[data-live='true']::after {
+  content: '';
+  position: absolute;
+  inset: -0.25rem;
+  border: 1px solid var(--c-aiko);
+  border-radius: inherit;
+  animation: mp-ping 1.6s var(--ease-out) infinite;
+}
+@keyframes mp-ping {
+  from {
+    opacity: 0.9;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+}
+
+.mp__lanes {
+  position: relative;
+  margin-left: var(--label-w);
+  padding-top: var(--lane-gap);
+}
+
+.mp-lane {
+  position: relative;
+  height: var(--lane-h);
+  margin-bottom: var(--lane-gap);
+  background: var(--bg-2);
+}
+.mp-lane::before {
+  content: attr(data-label);
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--label-w) * -1);
+  display: grid;
+  place-items: center;
+  width: var(--label-w);
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+/* Clips */
+
+.mp-clip {
+  position: absolute;
+  top: 0.2rem;
+  bottom: 0.2rem;
+  overflow: hidden;
+  border-radius: 0.4rem;
+  text-align: left;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.mp-clip__label {
+  position: absolute;
+  inset: 0 0 auto 0;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  height: 1.1rem;
+  padding: 0 0.45rem;
+  overflow: hidden;
+  color: #fff;
+  font-size: 0.6875rem;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.mp-clip--video {
+  background: color-mix(in srgb, var(--clip-video) 60%, #05060a);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--clip-video) 70%, #fff);
+}
+.mp-clip--video .mp-clip__label {
+  background: color-mix(in srgb, var(--clip-video) 78%, #000);
+}
+.mp-clip__strip {
+  position: absolute;
+  inset: 1.1rem 1px 1px 1px;
+  background-size: auto 100%;
+  background-repeat: repeat-x;
+  border-radius: 0 0 0.3rem 0.3rem;
+}
+
+.mp-clip[data-held='true'] {
+  z-index: 3;
+  box-shadow:
+    inset 0 0 0 1px var(--owner, var(--accent)),
+    0 0 0 1px var(--owner, var(--accent)),
+    0 0.75rem 1.5rem rgba(0, 0, 0, 0.5);
+}
+.mp-clip__edge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 0.3rem;
+  border-radius: 0.15rem;
+  background: var(--owner);
+  opacity: 0;
+}
+.mp-clip[data-trim='true'] {
+  box-shadow: inset 0 0 0 1px var(--owner);
+}
+.mp-clip[data-trim='true'] .mp-clip__edge {
+  opacity: 1;
+}
+
+/* The visitor's clips: real buttons, lime when held. */
+.mp-clip--yours {
+  top: calc(var(--lane-gap) + 0.2rem);
+  bottom: auto;
+  height: calc(var(--lane-h) - 0.4rem);
+  touch-action: none;
+  transition:
+    box-shadow var(--dur-2) var(--ease-out),
+    filter var(--dur-2) var(--ease-out);
+}
+.mp-clip--yours[data-lane='2'] {
+  top: calc(var(--lane-gap) + 0.2rem + 2 * (var(--lane-h) + var(--lane-gap)));
+}
+.mp-clip--yours:hover,
+.mp-clip--yours:focus-visible {
+  filter: brightness(1.15);
+  box-shadow:
+    inset 0 0 0 1px var(--accent-line),
+    0 0 0 1px var(--accent-line);
+}
+.mp-clip--yours:focus-visible {
+  outline-offset: 2px;
+}
+
+.mp-clip--text {
+  background: color-mix(in srgb, var(--clip-text) 30%, var(--bg-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--clip-text) 75%, transparent);
+}
+.mp-clip--text .mp-clip__label {
+  height: 100%;
+  color: #ffe2a8;
+}
+
+.mp-clip--audio {
+  background: color-mix(in srgb, var(--clip-audio) 20%, var(--bg-1));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--clip-audio) 55%, transparent);
+  color: color-mix(in srgb, var(--clip-audio) 80%, #fff);
+}
+.mp-clip--audio .mp-clip__label {
+  color: #b5f5dc;
+}
+.mp-clip__wave {
+  position: absolute;
+  inset: 1rem 0 0.1rem;
+  width: 100%;
+  height: calc(100% - 1.1rem);
+  opacity: 0.85;
+}
+
+.mp__snap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
+  background: repeating-linear-gradient(180deg, var(--accent) 0 4px, transparent 4px 7px);
+  box-shadow: 0 0 0.5rem var(--accent);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+.mp__snap[data-on='true'] {
+  opacity: 1;
+}
+
+/* Playheads */
+
+.mp-head {
+  position: absolute;
+  top: -2rem;
+  bottom: 0;
+  left: 0;
+  width: 1.5px;
+  margin-left: -0.75px;
+  background: var(--head);
+  opacity: 0.85;
+  pointer-events: none;
+  z-index: 5;
+  will-change: transform;
+}
+.mp-head__flag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0 0.3rem 0.3rem 0;
+  background: var(--head);
+  color: #0a0a0c;
+  font-size: 0.625rem;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.mp-head--you {
+  opacity: 1;
+  box-shadow: 0 0 0.6rem rgba(198, 248, 79, 0.5);
+}
+
+/* Comments panel */
+
+.mp-comments {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.85rem 1rem 1rem;
+  border-left: 1px solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-2) 60%, var(--bg-1));
+}
+.mp-comments__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--fg-2);
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+.mp-comments__head svg {
+  color: var(--fg-3);
+}
+.mp-comments__count {
+  margin-left: auto;
+  color: var(--fg-4);
+  font-size: 0.6875rem;
+  font-weight: 400;
+}
+.mp-comments__empty {
+  color: var(--fg-4);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+}
+
+.mp-thread {
+  padding: 0.75rem 0.85rem 0.6rem;
+  border: 1px solid var(--line-2);
+  border-left: 2px solid var(--c-aiko);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  box-shadow: var(--shadow-1);
+  transform-origin: 50% 0;
+}
+.mp-thread__msg {
+  display: flex;
+  gap: 0.55rem;
+  overflow: hidden;
+  padding-bottom: 0.6rem;
+  color: var(--fg-1);
+  font-size: var(--fs-small);
+  line-height: 1.35;
+}
+.mp-thread__msg .avatar {
+  --avatar-ring: transparent;
+  margin-top: 0.1rem;
+}
+.mp-thread__who {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  color: var(--fg-3);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+}
+.mp-thread__who .mono {
+  color: var(--c-aiko);
+  font-weight: 400;
+}
+.mp-thread__foot {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line-1);
+  color: var(--fg-4);
+  font-size: var(--fs-micro);
+}
+.mp-thread__foot[data-resolved='true'] {
+  color: var(--green);
+  font-weight: 600;
+}
+.mp-thread__typing {
+  display: inline-flex;
+  gap: 0.18rem;
+}
+.mp-thread__typing i {
+  width: 0.28rem;
+  height: 0.28rem;
+  border-radius: 50%;
+  background: var(--c-jonas);
+  animation: mp-typing 1s ease-in-out infinite;
+}
+.mp-thread__typing i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.mp-thread__typing i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes mp-typing {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: none;
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-0.15rem);
+  }
+}
+
+/* Cursors */
+
+.mp .collab-cursor {
+  font-size: 0.75rem;
+}
+
+/* Yours rests in the picture until your pointer comes in. */
+.mp__stage[data-inside='false'] .mp__you {
+  top: 5.5rem;
+  left: 46%;
+  animation: mp-float 4s var(--ease-in-out) infinite alternate;
+}
+@keyframes mp-float {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(0.6rem, 0.5rem, 0);
+  }
+}
+
+@media (max-width: 640px) {
+  .mp {
+    --label-w: 2rem;
+    --lane-h: 3rem;
+  }
+  .mp__role {
+    display: none;
+  }
+  .mp__timeline {
+    padding-right: 0.5rem;
+  }
+}
+@media (max-width: 900px) {
+  .mp__stage {
+    grid-template-columns: 1fr;
+  }
+  .mp-comments {
+    min-height: 11.5rem;
+    border-top: 1px solid var(--line-1);
+    border-left: 0;
+  }
+}
+
+.mp[data-active='false'] .mp__pin::after,
+.mp[data-active='false'] .mp__you,
+.mp[data-active='false'] .mp-thread__typing i {
+  animation-play-state: paused;
+}

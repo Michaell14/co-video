@@ -1,0 +1,47 @@
+/*
+ * A card whose fill and 1px edge are lit near the cursor. Everything is one stack of backgrounds
+ * on the card itself: three clipped to the padding box (the fill) over three clipped to the
+ * border box (the edge, seen through a transparent border). `--glow` is a registered number, so
+ * the light can fade in and out with an ordinary transition.
+ */
+@property --glow {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+.glow-card {
+  --mx: 50%;
+  --my: 0%;
+  position: relative;
+  border: 1px solid transparent;
+  border-radius: var(--r-xl);
+  background:
+    radial-gradient(
+        22rem circle at var(--mx) var(--my),
+        rgba(198, 248, 79, calc(0.075 * var(--glow))),
+        transparent 65%
+      )
+      padding-box,
+    var(--card-bg) padding-box,
+    linear-gradient(var(--bg-1), var(--bg-1)) padding-box,
+    radial-gradient(
+        14rem circle at var(--mx) var(--my),
+        rgba(198, 248, 79, calc(0.55 * var(--glow))),
+        transparent 70%
+      )
+      border-box,
+    linear-gradient(var(--line-1), var(--line-1)) border-box,
+    linear-gradient(var(--bg-1), var(--bg-1)) border-box;
+  box-shadow: var(--card-inset);
+  transition:
+    transform var(--dur-4) var(--ease-out),
+    --glow var(--dur-4) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .glow-card:hover {
+    --glow: 1;
+    transform: translateY(-3px);
+  }
+}

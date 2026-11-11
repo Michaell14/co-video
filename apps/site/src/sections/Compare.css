@@ -1,0 +1,122 @@
+.cmp {
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xl);
+  background: var(--bg-1);
+  box-shadow: var(--card-inset);
+}
+
+.cmp__table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--fs-body);
+}
+
+.cmp__table th,
+.cmp__table td {
+  padding: clamp(0.85rem, 1.5vw, 1.15rem) clamp(0.6rem, 2vw, 1.5rem);
+  text-align: center;
+  vertical-align: middle;
+}
+
+.cmp__table thead th {
+  padding-block: clamp(1.1rem, 2vw, 1.5rem);
+  color: var(--fg-2);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.cmp__table thead td {
+  width: 40%;
+}
+.cmp__table thead .cmp__own {
+  color: var(--accent);
+  font-size: var(--fs-body);
+  font-weight: 700;
+}
+
+.cmp__table tbody tr {
+  border-top: 1px solid var(--line-1);
+  transition: background-color var(--dur-2) var(--ease-out);
+}
+.cmp__table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.cmp__table tbody th {
+  color: var(--fg-1);
+  font-weight: 500;
+  text-align: left;
+  letter-spacing: -0.01em;
+}
+.cmp__note {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--fg-4);
+  font-size: var(--fs-micro);
+  font-weight: 400;
+}
+
+/* Tandem's column gets a quiet lime wash. */
+.cmp__own {
+  background: linear-gradient(180deg, rgba(198, 248, 79, 0.07), rgba(198, 248, 79, 0.045));
+  box-shadow:
+    inset 1px 0 0 rgba(198, 248, 79, 0.16),
+    inset -1px 0 0 rgba(198, 248, 79, 0.16);
+}
+
+.cmp__table svg {
+  display: inline-block;
+  vertical-align: middle;
+}
+.cmp__yes {
+  color: var(--fg-2);
+}
+.cmp__yes--own {
+  color: var(--accent);
+  filter: drop-shadow(0 0 0.4rem var(--accent-line));
+}
+.cmp__no {
+  color: var(--fg-4);
+}
+.cmp__text {
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.cmp__narrow {
+  display: none;
+}
+
+.cmp__foot {
+  max-width: 46em;
+  margin-top: 1.25rem;
+  color: var(--fg-4);
+  font-size: var(--fs-small);
+}
+
+@media (max-width: 720px) {
+  .cmp__table {
+    font-size: var(--fs-small);
+  }
+  .cmp__table thead td {
+    width: 34%;
+  }
+  .cmp__table thead th {
+    font-size: var(--fs-micro);
+  }
+  .cmp__table thead .cmp__own {
+    font-size: var(--fs-small);
+  }
+  .cmp__wide {
+    display: none;
+  }
+  .cmp__narrow {
+    display: inline;
+  }
+  .cmp__text {
+    font-size: 0.6875rem;
+  }
+}

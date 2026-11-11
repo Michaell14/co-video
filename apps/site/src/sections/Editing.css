@@ -1,0 +1,452 @@
+/* ---------- Tool cards ---------- */
+
+.tools {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+}
+.tools > li {
+  display: grid;
+}
+
+.tool {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+}
+
+.tool__stage {
+  position: relative;
+  display: grid;
+  align-items: center;
+  aspect-ratio: 16 / 10;
+  padding: 0 1.1rem;
+  border-bottom: 1px solid var(--line-1);
+  border-radius: calc(var(--r-xl) - 1px) calc(var(--r-xl) - 1px) 0 0;
+  background:
+    repeating-linear-gradient(90deg, var(--line-1) 0 1px, transparent 1px 2rem) 0 0 / 100% 0.5rem no-repeat,
+    radial-gradient(120% 100% at 50% 0%, rgba(255, 255, 255, 0.035), transparent 70%),
+    var(--bg-0);
+  overflow: hidden;
+}
+
+.tool__copy {
+  display: grid;
+  align-content: start;
+  gap: 0.6rem;
+  padding: 1.25rem 1.5rem 1.6rem;
+}
+.tool__title {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.tool__icon {
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 0.5rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.tool__copy p {
+  color: var(--fg-3);
+  font-size: var(--fs-small);
+  line-height: 1.55;
+}
+
+/* ---------- Illustrations ---------- */
+
+.ill {
+  --clip-r: 0.3rem;
+  position: relative;
+  display: grid;
+  gap: 0.3rem;
+  container-type: inline-size;
+}
+
+.ill__lane {
+  position: relative;
+  height: 2.5rem;
+  border-radius: 0.2rem;
+  background: var(--bg-2);
+}
+.ill__lane + .ill__lane {
+  height: 1.9rem;
+}
+
+.ill__clip {
+  position: absolute;
+  top: 0.15rem;
+  bottom: 0.15rem;
+  border-radius: var(--clip-r);
+}
+.ill__clip--video {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--clip-video) 85%, #000) 0 0.5rem, transparent 0.5rem),
+    linear-gradient(
+      105deg,
+      color-mix(in srgb, var(--clip-video) 55%, #0a0b10),
+      color-mix(in srgb, var(--violet) 45%, #0a0b10)
+    );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--clip-video) 60%, #fff);
+}
+.ill__clip--audio {
+  background:
+    repeating-linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--clip-audio) 70%, transparent) 0 1.5px,
+        transparent 1.5px 4px
+      )
+      50% 50% / 100% 42% no-repeat,
+    color-mix(in srgb, var(--clip-audio) 20%, var(--bg-1));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--clip-audio) 55%, transparent);
+}
+.ill__clip--text {
+  background: color-mix(in srgb, var(--clip-text) 32%, var(--bg-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--clip-text) 80%, transparent);
+}
+
+[data-active='false'] .ill *,
+[data-active='false'] .keys__track {
+  animation-play-state: paused !important;
+}
+
+/* Ripple trim: A loses its tail; B and C slide left to close the gap. */
+.ill--ripple [data-part='a'] {
+  left: 0;
+  width: 42cqw;
+  animation: ill-ripple-trim 5s var(--ease-in-out) infinite;
+}
+.ill--ripple [data-part='b'] {
+  left: 42.8cqw;
+  width: 26cqw;
+  animation: ill-ripple-shift 5s var(--ease-in-out) infinite;
+}
+.ill--ripple [data-part='c'] {
+  left: 69.6cqw;
+  width: 30.4cqw;
+  animation: ill-ripple-shift 5s var(--ease-in-out) infinite;
+}
+.ill__bracket {
+  position: absolute;
+  top: -0.1rem;
+  bottom: -0.1rem;
+  left: calc(42cqw - 0.35rem);
+  width: 0.35rem;
+  border: 2px solid var(--accent);
+  border-left: 0;
+  border-radius: 0 0.3rem 0.3rem 0;
+  box-shadow: 0 0 0.75rem var(--accent-line);
+  animation: ill-ripple-shift 5s var(--ease-in-out) infinite;
+}
+@keyframes ill-ripple-trim {
+  0%,
+  18%,
+  92%,
+  100% {
+    clip-path: inset(0 0 0 0 round var(--clip-r));
+  }
+  45%,
+  68% {
+    clip-path: inset(0 16cqw 0 0 round var(--clip-r));
+  }
+}
+@keyframes ill-ripple-shift {
+  0%,
+  18%,
+  92%,
+  100% {
+    transform: translateX(0);
+  }
+  45%,
+  68% {
+    transform: translateX(-16cqw);
+  }
+}
+
+/*
+ * Blade: a line drops, the clip becomes two, and the right half proves it by moving. The halves
+ * use real borders so the edges that meet can stay invisible until the cut.
+ */
+.ill--blade .ill__clip {
+  border: 1px solid;
+  box-shadow: none;
+}
+.ill--blade .ill__clip--video {
+  border-color: color-mix(in srgb, var(--clip-video) 60%, #fff);
+  /* A flat body, so the two halves read as one clip until they part. */
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--clip-video) 85%, #000) 0 0.5rem, transparent 0.5rem),
+    color-mix(in srgb, var(--clip-video) 50%, #0a0b10);
+}
+.ill--blade .ill__clip--audio {
+  border-color: color-mix(in srgb, var(--clip-audio) 55%, transparent);
+}
+.ill--blade [data-part='left'] {
+  left: 6cqw;
+  width: 46cqw;
+  border-radius: var(--clip-r) 0 0 var(--clip-r);
+  border-right-color: transparent;
+  animation: ill-blade-left 5s var(--ease-in-out) infinite;
+}
+.ill--blade [data-part='right'] {
+  left: 52cqw;
+  width: 40cqw;
+  border-radius: 0 var(--clip-r) var(--clip-r) 0;
+  border-left-color: transparent;
+  animation: ill-blade-right 5s var(--ease-in-out) infinite;
+}
+.ill__blade {
+  position: absolute;
+  top: -0.9rem;
+  bottom: -0.9rem;
+  left: 52cqw;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  box-shadow: 0 0 0.75rem var(--accent);
+  transform-origin: 50% 0;
+  animation: ill-blade-line 5s var(--ease-in-out) infinite;
+}
+@keyframes ill-blade-line {
+  0%,
+  10% {
+    transform: scaleY(0);
+    opacity: 1;
+  }
+  24%,
+  34% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+  44%,
+  100% {
+    transform: scaleY(1);
+    opacity: 0;
+  }
+}
+@keyframes ill-blade-left {
+  0%,
+  26%,
+  94%,
+  100% {
+    border-radius: var(--clip-r) 0 0 var(--clip-r);
+    border-right-color: transparent;
+  }
+  32%,
+  88% {
+    border-radius: var(--clip-r);
+  }
+}
+@keyframes ill-blade-right {
+  0%,
+  26%,
+  94%,
+  100% {
+    border-radius: 0 var(--clip-r) var(--clip-r) 0;
+    border-left-color: transparent;
+    transform: translateX(0);
+  }
+  32% {
+    border-radius: var(--clip-r);
+    transform: translateX(0.8cqw);
+  }
+  52%,
+  72% {
+    border-radius: var(--clip-r);
+    transform: translateX(7cqw);
+  }
+  88% {
+    border-radius: var(--clip-r);
+    transform: translateX(0.8cqw);
+  }
+}
+
+/* Snapping: the title drifts toward the cut, then jumps the last few pixels onto it. */
+.ill--snap [data-part='a'] {
+  left: 0;
+  width: 44cqw;
+}
+.ill--snap [data-part='b'] {
+  left: 44.8cqw;
+  width: 55.2cqw;
+}
+.ill--snap [data-part='mover'] {
+  left: 68cqw;
+  width: 28cqw;
+  animation: ill-snap-move 5s var(--ease-in-out) infinite;
+}
+.ill__guide {
+  position: absolute;
+  top: -0.9rem;
+  bottom: -0.9rem;
+  left: 44.4cqw;
+  width: 1px;
+  background: repeating-linear-gradient(180deg, var(--accent) 0 4px, transparent 4px 7px);
+  box-shadow: 0 0 0.6rem var(--accent);
+  opacity: 0;
+  animation: ill-snap-guide 5s linear infinite;
+}
+@keyframes ill-snap-move {
+  0%,
+  12% {
+    transform: translateX(0);
+    animation-timing-function: var(--ease-in-out);
+  }
+  44% {
+    transform: translateX(-19cqw);
+    animation-timing-function: var(--ease-spring);
+  }
+  50%,
+  76% {
+    transform: translateX(-23.2cqw);
+    animation-timing-function: var(--ease-in-out);
+  }
+  96%,
+  100% {
+    transform: translateX(0);
+  }
+}
+@keyframes ill-snap-guide {
+  0%,
+  45% {
+    opacity: 0;
+  }
+  49%,
+  74% {
+    opacity: 1;
+  }
+  80%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Keyframes: a value curve with its bezier tangents, and the current value riding along it. */
+.ill--curve {
+  padding: 0.25rem 0;
+}
+.ill--curve svg {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.ill__grid {
+  stroke: var(--line-1);
+  stroke-width: 1;
+  fill: none;
+}
+.ill__tangent {
+  stroke: var(--fg-4);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  fill: none;
+}
+.ill__curve {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  fill: none;
+  filter: drop-shadow(0 0 6px var(--accent-line));
+}
+.ill__key {
+  fill: var(--bg-0);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.ill__dot {
+  fill: #fff;
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.8));
+}
+
+.tools-also {
+  margin-top: 1.5rem;
+}
+
+/* ---------- Shortcut marquee ---------- */
+
+.keys {
+  margin-top: clamp(3rem, 6vw, 5rem);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+
+.keys__track {
+  display: flex;
+  width: max-content;
+  animation: keys-scroll 48s linear infinite;
+}
+.keys:hover .keys__track {
+  animation-play-state: paused;
+}
+
+.keys__row {
+  display: flex;
+  flex: none;
+  gap: 2.5rem;
+  padding-right: 2.5rem;
+}
+
+.keys__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.75rem 0;
+  white-space: nowrap;
+}
+.keys__caps {
+  display: inline-flex;
+  gap: 0.35rem;
+  font-size: 1.05rem;
+}
+.keys__label {
+  color: var(--fg-3);
+  font-size: var(--fs-small);
+}
+
+@keyframes keys-scroll {
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .keys {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .keys__track {
+    flex-wrap: wrap;
+    width: auto;
+    justify-content: center;
+    padding-inline: var(--gutter);
+  }
+  .keys__row {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.5rem 2rem;
+    min-width: 0;
+    padding: 0;
+  }
+  .keys__row[aria-hidden='true'] {
+    display: none;
+  }
+}
+
+@media (max-width: 1100px) {
+  .tools {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 560px) {
+  .tools {
+    grid-template-columns: 1fr;
+  }
+  .tool__stage {
+    aspect-ratio: 2 / 1;
+  }
+}
