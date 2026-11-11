@@ -63,11 +63,12 @@ export interface TextureSource {
     y: WebGLTexture;
     u: WebGLTexture;
     v: WebGLTexture;
-    /** Column-major Y'CbCr → R'G'B' matrix. */
+    /** Column-major Y'CbCr → R'G'B' matrix, with range expansion folded in. */
     matrix: Float32Array;
+    /** Black / neutral-chroma offsets as fractions of the full code range. */
     offset: [number, number, number];
-    /** Normalised texel value → nominal 0…1 code range. */
-    scale: number;
+    /** Weights that rebuild a 0…1 sample from its (low byte, high byte) texture channels. */
+    pack: [number, number];
   };
 }
 
@@ -631,7 +632,7 @@ export class Compositor {
         u.u_texV = yuv.v;
         u.u_yuvMat = yuv.matrix;
         u.u_yuvOffset = yuv.offset;
-        u.u_yuvScale = yuv.scale;
+        u.u_yuvPack = yuv.pack;
       }
       // The 8-bit fast path hands us pixels the browser already converted to SDR sRGB, so HDR
       // sources only need their own transfer function when we decoded the raw planes ourselves.

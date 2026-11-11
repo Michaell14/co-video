@@ -268,7 +268,7 @@ uniform sampler2D u_texU;
 uniform sampler2D u_texV;
 uniform mat3 u_yuvMat;
 uniform vec3 u_yuvOffset;
-uniform float u_yuvScale;
+uniform vec2 u_yuvPack;
 // Grade
 uniform int u_gradeEnabled;
 uniform float u_exposure;
@@ -401,7 +401,9 @@ void main() {
   vec2 uv = rotUv(v_uv);
   vec4 t;
   if (u_yuvEnabled == 1) {
-    vec3 yuv = vec3(texture(u_texY, uv).r, texture(u_texU, uv).r, texture(u_texV, uv).r) * u_yuvScale;
+    // Each plane is uploaded as two 8-bit channels (low byte, high byte) of a 16-bit sample.
+    // Bilinear filtering stays exact because the value is linear in both bytes.
+    vec3 yuv = vec3(dot(texture(u_texY, uv).rg, u_yuvPack), dot(texture(u_texU, uv).rg, u_yuvPack), dot(texture(u_texV, uv).rg, u_yuvPack));
     t = vec4(u_yuvMat * (yuv - u_yuvOffset), 1.0);
   } else {
     t = texture(u_src, uv);

@@ -1,0 +1,7 @@
+1
+00:00:00,500 --> 00:00:02,000
+Hello from Tandem
+
+2
+00:00:02,200 --> 00:00:03,800
+Captions import as text clips

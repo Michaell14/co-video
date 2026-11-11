@@ -12,7 +12,9 @@
  * and — in exact mode — resolves only once every layer has precisely the right picture.
  */
 import { VideoSampleSink, type VideoSample } from 'mediabunny';
-import type { ClipLayer, FrameDesc, Project } from '@tandem/core';
+
+type PlaneLayout = { offset: number; stride: number };
+import { isHdrMode, isHdrSpace, resolveInputSpace, type ClipLayer, type FrameDesc, type Project } from '@tandem/core';
 import type { Glx } from '../gl/glx';
 import type { SourceProvider, TextureSource } from '../gl/compositor';
 import { parseCubeLut } from '../gl/grade';
@@ -27,6 +29,46 @@ const EPS = 1e-4;
  * more than a third of a frame — in the future.
  */
 const tolerance = (s: VideoSample): number => Math.min(0.002, Math.max(s.duration, 0.004) * 0.33);
+
+// ─────────────────────────────────────────────────── high bit-depth planes ──
+
+interface PlaneSet {
+  data: Uint8Array;
+  layout: PlaneLayout[];
+  width: number;
+  height: number;
+  chromaW: number;
+  chromaH: number;
+  bits: number;
+  fullRange: boolean;
+  matrix: string | null;
+}
+
+const PLANAR_FORMATS: Record<string, { bits: number; subX: number; subY: number }> = {
+  I420P10: { bits: 10, subX: 2, subY: 2 },
+  I420P12: { bits: 12, subX: 2, subY: 2 },
+  I422P10: { bits: 10, subX: 2, subY: 1 },
+  I422P12: { bits: 12, subX: 2, subY: 1 },
+  I444P10: { bits: 10, subX: 1, subY: 1 },
+  I444P12: { bits: 12, subX: 1, subY: 1 },
+};
+
+/** Y'CbCr → R'G'B' (column-major), including limited-range expansion. */
+function yuvToRgb(matrix: string | null, bits: number, fullRange: boolean): { m: Float32Array; offset: [number, number, number] } {
+  const [kr, kb] = matrix === 'bt2020-ncl' || matrix === 'bt2020-cl' ? [0.2627, 0.0593] : matrix === 'smpte170m' || matrix === 'bt470bg' ? [0.299, 0.114] : [0.2126, 0.0722];
+  const kg = 1 - kr - kb;
+  const max = (1 << bits) - 1;
+  const unit = 1 << (bits - 8);
+  const sy = fullRange ? 1 : max / (219 * unit);
+  const sc = fullRange ? 1 : max / (224 * unit);
+  const offset: [number, number, number] = fullRange ? [0, (128 * unit) / max, (128 * unit) / max] : [(16 * unit) / max, (128 * unit) / max, (128 * unit) / max];
+  const rCr = 2 * (1 - kr);
+  const bCb = 2 * (1 - kb);
+  const gCb = (-2 * kb * (1 - kb)) / kg;
+  const gCr = (-2 * kr * (1 - kr)) / kg;
+  // Rows: R = sy·Y + rCr·sc·Cr, G = sy·Y + gCb·sc·Cb + gCr·sc·Cr, B = sy·Y + bCb·sc·Cb
+  return { m: new Float32Array([sy, sy, sy, 0, gCb * sc, bCb * sc, rCr * sc, gCr * sc, 0]), offset };
+}
 
 // ───────────────────────────────────────────────────────── video cursor ──
 
@@ -52,6 +94,12 @@ class VideoCursor {
   private resume: (() => void) | null = null;
   private opening: Promise<void> | null = null;
   private disposed = false;
+  /** Decode HDR sources at full bit depth (planar read-back) instead of the browser's 8-bit path. */
+  private raw = false;
+  private rawBroken = false;
+  private readonly planes = new WeakMap<VideoSample, PlaneSet>();
+  private planeTex: { y: WebGLTexture; u: WebGLTexture; v: WebGLTexture } | null = null;
+  private yuvInfo: TextureSource['yuv'] | undefined;
 
   constructor(
     private readonly glx: Glx,
@@ -70,6 +118,66 @@ class VideoCursor {
 
   get rotation(): 0 | 90 | 180 | 270 {
     return this.media?.rotation ?? 0;
+  }
+
+  /** Planar textures for the frame last uploaded, when the high bit-depth path is active. */
+  get yuv(): TextureSource['yuv'] | undefined {
+    return this.yuvInfo;
+  }
+
+  /** Ask for full bit-depth frames. Takes effect from the next decoded frame. */
+  setRaw(raw: boolean): void {
+    if (raw === this.raw) return;
+    this.raw = raw;
+    if (!raw) this.yuvInfo = undefined;
+    // Frames already buffered were prepared for the other path; decode afresh.
+    this.uploadedTs = NaN;
+    if (this.sink && !this.disposed) this.startPump(this.want);
+  }
+
+  /** Copy a sample's planes off the decoder so they can be uploaded synchronously later. */
+  private async capturePlanes(sample: VideoSample): Promise<void> {
+    const fmt = sample.format ? PLANAR_FORMATS[sample.format] : undefined;
+    if (!fmt) return;
+    try {
+      const data = new Uint8Array(sample.allocationSize());
+      const layout = await sample.copyTo(data);
+      const cs = sample.colorSpace;
+      this.planes.set(sample, {
+        data,
+        layout,
+        width: sample.codedWidth,
+        height: sample.codedHeight,
+        chromaW: Math.ceil(sample.codedWidth / fmt.subX),
+        chromaH: Math.ceil(sample.codedHeight / fmt.subY),
+        bits: fmt.bits,
+        fullRange: cs.fullRange === true,
+        matrix: cs.matrix,
+      });
+    } catch (err) {
+      // Some GPU-backed frames cannot be read back; fall back to the 8-bit path for this clip.
+      console.warn('[video] planar read-back unavailable, using 8-bit decode', err);
+      this.rawBroken = true;
+    }
+  }
+
+  private uploadPlanes(p: PlaneSet): void {
+    const gl = this.glx.gl;
+    if (!this.planeTex) this.planeTex = { y: this.glx.createTexture(), u: this.glx.createTexture(), v: this.glx.createTexture() };
+    const put = (tex: WebGLTexture, plane: PlaneLayout, w: number, h: number) => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, plane.stride >> 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, w, h, 0, gl.RG, gl.UNSIGNED_BYTE, p.data, plane.offset);
+    };
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    put(this.planeTex.y, p.layout[0], p.width, p.height);
+    put(this.planeTex.u, p.layout[1], p.chromaW, p.chromaH);
+    put(this.planeTex.v, p.layout[2], p.chromaW, p.chromaH);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    const max = (1 << p.bits) - 1;
+    const { m, offset } = yuvToRgb(p.matrix, p.bits, p.fullRange);
+    this.yuvInfo = { ...this.planeTex, matrix: m, offset, pack: [255 / max, 65280 / max] };
   }
 
   get hasPicture(): boolean {
@@ -181,6 +289,13 @@ class VideoCursor {
             return;
           }
           sample.setTimestamp(sample.timestamp - offset);
+          if (this.raw && !this.rawBroken) {
+            await this.capturePlanes(sample);
+            if (id !== this.pumpId || this.disposed) {
+              sample.close();
+              return;
+            }
+          }
           this.buffer.push(sample);
           this.notify();
           if (id !== this.pumpId || this.disposed) return;
@@ -258,6 +373,15 @@ class VideoCursor {
     if (!s) return this.hasPicture;
     if (s.timestamp === this.uploadedTs) return true;
     const gl = this.glx.gl;
+    const planes = this.raw && !this.rawBroken ? this.planes.get(s) : undefined;
+    if (planes) {
+      this.uploadPlanes(planes);
+      this.width = planes.width;
+      this.height = planes.height;
+      this.uploadedTs = s.timestamp;
+      return true;
+    }
+    this.yuvInfo = undefined;
     try {
       const src = s.toCanvasImageSource();
       gl.bindTexture(gl.TEXTURE_2D, this.tex);
@@ -281,11 +405,26 @@ class VideoCursor {
     this.buffer = [];
     this.resume?.();
     this.notify();
-    this.glx.gl.deleteTexture(this.tex);
+    const gl = this.glx.gl;
+    gl.deleteTexture(this.tex);
+    if (this.planeTex) {
+      gl.deleteTexture(this.planeTex.y);
+      gl.deleteTexture(this.planeTex.u);
+      gl.deleteTexture(this.planeTex.v);
+    }
   }
 }
 
 // ────────────────────────────────────────────────────────────── manager ──
+
+/**
+ * HDR sources are decoded at full bit depth only on HDR timelines. On SDR timelines the browser's
+ * own (GPU, zero-copy) HDR→SDR conversion is both faster and exactly what the viewer expects.
+ */
+function wantsRaw(project: Project, assetId: string): boolean {
+  if (!isHdrMode(project.settings.colorMode)) return false;
+  return isHdrSpace(resolveInputSpace(project.assets[assetId]));
+}
 
 interface ImageEntry {
   tex: WebGLTexture | null;
@@ -343,14 +482,15 @@ export class SourceManager implements SourceProvider {
 
   // ── SourceProvider ────────────────────────────────────────────────────
 
-  getTexture(layer: ClipLayer, _project: Project, frameW: number, frameH: number): TextureSource | null {
+  getTexture(layer: ClipLayer, project: Project, frameW: number, frameH: number): TextureSource | null {
     const clip = layer.clip;
     switch (clip.type) {
       case 'video': {
         if (!clip.assetId) return null;
         const cur = this.cursor(clip.id, clip.assetId, clip.reverse);
+        cur.setRaw(wantsRaw(project, clip.assetId));
         if (!cur.upload(layer.sourceTime)) return null;
-        return { tex: cur.tex, width: cur.width, height: cur.height, rotation: cur.rotation };
+        return { tex: cur.tex, width: cur.width, height: cur.height, rotation: cur.rotation, yuv: cur.yuv };
       }
       case 'image': {
         if (!clip.assetId) return null;
@@ -384,6 +524,7 @@ export class SourceManager implements SourceProvider {
       const clip = l.clip;
       if (clip.type === 'video' && clip.assetId) {
         const cur = this.cursor(clip.id, clip.assetId, clip.reverse);
+        cur.setRaw(wantsRaw(project, clip.assetId));
         if (exact) waits.push(cur.ready(l.sourceTime));
         else cur.request(l.sourceTime);
       } else if (clip.type === 'image' && clip.assetId) {
@@ -405,7 +546,6 @@ export class SourceManager implements SourceProvider {
         visit(layer.b);
       }
     }
-    void project;
     if (waits.length) await Promise.all(waits);
   }
 
