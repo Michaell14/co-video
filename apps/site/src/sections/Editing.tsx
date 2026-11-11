@@ -204,8 +204,8 @@ export function Editing() {
   return (
     <section
       className="section section--tint"
-      id="features"
-      aria-labelledby="features-title"
+      id="timeline"
+      aria-labelledby="timeline-title"
       ref={ref}
       data-active={active}
     >
@@ -213,7 +213,7 @@ export function Editing() {
         <SectionHead
           index="02"
           eyebrow="Timeline"
-          id="features-title"
+          id="timeline-title"
           title={
             <>
               A timeline that keeps up with <em>your hands.</em>

@@ -1,5 +1,18 @@
+import * as Y from 'yjs';
 import { ASSET_DEFAULTS, emptyProject, makeClip, makeTrack, applyEdits } from '../src';
 import type { Asset, Clip, Project, Track } from '../src';
+
+/** Wire two docs together like a (perfect) network would. */
+export function connect(a: Y.Doc, b: Y.Doc): void {
+  a.on('update', (u: Uint8Array, origin: unknown) => {
+    if (origin !== 'remote') Y.applyUpdate(b, u, 'remote');
+  });
+  b.on('update', (u: Uint8Array, origin: unknown) => {
+    if (origin !== 'remote') Y.applyUpdate(a, u, 'remote');
+  });
+  Y.applyUpdate(b, Y.encodeStateAsUpdate(a), 'remote');
+  Y.applyUpdate(a, Y.encodeStateAsUpdate(b), 'remote');
+}
 
 export interface Fixture {
   p: Project;

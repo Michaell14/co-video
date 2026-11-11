@@ -137,7 +137,7 @@
   color: var(--accent-ink);
 }
 .scope__note {
-  color: var(--fg-4);
+  color: var(--fg-3);
   font-size: 0.6875rem;
 }
 
@@ -167,7 +167,7 @@
   justify-content: space-between;
   width: 2.1rem;
   padding: 0.15rem 0.4rem 0.15rem 0;
-  color: var(--fg-4);
+  color: var(--fg-3);
   font-size: 0.625rem;
   text-align: right;
 }
@@ -196,6 +196,8 @@
 
 .cw {
   display: grid;
+  /* The wheel is as wide as its cell, however much room the caption underneath would like. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.6rem;
   min-width: 0;
 }
@@ -263,7 +265,7 @@
 }
 .cw__hint {
   grid-column: 1;
-  color: var(--fg-4);
+  color: var(--fg-3);
   font-size: var(--fs-micro);
 }
 .cw__reset {
@@ -365,7 +367,7 @@
   border-top: 1px solid var(--line-1);
 }
 .grade__tip {
-  color: var(--fg-4);
+  color: var(--fg-3);
   font-size: var(--fs-micro);
 }
 .grade__reset {
@@ -452,5 +454,14 @@
 @media (max-width: 420px) {
   .color-facts {
     grid-template-columns: 1fr;
+  }
+}
+/*
+ * Three wheels across leave each caption room for its name and hint, but not for a button beside
+ * them. Double-clicking a wheel and "Reset all" still reset it.
+ */
+@media (max-width: 359px) {
+  .cw__reset {
+    display: none;
   }
 }

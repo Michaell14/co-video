@@ -25,6 +25,9 @@
   --c-violet: #9775fa;
   --c-pink: #f783ac;
 
+  /* Quiet text on raised surfaces (--bg-3 and lighter), where --fg-3 falls just short of 4.5:1. */
+  --fg-3-raised: #8c8c99;
+
   --card-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012));
   --card-inset: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }

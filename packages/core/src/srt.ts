@@ -16,29 +16,54 @@ function parseTime(s: string): number | null {
   return +m[5] * 60 + +m[6] + +m[7].padEnd(3, '0') / 1000;
 }
 
+/** A timing line and nothing else: `start --> end`, optionally followed by WebVTT cue settings. */
+const TIMING = new RegExp(`^\\s*(?:${TIME.source})\\s*-->\\s*(?:${TIME.source})(?:\\s.*)?$`);
+
 /** Parses SRT or WebVTT. Unknown lines are skipped rather than failing the whole file. */
 export function parseSubtitles(text: string): Cue[] {
   const cues: Cue[] = [];
-  const blocks = text
-    .replace(/\r/g, '')
-    .replace(/^﻿/, '')
-    .split(/\n{2,}/);
-  for (const block of blocks) {
-    const lines = block.split('\n').filter((l) => l.trim() !== '');
-    const idx = lines.findIndex((l) => l.includes('-->'));
-    if (idx < 0) continue;
-    const [a, b] = lines[idx].split('-->');
-    const start = parseTime(a);
-    const end = parseTime(b ?? '');
-    if (start === null || end === null || end <= start) continue;
-    const body = lines
-      .slice(idx + 1)
+  let open: { start: number; end: number; lines: string[] } | null = null;
+  const close = (): void => {
+    if (!open) return;
+    const body = open.lines
       .join('\n')
       .replace(/<[^>]+>/g, '')
       .replace(/\{\\[^}]+\}/g, '')
       .trim();
-    if (body) cues.push({ start, end, text: body });
+    if (body) cues.push({ start: open.start, end: open.end, text: body });
+    open = null;
+  };
+  // Lines that precede a block's timing line (cue numbers, identifiers, the WEBVTT header) and
+  // blocks without a usable one are skipped.
+  let skipping = false;
+  const lines = text
+    .replace(/\r\n?/g, '\n')
+    .replace(/^\uFEFF/, '')
+    .split('\n');
+  for (const line of lines) {
+    // Editors leave spaces or tabs on the separator line; it still ends the cue.
+    if (line.trim() === '') {
+      close();
+      skipping = false;
+      continue;
+    }
+    if (skipping) continue;
+    // Inside a cue only an unmistakable timing line starts the next one, for files that lost their
+    // blank lines; an arrow in the text itself stays text.
+    if (open ? TIMING.test(line) : line.includes('-->')) {
+      if (open) {
+        // The number above the new timing line is that cue's counter, not the last line of this one.
+        if (/^\s*\d+\s*$/.test(open.lines[open.lines.length - 1] ?? '')) open.lines.pop();
+        close();
+      }
+      const [a, b] = line.split('-->');
+      const start = parseTime(a);
+      const end = parseTime(b ?? '');
+      if (start === null || end === null || end <= start) skipping = true;
+      else open = { start, end, lines: [] };
+    } else if (open) open.lines.push(line);
   }
+  close();
   return cues.sort((x, y) => x.start - y.start);
 }
 

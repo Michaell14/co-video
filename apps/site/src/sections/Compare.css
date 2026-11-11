@@ -53,7 +53,7 @@
 .cmp__note {
   display: block;
   margin-top: 0.15rem;
-  color: var(--fg-4);
+  color: var(--fg-3);
   font-size: var(--fs-micro);
   font-weight: 400;
 }
@@ -93,7 +93,7 @@
 .cmp__foot {
   max-width: 46em;
   margin-top: 1.25rem;
-  color: var(--fg-4);
+  color: var(--fg-3);
   font-size: var(--fs-small);
 }
 
@@ -118,5 +118,18 @@
   }
   .cmp__text {
     font-size: 0.6875rem;
+  }
+}
+/* The three answer columns are barely wider than the word "Tandem" here; give the words the padding. */
+@media (max-width: 380px) {
+  .cmp__table th,
+  .cmp__table td {
+    padding-inline: 0.35rem;
+  }
+  .cmp__table tbody th {
+    padding-left: 0.6rem;
+  }
+  .cmp__table thead .cmp__own {
+    font-size: var(--fs-micro);
   }
 }

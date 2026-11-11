@@ -1,6 +1,7 @@
 /** Process entry point: configuration from the environment, startup line, graceful shutdown. */
 import { resolve } from 'node:path';
-import { SERVER_VERSION, createTandemServer } from './server';
+import { DEFAULT_MAX_CONNECTIONS_PER_ROOM } from './rooms';
+import { DEFAULT_MAX_CONNECTIONS_PER_IP, SERVER_VERSION, createTandemServer } from './server';
 
 function fail(message: string): never {
   console.error(`[tandem] ${message}`);
@@ -41,6 +42,8 @@ const server = await createTandemServer({
   openCreate: flag('TANDEM_OPEN_CREATE', true),
   autoSnapshotMs: integer('AUTO_SNAPSHOT_MS', 10 * 60 * 1000),
   trustProxy: flag('TRUST_PROXY', false),
+  maxConnectionsPerIp: integer('MAX_CONNECTIONS_PER_IP', DEFAULT_MAX_CONNECTIONS_PER_IP, 1),
+  maxConnectionsPerRoom: integer('MAX_CONNECTIONS_PER_ROOM', DEFAULT_MAX_CONNECTIONS_PER_ROOM, 1),
 }).catch((err: unknown) => fail(`could not start: ${err instanceof Error ? err.message : String(err)}`));
 
 console.log(`[tandem] server v${SERVER_VERSION} listening on ${server.url} (data in ${dataDir})`);

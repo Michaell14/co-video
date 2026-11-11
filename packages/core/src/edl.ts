@@ -29,7 +29,10 @@ function reelName(name: string): string {
 export function toEdl(p: Project, opts: EdlOptions = {}): string {
   const s = p.settings;
   const fps = s.fpsNum / s.fpsDen;
-  const offset = opts.startTimecodeFrames ?? Math.round(3600 * fps);
+  // One hour of timecode. Non-drop timecode counts whole frames per second, so at 23.976 an hour
+  // on the counter is 86,400 frames; drop-frame timecode follows the clock.
+  const hour = isDropFrame(s) ? Math.round(3600 * fps) : 3600 * Math.round(fps);
+  const offset = opts.startTimecodeFrames ?? hour;
   const { video, audio } = tracksOf(p);
   const isMedia = (c: Clip): boolean =>
     (c.type === 'video' || c.type === 'audio' || c.type === 'image') && !!c.assetId && c.enabled;

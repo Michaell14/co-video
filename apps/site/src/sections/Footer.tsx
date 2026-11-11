@@ -1,5 +1,6 @@
 import { Logo } from '../components/Logo';
 import { EDITOR_URL, GITHUB_URL, ISSUES_URL, LICENSE_URL } from '../lib/links';
+import { FEATURE_SECTIONS, OPEN_SOURCE_SECTION } from '../lib/sections';
 import './Footer.css';
 
 const COLUMNS = [
@@ -7,10 +8,7 @@ const COLUMNS = [
     title: 'Product',
     links: [
       { label: 'Open the editor', href: EDITOR_URL },
-      { label: 'Multiplayer', href: '#multiplayer' },
-      { label: 'Timeline', href: '#features' },
-      { label: 'Effects', href: '#effects' },
-      { label: 'Colour', href: '#color' },
+      ...FEATURE_SECTIONS.map((section) => ({ label: section.label, href: `#${section.id}` })),
     ],
   },
   {
@@ -19,7 +17,7 @@ const COLUMNS = [
       { label: 'Source on GitHub', href: GITHUB_URL, external: true },
       { label: 'Report an issue', href: ISSUES_URL, external: true },
       { label: 'MIT licence', href: LICENSE_URL, external: true },
-      { label: 'Self-hosting', href: '#open-source' },
+      { label: 'Self-hosting', href: `#${OPEN_SOURCE_SECTION.id}` },
       { label: 'How it works', href: '#architecture' },
     ],
   },

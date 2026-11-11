@@ -7,9 +7,10 @@
 }
 
 .fx {
-  --split: 0%;
+  --split: 50%;
   display: grid;
   gap: 0.7rem;
+  container-type: inline-size;
 }
 
 .fx__frame {
@@ -20,12 +21,17 @@
   background: #000;
   box-shadow: 0 0 0 1px var(--line-2);
   isolation: isolate;
+  /* A sideways drag wipes the tile; an up-and-down one still scrolls the page. */
+  touch-action: pan-y;
   transition:
     transform var(--dur-4) var(--ease-out),
     box-shadow var(--dur-4) var(--ease-out);
 }
+.fx__frame:focus-visible {
+  border-radius: var(--r-lg);
+}
 @media (hover: hover) {
-  .fx:hover .fx__frame {
+  .fx__frame:hover {
     transform: translateY(-3px);
     box-shadow:
       0 0 0 1px var(--accent-line),
@@ -41,7 +47,7 @@
   background-position: center;
 }
 
-/* The untouched source, revealed left of the pointer on hover. */
+/* The untouched source, revealed left of the split while the tile is being compared. */
 .fx__source {
   z-index: 5;
   clip-path: inset(0 calc(100% - var(--split)) 0 0);
@@ -61,11 +67,9 @@
   opacity: 0;
   transition: opacity var(--dur-3) var(--ease-out);
 }
-@media (hover: hover) {
-  .fx:hover .fx__source,
-  .fx:hover .fx__divider {
-    opacity: 1;
-  }
+.fx[data-compare='true'] .fx__source,
+.fx[data-compare='true'] .fx__divider {
+  opacity: 1;
 }
 
 .fx__caption {
@@ -82,18 +86,28 @@
   letter-spacing: -0.01em;
 }
 .fx__note {
-  color: var(--fg-4);
+  color: var(--fg-3);
   font-family: var(--font-mono);
   font-size: 0.6875rem;
 }
+/*
+ * In a narrow tile the longer names push their note onto a second line while the shorter ones
+ * keep it beside them. Stack every caption there, so a row of tiles reads the same way.
+ */
+@container (max-width: 17.5rem) {
+  .fx__caption {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
 
 /*
- * Effect animations idle until the tile is hovered. On touch screens there is no hover, so they
- * run while the section is on screen instead. (!important: each layer sets the `animation`
- * shorthand later in this file, which would otherwise reset the play state.)
+ * Effect animations idle until the tile is being compared. On touch screens there is no hover,
+ * so they run while the section is on screen instead. (!important: each layer sets the
+ * `animation` shorthand later in this file, which would otherwise reset the play state.)
  */
 @media (hover: hover) {
-  .fx:not(:hover) .fx__frame * {
+  .fx:not([data-compare='true']) .fx__frame * {
     animation-play-state: paused !important;
   }
 }
@@ -357,7 +371,7 @@
 
 .fx-footnote {
   margin-top: 1.25rem;
-  color: var(--fg-4);
+  color: var(--fg-3);
   font-size: var(--fs-small);
 }
 
@@ -581,6 +595,36 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /*
+   * The transition tiles differ only in how they move. Without motion each one holds a still
+   * from the middle of its transition, so the four remain four different things.
+   */
+  .tr__tile .tr__a,
+  .tr__tile .tr__b {
+    animation: none;
+  }
+  [data-tr='dissolve'] .tr__b {
+    opacity: 0.5;
+  }
+  [data-tr='wipe'] .tr__b {
+    clip-path: inset(0 50% 0 0);
+  }
+  [data-tr='push'] .tr__a {
+    transform: translateX(-50%);
+  }
+  [data-tr='push'] .tr__b {
+    transform: translateX(50%);
+  }
+  [data-tr='zoom'] .tr__a {
+    transform: scale(1.8);
+    filter: blur(0.25rem);
+  }
+  [data-tr='zoom'] .tr__b {
+    opacity: 0.5;
+    transform: scale(0.8);
+    filter: blur(0.15rem);
+  }
+
   .fx-ticker {
     -webkit-mask-image: none;
     mask-image: none;
@@ -593,12 +637,18 @@
     flex: 1 1 100%;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 0.4rem 2.25rem;
+    gap: 0.4rem 1.5rem;
     min-width: 0;
     padding: 0;
   }
+  /* Standing still, the catalogue is a list to be read, not a texture going past. */
   .fx-ticker__row li {
+    color: var(--fg-3);
     font-size: 1rem;
+  }
+  /* The separators belong to the moving strip; in wrapped rows they would dangle at line ends. */
+  .fx-ticker__row li::after {
+    content: none;
   }
   .fx-ticker__row[aria-hidden='true'] {
     display: none;

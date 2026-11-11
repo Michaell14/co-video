@@ -12,6 +12,8 @@ import './MultiplayerDemo.css';
 
 const DURATION = 20; // seconds of timeline shown
 const LOOP = 12; // seconds per scripted loop
+/** The moment of the loop that stands in for the whole of it when nothing may move. */
+const STILL_AT = 6;
 const SNAP_POINTS = [7, 13];
 const SNAP_RANGE = 0.35;
 const NUDGE = 0.25;
@@ -115,6 +117,9 @@ const THREAD_STAGES = [
 ];
 const COMMENT_AT = 11.9;
 
+/** Pixels a resting cursor keeps clear to its right, so its arrow and name tag stay inside the lanes. */
+const CURSOR_TAG_ROOM = 68;
+
 /** Where the lanes sit inside the stage, in pixels; the scripted cursors are placed from this. */
 interface Metrics {
   lanesX: number;
@@ -155,6 +160,11 @@ export function MultiplayerDemo() {
   }, [following]);
 
   const active = useLoopActive(stage) && !reduced;
+  // Read inside `frame`, which is also the body of the animation loop and must keep its identity.
+  const still = useRef(false);
+  useEffect(() => {
+    still.current = Boolean(reduced);
+  }, [reduced]);
 
   const measure = useCallback(() => {
     const s = stage.current;
@@ -220,7 +230,11 @@ export function MultiplayerDemo() {
     );
     place(
       jonasCursor.current,
-      { x: m.lanesX + m.lanesW * (0.86 + 0.04 * Math.sin(time * 0.4)), y: laneMid(2, 0.4) },
+      {
+        // Near the right edge, but never so near that the name tag is cut off by it on a phone.
+        x: m.lanesX + Math.min(m.lanesW * (0.86 + 0.04 * Math.sin(time * 0.4)), m.lanesW - CURSOR_TAG_ROOM),
+        y: laneMid(2, 0.4),
+      },
       { x: xOf(jonasEnd), y: laneMid(1) },
       sampleTrack(JONAS_ATTACH, t),
       jonasDown,
@@ -234,7 +248,8 @@ export function MultiplayerDemo() {
       ? clamp(((pointer.current.x - m.lanesX) / m.lanesW) * DURATION, 0, DURATION)
       : 9;
     const goal = state.following ? state.mayaAt : pointerSec;
-    state.youAt = lerp(state.youAt, goal, state.following ? 0.2 : 0.35);
+    // The easing only converges over many frames. A still is drawn once, so it lands on the goal.
+    state.youAt = still.current ? goal : lerp(state.youAt, goal, state.following ? 0.2 : 0.35);
     if (mayaHead.current)
       mayaHead.current.style.transform = `translate3d(${(state.mayaAt / DURATION) * m.lanesW}px,0,0)`;
     if (youHead.current)
@@ -249,18 +264,28 @@ export function MultiplayerDemo() {
     }
   }, []);
 
+  /**
+   * Without the animation loop nothing redraws the stage, so whatever the visitor changes
+   * (following Maya, skimming with the pointer) has to ask for a fresh still itself.
+   */
+  const redrawStill = useCallback(() => {
+    if (still.current) frame(STILL_AT);
+  }, [frame]);
+
   useEffect(() => {
     measure();
-    frame(reduced ? 6 : 0);
+    frame(reduced ? STILL_AT : 0);
     const el = stage.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
       measure();
-      if (reduced) frame(6);
+      redrawStill();
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [measure, frame, reduced]);
+  }, [measure, frame, redrawStill, reduced]);
+
+  useEffect(redrawStill, [following, redrawStill]);
 
   useRafLoop(frame, active);
 
@@ -273,6 +298,7 @@ export function MultiplayerDemo() {
     const p = { x: clamp(e.clientX - r.left, 0, r.width), y: clamp(e.clientY - r.top, 0, r.height) };
     pointer.current = p;
     if (youCursor.current) youCursor.current.style.transform = `translate3d(${p.x}px,${p.y}px,0)`;
+    redrawStill();
   };
 
   const onStageMove = (e: PointerEvent<HTMLDivElement>) => {
@@ -309,6 +335,7 @@ export function MultiplayerDemo() {
     pointer.current = null;
     setInside(false);
     if (youCursor.current) youCursor.current.style.transform = '';
+    redrawStill();
   };
 
   const onClipDown = (e: PointerEvent<HTMLButtonElement>, id: UserClipId) => {
@@ -386,7 +413,8 @@ export function MultiplayerDemo() {
           <div className="mp__ruler" aria-hidden="true">
             {[0, 4, 8, 12, 16].map((sec) => (
               <span key={sec} className="mono" style={{ left: pct(sec) }}>
-                {timecode(sec).slice(3)}
+                {timecode(sec).slice(3, 8)}
+                <span className="mp__ruler-frames">{timecode(sec).slice(8)}</span>
               </span>
             ))}
             <span className="mp__pin" data-live={thread > 0 && thread < 3} style={{ left: pct(COMMENT_AT) }}>
@@ -412,13 +440,17 @@ export function MultiplayerDemo() {
                 }
               >
                 <span className="mp-clip__strip" style={{ backgroundImage: 'var(--still-4)' }} />
-                <span className="mp-clip__label">Drone_04.mov</span>
+                <span className="mp-clip__label">
+                  <span className="mp-clip__name">Drone_04.mov</span>
+                </span>
               </div>
             </div>
             <div className="mp-lane" data-label="V1">
               <div className="mp-clip mp-clip--video" style={{ left: pct(0), width: pct(7) }}>
                 <span className="mp-clip__strip" style={{ backgroundImage: 'var(--still-0)' }} />
-                <span className="mp-clip__label">Shore_A001.mov</span>
+                <span className="mp-clip__label">
+                  <span className="mp-clip__name">Shore_A001.mov</span>
+                </span>
               </div>
               <div
                 ref={jonasClip}
@@ -432,12 +464,16 @@ export function MultiplayerDemo() {
                 }
               >
                 <span className="mp-clip__strip" style={{ backgroundImage: 'var(--still-2)' }} />
-                <span className="mp-clip__label">Mist_A012.mov</span>
+                <span className="mp-clip__label">
+                  <span className="mp-clip__name">Mist_A012.mov</span>
+                </span>
                 <span className="mp-clip__edge" />
               </div>
               <div className="mp-clip mp-clip--video" style={{ left: pct(13), width: pct(7) }}>
                 <span className="mp-clip__strip" style={{ backgroundImage: 'var(--still-3)' }} />
-                <span className="mp-clip__label">Golden_B003.mov</span>
+                <span className="mp-clip__label">
+                  <span className="mp-clip__name">Golden_B003.mov</span>
+                </span>
               </div>
             </div>
             <div className="mp-lane" data-label="A1" />
@@ -460,7 +496,7 @@ export function MultiplayerDemo() {
                 )}
                 <span className="mp-clip__label">
                   {clip.kind === 'text' && <Type size="0.9em" strokeWidth={2.4} aria-hidden="true" />}
-                  {clip.name}
+                  <span className="mp-clip__name">{clip.name}</span>
                 </span>
               </button>
             ))}

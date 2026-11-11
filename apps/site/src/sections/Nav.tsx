@@ -5,14 +5,11 @@ import { Button } from '../components/Button';
 import { GithubMark } from '../components/GithubMark';
 import { Logo } from '../components/Logo';
 import { EDITOR_URL, GITHUB_URL } from '../lib/links';
+import { FEATURE_SECTIONS, OPEN_SOURCE_SECTION } from '../lib/sections';
 import './Nav.css';
 
-const LINKS = [
-  { id: 'features', label: 'Features' },
-  { id: 'multiplayer', label: 'Multiplayer' },
-  { id: 'color', label: 'Color' },
-  { id: 'open-source', label: 'Open source' },
-];
+/** In page order, so the active marker only ever moves forward as the visitor scrolls down. */
+const LINKS = [...FEATURE_SECTIONS, OPEN_SOURCE_SECTION];
 
 /**
  * Which nav section currently sits under the top third of the viewport. Sections below the fold

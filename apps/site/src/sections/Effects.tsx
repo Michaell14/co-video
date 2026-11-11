@@ -1,10 +1,12 @@
 import { Blend, Captions, Layers2, Shapes, Type } from 'lucide-react';
+import { useReducedMotion } from 'motion/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties, PointerEvent } from 'react';
+import type { CSSProperties, KeyboardEvent, PointerEvent } from 'react';
 import { Reveal } from '../components/Reveal';
 import { SectionHead } from '../components/SectionHead';
 import { loadStills } from '../lib/footage';
 import { useLoopActive } from '../lib/hooks';
+import { clamp } from '../lib/math';
 import './Effects.css';
 
 type EffectId = 'glow' | 'vhs' | 'chroma' | 'pixel' | 'duotone' | 'blur' | 'grain' | 'glitch';
@@ -24,6 +26,8 @@ const PIXEL_STEPS = [30, 24, 18, 13, 9, 13, 18, 24];
 
 /** Pixelate, done honestly: draw the still into a tiny canvas and scale it up without smoothing. */
 function PixelCanvas({ shot, animate }: { shot: number; animate: boolean }) {
+  // The other tiles are stilled by the reduced-motion rules in CSS; this one is driven by a timer.
+  const reduced = useReducedMotion();
   const canvas = useRef<HTMLCanvasElement>(null);
   const image = useRef<HTMLImageElement | null>(null);
 
@@ -53,7 +57,7 @@ function PixelCanvas({ shot, animate }: { shot: number; animate: boolean }) {
   }, [shot, draw]);
 
   useEffect(() => {
-    if (!animate) {
+    if (!animate || reduced) {
       draw(PIXEL_STEPS[0]);
       return;
     }
@@ -63,7 +67,7 @@ function PixelCanvas({ shot, animate }: { shot: number; animate: boolean }) {
       draw(PIXEL_STEPS[step]);
     }, 150);
     return () => window.clearInterval(timer);
-  }, [animate, draw]);
+  }, [animate, reduced, draw]);
 
   return <canvas ref={canvas} className="fx__pixels" width={PIXEL_STEPS[0]} height={17} />;
 }
@@ -128,27 +132,74 @@ function EffectLayers({ id, shot, hovered }: { id: EffectId; shot: number; hover
   }
 }
 
-function EffectTile({ id, name, note, shot }: (typeof TILES)[number]) {
-  const [hovered, setHovered] = useState(false);
+const SPLIT_STEP = 5;
 
-  // Hovering wipes between the source (left of the pointer) and the effect (right of it).
-  const onMove = (e: PointerEvent<HTMLElement>) => {
-    if (e.pointerType !== 'mouse') return;
+/**
+ * One effect, with a wipe against its source: the source shows left of the split, the effect
+ * right of it. The split follows a mouse while it hovers, a finger or pen while it is down, and
+ * the arrow keys while the frame has focus, which it gets from the keyboard and never from a press.
+ */
+function EffectTile({ id, name, note, shot }: (typeof TILES)[number]) {
+  const [pointing, setPointing] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [split, setSplit] = useState(50);
+  const comparing = pointing || focused;
+
+  const follow = (e: PointerEvent<HTMLElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
-    e.currentTarget.style.setProperty('--split', `${((e.clientX - r.left) / r.width) * 100}%`);
+    setSplit(clamp(((e.clientX - r.left) / r.width) * 100, 0, 100));
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    const targets: Record<string, number> = {
+      ArrowLeft: split - SPLIT_STEP,
+      ArrowDown: split - SPLIT_STEP,
+      ArrowRight: split + SPLIT_STEP,
+      ArrowUp: split + SPLIT_STEP,
+      Home: 0,
+      End: 100,
+    };
+    const target = targets[e.key];
+    if (target === undefined) return;
+    e.preventDefault();
+    setSplit(clamp(target, 0, 100));
   };
 
   return (
     <figure
       className="fx"
       data-fx={id}
-      style={{ '--img': `var(--still-${shot})` } as CSSProperties}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
-      onPointerMove={onMove}
+      data-compare={comparing}
+      style={{ '--img': `var(--still-${shot})`, '--split': `${split}%` } as CSSProperties}
     >
-      <div className="fx__frame">
-        <EffectLayers id={id} shot={shot} hovered={hovered} />
+      <div
+        className="fx__frame"
+        role="slider"
+        tabIndex={0}
+        aria-label={`${name}: how much of the picture shows the source instead of the effect`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(split)}
+        aria-valuetext={`${Math.round(split)}% source`}
+        onPointerEnter={(e) => {
+          follow(e);
+          setPointing(true);
+        }}
+        onPointerMove={follow}
+        onPointerLeave={() => setPointing(false)}
+        onPointerCancel={() => setPointing(false)}
+        // A press would otherwise focus the frame, and once the pointer has left, a focused frame
+        // with no wipe on show would still take the arrow keys, Home and End away from the page.
+        onMouseDown={(e) => e.preventDefault()}
+        onFocus={() => {
+          // From the middle, so both halves are on show before any key is pressed.
+          setSplit(50);
+          setFocused(true);
+        }}
+        onBlur={() => setFocused(false)}
+        onKeyDown={onKeyDown}
+      >
+        <EffectLayers id={id} shot={shot} hovered={comparing} />
         <span className="fx__img fx__source" />
         <span className="fx__divider" />
       </div>
@@ -266,8 +317,8 @@ export function Effects() {
           ))}
         </div>
         <Reveal as="p" className="fx-footnote">
-          These tiles are CSS stand-ins for the real shaders, on shader-generated footage. Hover one to wipe
-          against the source.
+          These tiles are CSS stand-ins for the real shaders, on shader-generated footage. Hover or drag
+          across one to wipe against the source, or focus it and use the arrow keys.
         </Reveal>
 
         <div className="tr">

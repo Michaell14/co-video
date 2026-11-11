@@ -16,11 +16,11 @@ import { fileURLToPath } from 'node:url';
 import packageJson from '../package.json' with { type: 'json' };
 import { createApiHandler } from './api';
 import { TokenAuthority, extractToken, loadOrCreateSecret } from './auth';
-import { HttpError, applySecurityHeaders, parseRequestUrl, sendError } from './http';
+import { HttpError, applySecurityHeaders, clientIp, parseRequestUrl, sendError } from './http';
 import { MediaStore } from './media';
 import { ProjectStore } from './projects';
-import { RateLimiter } from './rateLimit';
-import { DEFAULT_ROOM_IDLE_MS, RoomManager, isDocKind } from './rooms';
+import { ConcurrencyLimiter, RateLimiter } from './rateLimit';
+import { DEFAULT_MAX_CONNECTIONS_PER_ROOM, DEFAULT_ROOM_IDLE_MS, RoomManager, isDocKind } from './rooms';
 import { createStaticHandler } from './static';
 import { delay, isValidId } from './util';
 import { AUTO_VERSION_NAME, VersionStore } from './versions';
@@ -32,6 +32,11 @@ const DEFAULT_MAX_UPLOAD_BYTES = 20 * 1024 ** 3;
 const DEFAULT_AUTO_SNAPSHOT_MS = 10 * 60 * 1000;
 const CREATES_PER_HOUR = 30;
 const INVITES_PER_HOUR = 120;
+/**
+ * Open WebSockets per client address. A backstop against one client exhausting memory, not a
+ * quota: an office behind one NAT shares an address, and each editor tab holds two sockets.
+ */
+export const DEFAULT_MAX_CONNECTIONS_PER_IP = 200;
 /** Sockets that neither send nor receive anything for this long are closed (stalled transfers, idle keep-alive). */
 const SOCKET_IDLE_MS = 120_000;
 /** On shutdown, how long requests that are already running get to finish before their sockets are closed. */
@@ -59,8 +64,12 @@ export interface TandemServerOptions {
   autoSnapshotMs?: number;
   /** Whether `POST /api/projects` is open to anyone. Default true. */
   openCreate?: boolean;
-  /** Rate limit by the address a reverse proxy reports in `X-Forwarded-For`. Default false. */
+  /** Tell clients apart by the address a reverse proxy reports in `X-Forwarded-For`. Default false. */
   trustProxy?: boolean;
+  /** WebSockets one client address may hold open at a time. Default 200. */
+  maxConnectionsPerIp?: number;
+  /** WebSockets one room (a document of a project) holds at a time. Default 100. */
+  maxConnectionsPerRoom?: number;
   /** How long a room without connections stays in memory. Default 30 s. */
   roomIdleMs?: number;
 }
@@ -98,6 +107,7 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
   const dataDir = resolve(options.dataDir);
   const host = options.host ?? '127.0.0.1';
   const autoSnapshotMs = Math.max(0, options.autoSnapshotMs ?? DEFAULT_AUTO_SNAPSHOT_MS);
+  const trustProxy = options.trustProxy ?? false;
 
   await mkdir(resolve(dataDir, 'projects'), { recursive: true });
   const auth = new TokenAuthority(await loadOrCreateSecret(dataDir));
@@ -107,6 +117,7 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
   const rooms = new RoomManager({
     autoSnapshotMs,
     roomIdleMs: options.roomIdleMs ?? DEFAULT_ROOM_IDLE_MS,
+    maxConnectionsPerRoom: options.maxConnectionsPerRoom ?? DEFAULT_MAX_CONNECTIONS_PER_ROOM,
     projectDir: (projectId) => projects.dir(projectId),
     onDocChanged: (projectId) => projects.touch(projectId),
     saveAutoVersion: async (projectId, state) => {
@@ -123,7 +134,7 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
     version: SERVER_VERSION,
     corsOrigin: options.corsOrigin ?? '*',
     openCreate: options.openCreate ?? true,
-    trustProxy: options.trustProxy ?? false,
+    trustProxy,
     createLimiter: new RateLimiter(CREATES_PER_HOUR, HOUR_MS),
     inviteLimiter: new RateLimiter(INVITES_PER_HOUR, HOUR_MS),
   });
@@ -183,9 +194,21 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
     await rooms.accept(req, socket, head, projectId, kind, payload.r);
   }
 
+  const socketsPerAddress = new ConcurrencyLimiter(
+    options.maxConnectionsPerIp ?? DEFAULT_MAX_CONNECTIONS_PER_IP,
+  );
+
   server.on('upgrade', (req, socket, head) => {
     // Until `ws` takes over, an error on the raw socket (client reset) would otherwise be unhandled.
     socket.on('error', () => socket.destroy());
+    // Counted per TCP connection, from before the handshake until the connection is gone, so an
+    // upgrade that is still authenticating or loading its room already holds its place.
+    const address = clientIp(req, trustProxy);
+    if (!socketsPerAddress.acquire(address)) {
+      rejectUpgrade(socket, 429, 'too many connections from this address');
+      return;
+    }
+    socket.once('close', () => socketsPerAddress.release(address));
     handleUpgrade(req, socket, head).catch((err: unknown) => {
       if (err instanceof HttpError) {
         rejectUpgrade(socket, err.status, err.message);

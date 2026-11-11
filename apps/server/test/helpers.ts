@@ -1,6 +1,9 @@
 /** Test utilities: temp data dirs, a tiny HTTP wrapper and a minimal Yjs WebSocket client. */
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { request } from 'node:http';
+import { connect as netConnect } from 'node:net';
+import type { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as decoding from 'lib0/decoding';
@@ -125,9 +128,9 @@ export class TestClient {
   private readonly ws: WebSocket;
   private readonly ready: Promise<void>;
 
-  constructor(url: string) {
+  constructor(url: string, headers: Record<string, string> = {}) {
     this.awareness.setLocalState(null);
-    this.ws = new WebSocket(url);
+    this.ws = new WebSocket(url, { headers });
     this.ready = new Promise((resolve, reject) => {
       this.ws.once('open', () => resolve());
       this.ws.once('error', reject);
@@ -222,10 +225,71 @@ export class TestClient {
   }
 }
 
+/** An awareness frame written by hand, so it can carry states no real client would produce. */
+export function awarenessFrame(entries: { clientId: number; clock: number; state: string }[]): Uint8Array {
+  const update = encoding.createEncoder();
+  encoding.writeVarUint(update, entries.length);
+  for (const { clientId, clock, state } of entries) {
+    encoding.writeVarUint(update, clientId);
+    encoding.writeVarUint(update, clock);
+    encoding.writeVarString(update, state);
+  }
+  const frame = encoding.createEncoder();
+  encoding.writeVarUint(frame, WS_MSG_AWARENESS);
+  encoding.writeVarUint8Array(frame, encoding.toUint8Array(update));
+  return encoding.toUint8Array(frame);
+}
+
+/** One unfragmented binary frame as a client has to send it: masked (a zero key leaves the payload as it is). */
+function clientFrame(payload: Uint8Array): Buffer {
+  if (payload.length > 0xffff) throw new Error('frame too large for this helper');
+  const header =
+    payload.length < 126
+      ? [0x82, 0x80 | payload.length]
+      : [0x82, 0x80 | 126, payload.length >> 8, payload.length & 0xff];
+  return Buffer.concat([Buffer.from(header), Buffer.alloc(4), payload]);
+}
+
+/**
+ * A WebSocket peer on a bare TCP socket: it completes the handshake, sends `frames` and from then
+ * on answers nothing, not even a close frame, so its connection lingers on the server.
+ */
+export class SilentPeer {
+  private received = Buffer.alloc(0);
+  private readonly socket: Socket;
+
+  constructor(url: string, frames: Uint8Array[]) {
+    const { hostname, port, host, pathname, search } = new URL(url);
+    let upgraded = false;
+    this.socket = netConnect(Number(port), hostname, () => {
+      this.socket.write(
+        `GET ${pathname}${search} HTTP/1.1\r\nHost: ${host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
+          `Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\n\r\n`,
+      );
+    });
+    this.socket.on('data', (chunk: Buffer) => {
+      this.received = Buffer.concat([this.received, chunk]);
+      if (upgraded || !this.received.includes('\r\n\r\n')) return;
+      upgraded = true;
+      for (const frame of frames) this.socket.write(clientFrame(frame));
+    });
+    this.socket.on('error', () => undefined);
+  }
+
+  /** True once the server sent `text` (control frames carry their JSON as plain UTF-8). */
+  heard(text: string): boolean {
+    return this.received.includes(text);
+  }
+
+  destroy(): void {
+    this.socket.destroy();
+  }
+}
+
 /** Attempt a WebSocket connection that is expected to be refused; resolves with the HTTP status. */
-export function upgradeStatus(url: string): Promise<number> {
+export function upgradeStatus(url: string, headers: Record<string, string> = {}): Promise<number> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, { headers });
     ws.on('unexpected-response', (_req, res) => {
       resolve(res.statusCode ?? 0);
       res.resume();

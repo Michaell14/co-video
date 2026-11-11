@@ -49,15 +49,23 @@
   letter-spacing: 0.04em;
   white-space: nowrap;
 }
+.arch__tags {
+  display: inline-flex;
+  gap: 0.4rem;
+  margin-left: auto;
+}
 .arch__tag--pixels {
   margin-left: auto;
   background: var(--accent-soft);
   color: var(--accent);
 }
 .arch__tag--edits {
-  margin-left: auto;
   background: var(--violet-soft);
   color: #b3a8ff;
+}
+.arch__tag--media {
+  background: rgba(255, 181, 71, 0.14);
+  color: var(--amber);
 }
 
 /* ---------- The network: where edits travel ---------- */
@@ -72,7 +80,7 @@
 .arch__net .arch__legend {
   border-bottom-style: dashed;
 }
-/* The Yjs document belongs to the tab above: a short stem ties the two frames together. */
+/* What gets shared comes out of the tab above: a short stem ties the two frames together. */
 .arch__net::before {
   content: '';
   position: absolute;
@@ -135,6 +143,7 @@
   color: var(--fg-3);
   font-size: var(--fs-micro);
   line-height: 1.45;
+  text-wrap: pretty;
 }
 .node__people {
   display: flex;
@@ -171,7 +180,7 @@
   height: 1.25rem;
   overflow: hidden;
 }
-.wire--edits {
+.wire--shared {
   --wire: var(--violet);
   flex-basis: clamp(1.5rem, 6vw, 5rem);
 }
@@ -191,11 +200,17 @@
 .wire__lane--back {
   animation-direction: reverse;
 }
-.wire--edits .wire__lane {
-  margin-top: -4px;
+/* Three lanes, stacked around the centre line: edits out, edits back, and media underneath. */
+.wire--shared .wire__lane {
+  margin-top: -7px;
 }
-.wire--edits .wire__lane--back {
-  margin-top: 2.5px;
+.wire--shared .wire__lane--back {
+  margin-top: -1.5px;
+}
+.wire--shared .wire__lane--media {
+  --wire: var(--amber);
+  height: 3px;
+  margin-top: 4px;
 }
 [data-active='false'] .wire__lane {
   animation-play-state: paused;
@@ -257,7 +272,7 @@
     grid-column: 2;
   }
   .wire,
-  .wire--edits {
+  .wire--shared {
     flex-basis: 1.75rem;
     width: 2rem;
     height: 1.75rem;
@@ -275,11 +290,16 @@
     background: repeating-linear-gradient(180deg, var(--wire) 0 4px, transparent 4px 8px);
     animation-name: wire-y;
   }
-  .wire--edits .wire__lane {
-    margin: 0 0 0 -4px;
+  .wire--shared .wire__lane {
+    margin: 0 0 0 -7px;
   }
-  .wire--edits .wire__lane--back {
-    margin: 0 0 0 2.5px;
+  .wire--shared .wire__lane--back {
+    margin: 0 0 0 -1.5px;
+  }
+  .wire--shared .wire__lane--media {
+    width: 3px;
+    height: auto;
+    margin: 0 0 0 4px;
   }
   .arch-notes {
     grid-template-columns: 1fr;

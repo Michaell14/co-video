@@ -34,21 +34,28 @@ await server.close();
 
 ## Configuration
 
-| Variable             | Default                | Meaning                                                                                               |
-| -------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------- |
-| `PORT`               | `8787`                 | TCP port.                                                                                             |
-| `HOST`               | `0.0.0.0`              | Interface to bind.                                                                                    |
-| `DATA_DIR`           | `./data`               | Where everything is stored (see below).                                                               |
-| `CORS_ORIGIN`        | `*`                    | Value of `Access-Control-Allow-Origin` on API responses. Set it to the editor's origin in production. |
-| `EDITOR_DIST`        | `../editor/dist`       | Built editor, served at `/app/` (relative default is resolved against this package).                  |
-| `SITE_DIST`          | `../site/dist`         | Built site, served at `/`.                                                                            |
-| `MAX_UPLOAD_BYTES`   | `21474836480` (20 GiB) | Largest single asset.                                                                                 |
-| `TANDEM_OPEN_CREATE` | `true`                 | Whether anyone may `POST /api/projects`. With `false` the endpoint answers 403.                       |
-| `AUTO_SNAPSHOT_MS`   | `600000` (10 min)      | Interval of automatic versions while a project changes; `0` turns them off.                           |
-| `TRUST_PROXY`        | `false`                | Rate-limit by the last `X-Forwarded-For` entry. Enable only behind a reverse proxy that sets it.      |
+| Variable                   | Default                | Meaning                                                                                                      |
+| -------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `PORT`                     | `8787`                 | TCP port.                                                                                                    |
+| `HOST`                     | `0.0.0.0`              | Interface to bind.                                                                                           |
+| `DATA_DIR`                 | `./data`               | Where everything is stored (see below).                                                                      |
+| `CORS_ORIGIN`              | `*`                    | Value of `Access-Control-Allow-Origin` on API responses. Set it to the editor's origin in production.        |
+| `EDITOR_DIST`              | `../editor/dist`       | Built editor, served at `/app/` (relative default is resolved against this package).                         |
+| `SITE_DIST`                | `../site/dist`         | Built site, served at `/`.                                                                                   |
+| `MAX_UPLOAD_BYTES`         | `21474836480` (20 GiB) | Largest single asset.                                                                                        |
+| `TANDEM_OPEN_CREATE`       | `true`                 | Whether anyone may `POST /api/projects`. With `false` the endpoint answers 403.                              |
+| `AUTO_SNAPSHOT_MS`         | `600000` (10 min)      | Interval of automatic versions while a project changes; `0` turns them off.                                  |
+| `TRUST_PROXY`              | `false`                | Tell clients apart by the last `X-Forwarded-For` entry. Enable only behind a reverse proxy that sets it.     |
+| `MAX_CONNECTIONS_PER_IP`   | `200`                  | WebSockets one client address may hold open at a time (an editor tab uses two). More are refused with `429`. |
+| `MAX_CONNECTIONS_PER_ROOM` | `100`                  | WebSockets per room, i.e. per document of a project. More are refused with `503` (see the security model).   |
 
 The server speaks plain HTTP. Put it behind a reverse proxy for TLS (and compression of the static
 files); the proxy must pass WebSocket upgrades and should not buffer request bodies of uploads.
+
+Behind a proxy every request arrives from the proxy's address. Unless `TRUST_PROXY` is on, all clients
+then share one rate limit and `MAX_CONNECTIONS_PER_IP` caps the whole server, so turn `TRUST_PROXY` on
+(or raise the cap). The two connection limits are a backstop against a client that opens sockets until
+the process runs out of memory, not a quota: the defaults leave room for an office behind one address.
 
 ## Data layout
 
@@ -123,6 +130,11 @@ What the server enforces:
   files are confined to their build directory.
 - Request limits: JSON bodies 64 KiB, WebSocket messages 32 MiB, assets `MAX_UPLOAD_BYTES`; project
   creation 30/hour and invites 120/hour per client address (in memory, best effort).
+- Open WebSockets are capped per client address and per room; an upgrade over a cap is refused before the
+  handshake. A full room still admits a participant who may write its document: the most recent read-only
+  connection is closed (code `1013`) to make way, so a viewer link cannot be used to keep editors out.
+- Presence updates over 1 MiB are ignored. One whose states are not valid JSON, or nest more than 32 levels
+  deep, closes the connection like any other malformed message, and no part of it is kept or relayed.
 - Uploaded files are served with their stored content type, `X-Content-Type-Options: nosniff` and
   `Content-Security-Policy: sandbox`, so an uploaded HTML or SVG file cannot run script in the app's origin.
 - The pages themselves (site and editor) are served with a Content-Security-Policy that allows scripts,
@@ -141,6 +153,8 @@ What it does **not** do — know this before exposing a server:
 - **Editors are trusted with the document.** The server relays Yjs updates without understanding the
   project model, so an editor can write anything into the document, and can fill the disk: there is no
   per-project quota, only the per-asset limit.
+- **The connection caps do not arbitrate between equals.** Participants with the same rights can still
+  fill a room and keep each other out (viewers other viewers, editors other editors) until they leave.
 - **No encryption at rest**, and anyone who can read `DATA_DIR/secret` can mint any token.
 - With `TANDEM_OPEN_CREATE=true` anyone who can reach the server can create projects. With `false` nobody
   can — create the projects you need first, then switch it off.
@@ -154,6 +168,7 @@ What it does **not** do — know this before exposing a server:
   (over the limit), `507` (disk full). `DELETE` is idempotent.
 - `GET …/media/:assetId` supports one byte range per request (`a-b`, `a-`, `-n`); a multi-range request
   gets the whole file with `200`.
-- A WebSocket upgrade that fails authentication is answered with a normal HTTP status (`401`, `404`),
-  which browsers surface only as a failed connection — validate the token with `GET /api/projects/:id`
-  first if you need to tell the cases apart.
+- A WebSocket upgrade that is refused is answered with a normal HTTP status: `401` / `404` when
+  authentication fails, `429` when the address has too many sockets open, `503` when the room is full.
+  Browsers surface all of them only as a failed connection — validate the token with
+  `GET /api/projects/:id` first if you need to tell a bad link from a busy server.

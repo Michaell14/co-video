@@ -9,14 +9,19 @@ import './Architecture.css';
 
 /**
  * A connector between two nodes: dashes that flow in the direction of travel. It runs
- * left-to-right on wide screens and top-to-bottom when the diagram stacks. `both` draws a second
- * lane flowing the other way.
+ * left-to-right on wide screens and top-to-bottom when the diagram stacks. A `shared` wire is
+ * what a shared project puts on the network: edits flowing both ways, and a heavier lane of media.
  */
-function Wire({ kind = 'pixels', both = false }: { kind?: 'pixels' | 'edits'; both?: boolean }) {
+function Wire({ kind = 'pixels' }: { kind?: 'pixels' | 'shared' }) {
   return (
     <li className={`wire wire--${kind}`} aria-hidden="true">
       <span className="wire__lane" />
-      {both && <span className="wire__lane wire__lane--back" />}
+      {kind === 'shared' && (
+        <>
+          <span className="wire__lane wire__lane--back" />
+          <span className="wire__lane wire__lane--media" />
+        </>
+      )}
     </li>
   );
 }
@@ -44,16 +49,16 @@ function Node({ icon, title, detail, tone = 'plain', children }: NodeProps) {
 
 const NOTES = [
   {
-    title: 'No upload, no queue',
-    text: 'Media is read from disk and decoded by WebCodecs, on hardware decoders where your browser has them. There is nothing to wait for.',
+    title: 'Nothing to wait for',
+    text: 'Media is read from your disk and decoded by WebCodecs, on hardware decoders where your browser has them. There is no upload or transcode to sit through before you can cut.',
   },
   {
     title: 'Export is local too',
     text: 'The same compositor that draws the viewer feeds the encoder. Which codecs you can export depends on your browser.',
   },
   {
-    title: 'A server with one job',
-    text: 'It passes Yjs updates between tabs over a WebSocket. An edit is a handful of bytes; your footage never goes through it.',
+    title: 'A server with two small jobs',
+    text: 'When you share a project, the server relays its Yjs updates and stores its originals for collaborators to stream. It never decodes or renders a frame, and a project you have not shared is never sent to it.',
   },
 ];
 
@@ -76,10 +81,10 @@ export function Architecture() {
           id="architecture-title"
           title={
             <>
-              Your GPU does the work. Our server <em>only relays edits.</em>
+              Your GPU does the work. The server <em>renders nothing.</em>
             </>
           }
-          lead="There is no render farm behind Tandem. Decoding, compositing and encoding all happen in your tab, on your hardware. The only thing that travels is the edit itself."
+          lead="There is no render farm behind Tandem. Decoding, compositing and encoding all happen in your tab, on your hardware. A project you keep to yourself stays on your device; share it, and a small server relays the edits and stores the project’s media for your collaborators."
         />
 
         <Reveal>
@@ -92,9 +97,10 @@ export function Architecture() {
                   <i />
                 </span>
                 Your browser tab
-                <span className="arch__tag arch__tag--pixels">pixels stay here</span>
+                <span className="arch__tag arch__tag--pixels">rendered locally</span>
               </p>
               <ol className="pipe" aria-label="Picture pipeline, in order">
+                {/* \u00a0 ties each separator dot to the item before it, so no wrapped line starts with one. */}
                 <Node icon={<FolderOpen size="1.1rem" />} title="Your media" detail="Read from your disk" />
                 <Wire />
                 <Node
@@ -106,44 +112,51 @@ export function Architecture() {
                 <Node
                   icon={<Cpu size="1.1rem" />}
                   title="WebGL2 compositor"
-                  detail="16-bit float · layers, effects, grade"
+                  detail={'16-bit float\u00a0· layers, effects, grade'}
                   tone="core"
                 />
                 <Wire />
                 <Node
                   icon={<PackageCheck size="1.1rem" />}
                   title="WebCodecs encode"
-                  detail="H.264 · HEVC · VP9 · AV1"
+                  detail={'H.264\u00a0· HEVC\u00a0· VP9\u00a0· AV1'}
                 />
                 <Wire />
-                <Node icon={<FileVideo size="1.1rem" />} title="Your file" detail="MP4 · MOV · WebM · MKV" />
+                <Node
+                  icon={<FileVideo size="1.1rem" />}
+                  title="Your file"
+                  detail={'MP4\u00a0· MOV\u00a0· WebM\u00a0· MKV'}
+                />
               </ol>
             </div>
 
             <div className="arch__net">
               <p className="arch__legend">
-                Between tabs
-                <span className="arch__tag arch__tag--edits">edits only</span>
+                When you share
+                <span className="arch__tags">
+                  <span className="arch__tag arch__tag--edits">edits</span>
+                  <span className="arch__tag arch__tag--media">media</span>
+                </span>
               </p>
-              <ol className="sync" aria-label="Collaboration path, in order">
+              <ol className="sync" aria-label="What a shared project sends, in order">
                 <Node
                   icon={<Network size="1.1rem" />}
-                  title="Yjs document"
-                  detail="The project, as a CRDT. Lives in your tab."
+                  title="Project and media"
+                  detail="The edit as a Yjs document, and the originals it uses"
                   tone="edits"
                 />
-                <Wire kind="edits" both />
+                <Wire kind="shared" />
                 <Node
                   icon={<Server size="1.1rem" />}
-                  title="Relay server"
-                  detail="One small Node process, passing updates along"
+                  title="Tandem server"
+                  detail="One small Node process. Relays edits, stores shared media"
                   tone="edits"
                 />
-                <Wire kind="edits" both />
+                <Wire kind="shared" />
                 <Node
                   icon={null}
                   title="Everyone else"
-                  detail="Each tab does its own decoding and compositing"
+                  detail="Streams the media; decodes and composites in their own tab"
                   tone="edits"
                 >
                   <span className="node__people" aria-hidden="true">

@@ -128,7 +128,8 @@
   display: none;
 }
 
-@media (max-width: 900px) {
+/* Below this the five links crowd the actions, so they move into the menu. */
+@media (max-width: 960px) {
   .nav__bar {
     grid-template-columns: 1fr auto;
   }

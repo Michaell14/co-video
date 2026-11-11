@@ -92,14 +92,23 @@ export function neighbors(p: Project, clip: Clip): { prev: Clip | null; next: Cl
   return { prev: i > 0 ? list[i - 1] : null, next: i >= 0 && i < list.length - 1 ? list[i + 1] : null };
 }
 
+const groupLinks = memoByRef((clips: Project['clips']) => {
+  const map = new Map<ID, ID[]>();
+  for (const c of Object.values(clips)) {
+    if (!c.linkId) continue;
+    const list = map.get(c.linkId);
+    if (list) list.push(c.id);
+    else map.set(c.linkId, [c.id]);
+  }
+  return map;
+});
+
 /** All clip ids linked with `id` (including itself). */
 export function linkedIds(p: Project, id: ID): ID[] {
   const c = p.clips[id];
   if (!c) return [];
   if (!c.linkId) return [id];
-  const out: ID[] = [];
-  for (const o of Object.values(p.clips)) if (o.linkId === c.linkId) out.push(o.id);
-  return out;
+  return groupLinks(p.clips).get(c.linkId)?.slice() ?? [id];
 }
 
 /** Expand a selection to include linked partners. */

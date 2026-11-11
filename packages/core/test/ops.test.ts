@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_TEXT,
   addAssetToTimeline,
   addGenerator,
   applyEdits,
@@ -9,13 +10,18 @@ import {
   closeGap,
   deleteClips,
   deleteRange,
+  evalKeyframes,
   freezeFrame,
   handles,
+  insertClips,
   sourceTimeAt,
+  makeClip,
+  makeTrack,
   makeTransition,
   openGap,
   pasteClips,
   placeClips,
+  resolveFrame,
   rollEdit,
   sequenceEnd,
   setSpeed,
@@ -29,6 +35,7 @@ import {
   moveTrack,
   tracksOf,
 } from '../src';
+import type { Clip, Project } from '../src';
 import { addClip, fixture, overlaps } from './helpers';
 
 describe('adding media', () => {
@@ -262,7 +269,7 @@ describe('split & delete', () => {
     expect(splitClips(a.p, [a.clip.id], 110).edits).toEqual([]);
   });
 
-  it('ripple delete closes the gap on that track only', () => {
+  it('ripple delete closes the gap and takes the other tracks along', () => {
     const f = fixture();
     let p = f.p;
     const a = addClip(p, f.v1.id, 0, 100);
@@ -275,7 +282,10 @@ describe('split & delete', () => {
     p = other.p;
     const q = applyEdits(p, deleteClips(p, [b.clip.id], true));
     expect(q.clips[c.clip.id].start).toBe(100);
-    expect(q.clips[other.clip.id].start).toBe(150);
+    expect(q.clips[other.clip.id].start).toBe(100);
+    // Without ripple nothing else moves.
+    const lifted = applyEdits(p, deleteClips(p, [b.clip.id]));
+    expect([lifted.clips[c.clip.id].start, lifted.clips[other.clip.id].start]).toEqual([150, 150]);
   });
 
   it('closes a gap', () => {
@@ -301,6 +311,85 @@ describe('split & delete', () => {
       [100, 150],
     ]);
     expect(list[1].sourceIn).toBeCloseTo(5);
+  });
+
+  /** Opacity the title animation applies at each frame (1 where no title is showing). */
+  const animOpacity = (p: Project, frames: number[]): number[] =>
+    frames.map((f) => {
+      const layer = resolveFrame(p, f).layers[0];
+      return layer?.kind === 'clip' ? +layer.layer.anim.opacity.toFixed(2) : 1;
+    });
+
+  const animatedTitle = (f: ReturnType<typeof fixture>, start: number, duration: number) => {
+    const clip = makeClip('text', f.v2.id, {
+      start,
+      duration,
+      fadeIn: 5,
+      fadeOut: 5,
+      transIn: makeTransition('crossDissolve', 10),
+      transOut: makeTransition('crossDissolve', 10),
+      text: {
+        ...DEFAULT_TEXT,
+        animIn: { type: 'fade', duration: 20 },
+        animOut: { type: 'slideUp', duration: 20 },
+      },
+    });
+    return { p: applyEdits(f.p, [{ op: 'addClip', clip }]), clip };
+  };
+
+  it('does not animate a title out and back in across a split', () => {
+    const f = fixture();
+    const { p, clip } = animatedTitle(f, 0, 100);
+    const r = splitClips(p, [clip.id], 50);
+    const q = applyEdits(p, r.edits);
+    const left = q.clips[clip.id];
+    const right = q.clips[r.created[0]];
+    // Each half keeps the animation of the end it still owns, and its length.
+    expect(left.text!.animIn).toEqual({ type: 'fade', duration: 20 });
+    expect(left.text!.animOut).toEqual({ type: 'none', duration: 20 });
+    expect(right.text!.animIn).toEqual({ type: 'none', duration: 20 });
+    expect(right.text!.animOut).toEqual({ type: 'slideUp', duration: 20 });
+    expect([left.transOut, left.fadeOut, right.transIn, right.fadeIn]).toEqual([null, 0, null, 0]);
+    // The transitions at the outer ends hide the layer there, so look at the modifiers directly.
+    const before = applyEdits(p, [
+      { op: 'updateClip', id: clip.id, patch: { transIn: null, transOut: null } },
+    ]);
+    const after = applyEdits(q, [
+      { op: 'updateClip', id: left.id, patch: { transIn: null } },
+      { op: 'updateClip', id: right.id, patch: { transOut: null } },
+    ]);
+    expect(animOpacity(before, [0, 10, 48, 49, 50, 51, 99])).toEqual([0, 0.5, 1, 1, 1, 1, 0.1]);
+    expect(animOpacity(after, [0, 10, 48, 49, 50, 51, 99])).toEqual([0, 0.5, 1, 1, 1, 1, 0.1]);
+    // The original text object is shared, not rewritten, where nothing changes.
+    const plain = makeClip('text', f.v2.id, { start: 200, duration: 50, text: { ...DEFAULT_TEXT } });
+    const withPlain = applyEdits(p, [{ op: 'addClip', clip: plain }]);
+    const halves = splitClips(withPlain, [plain.id], 220);
+    expect(halves.edits.every((e) => e.op !== 'updateClip' || !('text' in e.patch))).toBe(true);
+  });
+
+  it('drops title animation at the edges made by an overwrite or an insert edit', () => {
+    const f = fixture();
+    const { p, clip } = animatedTitle(f, 0, 100);
+    // Something lands in the middle: both remaining pieces lose the animation at the new cut.
+    const mid = makeClip('image', f.v2.id, { start: 40, duration: 20 });
+    let q = applyEdits(p, insertClips(p, [mid]).edits);
+    const [head, , tail] = clipsOnTrack(q, f.v2.id);
+    expect([head.text!.animIn.type, head.text!.animOut.type]).toEqual(['fade', 'none']);
+    expect([tail.text!.animIn.type, tail.text!.animOut.type]).toEqual(['none', 'slideUp']);
+    // Something covers the tail: the piece that is left keeps its entrance only.
+    const over = makeClip('image', f.v2.id, { start: 70, duration: 80 });
+    q = applyEdits(p, insertClips(p, [over]).edits);
+    expect(q.clips[clip.id].text).toEqual({ ...clip.text, animOut: { type: 'none', duration: 20 } });
+    expect(q.clips[clip.id].duration).toBe(70);
+    // An insert edit splits it the same way.
+    q = applyEdits(p, openGap(p, [f.v2.id], 30, 60));
+    const [l, r] = clipsOnTrack(q, f.v2.id);
+    expect([l.text!.animIn.type, l.text!.animOut.type]).toEqual(['fade', 'none']);
+    expect([r.text!.animIn.type, r.text!.animOut.type]).toEqual(['none', 'slideUp']);
+    expect(r.start).toBe(90);
+    // Trimming is not a cut: the animation moves with the edge.
+    q = applyEdits(p, trimClips(p, [clip.id], 'end', -30));
+    expect(q.clips[clip.id].text).toEqual(clip.text);
   });
 
   it('opens a gap for insert edits', () => {
@@ -386,6 +475,49 @@ describe('speed, paste, transitions, keyframes', () => {
     expect(overlaps(q)).toEqual([]);
   });
 
+  it('keeps keyframes on the picture when a neighbour limits a slow-down', () => {
+    const f = fixture();
+    const keyframes = { x: [{ t: 50, v: 1, e: 'linear' as const }] };
+    const a = addClip(f.p, f.v1.id, 0, 100, { keyframes });
+    const alone = applyEdits(a.p, setSpeed(a.p, [a.clip.id], 0.5));
+    expect(alone.clips[a.clip.id].duration).toBe(200);
+    expect(alone.clips[a.clip.id].keyframes.x[0].t).toBe(100);
+    // With a clip right behind it the slowed clip cannot grow, but the moment the keyframe marks
+    // is still twice as far in.
+    const p = addClip(a.p, f.v1.id, 100, 50).p;
+    const q = applyEdits(p, setSpeed(p, [a.clip.id], 0.5));
+    expect(q.clips[a.clip.id].duration).toBe(100);
+    expect(q.clips[a.clip.id].keyframes.x[0].t).toBe(100);
+    expect(sourceTimeAt(q.clips[a.clip.id], 100, q)).toBeCloseTo(sourceTimeAt(a.clip, 50, p));
+    // Back to full speed and the keyframe is where it started.
+    const back = applyEdits(q, setSpeed(q, [a.clip.id], 1));
+    expect(back.clips[a.clip.id].keyframes.x[0].t).toBe(50);
+    expect(evalKeyframes(back.clips[a.clip.id].keyframes.x, 50)).toBe(1);
+  });
+
+  it('keeps the first frame of a reversed clip when a neighbour cuts a slow-down short', () => {
+    const f = fixture();
+    const a = addClip(f.p, f.v1.id, 300, 300, { sourceIn: 10, reverse: true });
+    const p = addClip(a.p, f.v1.id, 600, 100).p;
+    const first = sourceTimeAt(a.clip, 0, p);
+    const q = applyEdits(p, setSpeed(p, [a.clip.id], 0.5));
+    const slow = q.clips[a.clip.id];
+    expect(slow.duration).toBe(300);
+    // Half speed shows the top half of the source range, still starting from its last frame.
+    expect(slow.sourceIn).toBeCloseTo(15);
+    expect(Math.abs(sourceTimeAt(slow, 0, q) - first)).toBeLessThan(1 / 30);
+    expect(sourceTimeAt(slow, 299, q)).toBeCloseTo(15);
+    // Unclamped, forwards, or reversing in the same step: the range is used as before.
+    const free = applyEdits(a.p, setSpeed(a.p, [a.clip.id], 0.5));
+    expect([free.clips[a.clip.id].duration, free.clips[a.clip.id].sourceIn]).toEqual([600, 10]);
+    const forwards = applyEdits(p, setSpeed(p, [a.clip.id], 0.5, false));
+    expect(forwards.clips[a.clip.id].sourceIn).toBe(10);
+    const b = addClip(p, f.v1.id, 0, 300, { sourceIn: 10 });
+    const flipped = applyEdits(b.p, setSpeed(b.p, [b.clip.id], 0.5, true));
+    expect(flipped.clips[b.clip.id].sourceIn).toBeCloseTo(15);
+    expect(overlaps(flipped)).toEqual([]);
+  });
+
   it('pastes with fresh ids and remapped links', () => {
     const { p, asset } = fixture();
     const q0 = applyEdits(p, addAssetToTimeline(p, asset, { frame: 0, sourceOut: 2 }).edits);
@@ -397,6 +529,104 @@ describe('speed, paste, transitions, keyframes', () => {
     expect(pasted.every((c) => c.start === 200)).toBe(true);
     expect(pasted[0].linkId).toBe(pasted[1].linkId);
     expect(pasted[0].linkId).not.toBe(items[0].linkId);
+  });
+
+  it('pastes back onto the tracks the clips came from, overwriting what is there', () => {
+    const f = fixture();
+    let p = f.p;
+    const a = addClip(p, f.v1.id, 0, 50);
+    p = a.p;
+    const b = addClip(p, f.v2.id, 20, 50);
+    p = b.p;
+    const inTheWay = addClip(p, f.v1.id, 110, 30);
+    p = inTheWay.p;
+    const r = pasteClips(p, [a.clip, b.clip], 100);
+    const q = applyEdits(p, r.edits);
+    const [pa, pb] = r.created.map((id) => q.clips[id]);
+    expect([pa.trackId, pa.start, pb.trackId, pb.start]).toEqual([f.v1.id, 100, f.v2.id, 120]);
+    expect(q.clips[inTheWay.clip.id]).toBeUndefined();
+    expect(tracksOf(q).video).toHaveLength(2);
+    expect(overlaps(q)).toEqual([]);
+  });
+
+  it('gives each source track its own target when clips cannot go back where they came from', () => {
+    const f = fixture();
+    let p = f.p;
+    const a = addClip(p, f.v1.id, 0, 100);
+    p = a.p;
+    const b = addClip(p, f.v2.id, 0, 100);
+    p = b.p;
+    const b2 = addClip(p, f.v2.id, 100, 50);
+    p = b2.p;
+    const items = [a.clip, b.clip, b2.clip];
+    const tracks = (q: Project, ids: string[]) => ids.map((id) => q.clips[id].trackId);
+
+    // V2 is locked: its clips move together to a new track above, not onto V1 with the others.
+    const locked = applyEdits(p, [{ op: 'updateTrack', id: f.v2.id, patch: { locked: true } }]);
+    let r = pasteClips(locked, items, 500);
+    let q = applyEdits(locked, r.edits);
+    expect(r.edits.filter((e) => e.op === 'addTrack')).toHaveLength(1);
+    const top = tracksOf(q).video[2];
+    expect(tracks(q, r.created)).toEqual([f.v1.id, top.id, top.id]);
+    expect(r.created.map((id) => q.clips[id].start)).toEqual([500, 500, 600]);
+    expect(overlaps(q)).toEqual([]);
+
+    // The tracks are unknown (copied in another project): two layers stay two layers, on tracks
+    // that are free at that time, and nothing already on the timeline is overwritten.
+    const foreign = items.map((c): Clip => ({ ...c, trackId: c.trackId === f.v1.id ? 'gone1' : 'gone2' }));
+    r = pasteClips(p, foreign, 50);
+    q = applyEdits(p, r.edits);
+    expect(Object.keys(q.clips)).toHaveLength(6);
+    for (const c of [a.clip, b.clip, b2.clip]) expect(q.clips[c.id]).toBe(p.clips[c.id]);
+    const [t1, t2, t3] = tracks(q, r.created);
+    expect(t1).not.toBe(t2);
+    expect(t2).toBe(t3);
+    expect(r.edits.filter((e) => e.op === 'addTrack')).toHaveLength(2);
+    expect(overlaps(q)).toEqual([]);
+
+    // Where there is room they reuse existing tracks, bottom up, in the order they were copied.
+    r = pasteClips(p, foreign, 400);
+    q = applyEdits(p, r.edits);
+    expect(r.edits.filter((e) => e.op === 'addTrack')).toHaveLength(0);
+    expect(tracks(q, r.created)).toEqual([f.v1.id, f.v2.id, f.v2.id]);
+    expect(overlaps(q)).toEqual([]);
+  });
+
+  it('creates one track for all the audio that has nowhere to go', () => {
+    const f = fixture();
+    let p = f.p;
+    const audio = [0, 100, 200].map((start) =>
+      makeClip('audio', f.a1.id, { assetId: 'asset1', start, duration: 100 }),
+    );
+    p = applyEdits(
+      p,
+      audio.map((clip) => ({ op: 'addClip', clip }) as const),
+    );
+    p = applyEdits(p, [{ op: 'updateTrack', id: f.a1.id, patch: { locked: true } }]);
+    const r = pasteClips(p, audio, 0);
+    const q = applyEdits(p, r.edits);
+    expect(r.edits.filter((e) => e.op === 'addTrack')).toHaveLength(1);
+    const added = tracksOf(q).audio[1];
+    expect(r.created.map((id) => q.clips[id].trackId)).toEqual([added.id, added.id, added.id]);
+    expect(clipsOnTrack(q, f.a1.id)).toHaveLength(3);
+    expect(overlaps(q)).toEqual([]);
+
+    // A second locked source track gets a second new track; a free unlocked one is used first.
+    const a2 = makeTrack('audio', 1);
+    const other = makeClip('audio', a2.id, { assetId: 'asset1', start: 0, duration: 300 });
+    let two = applyEdits(p, [
+      { op: 'addTrack', track: { ...a2, locked: true } },
+      { op: 'addClip', clip: other },
+    ]);
+    const spare = makeTrack('audio', 2);
+    two = applyEdits(two, [{ op: 'addTrack', track: spare }]);
+    const r2 = pasteClips(two, [...audio, other], 0);
+    const q2 = applyEdits(two, r2.edits);
+    expect(r2.edits.filter((e) => e.op === 'addTrack')).toHaveLength(1);
+    const homes = r2.created.map((id) => q2.clips[id].trackId);
+    expect(new Set(homes.slice(0, 3))).toEqual(new Set([spare.id]));
+    expect(homes[3]).not.toBe(spare.id);
+    expect(overlaps(q2)).toEqual([]);
   });
 
   it('clamps transition length to the shorter neighbour', () => {

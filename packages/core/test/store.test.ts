@@ -1,26 +1,43 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import {
+  ASSET_DEFAULTS,
+  CLIP_DEFAULTS,
+  DEFAULT_COMPRESSOR,
+  DEFAULT_EQ,
+  DEFAULT_GRADE,
+  DEFAULT_MASK,
+  DEFAULT_SHAPE,
+  DEFAULT_TEXT,
   ProjectStore,
+  ReviewStore,
+  addTrack,
+  baseValue,
+  changeFrameRate,
+  clipGainAt,
+  clipsUnderFrame,
+  displayTracks,
+  formatTimecode,
+  gainBreakpoints,
+  initials,
   makeClip,
   makeEffect,
+  makeTrack,
+  makeTransition,
   parseProjectFile,
+  removeTrack,
+  resolveFrame,
+  sequenceEnd,
   serializeProject,
+  setSpeed,
+  snapPoints,
+  splitClips,
+  toEdl,
   tracksOf,
-  ReviewStore,
+  trimRange,
 } from '../src';
-
-/** Wire two docs together like a (perfect) network would. */
-function connect(a: Y.Doc, b: Y.Doc) {
-  a.on('update', (u: Uint8Array, origin: unknown) => {
-    if (origin !== 'remote') Y.applyUpdate(b, u, 'remote');
-  });
-  b.on('update', (u: Uint8Array, origin: unknown) => {
-    if (origin !== 'remote') Y.applyUpdate(a, u, 'remote');
-  });
-  Y.applyUpdate(b, Y.encodeStateAsUpdate(a), 'remote');
-  Y.applyUpdate(a, Y.encodeStateAsUpdate(b), 'remote');
-}
+import type { Asset, Clip, Project, ProjectSettings, Track } from '../src';
+import { connect } from './helpers';
 
 describe('ProjectStore', () => {
   it('initialises a new document once', () => {
@@ -150,7 +167,7 @@ describe('ProjectStore', () => {
     s.initIfEmpty();
     const evil = new Y.Map<unknown>();
     s.doc.transact(() => {
-      evil.set('trackId', 'nope');
+      evil.set('trackId', tracksOf(s.get()).video[0].id);
       evil.set('type', 'video');
       evil.set('start', 'banana');
       evil.set('duration', -50);
@@ -165,6 +182,410 @@ describe('ProjectStore', () => {
     expect(c.speed).toBe(1);
     expect(c.effects).toEqual([]);
     expect(s.get().clips.junk).toBeUndefined();
+  });
+
+  /** Everything the renderer, the timeline and the common edits do with a snapshot. */
+  const exercise = (p: Project): void => {
+    const end = sequenceEnd(p);
+    for (const f of [0, 1, Math.floor(end / 2), end - 1, end]) resolveFrame(p, f);
+    snapPoints(p, new Set());
+    changeFrameRate(p, 24, 1);
+    toEdl(p);
+    formatTimecode(end, p.settings);
+    for (const c of Object.values(p.clips)) {
+      for (const path of Object.keys(c.keyframes)) baseValue(c, path);
+      baseValue(c, 'fx:nope:amount');
+      clipGainAt(c, 0);
+      gainBreakpoints(c);
+      trimRange(p, [c.id], 'end', false);
+      setSpeed(p, [c.id], 2);
+      splitClips(p, [c.id], c.start + 1);
+    }
+  };
+
+  it('repairs malformed nested clip data so nothing downstream can throw', () => {
+    const garbage: unknown[] = [
+      null,
+      5,
+      -1e308,
+      'x',
+      true,
+      [],
+      [null],
+      [[null]],
+      [5, 'a'],
+      {},
+      { a: null },
+      { x: [null] },
+      { x: [{ t: 'soon', v: 1 }] },
+      { x: 7 },
+    ];
+    const nested: Record<string, unknown[]> = {
+      text: [
+        { animIn: null, animOut: 5 },
+        { gradient: 5, stroke: null, shadow: 'x', bg: [] },
+        { align: 'diagonal', boxWidth: 'wide', size: 'big', content: 7 },
+        { animIn: { type: 9, duration: 'long' } },
+      ],
+      grade: [
+        { curves: { m: [null], r: 5, g: [[0, 'a']], b: [[0.5, 0.5]] } },
+        { curves: null, lift: 'x', gamma: [1, 2], zones: null, hueSat: [[1, 1], null, [0, 0]] },
+        { lutId: {}, lutIntensity: 'full' },
+      ],
+      shape: [
+        { gradient: null, kind: 'blob', sides: 1e9 },
+        { sides: -4, w: 'wide' },
+      ],
+      mask: [{ type: 5, x: 'left' }, { feather: null }],
+      effects: [
+        [{ id: 'a', type: 'gaussianBlur', enabled: 'yes', params: null }],
+        [{ id: 'b', type: 'gaussianBlur', params: { radius: {}, list: [1, null] } }, { id: 5 }, 'x'],
+      ],
+      keyframes: [
+        { x: [{ t: 10, v: 1, e: [9, 9, 9] }, { t: 0, v: 0, e: 'bouncy' }, null, { t: NaN, v: 1 }] },
+        { 'fx:a:radius': [{ t: 0, v: 3 }] },
+      ],
+      transIn: [{ type: 5 }, { type: 'crossDissolve', duration: 'long' }, { type: 'crossDissolve' }],
+      transOut: [{ type: 'crossDissolve', duration: -5, params: [null] }],
+    };
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    const track = tracksOf(s.get()).video[0];
+    const cases: [string, unknown][] = [];
+    for (const key of Object.keys(CLIP_DEFAULTS)) for (const g of garbage) cases.push([key, g]);
+    for (const [key, list] of Object.entries(nested)) for (const g of list) cases.push([key, g]);
+    cases.forEach(([key, value], i) => {
+      const m = new Y.Map<unknown>();
+      s.doc.transact(() => {
+        m.set('trackId', track.id);
+        m.set('type', i % 2 ? 'text' : 'video');
+        m.set('start', i * 20);
+        m.set('duration', 20);
+        m.set('text', { ...DEFAULT_TEXT });
+        m.set(key, value);
+        s.doc.getMap('clips').set(`c${i}`, m);
+      });
+    });
+    const p = s.get();
+    expect(Object.keys(p.clips)).toHaveLength(cases.length);
+    expect(() => exercise(p)).not.toThrow();
+
+    // The repaired values are well-formed, not merely survivable.
+    const byCase = (key: string, n: number): Clip =>
+      p.clips[`c${cases.findIndex(([k, v]) => k === key && v === nested[key][n])}`];
+    expect(byCase('keyframes', 0).keyframes).toEqual({
+      x: [
+        { t: 0, v: 0, e: 'linear' },
+        { t: 10, v: 1, e: 'linear' },
+      ],
+    });
+    expect(byCase('text', 0).text!.animIn).toEqual(DEFAULT_TEXT.animIn);
+    expect(byCase('text', 2).text).toEqual(DEFAULT_TEXT);
+    expect(byCase('grade', 0).grade!.curves).toEqual(DEFAULT_GRADE.curves);
+    expect(byCase('grade', 1).grade!.hueSat).toEqual([
+      [0, 0],
+      [1, 1],
+    ]);
+    expect(byCase('grade', 1).grade!.zones).toEqual(DEFAULT_GRADE.zones);
+    expect(byCase('shape', 0).shape).toEqual({ ...DEFAULT_SHAPE, sides: 64 });
+    expect(byCase('mask', 0).mask).toEqual(DEFAULT_MASK);
+    expect(byCase('effects', 1).effects).toEqual([
+      { id: 'b', type: 'gaussianBlur', enabled: true, params: {} },
+    ]);
+    expect(byCase('transIn', 1).transIn).toBeNull();
+    expect(byCase('transOut', 0).transOut).toEqual({ type: 'crossDissolve', duration: 1, params: {} });
+
+    // The same repairs apply to an imported project file.
+    const file = JSON.parse(serializeProject(p));
+    cases.forEach(([key, value], i) => (file.project.clips[`c${i}`][key] = value));
+    const loaded = parseProjectFile(JSON.stringify(file))!;
+    expect(Object.keys(loaded.clips)).toHaveLength(cases.length);
+    expect(() => exercise(loaded)).not.toThrow();
+    expect(loaded.clips).toEqual(p.clips);
+  });
+
+  /** A clip, a track and an asset in which no field has its default value. */
+  const everyFieldSet = (trackId: string) => {
+    const fx = makeEffect('gaussianBlur');
+    const clip = makeClip('text', trackId, {
+      assetId: 'asset9',
+      start: 12,
+      duration: 90,
+      sourceIn: 1.5,
+      speed: 2,
+      reverse: true,
+      freeze: true,
+      name: 'Title',
+      label: '#ef4444',
+      enabled: false,
+      linkId: 'link1',
+      x: 0.1,
+      y: -0.2,
+      scaleX: 1.5,
+      scaleY: 0.5,
+      rotation: 30,
+      anchorX: 0.25,
+      anchorY: 0.75,
+      opacity: 0.8,
+      blend: 'soft-light',
+      fit: 'cover',
+      flipH: true,
+      flipV: true,
+      cropL: 0.1,
+      cropT: 0.2,
+      cropR: 0.3,
+      cropB: 0.4,
+      volume: -6,
+      pan: 0.5,
+      fadeIn: 5,
+      fadeOut: 7,
+      audioMuted: true,
+      effects: [fx, { ...makeEffect('gaussianBlur'), enabled: false }],
+      grade: {
+        ...DEFAULT_GRADE,
+        lift: [0.1, 0, -0.1, 0.02],
+        curves: {
+          ...DEFAULT_GRADE.curves,
+          m: [
+            [0, 0.05],
+            [0.5, 0.6],
+            [1, 0.95],
+          ],
+        },
+        zones: { ...DEFAULT_GRADE.zones, mid: 0.5 },
+        lutId: 'lut1',
+      },
+      mask: { ...DEFAULT_MASK, type: 'rect', invert: true },
+      keyframes: {
+        x: [
+          { t: 0, v: 0, e: 'hold' },
+          { t: 30, v: 0.2, e: [0.2, 0, 0, 1.4] },
+        ],
+        [`fx:${fx.id}:radius`]: [{ t: 10, v: 12, e: 'easeInOut' }],
+        opacity: [],
+      },
+      transIn: makeTransition('crossDissolve', 12),
+      transOut: makeTransition('dipToBlack', 8),
+      text: {
+        ...DEFAULT_TEXT,
+        content: 'Hello',
+        align: 'left',
+        boxWidth: 0.5,
+        stroke: { enabled: true, color: '#112233', width: 0.1 },
+        animIn: { type: 'slideUp', duration: 20 },
+      },
+      shape: { ...DEFAULT_SHAPE, kind: 'star', sides: 7 },
+    });
+    const track: Track = {
+      ...makeTrack('audio', 3, 'Dialogue'),
+      muted: true,
+      solo: true,
+      locked: true,
+      hidden: true,
+      height: 80,
+      volume: -3,
+      pan: -0.5,
+      eq: { ...DEFAULT_EQ, enabled: true, mid: 4 },
+      compressor: { ...DEFAULT_COMPRESSOR, enabled: true, ratio: 6 },
+    };
+    const asset: Asset = {
+      id: 'asset9',
+      name: 'shot.mov',
+      kind: 'video',
+      size: 1024,
+      mime: 'video/quicktime',
+      duration: 12.5,
+      width: 3840,
+      height: 2160,
+      fps: 23.976,
+      rotation: 90,
+      hasVideo: true,
+      hasAudio: true,
+      audioChannels: 2,
+      audioSampleRate: 48000,
+      videoCodec: 'hvc1',
+      audioCodec: 'mp4a',
+      color: { primaries: 'bt2020', transfer: 'pq', matrix: 'bt2020-ncl', fullRange: false },
+      hdr: true,
+      inputColorSpace: 'rec2020-pq',
+      folderId: 'folder1',
+      createdAt: 1700000000000,
+      createdBy: 'u1',
+      thumb: 'data:image/webp;base64,AAAA',
+      uploaded: true,
+    };
+    return { clip, track, asset };
+  };
+
+  it('keeps every well-formed field exactly as written', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    const { clip, track, asset } = everyFieldSet(tracksOf(s.get()).video[0].id);
+    // A field added to the model has to be added above too, or this test cannot vouch for it.
+    const unset = (entity: object, defaults: object): string[] =>
+      Object.entries(defaults)
+        .filter(([key, d]) => JSON.stringify((entity as Record<string, unknown>)[key]) === JSON.stringify(d))
+        .map(([key]) => key);
+    expect(unset(clip, CLIP_DEFAULTS)).toEqual([]);
+    expect(unset(asset, ASSET_DEFAULTS)).toEqual([]);
+    expect(unset(track, makeTrack('video', 0))).toEqual([]);
+
+    const marker = { id: 'm1', frame: 48, name: 'Beat', color: '#ef4444', note: 'On the snare' };
+    const folder = { id: 'folder1', name: 'Day 1', parentId: 'root' };
+    const settings: ProjectSettings = {
+      name: 'Feature',
+      width: 4096,
+      height: 1716,
+      fpsNum: 24000,
+      fpsDen: 1001,
+      sampleRate: 96000,
+      background: '#101010',
+      colorMode: 'hdr-pq',
+      toneMap: 'bt2390',
+      peakNits: 4000,
+      refWhiteNits: 100,
+    };
+    s.commit([
+      { op: 'settings', patch: settings },
+      { op: 'addAsset', asset },
+      { op: 'addTrack', track },
+      { op: 'addClip', clip },
+      { op: 'setMarker', marker },
+      { op: 'addFolder', folder },
+    ]);
+    const p = s.get();
+    expect(p.settings).toEqual(settings);
+    expect(p.assets[asset.id]).toEqual(asset);
+    expect(p.tracks[track.id]).toEqual(track);
+    expect(p.clips[clip.id]).toEqual(clip);
+    expect(p.markers.m1).toEqual(marker);
+    expect(p.folders.folder1).toEqual(folder);
+    expect(parseProjectFile(serializeProject(p))).toEqual(p);
+    // A second store on the same document reads the same thing.
+    expect(new ProjectStore(s.doc).get()).toEqual(p);
+  });
+
+  it('keeps nested values referentially stable when other fields of the clip change', () => {
+    const a = new ProjectStore();
+    a.initIfEmpty();
+    const b = new ProjectStore();
+    connect(a.doc, b.doc);
+    const { clip } = everyFieldSet(tracksOf(a.get()).video[0].id);
+    a.commit([{ op: 'addClip', clip }]);
+    const nested = ['effects', 'grade', 'mask', 'keyframes', 'transIn', 'transOut', 'text', 'shape'] as const;
+    for (const s of [a, b]) {
+      const before = s.get().clips[clip.id];
+      a.commit([{ op: 'updateClip', id: clip.id, patch: { opacity: 0.4, start: 40 } }]);
+      const after = s.get().clips[clip.id];
+      expect(after).not.toBe(before);
+      expect(after.opacity).toBe(0.4);
+      // The renderer keys its curve and text caches on these.
+      for (const key of nested) expect(after[key], key).toBe(before[key]);
+      expect(after.grade!.curves).toBe(before.grade!.curves);
+      a.commit([{ op: 'updateClip', id: clip.id, patch: { opacity: 0.8, start: 12 } }]);
+    }
+    // Replacing one nested value changes that one only.
+    const before = b.get().clips[clip.id];
+    a.commit([{ op: 'updateClip', id: clip.id, patch: { mask: { ...DEFAULT_MASK, feather: 0.3 } } }]);
+    const after = b.get().clips[clip.id];
+    expect(after.mask).not.toBe(before.mask);
+    expect(after.mask!.feather).toBe(0.3);
+    for (const key of nested) if (key !== 'mask') expect(after[key], key).toBe(before[key]);
+  });
+
+  it('repairs malformed markers, folders, tracks and settings', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    s.commit([
+      { op: 'setMarker', marker: { id: 'good', frame: 48, name: 'Beat', color: '#fff', note: 'n' } },
+    ]);
+    const good = s.get().markers.good;
+    s.doc.transact(() => {
+      const markers = s.doc.getMap('markers');
+      markers.set('null', null);
+      markers.set('text', 'marker');
+      markers.set('noFrame', { name: 'x' });
+      markers.set('loose', { frame: 12.4, name: 5, color: null });
+      const folders = s.doc.getMap('folders');
+      folders.set('null', null);
+      folders.set('loose', { name: 9, parentId: 3 });
+      const t = new Y.Map<unknown>();
+      t.set('kind', 'audio');
+      t.set('eq', { enabled: 'yes', low: 'boomy' });
+      t.set('compressor', [1, 2]);
+      t.set('order', 'first');
+      s.doc.getMap('tracks').set('t', t);
+      const settings = s.doc.getMap('settings');
+      settings.set('fpsNum', 0);
+      settings.set('width', -5);
+      settings.set('height', 1e9);
+      settings.set('sampleRate', 3);
+      settings.set('colorMode', 'technicolor');
+      settings.set('toneMap', null);
+    });
+    const p = s.get();
+    expect(Object.keys(p.markers).sort()).toEqual(['good', 'loose']);
+    expect(p.markers.loose).toEqual({ id: 'loose', frame: 12, name: '', color: '#f59e0b', note: '' });
+    // Markers nobody touched keep their identity.
+    expect(p.markers.good).toBe(good);
+    expect(p.folders).toEqual({ loose: { id: 'loose', name: '', parentId: null } });
+    expect(p.tracks.t.eq).toEqual({
+      enabled: false,
+      low: 0,
+      mid: 0,
+      high: 0,
+      lowFreq: 120,
+      midFreq: 1200,
+      highFreq: 8000,
+    });
+    expect(p.tracks.t.compressor).toBeNull();
+    expect(p.tracks.t.order).toBe(0);
+    expect(p.settings).toMatchObject({
+      fpsNum: 30,
+      fpsDen: 1,
+      width: 16,
+      height: 16384,
+      sampleRate: 8000,
+      colorMode: 'sdr',
+      toneMap: 'none',
+    });
+    expect(formatTimecode(90, p.settings)).toBe('00:00:03:00');
+    expect(() => exercise(p)).not.toThrow();
+
+    const file = JSON.parse(serializeProject(p));
+    file.project.markers = { a: null, b: { frame: 3 } };
+    file.project.folders = 'none';
+    file.project.settings = { fpsNum: 30000, fpsDen: 0, width: 'wide' };
+    const loaded = parseProjectFile(JSON.stringify(file))!;
+    expect(Object.keys(loaded.markers)).toEqual(['b']);
+    expect(loaded.folders).toEqual({});
+    expect(loaded.settings).toMatchObject({ fpsNum: 30, fpsDen: 1, width: 1920 });
+    expect(() => exercise(loaded)).not.toThrow();
+  });
+
+  it('never lets an entity id replace the prototype of a snapshot record', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    const track = tracksOf(s.get()).video[0];
+    s.doc.transact(() => {
+      const m = new Y.Map<unknown>();
+      m.set('trackId', track.id);
+      m.set('type', 'video');
+      s.doc.getMap('clips').set('__proto__', m);
+      const onProto = new Y.Map<unknown>();
+      onProto.set('trackId', 'constructor');
+      onProto.set('type', 'video');
+      s.doc.getMap('clips').set('c', onProto);
+      s.doc.getMap('markers').set('__proto__', { frame: 5 });
+    });
+    const p = s.get();
+    expect(Object.keys(p.clips)).toEqual([]);
+    expect(Object.getPrototypeOf(p.clips)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(p.markers)).toBe(Object.prototype);
+    const file = `{"format":"tandem-project","project":{"tracks":{"__proto__":{"kind":"video"}}}}`;
+    const loaded = parseProjectFile(file)!;
+    expect(Object.getPrototypeOf(loaded.tracks)).toBe(Object.prototype);
+    expect(Object.keys(loaded.tracks)).toEqual([]);
   });
 
   it('only accepts inline images as asset posters', () => {
@@ -209,6 +630,170 @@ describe('ProjectStore', () => {
     expect(Object.keys(t.get().clips)).toHaveLength(1);
     t.undo();
     expect(Object.keys(t.get().clips)).toHaveLength(0);
+  });
+});
+
+describe('clips whose track is gone', () => {
+  /** Two stores that only exchange updates when `sync()` is called. */
+  const offlinePair = () => {
+    const a = new ProjectStore();
+    a.initIfEmpty();
+    const b = new ProjectStore();
+    const sync = () => {
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc), 'remote');
+      Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc), 'remote');
+    };
+    sync();
+    return { a, b, sync };
+  };
+
+  it('hides a clip when the track under it is undone away and returns it on redo', () => {
+    const a = new ProjectStore();
+    a.initIfEmpty();
+    const b = new ProjectStore();
+    connect(a.doc, b.doc);
+    const base = tracksOf(a.get()).video[0];
+    const keep = makeClip('video', base.id, { start: 0, duration: 50 });
+    a.commit([{ op: 'addClip', clip: keep }]);
+
+    const added = addTrack(b.get(), 'video');
+    b.commit(added.edits);
+    const clip = makeClip('video', added.trackId, { start: 300, duration: 100 });
+    a.commit([{ op: 'addClip', clip }]);
+    expect(b.get().clips[clip.id]).toEqual(clip);
+    const keptBefore = a.get().clips[keep.id];
+
+    b.undo();
+    for (const s of [a, b]) {
+      const p = s.get();
+      expect(p.tracks[added.trackId]).toBeUndefined();
+      expect(p.clips[clip.id]).toBeUndefined();
+      expect(sequenceEnd(p)).toBe(50);
+      expect(snapPoints(p, new Set())).toEqual([0, 50]);
+      expect(clipsUnderFrame(p, 350)).toEqual([]);
+      expect(displayTracks(p).map((t) => t.id)).not.toContain(added.trackId);
+    }
+    // The clip nobody touched is the very same object.
+    expect(a.get().clips[keep.id]).toBe(keptBefore);
+    // The clip is still in the document, waiting for its track.
+    expect(a.doc.getMap('clips').has(clip.id)).toBe(true);
+
+    b.redo();
+    for (const s of [a, b]) {
+      expect(s.get().tracks[added.trackId]).toBeDefined();
+      expect(s.get().clips[clip.id]).toEqual(clip);
+      expect(sequenceEnd(s.get())).toBe(400);
+    }
+    expect(a.get().clips).toEqual(b.get().clips);
+  });
+
+  it('hides a clip added while someone else deleted its track, until the delete is undone', () => {
+    const { a, b, sync } = offlinePair();
+    const track = tracksOf(a.get()).video[1];
+    const old = makeClip('video', track.id, { start: 0, duration: 40 });
+    a.commit([{ op: 'addClip', clip: old }]);
+    sync();
+
+    a.commit(removeTrack(a.get(), track.id));
+    const late = makeClip('video', track.id, { start: 100, duration: 60 });
+    b.commit([{ op: 'addClip', clip: late }]);
+    expect(b.get().clips[late.id]).toEqual(late);
+    sync();
+    for (const s of [a, b]) {
+      expect(s.get().tracks[track.id]).toBeUndefined();
+      expect(Object.keys(s.get().clips)).toEqual([]);
+      expect(sequenceEnd(s.get())).toBe(0);
+      expect(() => resolveFrame(s.get(), 120)).not.toThrow();
+    }
+
+    a.undo();
+    sync();
+    for (const s of [a, b]) {
+      expect(s.get().tracks[track.id]).toBeDefined();
+      expect(s.get().clips[old.id]).toEqual(old);
+      expect(s.get().clips[late.id]).toEqual(late);
+    }
+    expect(a.get()).toEqual(b.get());
+  });
+
+  it('follows a clip that is moved onto a missing track and back', () => {
+    const { a, b, sync } = offlinePair();
+    const [v1, v2] = tracksOf(a.get()).video;
+    const clip = makeClip('video', v1.id, { start: 0, duration: 40 });
+    a.commit([{ op: 'addClip', clip }]);
+    sync();
+    a.commit(removeTrack(a.get(), v2.id));
+    b.commit([{ op: 'updateClip', id: clip.id, patch: { trackId: v2.id } }]);
+    sync();
+    expect(a.get().clips[clip.id]).toBeUndefined();
+    expect(b.get().clips[clip.id]).toBeUndefined();
+    b.undo();
+    sync();
+    expect(a.get().clips[clip.id]).toEqual(clip);
+    expect(b.get().clips[clip.id]).toEqual(clip);
+  });
+
+  it('keeps the clip map and untouched clips referentially stable across track changes', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    const [v1, v2] = tracksOf(s.get()).video;
+    const one = makeClip('video', v1.id, { start: 0, duration: 10 });
+    const two = makeClip('video', v2.id, { start: 0, duration: 10 });
+    s.commit([
+      { op: 'addClip', clip: one },
+      { op: 'addClip', clip: two },
+    ]);
+    const clips = s.get().clips;
+    let calls = 0;
+    s.subscribe(() => calls++);
+
+    // Changing a track, or adding and removing an empty one, leaves the clip map alone.
+    s.commit([{ op: 'updateTrack', id: v1.id, patch: { name: 'Main', muted: true } }]);
+    const extra = addTrack(s.get(), 'audio');
+    s.commit(extra.edits);
+    s.commit(removeTrack(s.get(), extra.trackId));
+    expect(s.get().clips).toBe(clips);
+    expect(calls).toBe(3);
+
+    // Removing only the track (as an undo of "add track" does) drops its clip and nothing else.
+    s.commit([{ op: 'removeTrack', id: v2.id }]);
+    expect(calls).toBe(4);
+    expect(s.get().clips).not.toBe(clips);
+    expect(Object.keys(s.get().clips)).toEqual([one.id]);
+    expect(s.get().clips[one.id]).toBe(clips[one.id]);
+
+    // An edit to the hidden clip changes nothing anyone can see, so nobody is notified.
+    const hidden = s.get().clips;
+    s.commit([{ op: 'updateClip', id: two.id, patch: { opacity: 0.5 } }]);
+    expect(s.get().clips).toBe(hidden);
+    expect(calls).toBe(4);
+
+    s.undo();
+    s.undo();
+    expect(s.get().clips[two.id]).toEqual(two);
+    expect(s.get().clips[one.id]).toBe(clips[one.id]);
+  });
+
+  it('reads an existing document without its trackless clips and drops them from project files', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    const [v1, v2] = tracksOf(s.get()).video;
+    const one = makeClip('video', v1.id, { start: 0, duration: 10 });
+    const two = makeClip('video', v2.id, { start: 0, duration: 99 });
+    s.commit([
+      { op: 'addClip', clip: one },
+      { op: 'addClip', clip: two },
+    ]);
+    const file = serializeProject(s.get());
+    s.commit([{ op: 'removeTrack', id: v2.id }]);
+
+    const reopened = new ProjectStore(s.doc);
+    expect(Object.keys(reopened.get().clips)).toEqual([one.id]);
+    expect(sequenceEnd(reopened.get())).toBe(10);
+
+    const edited = JSON.parse(file);
+    delete edited.project.tracks[v2.id];
+    expect(Object.keys(parseProjectFile(JSON.stringify(edited))!.clips)).toEqual([one.id]);
   });
 });
 

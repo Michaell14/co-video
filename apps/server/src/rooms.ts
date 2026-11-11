@@ -33,6 +33,14 @@ export const DEFAULT_ROOM_IDLE_MS = 30_000;
 const MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
 /** Presence is a few hundred bytes of JSON; a megabyte of it is abuse, and viewers may send it. */
 const MAX_AWARENESS_BYTES = 1024 * 1024;
+/**
+ * Presence is a handful of flat fields. The bound matters because a state is stored parsed and
+ * written back out for every broadcast and every new connection, and `JSON.stringify` overflows
+ * the stack on nesting that `JSON.parse` accepts without complaint.
+ */
+const MAX_AWARENESS_DEPTH = 32;
+/** How many sockets one room accepts unless configured otherwise. */
+export const DEFAULT_MAX_CONNECTIONS_PER_ROOM = 100;
 /** At most one "your edit was dropped" notice per connection in this interval. */
 const READONLY_NOTICE_INTERVAL_MS = 1000;
 /** On shutdown, how long clients get to complete the close handshake before sockets are destroyed. */
@@ -68,6 +76,45 @@ function awarenessFrame(awareness: awarenessProtocol.Awareness, clients: number[
   return encoding.toUint8Array(encoder);
 }
 
+/** How deeply arrays and objects nest in a JSON text. Brackets inside strings are text, not structure. */
+function jsonDepth(json: string): number {
+  let depth = 0;
+  let deepest = 0;
+  let inString = false;
+  for (let i = 0; i < json.length; i++) {
+    const char = json[i];
+    if (inString) {
+      if (char === '\\') i++;
+      else if (char === '"') inString = false;
+    } else if (char === '"') {
+      inString = true;
+    } else if (char === '[' || char === '{') {
+      deepest = Math.max(deepest, ++depth);
+    } else if (char === ']' || char === '}') {
+      depth--;
+    }
+  }
+  return deepest;
+}
+
+/**
+ * Throws unless every state in a client's awareness update is JSON the server can store and send
+ * on. `applyAwarenessUpdate` stores entry by entry and only announces the change at the end, so
+ * an update that fails halfway would leave states behind that no connection owns; checking the
+ * whole update first means it is applied completely or not at all.
+ */
+function assertRelayableAwareness(update: Uint8Array): void {
+  const decoder = decoding.createDecoder(update);
+  const count = decoding.readVarUint(decoder);
+  for (let i = 0; i < count; i++) {
+    decoding.readVarUint(decoder); // client id
+    decoding.readVarUint(decoder); // clock
+    const state = decoding.readVarString(decoder);
+    if (jsonDepth(state) > MAX_AWARENESS_DEPTH) throw new Error('awareness state is nested too deeply');
+    JSON.parse(state);
+  }
+}
+
 /** A plain Uint8Array view of whatever `ws` handed us (no copy for the common single-Buffer case). */
 function toUint8Array(data: RawData): Uint8Array {
   if (Array.isArray(data)) data = Buffer.concat(data);
@@ -82,7 +129,7 @@ class Connection {
   alive = true;
   /** Awareness client ids this socket announced; they are removed from the room when it closes. */
   readonly awarenessIds = new Set<number>();
-  /** Set once the connection sent something undecodable; nothing it sends afterwards is looked at. */
+  /** Set once the server gave up on the connection; nothing it sends afterwards is looked at. */
   rejected = false;
   private lastReadonlyNotice = 0;
 
@@ -138,6 +185,8 @@ export interface RoomManagerOptions extends RoomHooks {
   autoSnapshotMs: number;
   /** How long a room without connections stays loaded. */
   roomIdleMs: number;
+  /** How many sockets one room holds at a time. */
+  maxConnectionsPerRoom: number;
 }
 
 export class Room {
@@ -225,13 +274,42 @@ export class Room {
     return Y.encodeStateAsUpdate(this.doc);
   }
 
-  /** Attach a freshly upgraded socket. Everything it needs to catch up is sent right away. */
+  private get full(): boolean {
+    return this.conns.size >= this.opts.maxConnectionsPerRoom;
+  }
+
+  /** The connection that makes way when a full room takes someone who may write its document. */
+  private latestReadOnly(): Connection | undefined {
+    return [...this.conns].reverse().find((conn) => !conn.canWrite);
+  }
+
+  /**
+   * Whether one more connection with `role` fits in. A full room still takes someone who may
+   * write its document, as long as a read-only connection (the most recent one) can give up its
+   * place: otherwise a single viewer link would be enough to keep the editors out of their project.
+   * Asking changes nothing. The place is only taken in connect(), by a socket that did join.
+   */
+  hasRoomFor(role: Role): boolean {
+    return !this.full || (canWriteDoc(role, this.kind) && this.latestReadOnly() !== undefined);
+  }
+
+  /**
+   * Attach a freshly upgraded socket. Everything it needs to catch up is sent right away. In a
+   * full room it takes the place hasRoomFor() found for it.
+   */
   connect(ws: WebSocket, role: Role, registry: Set<Connection>): void {
     if (this.closed) {
       ws.close(1012, 'room is restarting');
       return;
     }
     const conn = new Connection(ws, role, canWriteDoc(role, this.kind));
+    const displaced = this.full && conn.canWrite ? this.latestReadOnly() : undefined;
+    if (displaced) {
+      // The place is free now, not when the peer gets round to answering the close frame.
+      displaced.rejected = true;
+      this.disconnect(displaced);
+      displaced.ws.close(1013, 'room is full');
+    }
     this.conns.add(conn);
     registry.add(conn);
     if (this.idleTimer) clearTimeout(this.idleTimer);
@@ -278,7 +356,9 @@ export class Room {
         case WS_MSG_AWARENESS:
           // Presence is relayed for every role: viewers should show up in the avatar stack too.
           if (bytes.byteLength <= MAX_AWARENESS_BYTES) {
-            awarenessProtocol.applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(decoder), conn);
+            const update = decoding.readVarUint8Array(decoder);
+            assertRelayableAwareness(update);
+            awarenessProtocol.applyAwarenessUpdate(this.awareness, update, conn);
           }
           break;
         default:
@@ -492,6 +572,10 @@ export class RoomManager {
     const room = await this.acquire(projectId, kind);
     try {
       if (socket.destroyed) return; // the client gave up while we were loading
+      // Nothing is awaited between this check and connect(), so concurrent upgrades cannot
+      // overshoot the limit together. Nobody is displaced yet: the handshake below can still be
+      // refused, and a connection that never joins must not cost a viewer their place.
+      if (!room.hasRoomFor(role)) throw new HttpError(503, 'this project has too many open connections');
       // The callback runs synchronously inside handleUpgrade, i.e. before the pin is released.
       this.wss.handleUpgrade(req, socket, head, (ws) => {
         try {

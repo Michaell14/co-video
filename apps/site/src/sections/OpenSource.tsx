@@ -1,14 +1,15 @@
 import { ArrowUpRight, Check, Copy } from 'lucide-react';
 import { useInView } from 'motion/react';
 import { useEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { Button } from '../components/Button';
 import { GithubMark } from '../components/GithubMark';
 import { Reveal } from '../components/Reveal';
 import { GITHUB_URL, LICENSE_URL } from '../lib/links';
 import './OpenSource.css';
 
-const COMMANDS = [`git clone ${GITHUB_URL} && cd co-video`, 'pnpm install && pnpm build && pnpm start'];
+/** One step per line, each short enough to be read in full beside the copy at laptop widths. */
+const COMMANDS = [`git clone ${GITHUB_URL}`, 'cd co-video', 'pnpm install && pnpm build && pnpm start'];
 
 const STACK = [
   { name: 'TypeScript', color: '#5aa2ff' },
@@ -19,6 +20,11 @@ const STACK = [
 ];
 
 const PROMISES = ['No accounts.', 'No watermarks.', 'No upsell.'];
+
+/** The command with a soft break after each slash, so a URL that has to wrap does so between path segments. */
+function breakable(command: string): ReactNode[] {
+  return command.split(/(?<=\/)/).flatMap((part, i) => (i === 0 ? [part] : [<wbr key={i} />, part]));
+}
 
 function Terminal() {
   const ref = useRef<HTMLDivElement>(null);
@@ -45,7 +51,7 @@ function Terminal() {
           <i />
           <i />
         </span>
-        <span className="term__title">Self-host in two commands</span>
+        <span className="term__title">Self-host in three commands</span>
         <button type="button" className="term__copy" onClick={copy} aria-live="polite">
           {copied ? <Check size="0.9rem" aria-hidden="true" /> : <Copy size="0.9rem" aria-hidden="true" />}
           {copied ? 'Copied' : 'Copy'}
@@ -60,7 +66,7 @@ function Terminal() {
               <span className="term__prompt" aria-hidden="true">
                 $
               </span>
-              <span className="term__typed">{command}</span>
+              <span className="term__typed">{breakable(command)}</span>
               {i === COMMANDS.length - 1 && <span className="term__caret" aria-hidden="true" />}
             </code>
           );
@@ -119,8 +125,8 @@ export function OpenSource() {
           <Reveal className="os__side" delay={0.1}>
             <Terminal />
             <p className="os__note">
-              That starts one small Node server, which serves the editor and relays edits. Your media stays on
-              your machine, or on the server you run.
+              That starts one small Node server, which serves the editor, relays edits and keeps the media of
+              the projects you share. Your footage stays on your machine and on the server you run.
             </p>
           </Reveal>
         </div>

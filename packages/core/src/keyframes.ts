@@ -1,4 +1,5 @@
 import type { Clip, Easing, Keyframe } from './types';
+import { clamp } from './util';
 
 /** Solve a CSS-style cubic bezier (P0 = 0,0  P3 = 1,1) for y at x. */
 export function cubicBezier(x1: number, y1: number, x2: number, y2: number, x: number): number {
@@ -10,28 +11,34 @@ export function cubicBezier(x1: number, y1: number, x2: number, y2: number, x: n
   const cy = 3 * y1;
   const by = 3 * (y2 - y1) - cy;
   const ay = 1 - cy - by;
-  // Newton–Raphson with a bisection fallback.
+  const xAt = (t: number): number => ((ax * t + bx) * t + cx) * t;
+  const yAt = (t: number): number => ((ay * t + by) * t + cy) * t;
+  const tolerance = 1e-7;
+  // Newton–Raphson settles in a few steps on ordinary curves.
   let t = x;
   for (let i = 0; i < 8; i++) {
-    const xt = ((ax * t + bx) * t + cx) * t - x;
-    if (Math.abs(xt) < 1e-6) break;
+    const err = xAt(t) - x;
+    if (Math.abs(err) < tolerance) {
+      if (t >= 0 && t <= 1) return yAt(t);
+      break;
+    }
     const d = (3 * ax * t + 2 * bx) * t + cx;
     if (Math.abs(d) < 1e-6) break;
-    t -= xt / d;
+    t -= err / d;
   }
-  if (t < 0 || t > 1) {
-    let lo = 0;
-    let hi = 1;
-    t = x;
-    for (let i = 0; i < 24; i++) {
-      const xt = ((ax * t + bx) * t + cx) * t;
-      if (Math.abs(xt - x) < 1e-6) break;
-      if (xt < x) lo = t;
-      else hi = t;
-      t = (lo + hi) / 2;
-    }
+  // It stalls where the curve runs flat in x (a handle at x1 = 1 or x2 = 0) and can leave 0…1.
+  // x(t) rises monotonically for handles inside 0…1, so bisection always closes in.
+  let lo = 0;
+  let hi = 1;
+  t = x;
+  for (let i = 0; i < 48; i++) {
+    const err = xAt(t) - x;
+    if (Math.abs(err) < tolerance) break;
+    if (err < 0) lo = t;
+    else hi = t;
+    t = (lo + hi) / 2;
   }
-  return ((ay * t + by) * t + cy) * t;
+  return yAt(t);
 }
 
 export const EASING_BEZIERS: Record<string, [number, number, number, number]> = {
@@ -40,6 +47,28 @@ export const EASING_BEZIERS: Record<string, [number, number, number, number]> = 
   easeOut: [0, 0, 0.58, 1],
   easeInOut: [0.42, 0, 0.58, 1],
 };
+
+const EASING_NAMES: Record<Extract<Easing, string>, true> = {
+  linear: true,
+  hold: true,
+  ease: true,
+  easeIn: true,
+  easeOut: true,
+  easeInOut: true,
+};
+
+/**
+ * A well-formed easing from a value that may be anything: a preset name, or a bezier
+ * `[x1, y1, x2, y2]` whose time handles stay inside the segment (outside 0…1 the curve would fold
+ * back on itself). Anything else interpolates linearly. A well-formed curve is returned as it is.
+ */
+export function conformEasing(e: unknown): Easing {
+  if (typeof e === 'string') return Object.hasOwn(EASING_NAMES, e) ? (e as Easing) : 'linear';
+  if (!Array.isArray(e) || e.length !== 4 || !e.every(Number.isFinite)) return 'linear';
+  const [x1, y1, x2, y2] = e as [number, number, number, number];
+  const inside = x1 >= 0 && x1 <= 1 && x2 >= 0 && x2 <= 1;
+  return inside ? (e as [number, number, number, number]) : [clamp(x1, 0, 1), y1, clamp(x2, 0, 1), y2];
+}
 
 export function applyEasing(e: Easing, t: number): number {
   if (e === 'linear') return t;

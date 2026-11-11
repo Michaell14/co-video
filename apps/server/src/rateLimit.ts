@@ -40,3 +40,24 @@ export class RateLimiter {
     }
   }
 }
+
+/** Caps how many things one key (e.g. a client address) holds open at the same time. */
+export class ConcurrencyLimiter {
+  private readonly held = new Map<string, number>();
+
+  constructor(private readonly limit: number) {}
+
+  /** Take a slot for `key`. Returns `false` if all are taken; every `true` needs one `release(key)`. */
+  acquire(key: string): boolean {
+    const count = this.held.get(key) ?? 0;
+    if (count >= this.limit) return false;
+    this.held.set(key, count + 1);
+    return true;
+  }
+
+  release(key: string): void {
+    const count = this.held.get(key) ?? 0;
+    if (count > 1) this.held.set(key, count - 1);
+    else this.held.delete(key);
+  }
+}

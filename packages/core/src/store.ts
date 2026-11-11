@@ -18,62 +18,316 @@ import * as Y from 'yjs';
 import {
   ASSET_DEFAULTS,
   CLIP_DEFAULTS,
+  CLIP_TYPE_COLORS,
+  DEFAULT_COMPRESSOR,
+  DEFAULT_EQ,
   DEFAULT_GRADE,
+  DEFAULT_MASK,
   DEFAULT_SETTINGS,
   DEFAULT_SHAPE,
   DEFAULT_TEXT,
   DEFAULT_TRACK_HEIGHT,
+  MARKER_COLORS,
   SCHEMA_VERSION,
   starterTracks,
 } from './defaults';
-import type { Asset, Clip, Edit, Folder, ID, Marker, Project, ProjectSettings, Track } from './types';
-import { deepEqual } from './util';
+import { conformEasing } from './keyframes';
+import type {
+  Asset,
+  AssetColorInfo,
+  AssetKind,
+  BlendMode,
+  Clip,
+  ColorMode,
+  CurvePoint,
+  Edit,
+  EffectInstance,
+  FitMode,
+  Folder,
+  ID,
+  InputColorSpace,
+  Keyframe,
+  Marker,
+  ParamValue,
+  Project,
+  ProjectSettings,
+  ShapeKind,
+  ToneMapOp,
+  Track,
+  Transition,
+} from './types';
+import { clamp, deepEqual } from './util';
 
 type Listener = () => void;
+type Json = Record<string, unknown>;
+
+/** Turns a value from the wire into a well-formed one, or `undefined` to keep the default. */
+type Reader = (v: unknown) => unknown;
+type Readers<T> = { [K in keyof T]?: Reader };
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const isObj = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** Coerce arbitrary JSON from the wire into a well-formed entity using `defaults` as the type guide. */
-function conform<T extends object>(defaults: T, json: Record<string, unknown>): T {
-  if (!json || typeof json !== 'object') return { ...defaults };
-  const out: Record<string, unknown> = { ...(defaults as Record<string, unknown>) };
-  for (const key of Object.keys(defaults)) {
-    const d = (defaults as Record<string, unknown>)[key];
+/**
+ * Coerce arbitrary JSON from the wire into a well-formed entity using `defaults` as the type guide.
+ * Numbers, booleans, strings and nested plain objects are checked against the default's own type;
+ * anything else (arrays, nullable values, enumerations) has no type to go by and is only accepted
+ * through a reader, so a field nobody vouched for can never reach the renderer as-is.
+ *
+ * A value that is already exactly well-formed is handed back as it is, here and in every reader
+ * below. Nested values in the document are replaced, never mutated, so they keep their identity
+ * from one read of an entity to the next and whatever caches by identity downstream keeps working.
+ */
+function conform<T extends object>(defaults: T, json: unknown, readers: Readers<T> = {}): T {
+  if (!isObj(json)) return { ...defaults };
+  const out: Json = { ...(defaults as Json) };
+  const keys = Object.keys(defaults);
+  let asIs = Object.keys(json).length === keys.length;
+  for (const key of keys) {
     const v = json[key];
-    if (v === undefined) continue;
-    if (typeof d === 'number') {
-      if (isNum(v)) out[key] = v;
-    } else if (typeof d === 'boolean') {
-      if (typeof v === 'boolean') out[key] = v;
-    } else if (typeof d === 'string') {
-      if (typeof v === 'string') out[key] = v;
-    } else if (Array.isArray(d)) {
-      if (Array.isArray(v)) out[key] = v;
-    } else {
-      // null-able or object valued: accept null or objects/strings as-is.
-      if (v === null || typeof v === 'object' || typeof v === 'string') out[key] = v;
-    }
+    const d = (defaults as Json)[key];
+    const reader = (readers as Record<string, Reader | undefined>)[key];
+    let next: unknown;
+    if (v === undefined) next = undefined;
+    else if (reader) next = reader(v);
+    else if (typeof d === 'number') next = isNum(v) ? v : undefined;
+    else if (typeof d === 'boolean') next = typeof v === 'boolean' ? v : undefined;
+    else if (typeof d === 'string') next = typeof v === 'string' ? v : undefined;
+    else if (isObj(d)) next = isObj(v) ? conform(d, v) : undefined;
+    if (next !== undefined) out[key] = next;
+    if (next === undefined || next !== v) asIs = false;
   }
-  return out as T;
+  return (asIs ? json : out) as T;
 }
 
-function readClip(id: ID, json: Record<string, unknown>): Clip | null {
-  if (typeof json.trackId !== 'string' || typeof json.type !== 'string') return null;
-  const clip = conform(CLIP_DEFAULTS, json) as Clip;
-  clip.id = id;
-  clip.trackId = json.trackId;
-  clip.type = json.type as Clip['type'];
-  clip.start = Math.max(0, Math.round(clip.start));
-  clip.duration = Math.max(1, Math.round(clip.duration));
+/** Read every item of a list, dropping the ones `read` rejects. */
+function conformList<T>(list: readonly unknown[], read: (item: unknown) => T | undefined): T[] {
+  let out: T[] | null = null;
+  for (let i = 0; i < list.length; i++) {
+    const next = read(list[i]);
+    if (!out && next !== list[i]) out = list.slice(0, i) as T[];
+    if (out && next !== undefined) out.push(next);
+  }
+  return out ?? (list as T[]);
+}
+
+/** `list` in ascending order of `key`. */
+function inOrder<T>(list: T[], key: (item: T) => number): T[] {
+  for (let i = 1; i < list.length; i++) {
+    if (key(list[i]) < key(list[i - 1])) return list.slice().sort((a, b) => key(a) - key(b));
+  }
+  return list;
+}
+
+const strOrNull: Reader = (v) => (v === null || typeof v === 'string' ? v : undefined);
+const numOrNull: Reader = (v) => (v === null || isNum(v) ? v : undefined);
+const boolOrNull: Reader = (v) => (v === null || typeof v === 'boolean' ? v : undefined);
+
+/** Reader for a closed set of strings, written as a record so the compiler keeps it exhaustive. */
+const oneOf =
+  <T extends string>(allowed: Record<T, true>): Reader =>
+  (v) =>
+    typeof v === 'string' && Object.hasOwn(allowed, v) ? v : undefined;
+
+const shaped =
+  <T extends object>(defaults: T, readers?: Readers<T>): Reader =>
+  (v) =>
+    isObj(v) ? conform(defaults, v, readers) : undefined;
+
+const nullable =
+  (reader: Reader): Reader =>
+  (v) =>
+    v === null ? null : reader(v);
+
+/**
+ * Entity ids arrive as map keys chosen by whoever wrote them. `__proto__` is the one key that would
+ * replace a record's prototype instead of adding an entry.
+ */
+const isSafeId = (id: string): boolean => id !== '__proto__';
+
+/** Longest timeline the model accepts, in frames: weeks of footage at any real frame rate. */
+const MAX_FRAMES = 100_000_000;
+
+const BLEND_MODES: Record<BlendMode, true> = {
+  normal: true,
+  multiply: true,
+  screen: true,
+  overlay: true,
+  darken: true,
+  lighten: true,
+  'color-dodge': true,
+  'color-burn': true,
+  'hard-light': true,
+  'soft-light': true,
+  difference: true,
+  exclusion: true,
+  add: true,
+  subtract: true,
+  hue: true,
+  saturation: true,
+  color: true,
+  luminosity: true,
+};
+const FIT_MODES: Record<FitMode, true> = { contain: true, cover: true, stretch: true, none: true };
+const SHAPE_KINDS: Record<ShapeKind, true> = {
+  rect: true,
+  ellipse: true,
+  triangle: true,
+  star: true,
+  polygon: true,
+  line: true,
+  arrow: true,
+};
+const ASSET_KINDS: Record<AssetKind, true> = { video: true, audio: true, image: true, lut: true };
+const INPUT_COLOR_SPACES: Record<InputColorSpace, true> = {
+  auto: true,
+  srgb: true,
+  rec709: true,
+  'display-p3': true,
+  'rec2020-pq': true,
+  'rec2020-hlg': true,
+  linear: true,
+  slog3: true,
+  logc3: true,
+  vlog: true,
+};
+const COLOR_MODES: Record<ColorMode, true> = { sdr: true, 'hdr-pq': true, 'hdr-hlg': true };
+const TONE_MAP_OPS: Record<ToneMapOp, true> = {
+  none: true,
+  reinhard: true,
+  hable: true,
+  aces: true,
+  bt2390: true,
+};
+
+const isParam = (v: unknown): v is ParamValue =>
+  isNum(v) || typeof v === 'boolean' || typeof v === 'string' || (Array.isArray(v) && v.every(isNum));
+
+function readParams(v: unknown): Record<string, ParamValue> {
+  if (!isObj(v)) return {};
+  const entries = Object.entries(v);
+  const good = entries.filter(
+    (entry): entry is [string, ParamValue] => isSafeId(entry[0]) && isParam(entry[1]),
+  );
+  return good.length === entries.length ? (v as Record<string, ParamValue>) : Object.fromEntries(good);
+}
+
+function readEffect(e: unknown): EffectInstance | undefined {
+  if (!isObj(e) || typeof e.id !== 'string' || typeof e.type !== 'string') return undefined;
+  const params = readParams(e.params);
+  const enabled = e.enabled !== false;
+  if (enabled === e.enabled && params === e.params && Object.keys(e).length === 4)
+    return e as unknown as EffectInstance;
+  return { id: e.id, type: e.type, enabled, params };
+}
+
+const readEffects: Reader = (v) => (Array.isArray(v) ? conformList(v, readEffect) : undefined);
+
+const readTransition: Reader = (v) => {
+  if (v === null) return null;
+  if (!isObj(v) || typeof v.type !== 'string' || !isNum(v.duration)) return undefined;
+  const params = readParams(v.params);
+  const duration = Math.max(1, v.duration);
+  if (duration === v.duration && params === v.params && Object.keys(v).length === 3) return v;
+  const t: Transition = { type: v.type, duration, params };
+  return t;
+};
+
+function readKeyframe(k: unknown): Keyframe | undefined {
+  if (!isObj(k) || !isNum(k.t) || !isNum(k.v)) return undefined;
+  const e = conformEasing(k.e);
+  return e === k.e && Object.keys(k).length === 3 ? (k as unknown as Keyframe) : { t: k.t, v: k.v, e };
+}
+
+const readKeyframes: Reader = (v) => {
+  if (!isObj(v)) return undefined;
+  const out: Record<string, Keyframe[]> = {};
+  let asIs = true;
+  for (const [path, list] of Object.entries(v)) {
+    if (!isSafeId(path) || !Array.isArray(list)) {
+      asIs = false;
+      continue;
+    }
+    // Evaluation binary-searches the list, so it has to arrive in time order.
+    out[path] = inOrder(conformList(list, readKeyframe), (k) => k.t);
+    if (out[path] !== list) asIs = false;
+  }
+  return asIs ? v : out;
+};
+
+const readWheel: Reader = (v) => (Array.isArray(v) && v.length === 4 && v.every(isNum) ? v : undefined);
+
+const isPoint = (pt: unknown): pt is CurvePoint =>
+  Array.isArray(pt) && pt.length === 2 && isNum(pt[0]) && isNum(pt[1]);
+
+const readCurve: Reader = (v) => {
+  if (!Array.isArray(v)) return undefined;
+  const pts = conformList(v, (pt) => (isPoint(pt) ? pt : undefined));
+  // The curve baker interpolates between neighbours: it needs two points, left to right.
+  return pts.length >= 2 ? inOrder(pts, (pt) => pt[0]) : undefined;
+};
+
+const CLIP_READERS: Readers<typeof CLIP_DEFAULTS> = {
+  assetId: strOrNull,
+  label: strOrNull,
+  linkId: strOrNull,
+  blend: oneOf(BLEND_MODES),
+  fit: oneOf(FIT_MODES),
+  effects: readEffects,
+  grade: nullable(
+    shaped(DEFAULT_GRADE, {
+      lift: readWheel,
+      gamma: readWheel,
+      gain: readWheel,
+      offset: readWheel,
+      curves: shaped(DEFAULT_GRADE.curves, { m: readCurve, r: readCurve, g: readCurve, b: readCurve }),
+      hueSat: readCurve,
+      hueHue: readCurve,
+      lumSat: readCurve,
+      lutId: strOrNull,
+    }),
+  ),
+  mask: nullable(shaped(DEFAULT_MASK, { type: oneOf({ rect: true, ellipse: true }) })),
+  keyframes: readKeyframes,
+  transIn: readTransition,
+  transOut: readTransition,
+  text: nullable(
+    shaped(DEFAULT_TEXT, {
+      align: oneOf({ left: true, center: true, right: true }),
+      boxWidth: numOrNull,
+    }),
+  ),
+  shape: nullable(
+    shaped(DEFAULT_SHAPE, {
+      kind: oneOf(SHAPE_KINDS),
+      // The outline is drawn one vertex at a time.
+      sides: (v) => (isNum(v) ? clamp(Math.round(v), 3, 64) : undefined),
+    }),
+  ),
+};
+
+function readClip(id: ID, json: unknown): Clip | null {
+  if (!isSafeId(id) || !isObj(json) || typeof json.trackId !== 'string') return null;
+  if (typeof json.type !== 'string' || !Object.hasOwn(CLIP_TYPE_COLORS, json.type)) return null;
+  const clip: Clip = {
+    ...conform(CLIP_DEFAULTS, json, CLIP_READERS),
+    id,
+    trackId: json.trackId,
+    type: json.type as Clip['type'],
+  };
+  clip.start = clamp(Math.round(clip.start), 0, MAX_FRAMES);
+  clip.duration = clamp(Math.round(clip.duration), 1, MAX_FRAMES);
   clip.speed = clip.speed > 0 ? clip.speed : 1;
-  if (clip.grade) clip.grade = { ...DEFAULT_GRADE, ...clip.grade };
-  if (clip.text) clip.text = { ...DEFAULT_TEXT, ...clip.text };
-  if (clip.shape) clip.shape = { ...DEFAULT_SHAPE, ...clip.shape };
-  if (typeof clip.keyframes !== 'object' || clip.keyframes === null) clip.keyframes = {};
   return clip;
 }
 
-function readTrack(id: ID, json: Record<string, unknown>): Track | null {
+const TRACK_READERS: Readers<Omit<Track, 'id' | 'kind'>> = {
+  eq: nullable(shaped(DEFAULT_EQ)),
+  compressor: nullable(shaped(DEFAULT_COMPRESSOR)),
+};
+
+function readTrack(id: ID, json: unknown): Track | null {
+  if (!isSafeId(id) || !isObj(json)) return null;
   if (json.kind !== 'video' && json.kind !== 'audio') return null;
   const base: Omit<Track, 'id' | 'kind'> = {
     name: '',
@@ -88,24 +342,111 @@ function readTrack(id: ID, json: Record<string, unknown>): Track | null {
     eq: null,
     compressor: null,
   };
-  return { ...conform(base, json), id, kind: json.kind };
+  return { ...conform(base, json, TRACK_READERS), id, kind: json.kind };
 }
 
-function readAsset(id: ID, json: Record<string, unknown>): Asset | null {
-  if (typeof json.kind !== 'string') return null;
-  const asset = conform(ASSET_DEFAULTS, json);
+const NO_COLOR_INFO: AssetColorInfo = { primaries: null, transfer: null, matrix: null, fullRange: null };
+
+const ASSET_READERS: Readers<typeof ASSET_DEFAULTS> = {
+  videoCodec: strOrNull,
+  audioCodec: strOrNull,
+  color: nullable(
+    shaped(NO_COLOR_INFO, {
+      primaries: strOrNull,
+      transfer: strOrNull,
+      matrix: strOrNull,
+      fullRange: boolOrNull,
+    }),
+  ),
+  inputColorSpace: oneOf(INPUT_COLOR_SPACES),
+  folderId: strOrNull,
+  // A poster is an inline image. Anything else (a remote URL a peer slipped in) would make every
+  // collaborator's browser call out to it.
+  thumb: (v) => (typeof v === 'string' && /^data:image\/(png|jpeg|webp|avif);/.test(v) ? v : null),
+};
+
+function readAsset(id: ID, json: unknown): Asset | null {
+  if (!isSafeId(id) || !isObj(json)) return null;
+  if (typeof json.kind !== 'string' || !Object.hasOwn(ASSET_KINDS, json.kind)) return null;
   return {
-    ...asset,
+    ...conform(ASSET_DEFAULTS, json, ASSET_READERS),
     id,
-    kind: json.kind as Asset['kind'],
+    kind: json.kind as AssetKind,
     name: typeof json.name === 'string' ? json.name : 'Untitled',
-    // A poster is an inline image. Anything else (a remote URL a peer slipped in) would make every
-    // collaborator's browser call out to it.
-    thumb:
-      typeof asset.thumb === 'string' && /^data:image\/(png|jpeg|webp|avif);/.test(asset.thumb)
-        ? asset.thumb
-        : null,
   };
+}
+
+function readMarker(id: ID, json: unknown): Marker | null {
+  if (!isSafeId(id) || !isObj(json) || !isNum(json.frame)) return null;
+  return {
+    id,
+    frame: clamp(Math.round(json.frame), 0, MAX_FRAMES),
+    name: typeof json.name === 'string' ? json.name : '',
+    color: typeof json.color === 'string' ? json.color : MARKER_COLORS[0],
+    note: typeof json.note === 'string' ? json.note : '',
+  };
+}
+
+function readFolder(id: ID, json: unknown): Folder | null {
+  if (!isSafeId(id) || !isObj(json)) return null;
+  return {
+    id,
+    name: typeof json.name === 'string' ? json.name : '',
+    parentId: typeof json.parentId === 'string' ? json.parentId : null,
+  };
+}
+
+const SETTINGS_READERS: Readers<ProjectSettings> = {
+  colorMode: oneOf(COLOR_MODES),
+  toneMap: oneOf(TONE_MAP_OPS),
+};
+
+function readSettings(json: unknown): ProjectSettings {
+  const s = { ...conform(DEFAULT_SETTINGS, json, SETTINGS_READERS) };
+  // Every time conversion divides by the frame rate, and timecode counts in whole frames per second.
+  const fps = s.fpsNum / s.fpsDen;
+  if (!(s.fpsNum >= 1 && s.fpsDen >= 1 && fps >= 1 && fps <= 1000)) {
+    s.fpsNum = DEFAULT_SETTINGS.fpsNum;
+    s.fpsDen = DEFAULT_SETTINGS.fpsDen;
+  }
+  s.width = clamp(Math.round(s.width), 16, 16384);
+  s.height = clamp(Math.round(s.height), 16, 16384);
+  s.sampleRate = clamp(Math.round(s.sampleRate), 8000, 192000);
+  s.peakNits = clamp(s.peakNits, 1, 10000);
+  s.refWhiteNits = clamp(s.refWhiteNits, 1, 10000);
+  return s;
+}
+
+/** Read a map of entities, leaving out the ones that are malformed beyond repair. */
+function readRecord<T>(json: unknown, reader: (id: ID, json: unknown) => T | null): Record<ID, T> {
+  const out: Record<ID, T> = {};
+  if (!isObj(json)) return out;
+  for (const [id, value] of Object.entries(json)) {
+    const entity = reader(id, value);
+    if (entity) out[id] = entity;
+  }
+  return out;
+}
+
+/** A copy of `record` with `changes` applied; a null change removes the entry. */
+function patched<T>(record: Readonly<Record<ID, T>>, changes: Map<ID, T | null>): Record<ID, T> {
+  const next = { ...record };
+  for (const [id, entity] of changes) {
+    if (entity) next[id] = entity;
+    else delete next[id];
+  }
+  return next;
+}
+
+/** The clips that have a lane to sit on. `clips` itself is returned when none are missing one. */
+function clipsWithTrack(clips: Record<ID, Clip>, tracks: Readonly<Record<ID, Track>>): Record<ID, Clip> {
+  let out: Record<ID, Clip> | null = null;
+  for (const c of Object.values(clips)) {
+    if (Object.hasOwn(tracks, c.trackId)) continue;
+    out ??= { ...clips };
+    delete out[c.id];
+  }
+  return out ?? clips;
 }
 
 export interface CommitOptions {
@@ -124,6 +465,12 @@ export class ProjectStore {
   readonly systemOrigin = { tandem: 'system' };
 
   private project: Project;
+  /**
+   * Every well-formed clip in the document. The snapshot only carries the ones whose track exists:
+   * a clip can outlive its track (someone undoes "add track" after a collaborator dropped a clip on
+   * it, or deletes the track while a clip is on its way there), and it comes back with the track.
+   */
+  private readonly allClips = new Map<ID, Clip>();
   private listeners = new Set<Listener>();
   private metaListeners = new Set<Listener>();
   /** Bumps whenever the undo / redo stacks change. */
@@ -133,8 +480,8 @@ export class ProjectStore {
   private readonly yAssets: Y.Map<Y.Map<unknown>>;
   private readonly yTracks: Y.Map<Y.Map<unknown>>;
   private readonly yClips: Y.Map<Y.Map<unknown>>;
-  private readonly yFolders: Y.Map<Folder>;
-  private readonly yMarkers: Y.Map<Marker>;
+  private readonly yFolders: Y.Map<unknown>;
+  private readonly yMarkers: Y.Map<unknown>;
   private readonly yMeta: Y.Map<unknown>;
 
   constructor(doc: Y.Doc = new Y.Doc()) {
@@ -150,20 +497,16 @@ export class ProjectStore {
     this.project = this.readAll();
 
     this.ySettings.observe(() => {
-      this.project = { ...this.project, settings: this.readSettings() };
+      this.project = { ...this.project, settings: readSettings(this.ySettings.toJSON()) };
       this.dirty = true;
     });
-    this.observeEntities(this.yAssets, 'assets', readAsset);
-    this.observeEntities(this.yTracks, 'tracks', readTrack);
-    this.observeEntities(this.yClips, 'clips', readClip);
-    this.yFolders.observe(() => {
-      this.project = { ...this.project, folders: this.yFolders.toJSON() as Record<ID, Folder> };
-      this.dirty = true;
+    this.observeEntities(this.yAssets, readAsset, (changes) => {
+      this.project = { ...this.project, assets: patched(this.project.assets, changes) };
     });
-    this.yMarkers.observe(() => {
-      this.project = { ...this.project, markers: this.yMarkers.toJSON() as Record<ID, Marker> };
-      this.dirty = true;
-    });
+    this.observeEntities(this.yTracks, readTrack, this.applyTrackChanges);
+    this.observeEntities(this.yClips, readClip, this.applyClipChanges);
+    this.observeValues(this.yFolders, 'folders', readFolder);
+    this.observeValues(this.yMarkers, 'markers', readMarker);
     doc.on('afterTransaction', this.flush);
 
     this.undoManager = new Y.UndoManager(
@@ -290,15 +633,8 @@ export class ProjectStore {
     return () => this.metaListeners.delete(fn);
   };
 
-  private readSettings(): ProjectSettings {
-    return conform(DEFAULT_SETTINGS, this.ySettings.toJSON());
-  }
-
   private readAll(): Project {
-    const read = <T>(
-      map: Y.Map<Y.Map<unknown>>,
-      reader: (id: ID, json: Record<string, unknown>) => T | null,
-    ) => {
+    const read = <T>(map: Y.Map<Y.Map<unknown>>, reader: (id: ID, json: unknown) => T | null) => {
       const out: Record<ID, T> = {};
       map.forEach((value, id) => {
         if (!(value instanceof Y.Map)) return;
@@ -307,20 +643,24 @@ export class ProjectStore {
       });
       return out;
     };
+    const tracks = read(this.yTracks, readTrack);
+    const clips = read(this.yClips, readClip);
+    for (const c of Object.values(clips)) this.allClips.set(c.id, c);
     return {
-      settings: this.readSettings(),
+      settings: readSettings(this.ySettings.toJSON()),
       assets: read(this.yAssets, readAsset),
-      tracks: read(this.yTracks, readTrack),
-      clips: read(this.yClips, readClip),
-      folders: this.yFolders.toJSON() as Record<ID, Folder>,
-      markers: this.yMarkers.toJSON() as Record<ID, Marker>,
+      tracks,
+      clips: clipsWithTrack(clips, tracks),
+      folders: readRecord(this.yFolders.toJSON(), readFolder),
+      markers: readRecord(this.yMarkers.toJSON(), readMarker),
     };
   }
 
+  /** Re-read the entities a transaction touched and hand them to `apply` (null = gone or malformed). */
   private observeEntities<T>(
     map: Y.Map<Y.Map<unknown>>,
-    key: 'assets' | 'tracks' | 'clips',
-    reader: (id: ID, json: Record<string, unknown>) => T | null,
+    reader: (id: ID, json: unknown) => T | null,
+    apply: (changes: Map<ID, T | null>) => void,
   ): void {
     map.observeDeep((events) => {
       const touched = new Set<ID>();
@@ -332,17 +672,65 @@ export class ProjectStore {
         }
       }
       if (!touched.size) return;
-      const next: Record<ID, unknown> = { ...(this.project[key] as Record<ID, unknown>) };
+      const changes = new Map<ID, T | null>();
       for (const id of touched) {
         const value = map.get(id);
-        const entity = value instanceof Y.Map ? reader(id, value.toJSON()) : null;
-        if (entity) next[id] = entity;
-        else delete next[id];
+        changes.set(id, value instanceof Y.Map ? reader(id, value.toJSON()) : null);
       }
-      this.project = { ...this.project, [key]: next };
+      const before = this.project;
+      apply(changes);
+      if (this.project !== before) this.dirty = true;
+    });
+  }
+
+  /** Folders and markers are whole JSON values keyed by id. */
+  private observeValues<T>(
+    map: Y.Map<unknown>,
+    key: 'folders' | 'markers',
+    reader: (id: ID, json: unknown) => T | null,
+  ): void {
+    map.observe((event) => {
+      const changes = new Map<ID, T | null>();
+      for (const id of event.keysChanged) changes.set(id, reader(id, map.get(id)));
+      const current = this.project[key] as Readonly<Record<ID, T>>;
+      this.project = { ...this.project, [key]: patched(current, changes) };
       this.dirty = true;
     });
   }
+
+  private applyTrackChanges = (changes: Map<ID, Track | null>): void => {
+    const before = this.project.tracks;
+    const tracks = patched(before, changes);
+    this.project = { ...this.project, tracks };
+    let cameOrWent = false;
+    for (const [id, track] of changes) if (!!track !== Object.hasOwn(before, id)) cameOrWent = true;
+    if (!cameOrWent) return;
+    // A track that appears brings back the clips waiting for it; one that goes takes its clips
+    // out of the snapshot. Everything else keeps its identity.
+    let clips: Record<ID, Clip> | null = null;
+    for (const c of this.allClips.values()) {
+      const show = Object.hasOwn(tracks, c.trackId);
+      if (show === (this.project.clips[c.id] === c)) continue;
+      clips ??= { ...this.project.clips };
+      if (show) clips[c.id] = c;
+      else delete clips[c.id];
+    }
+    if (clips) this.project = { ...this.project, clips };
+  };
+
+  private applyClipChanges = (changes: Map<ID, Clip | null>): void => {
+    let clips: Record<ID, Clip> | null = null;
+    for (const [id, clip] of changes) {
+      if (clip) this.allClips.set(id, clip);
+      else this.allClips.delete(id);
+      const shown = clip && Object.hasOwn(this.project.tracks, clip.trackId) ? clip : null;
+      if (!shown && !Object.hasOwn(this.project.clips, id)) continue;
+      clips ??= { ...this.project.clips };
+      if (shown) clips[id] = shown;
+      else delete clips[id];
+    }
+    if (clips) this.project = { ...this.project, clips };
+  };
 
   private writeEntity(
     map: Y.Map<Y.Map<unknown>>,
@@ -396,7 +784,7 @@ export class ProjectStore {
         break;
       case 'updateFolder': {
         const cur = this.yFolders.get(e.id);
-        if (cur) this.yFolders.set(e.id, { ...cur, ...e.patch });
+        if (isObj(cur)) this.yFolders.set(e.id, { ...cur, ...e.patch });
         break;
       }
       case 'removeFolder':
@@ -518,30 +906,17 @@ export function serializeProject(project: Project): string {
 export function parseProjectFile(text: string): Project | null {
   try {
     const data = JSON.parse(text);
-    if (data?.format !== 'tandem-project' || !data.project) return null;
-    const p = data.project as Project;
-    const clips: Record<ID, Clip> = {};
-    for (const [id, c] of Object.entries(p.clips ?? {})) {
-      const r = readClip(id, c as unknown as Record<string, unknown>);
-      if (r) clips[id] = r;
-    }
-    const tracks: Record<ID, Track> = {};
-    for (const [id, t] of Object.entries(p.tracks ?? {})) {
-      const r = readTrack(id, t as unknown as Record<string, unknown>);
-      if (r) tracks[id] = r;
-    }
-    const assets: Record<ID, Asset> = {};
-    for (const [id, a] of Object.entries(p.assets ?? {})) {
-      const r = readAsset(id, a as unknown as Record<string, unknown>);
-      if (r) assets[id] = r;
-    }
+    if (data?.format !== 'tandem-project' || !isObj(data.project)) return null;
+    const p = data.project;
+    const tracks = readRecord(p.tracks, readTrack);
     return {
-      settings: conform(DEFAULT_SETTINGS, (p.settings ?? {}) as unknown as Record<string, unknown>),
-      assets,
+      settings: readSettings(p.settings),
+      assets: readRecord(p.assets, readAsset),
       tracks,
-      clips,
-      folders: p.folders ?? {},
-      markers: p.markers ?? {},
+      // In a file, a clip whose track is missing can never get it back.
+      clips: clipsWithTrack(readRecord(p.clips, readClip), tracks),
+      folders: readRecord(p.folders, readFolder),
+      markers: readRecord(p.markers, readMarker),
     };
   } catch {
     return null;

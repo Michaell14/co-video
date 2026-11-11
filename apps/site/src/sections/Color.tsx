@@ -1,5 +1,6 @@
 import { RotateCcw } from 'lucide-react';
 import { animate, useInView, useReducedMotion } from 'motion/react';
+import type { AnimationPlaybackControls } from 'motion/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Reveal } from '../components/Reveal';
@@ -113,6 +114,14 @@ export function Color() {
     latest.current = params;
   }, [params]);
 
+  /** The look transition in flight, if any. It writes `params` every frame until it is stopped. */
+  const lookAnimation = useRef<AnimationPlaybackControls | null>(null);
+  const stopLookAnimation = useCallback(() => {
+    lookAnimation.current?.stop();
+    lookAnimation.current = null;
+  }, []);
+  useEffect(() => stopLookAnimation, [stopLookAnimation]);
+
   // Set up WebGL only once the section is close, on the flat frame the footage shader rendered.
   useEffect(() => {
     if (!near) return;
@@ -138,6 +147,7 @@ export function Color() {
 
   const applyLook = useCallback(
     (index: number) => {
+      stopLookAnimation();
       setLook(index);
       const from = latest.current;
       const to = LOOKS[index].params;
@@ -145,13 +155,13 @@ export function Color() {
         setParams(to);
         return;
       }
-      animate(0, 1, {
+      lookAnimation.current = animate(0, 1, {
         duration: 0.9,
         ease: [0.16, 1, 0.3, 1],
         onUpdate: (u) => setParams(mixGrade(from, to, u)),
       });
     },
-    [reduced],
+    [reduced, stopLookAnimation],
   );
 
   // First time it scrolls into view, grade it in front of the visitor.
@@ -165,6 +175,9 @@ export function Color() {
 
   const edit = (patch: Partial<GradeParams>) => {
     touched.current = true;
+    // A hand on a control takes over from a look that is still easing in; otherwise its next
+    // frame would write over the change.
+    stopLookAnimation();
     setLook(null);
     setParams((prev) => ({ ...prev, ...patch }));
   };

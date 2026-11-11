@@ -35,6 +35,28 @@ describe('EDL export', () => {
     expect(out).toContain('* TRANSITION IN: crossDissolve 12 FRAMES (EXPORTED AS A CUT)');
   });
 
+  it('starts the programme at one hour of timecode at every frame rate', () => {
+    const f = fixture();
+    const first = (fpsNum: number, fpsDen: number, frames: number): string => {
+      let p = applyEdits(f.p, [{ op: 'settings', patch: { fpsNum, fpsDen } }]);
+      p = addClip(p, f.v1.id, 0, frames).p;
+      return toEdl(p)
+        .split('\r\n')
+        .find((l) => l.startsWith('001'))!;
+    };
+    // 23.976 counts 24 frames to the timecode second, so ten seconds on the counter are 240 frames.
+    expect(first(24000, 1001, 240)).toMatch(/ 01:00:00:00 01:00:10:00$/);
+    expect(first(24, 1, 240)).toMatch(/ 01:00:00:00 01:00:10:00$/);
+    expect(first(25, 1, 250)).toMatch(/ 01:00:00:00 01:00:10:00$/);
+    expect(first(48000, 1001, 480)).toMatch(/ 01:00:00:00 01:00:10:00$/);
+    expect(first(30000, 1001, 300)).toMatch(/ 01:00:00;00 01:00:10;00$/);
+    expect(first(60000, 1001, 600)).toMatch(/ 01:00:00;00 01:00:10;00$/);
+    // An explicit start still wins.
+    let p = applyEdits(f.p, [{ op: 'settings', patch: { fpsNum: 24000, fpsDen: 1001 } }]);
+    p = addClip(p, f.v1.id, 0, 24).p;
+    expect(toEdl(p, { startTimecodeFrames: 0 })).toMatch(/ 00:00:00:00 00:00:01:00\r\n/);
+  });
+
   it('uses drop-frame timecode for 29.97 and skips disabled clips and generators', () => {
     const f = fixture();
     let p = applyEdits(f.p, [{ op: 'settings', patch: { fpsNum: 30000, fpsDen: 1001 } }]);

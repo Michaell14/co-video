@@ -9,7 +9,9 @@ import { createTandemServer } from '../src/server';
 import type { TandemServer, TandemServerOptions } from '../src/server';
 import {
   Api,
+  SilentPeer,
   TestClient,
+  awarenessFrame,
   content,
   rawGet,
   removeTempDirs,
@@ -431,6 +433,69 @@ describe('tandem server', () => {
       await waitFor(() => !b.awareness.getStates().has(a.doc.clientID), 'a removed from b');
       await waitFor(() => !viewer.awareness.getStates().has(a.doc.clientID), 'a removed from viewer');
       expect(b.awareness.getStates().has(viewer.doc.clientID)).toBe(true);
+    });
+
+    it('refuses presence it could not relay, and keeps no part of such an update', async () => {
+      const project = await api.createProject();
+      const viewerToken = await api.invite(project, 'viewer');
+      const owner = await connect(api, project, 'project').whenSynced();
+      owner.awareness.setLocalState({ user: { name: 'Ada' } });
+      const present = (client: TestClient): number[] => [...client.awareness.getStates().keys()];
+      const joinAndListPresence = async (): Promise<number[]> => {
+        const joiner = await connect(api, project, 'project').whenSynced();
+        await waitFor(() => joiner.awareness.getStates().has(owner.doc.clientID), 'owner visible to joiner');
+        return present(joiner);
+      };
+
+      // Valid JSON, but nested so deeply that writing it back out overflows the stack.
+      const deep = '['.repeat(5000) + ']'.repeat(5000);
+      const vandal = await connect(api, project, 'project', viewerToken).whenSynced();
+      vandal.send(awarenessFrame([{ clientId: 4242, clock: 1, state: deep }]));
+      await waitFor(() => vandal.closed, 'sender of a deep state closed');
+      expect(vandal.hasControl('error')).toBe(true);
+
+      // A sender that never completes the close handshake stays connected for a while. Nobody
+      // who joins in the meantime may be affected by what it sent.
+      const silent = new SilentPeer(api.wsUrl(project.id, 'project', viewerToken), [
+        awarenessFrame([{ clientId: 4243, clock: 1, state: deep }]),
+      ]);
+      try {
+        await waitFor(() => silent.heard('malformed message'), 'silent peer rejected');
+        expect(await joinAndListPresence()).toEqual([owner.doc.clientID]);
+      } finally {
+        silent.destroy();
+      }
+
+      // An update is checked as a whole: a harmless entry ahead of a broken one is not kept either,
+      // or it would stay behind as a presence that no connection owns.
+      for (const broken of [deep, '{not json']) {
+        const sneaky = await connect(api, project, 'project', viewerToken).whenSynced();
+        sneaky.send(
+          awarenessFrame([
+            { clientId: 4244, clock: 1, state: '{"user":{"name":"Ghost"}}' },
+            { clientId: 4245, clock: 1, state: broken },
+          ]),
+        );
+        await waitFor(() => sneaky.closed, 'sender of a half-broken update closed');
+        expect(await joinAndListPresence()).toEqual([owner.doc.clientID]);
+      }
+      expect(present(owner)).toEqual([owner.doc.clientID]);
+
+      // Ordinary presence is untouched by the check: some nesting is fine, and brackets inside
+      // strings (escaped quotes and all) are text, not structure.
+      const viewer = await connect(api, project, 'project', viewerToken).whenSynced();
+      const state = { user: { name: '\\"[{'.repeat(50) }, selection: [[{ ranges: [[1, 2]] }]] };
+      viewer.awareness.setLocalState(state);
+      await waitFor(() => owner.awareness.getStates().has(viewer.doc.clientID), 'viewer visible to owner');
+      expect(owner.awareness.getStates().get(viewer.doc.clientID)).toEqual(state);
+
+      // The limit itself: 32 levels pass, one more does not.
+      const nested = (depth: number): string => '['.repeat(depth) + ']'.repeat(depth);
+      viewer.send(awarenessFrame([{ clientId: 4246, clock: 1, state: nested(32) }]));
+      await waitFor(() => owner.awareness.getStates().has(4246), '32 levels relayed');
+      viewer.send(awarenessFrame([{ clientId: 4247, clock: 1, state: nested(33) }]));
+      await waitFor(() => viewer.closed, 'sender of 33 levels closed');
+      expect(owner.awareness.getStates().has(4247)).toBe(false);
     });
   });
 
@@ -1159,6 +1224,138 @@ describe('project creation policy', () => {
     const { api } = await start({ corsOrigin: 'https://tandem.example' });
     const res = await api.fetch('/api/health');
     expect(res.headers.get('access-control-allow-origin')).toBe('https://tandem.example');
+  });
+});
+
+describe('connection limits', () => {
+  /** Connect, retrying while the server has not yet noticed that an earlier socket is gone. */
+  async function connectEventually(api: Api, project: Project, token = project.token): Promise<TestClient> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await connect(api, project, 'project', token).whenSynced();
+      } catch (err) {
+        if (attempt === 100) throw err;
+        await sleep(10);
+      }
+    }
+  }
+
+  const accepted = (results: PromiseSettledResult<unknown>[]): number =>
+    results.filter((result) => result.status === 'fulfilled').length;
+
+  it('caps the open sockets of one address, counting upgrades that are still in progress', async () => {
+    const { api } = await start({ maxConnectionsPerIp: 3 });
+    const project = await api.createProject();
+
+    // All at once, against a room that still has to be loaded from disk.
+    const burst = await Promise.allSettled(
+      Array.from({ length: 8 }, () => connect(api, project, 'project').whenSynced()),
+    );
+    expect(accepted(burst)).toBe(3);
+    expect(await upgradeStatus(api.wsUrl(project.id, 'project', project.token))).toBe(429);
+    // The limit is per address, whichever room the socket is for, and it only concerns WebSockets.
+    expect(await upgradeStatus(api.wsUrl(project.id, 'review', project.token))).toBe(429);
+    expect((await api.fetch(`/api/projects/${project.id}`, { token: project.token })).status).toBe(200);
+
+    // Every socket that goes away frees its place, and so do upgrades that were refused.
+    await Promise.all(clients.splice(0).map((client) => client.close()));
+    for (let i = 0; i < 10; i++) {
+      expect(await upgradeStatus(api.wsUrl(project.id, 'project', 'garbage'))).toBe(401);
+    }
+    for (let i = 0; i < 3; i++) await connectEventually(api, project);
+    expect(await upgradeStatus(api.wsUrl(project.id, 'project', project.token))).toBe(429);
+  });
+
+  it('counts sockets by the address the proxy reports when trustProxy is on', async () => {
+    const { api } = await start({ trustProxy: true, maxConnectionsPerIp: 1 });
+    const project = await api.createProject();
+    const url = api.wsUrl(project.id, 'project', project.token);
+    const from = (forwardedFor: string): TestClient => {
+      const client = new TestClient(url, { 'X-Forwarded-For': forwardedFor });
+      clients.push(client);
+      return client;
+    };
+
+    await from('203.0.113.9').whenSynced();
+    expect(await upgradeStatus(url, { 'X-Forwarded-For': '203.0.113.9' })).toBe(429);
+    expect(await upgradeStatus(url, { 'X-Forwarded-For': '198.51.100.1, 203.0.113.9' })).toBe(429);
+    await from('203.0.113.10').whenSynced();
+    await from('203.0.113.9, 198.51.100.1').whenSynced();
+  });
+
+  it('caps the sockets of one room', async () => {
+    const { api } = await start({ maxConnectionsPerRoom: 2 });
+    const project = await api.createProject();
+    const viewerToken = await api.invite(project, 'viewer');
+
+    const burst = Array.from({ length: 6 }, () => connect(api, project, 'project', viewerToken));
+    expect(accepted(await Promise.allSettled(burst.map((client) => client.whenSynced())))).toBe(2);
+    expect(await upgradeStatus(api.wsUrl(project.id, 'project', viewerToken))).toBe(503);
+
+    // The project's other document is a room of its own, and so is every other project.
+    await connect(api, project, 'review', viewerToken).whenSynced();
+    await connect(api, await api.createProject(), 'project').whenSynced();
+
+    // A place is free again as soon as someone leaves.
+    await burst.find((client) => client.synced)?.close();
+    await connectEventually(api, project, viewerToken);
+    expect(await upgradeStatus(api.wsUrl(project.id, 'project', viewerToken))).toBe(503);
+  });
+
+  it('does not let read-only connections keep people who can edit out of a full room', async () => {
+    const { api } = await start({ maxConnectionsPerRoom: 2 });
+    const project = await api.createProject();
+    const editorToken = await api.invite(project, 'editor');
+    const viewerToken = await api.invite(project, 'viewer');
+
+    const early = await connect(api, project, 'project', viewerToken).whenSynced();
+    const late = await connect(api, project, 'project', viewerToken).whenSynced();
+    late.awareness.setLocalState({ user: { name: 'Vera' } });
+    await waitFor(() => early.awareness.getStates().has(late.doc.clientID), 'late viewer visible');
+
+    // The most recent read-only connection makes way, and its presence goes with it.
+    const owner = await connect(api, project, 'project').whenSynced();
+    await waitFor(() => late.closed, 'late viewer displaced');
+    await waitFor(() => !early.awareness.getStates().has(late.doc.clientID), 'displaced presence removed');
+    expect(early.closed).toBe(false);
+    expect(await upgradeStatus(api.wsUrl(project.id, 'project', viewerToken))).toBe(503);
+
+    const editor = await connect(api, project, 'project', editorToken).whenSynced();
+    await waitFor(() => early.closed, 'early viewer displaced');
+    owner.map.set('title', 'Still editable');
+    await waitFor(() => editor.map.get('title') === 'Still editable', 'owner → editor');
+
+    // Among those who can edit nobody is displaced: a full room is full.
+    expect(await upgradeStatus(api.wsUrl(project.id, 'project', editorToken))).toBe(503);
+    expect(await upgradeStatus(api.wsUrl(project.id, 'project', project.token))).toBe(503);
+    expect(owner.closed).toBe(false);
+    expect(editor.closed).toBe(false);
+
+    // Commenters only read the project document, but they write the review document.
+    const commenterToken = await api.invite(project, 'commenter');
+    expect(await upgradeStatus(api.wsUrl(project.id, 'project', commenterToken))).toBe(503);
+    const reviewViewer = await connect(api, project, 'review', viewerToken).whenSynced();
+    await connect(api, project, 'review', viewerToken).whenSynced();
+    await connect(api, project, 'review', commenterToken).whenSynced();
+    expect(reviewViewer.closed).toBe(false);
+  });
+
+  it('displaces nobody for a connection that does not get as far as joining', async () => {
+    const { api } = await start({ maxConnectionsPerRoom: 1 });
+    const project = await api.createProject();
+    const viewerToken = await api.invite(project, 'viewer');
+    const viewer = await connect(api, project, 'project', viewerToken).whenSynced();
+
+    // The owner's token, but a handshake that is turned down after the room was found to have a
+    // place to give: a list of subprotocols with nothing in it.
+    const ownerUrl = api.wsUrl(project.id, 'project', project.token);
+    expect(await upgradeStatus(ownerUrl, { 'Sec-WebSocket-Protocol': ',' })).toBe(400);
+    // The room's one place is still the viewer's.
+    expect(await upgradeStatus(api.wsUrl(project.id, 'project', viewerToken))).toBe(503);
+    expect(viewer.closed).toBe(false);
+
+    await connect(api, project, 'project').whenSynced();
+    await waitFor(() => viewer.closed, 'viewer displaced by the owner who did join');
   });
 });
 
