@@ -220,8 +220,12 @@ class VideoCursor {
   private covers(t: number): boolean {
     const s = this.pick(t);
     if (!s) return false;
-    // The last frame of a file has no successor, so accept it for any later time.
-    return t < s.timestamp + Math.max(s.duration, 1e-3) + EPS || (this.pumpEnded && s === this.buffer[this.buffer.length - 1]);
+    // Half-open interval [start, end), with the same forward tolerance `pick` uses applied to both
+    // ends. Without it a frame would also "cover" the instant its successor starts, and an export
+    // that outran the decoder would repeat a frame.
+    if (t + tolerance(s) < s.timestamp + Math.max(s.duration, 1e-3)) return true;
+    // The last frame of a file has no successor, so it holds for any later time.
+    return this.pumpEnded && s === this.buffer[this.buffer.length - 1];
   }
 
   /** Whether the running decode pipeline will produce (or already holds) the frame for `t`. */

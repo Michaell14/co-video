@@ -1,0 +1,67 @@
+import { expect, type Page } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
+
+/** Page errors and console errors that are not expected noise. */
+export function trackErrors(page: Page): string[] {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    const t = m.text();
+    // Missing media before upload and the dev-mode double mount are expected.
+    if (/404 \(Not Found\)|502 \(Bad Gateway\)|WebSocket/.test(t)) return;
+    errors.push(`console: ${t}`);
+  });
+  return errors;
+}
+
+export async function newProject(page: Page): Promise<void> {
+  await page.goto('/');
+  await page.locator('.starter').first().click();
+  await expect(page.locator('.tl')).toBeVisible();
+  await page.waitForFunction(() => !!(window as any).tandem?.session?.player);
+}
+
+export async function importFixtures(page: Page, names: string[]): Promise<void> {
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.evaluate(() => void (window as any).tandem.cmd.importMedia())]);
+  await chooser.setFiles(names.map((n) => join(FIXTURES, n)));
+  await page.waitForFunction((n) => Object.keys((window as any).tandem.session.store.get().assets).length >= n, names.length);
+}
+
+/** Summarise the timeline as `type@start+duration` strings, sorted. */
+export function clips(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    Object.values((window as any).tandem.session.store.get().clips)
+      .map((c: any) => `${c.type}@${c.start}+${c.duration}`)
+      .sort(),
+  );
+}
+
+export function hasFfprobe(): boolean {
+  try {
+    execFileSync('ffprobe', ['-version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function ffprobe(file: string): { streams: Record<string, string>[]; format: Record<string, string> } {
+  const out = execFileSync('ffprobe', [
+    '-v', 'error', '-count_frames',
+    '-show_entries', 'stream=codec_name,codec_type,width,height,r_frame_rate,nb_read_frames,pix_fmt,color_transfer,color_primaries',
+    '-show_entries', 'format=duration,size', '-of', 'json', file,
+  ]);
+  return JSON.parse(out.toString());
+}
+
+/** Serve fixture files to the engine lab page. */
+export async function openLab(page: Page): Promise<void> {
+  await page.route('**/fixtures/*', (route) => route.fulfill({ path: join(FIXTURES, new URL(route.request().url()).pathname.split('/').pop()!) }));
+  await page.goto('/lab.html');
+  await page.waitForFunction(() => document.title === 'lab-ready');
+}
