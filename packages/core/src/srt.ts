@@ -19,7 +19,10 @@ function parseTime(s: string): number | null {
 /** Parses SRT or WebVTT. Unknown lines are skipped rather than failing the whole file. */
 export function parseSubtitles(text: string): Cue[] {
   const cues: Cue[] = [];
-  const blocks = text.replace(/\r/g, '').replace(/^﻿/, '').split(/\n{2,}/);
+  const blocks = text
+    .replace(/\r/g, '')
+    .replace(/^﻿/, '')
+    .split(/\n{2,}/);
   for (const block of blocks) {
     const lines = block.split('\n').filter((l) => l.trim() !== '');
     const idx = lines.findIndex((l) => l.includes('-->'));
@@ -54,5 +57,7 @@ export function toSrt(cues: Cue[]): string {
 }
 
 export function toVtt(cues: Cue[]): string {
-  return 'WEBVTT\n\n' + cues.map((c) => `${fmt(c.start, '.')} --> ${fmt(c.end, '.')}\n${c.text}\n`).join('\n');
+  return (
+    'WEBVTT\n\n' + cues.map((c) => `${fmt(c.start, '.')} --> ${fmt(c.end, '.')}\n${c.text}\n`).join('\n')
+  );
 }

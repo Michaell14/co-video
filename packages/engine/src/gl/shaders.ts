@@ -82,7 +82,15 @@ vec3 toneMap(vec3 x, int op, float peak) {
 
 export const TONEMAP_IDS: Record<string, number> = { none: 0, reinhard: 1, hable: 2, aces: 3, bt2390: 4 };
 
-export const TRANSFER_IDS: Record<string, number> = { srgb: 0, pq: 1, hlg: 2, linear: 3, slog3: 4, logc3: 5, vlog: 6 };
+export const TRANSFER_IDS: Record<string, number> = {
+  srgb: 0,
+  pq: 1,
+  hlg: 2,
+  linear: 3,
+  slog3: 4,
+  logc3: 5,
+  vlog: 6,
+};
 
 // ─────────────────────────────────────────────────────────────── layers ──
 

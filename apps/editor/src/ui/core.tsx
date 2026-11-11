@@ -139,7 +139,15 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: ReactNode;
 }
 
-export function Button({ variant = 'default', size = 'md', block, icon, className, children, ...rest }: ButtonProps) {
+export function Button({
+  variant = 'default',
+  size = 'md',
+  block,
+  icon,
+  className,
+  children,
+  ...rest
+}: ButtonProps) {
   return (
     <button
       type="button"
@@ -166,7 +174,16 @@ interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   tipPlace?: 'top' | 'bottom';
 }
 
-export function IconButton({ label, keys, active, small, tipPlace, className, children, ...rest }: IconButtonProps) {
+export function IconButton({
+  label,
+  keys,
+  active,
+  small,
+  tipPlace,
+  className,
+  children,
+  ...rest
+}: IconButtonProps) {
   const t = tip(label, keys, tipPlace);
   return (
     <button
@@ -210,7 +227,18 @@ interface SliderProps extends GestureProps {
   disabled?: boolean;
 }
 
-export function Slider({ value, min, max, step, onChange, onStart, onEnd, defaultValue, origin, disabled }: SliderProps) {
+export function Slider({
+  value,
+  min,
+  max,
+  step,
+  onChange,
+  onStart,
+  onEnd,
+  defaultValue,
+  origin,
+  disabled,
+}: SliderProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(false);
   const span = max - min || 1;
@@ -256,7 +284,9 @@ export function Slider({ value, min, max, step, onChange, onStart, onEnd, defaul
       <div className="slider__track">
         <div className="slider__fill" style={{ left: `${a}%`, width: `${b - a}%` }} />
       </div>
-      {origin !== undefined && origin > min && origin < max && <div className="slider__center" style={{ left: `${pct(origin)}%` }} />}
+      {origin !== undefined && origin > min && origin < max && (
+        <div className="slider__center" style={{ left: `${pct(origin)}%` }} />
+      )}
       <div className="slider__thumb" style={{ left: `${pct(value)}%` }} />
     </div>
   );
@@ -321,7 +351,11 @@ export function NumberField({
   };
 
   return (
-    <div className="field num" data-scrubbing={scrubbing} style={{ ...style, ...(disabled ? { opacity: 0.4, pointerEvents: 'none' } : null) }}>
+    <div
+      className="field num"
+      data-scrubbing={scrubbing}
+      style={{ ...style, ...(disabled ? { opacity: 0.4, pointerEvents: 'none' } : null) }}
+    >
       {prefix && <span className="field__prefix">{prefix}</span>}
       <input
         ref={inputRef}
@@ -413,7 +447,22 @@ interface TextFieldProps {
   readOnly?: boolean;
 }
 
-export function TextField({ value, onChange, placeholder, multiline, autoFocus, onEnter, onFocus, onBlur, prefix, style, rows = 3, ariaLabel, type, readOnly }: TextFieldProps) {
+export function TextField({
+  value,
+  onChange,
+  placeholder,
+  multiline,
+  autoFocus,
+  onEnter,
+  onFocus,
+  onBlur,
+  prefix,
+  style,
+  rows = 3,
+  ariaLabel,
+  type,
+  readOnly,
+}: TextFieldProps) {
   const stop = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !multiline) onEnter?.();
     if (e.key === 'Escape') (e.target as HTMLElement).blur();
@@ -423,9 +472,33 @@ export function TextField({ value, onChange, placeholder, multiline, autoFocus, 
     <div className={cx('field', multiline && 'field--area')} style={style}>
       {prefix && <span className="field__prefix">{prefix}</span>}
       {multiline ? (
-        <textarea aria-label={ariaLabel} value={value} rows={rows} placeholder={placeholder} autoFocus={autoFocus} onChange={(e) => onChange(e.target.value)} onKeyDown={stop} onFocus={onFocus} onBlur={onBlur} spellCheck={false} readOnly={readOnly} />
+        <textarea
+          aria-label={ariaLabel}
+          value={value}
+          rows={rows}
+          placeholder={placeholder}
+          autoFocus={autoFocus}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={stop}
+          onFocus={onFocus}
+          onBlur={onBlur}
+          spellCheck={false}
+          readOnly={readOnly}
+        />
       ) : (
-        <input aria-label={ariaLabel} type={type} value={value} placeholder={placeholder} autoFocus={autoFocus} onChange={(e) => onChange(e.target.value)} onKeyDown={stop} onFocus={onFocus} onBlur={onBlur} spellCheck={false} readOnly={readOnly} />
+        <input
+          aria-label={ariaLabel}
+          type={type}
+          value={value}
+          placeholder={placeholder}
+          autoFocus={autoFocus}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={stop}
+          onFocus={onFocus}
+          onBlur={onBlur}
+          spellCheck={false}
+          readOnly={readOnly}
+        />
       )}
     </div>
   );
@@ -445,7 +518,16 @@ interface PopoverProps {
   matchWidth?: boolean;
 }
 
-export function Popover({ anchor, onClose, children, align = 'start', side = 'bottom', className, style, matchWidth }: PopoverProps) {
+export function Popover({
+  anchor,
+  onClose,
+  children,
+  align = 'start',
+  side = 'bottom',
+  className,
+  style,
+  matchWidth,
+}: PopoverProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number; origin: string } | null>(null);
 
@@ -465,7 +547,12 @@ export function Popover({ anchor, onClose, children, align = 'start', side = 'bo
       top = rect.top;
       if (left + w > vw - 8) left = rect.left - w - 6;
     } else {
-      left = align === 'end' ? rect.right - w : align === 'center' ? rect.left + rect.width / 2 - w / 2 : rect.left;
+      left =
+        align === 'end'
+          ? rect.right - w
+          : align === 'center'
+            ? rect.left + rect.width / 2 - w / 2
+            : rect.left;
       top = side === 'top' ? rect.top - h - 6 : rect.bottom + 6;
       if (side === 'bottom' && top + h > vh - 8 && rect.top - h - 6 > 8) {
         top = rect.top - h - 6;
@@ -644,7 +731,10 @@ export function MenuButton({
 // Context menu: one global instance, opened imperatively.
 let openCtx: (state: { x: number; y: number; items: MenuEntry[] } | null) => void = () => {};
 
-export function openContextMenu(e: { clientX: number; clientY: number; preventDefault: () => void }, items: MenuEntry[]): void {
+export function openContextMenu(
+  e: { clientX: number; clientY: number; preventDefault: () => void },
+  items: MenuEntry[],
+): void {
   e.preventDefault();
   openCtx({ x: e.clientX, y: e.clientY, items });
 }
@@ -743,8 +833,25 @@ export function Select<T extends string | number>({
 
 // ─────────────────────────────────────────────────── switch / segmented ──
 
-export function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
-  return <button type="button" role="switch" aria-checked={checked} aria-label={label} className="switch" onClick={() => onChange(!checked)} />;
+export function Switch({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      className="switch"
+      onClick={() => onChange(!checked)}
+    />
+  );
 }
 
 export function Segmented<T extends string>({
@@ -766,7 +873,12 @@ export function Segmented<T extends string>({
   }, [value, options.length]);
   return (
     <div ref={ref} className={cx('seg', block && 'seg--block')} role="group">
-      {thumb && <div className="seg__thumb" style={{ width: thumb.w, transform: `translateX(${thumb.x - 2}px)`, left: 2 }} />}
+      {thumb && (
+        <div
+          className="seg__thumb"
+          style={{ width: thumb.w, transform: `translateX(${thumb.x - 2}px)`, left: 2 }}
+        />
+      )}
       {options.map((o) => (
         <button
           key={o.value}
@@ -786,7 +898,12 @@ export function Segmented<T extends string>({
 
 // ───────────────────────────────────────────────────────────── colour ──
 
-export function ColorField({ value, onChange, onStart, onEnd }: { value: string; onChange: (v: string) => void } & GestureProps) {
+export function ColorField({
+  value,
+  onChange,
+  onStart,
+  onEnd,
+}: { value: string; onChange: (v: string) => void } & GestureProps) {
   const [text, setText] = useState<string | null>(null);
   const started = useRef(false);
   return (
@@ -933,7 +1050,14 @@ export function ToastLayer() {
     <div className="toasts" aria-live="polite">
       {list.map((t) => (
         <div key={t.id} className="toast" data-kind={t.kind}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             {t.kind === 'error' ? (
               <path d="M12 8v5m0 3.5v.01M10.3 3.9 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
             ) : t.kind === 'success' ? (

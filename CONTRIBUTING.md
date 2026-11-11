@@ -15,6 +15,7 @@ SwiftShader.
 ## Before you open a pull request
 
 ```bash
+pnpm format       # Prettier; CI checks it
 pnpm typecheck    # every package
 pnpm test         # unit tests (core model, edit operations, server)
 pnpm test:e2e     # Playwright: real editor + real server + real render engine
@@ -25,15 +26,15 @@ inspect their output with `ffprobe` and skip themselves when it is not installed
 
 ## Where things live
 
-| Path | What it is |
-| --- | --- |
-| `packages/core` | The project model, the Yjs store, edit operations, frame resolver, colour math, effect and transition definitions. Pure TypeScript, no DOM. |
-| `packages/engine` | WebGL2 compositor, decode cursors, audio graph, player, exporter. Browser only. |
-| `packages/design` | Design tokens shared by the editor and the website. |
-| `apps/editor` | The React editor. |
-| `apps/server` | Collaboration + media server. |
-| `apps/site` | Marketing website. |
-| `e2e` | Playwright tests and media fixtures. |
+| Path              | What it is                                                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/core`   | The project model, the Yjs store, edit operations, frame resolver, colour math, effect and transition definitions. Pure TypeScript, no DOM. |
+| `packages/engine` | WebGL2 compositor, decode cursors, audio graph, player, exporter. Browser only.                                                             |
+| `packages/design` | Design tokens shared by the editor and the website.                                                                                         |
+| `apps/editor`     | The React editor.                                                                                                                           |
+| `apps/server`     | Collaboration + media server.                                                                                                               |
+| `apps/site`       | Marketing website.                                                                                                                          |
+| `e2e`             | Playwright tests and media fixtures.                                                                                                        |
 
 `docs/ARCHITECTURE.md` explains how the pieces fit together and why.
 

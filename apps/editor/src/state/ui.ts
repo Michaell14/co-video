@@ -5,12 +5,16 @@ import type { Clip, Grade, EffectInstance, ID, Project } from '@tandem/core';
 export type Tool = 'select' | 'blade' | 'slip' | 'hand';
 export type Workspace = 'edit' | 'color' | 'audio';
 export type LibraryTab = 'media' | 'text' | 'effects' | 'transitions';
-export type DialogId = 'export' | 'share' | 'shortcuts' | 'versions' | 'palette' | 'project' | 'profile' | null;
+export type DialogId =
+  'export' | 'share' | 'shortcuts' | 'versions' | 'palette' | 'project' | 'profile' | null;
 
 export interface AttributeClipboard {
   effects: EffectInstance[];
   grade: Grade | null;
-  transform: Pick<Clip, 'x' | 'y' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity' | 'blend' | 'cropL' | 'cropT' | 'cropR' | 'cropB'>;
+  transform: Pick<
+    Clip,
+    'x' | 'y' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity' | 'blend' | 'cropL' | 'cropT' | 'cropR' | 'cropB'
+  >;
 }
 
 export interface UIState {
@@ -98,7 +102,10 @@ export const useUI = create<UIState>((set, get) => ({
     })),
   toggleSelect: (id) => {
     const cur = get().selection;
-    set({ selection: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id], selectedTransition: null });
+    set({
+      selection: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id],
+      selectedTransition: null,
+    });
   },
   clearSelection: () => {
     if (get().selection.length || get().selectedTransition) set({ selection: [], selectedTransition: null });

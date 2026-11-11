@@ -1,4 +1,17 @@
-import { AudioLines, Blend, Film, Gauge, Image as ImageIcon, Layers, Link2, Shapes, Snowflake, Sparkles, Square, Type } from 'lucide-react';
+import {
+  AudioLines,
+  Blend,
+  Film,
+  Gauge,
+  Image as ImageIcon,
+  Layers,
+  Link2,
+  Shapes,
+  Snowflake,
+  Sparkles,
+  Square,
+  Type,
+} from 'lucide-react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   addAssetToTimeline,
@@ -63,7 +76,15 @@ type Drag =
       /** A track created by dragging past the outermost lane; kept for the rest of the drag. */
       newTrack?: { edits: Edit[]; trackId: ID };
     }
-  | { kind: 'trim'; ids: ID[]; edge: Edge; f0: number; restore: number; roll: [ID, ID] | null; ripple: boolean }
+  | {
+      kind: 'trim';
+      ids: ID[];
+      edge: Edge;
+      f0: number;
+      restore: number;
+      roll: [ID, ID] | null;
+      ripple: boolean;
+    }
   | { kind: 'slip'; ids: ID[]; x0: number; restore: number }
   | { kind: 'fade'; id: ID; side: 'in' | 'out'; f0: number; base: number }
   | { kind: 'trans'; id: ID; side: 'in' | 'out'; f0: number; base: number }
@@ -103,7 +124,12 @@ export function Lanes({ lanes, height, width, live }: Props) {
   const toY = (clientY: number): number => clientY - ref.current!.getBoundingClientRect().top;
 
   /** Snap `edges` (already offset by the raw delta) to nearby cut points. Returns the correction. */
-  const snap = (p: Project, moving: ReadonlySet<ID>, edges: number[], disabled: boolean): { adjust: number; line: number | null } => {
+  const snap = (
+    p: Project,
+    moving: ReadonlySet<ID>,
+    edges: number[],
+    disabled: boolean,
+  ): { adjust: number; line: number | null } => {
     if (!ui().snapping || disabled) return { adjust: 0, line: null };
     const pts = snapPoints(p, moving, [playhead()]);
     const threshold = 8 / ui().ppf;
@@ -121,11 +147,21 @@ export function Lanes({ lanes, height, width, live }: Props) {
   };
 
   // ─────────────────────────────────────────────────────── move planning ──
-  const planMove = (d: Extract<Drag, { kind: 'move' }>, e: { clientX: number; clientY: number; altKey: boolean; shiftKey: boolean }) => {
+  const planMove = (
+    d: Extract<Drag, { kind: 'move' }>,
+    e: { clientX: number; clientY: number; altKey: boolean; shiftKey: boolean },
+  ) => {
     const base = store();
     const moving = new Set(d.ids);
     const clips = d.ids.map((id) => base.clips[id]).filter(Boolean);
-    if (!clips.length) return { edits: [] as Edit[], commit: [] as Edit[], project: base, line: null as number | null, placements: [] };
+    if (!clips.length)
+      return {
+        edits: [] as Edit[],
+        commit: [] as Edit[],
+        project: base,
+        line: null as number | null,
+        placements: [],
+      };
     let delta = Math.round(toFrame(e.clientX) - d.f0);
     const minStart = Math.min(...clips.map((c) => c.start));
     delta = Math.max(delta, -minStart);
@@ -142,7 +178,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
     const last = kindLanes[kindLanes.length - 1];
     // Picture stacks upwards and sound downwards, so "past the edge" is above the top video lane
     // or below the bottom audio lane. Dragging there makes a new track.
-    const beyond = kind === 'video' ? !!first && y < first.top - LANE_GAP : !!last && y > last.top + last.height + LANE_GAP;
+    const beyond =
+      kind === 'video'
+        ? !!first && y < first.top - LANE_GAP
+        : !!last && y > last.top + last.height + LANE_GAP;
     if (beyond && !d.newTrack) d.newTrack = addTrack(base, kind);
     const p = d.newTrack ? applyEdits(base, d.newTrack.edits) : base;
     let tracks = kindLanes.map((l) => l.track);
@@ -179,7 +218,11 @@ export function Lanes({ lanes, height, width, live }: Props) {
       // The preview keeps the new lane for as long as the drag lasts, so the layout under the
       // pointer never jumps; the commit only creates it if something actually landed there.
       edits: d.newTrack ? [...d.newTrack.edits, ...placed] : placed,
-      commit: usesNew ? [...d.newTrack!.edits, ...placed] : d.newTrack ? placeClips(base, placements) : placed,
+      commit: usesNew
+        ? [...d.newTrack!.edits, ...placed]
+        : d.newTrack
+          ? placeClips(base, placements)
+          : placed,
       project: usesNew ? p : base,
       prefix: usesNew ? d.newTrack!.edits : [],
       line: s.line,
@@ -235,7 +278,13 @@ export function Lanes({ lanes, height, width, live }: Props) {
       }
       if ((handle === 'fade-in' || handle === 'fade-out') && editable) {
         session.store.beginGesture();
-        drag.current = { kind: 'fade', id: clip.id, side: handle === 'fade-in' ? 'in' : 'out', f0: f, base: handle === 'fade-in' ? clip.fadeIn : clip.fadeOut };
+        drag.current = {
+          kind: 'fade',
+          id: clip.id,
+          side: handle === 'fade-in' ? 'in' : 'out',
+          f0: f,
+          base: handle === 'fade-in' ? clip.fadeIn : clip.fadeOut,
+        };
         return;
       }
       if ((handle === 'start' || handle === 'end') && editable) {
@@ -246,10 +295,20 @@ export function Lanes({ lanes, height, width, live }: Props) {
         if (e.metaKey || e.ctrlKey) {
           const list = clipsOnTrack(p, clip.trackId);
           const i = list.findIndex((c) => c.id === clip.id);
-          if (handle === 'start' && i > 0 && clipEnd(list[i - 1]) === clip.start) roll = [list[i - 1].id, clip.id];
-          if (handle === 'end' && i < list.length - 1 && list[i + 1].start === clipEnd(clip)) roll = [clip.id, list[i + 1].id];
+          if (handle === 'start' && i > 0 && clipEnd(list[i - 1]) === clip.start)
+            roll = [list[i - 1].id, clip.id];
+          if (handle === 'end' && i < list.length - 1 && list[i + 1].start === clipEnd(clip))
+            roll = [clip.id, list[i + 1].id];
         }
-        drag.current = { kind: 'trim', ids, edge: handle, f0: f, restore: playhead(), roll, ripple: ui().rippleMode !== e.altKey };
+        drag.current = {
+          kind: 'trim',
+          ids,
+          edge: handle,
+          f0: f,
+          restore: playhead(),
+          roll,
+          ripple: ui().rippleMode !== e.altKey,
+        };
         return;
       }
       // Body: select and maybe move.
@@ -260,15 +319,33 @@ export function Lanes({ lanes, height, width, live }: Props) {
         else ui().select(group, true);
       } else if (!selectedSet.has(clip.id)) ui().select(group);
       else reselect = true;
-      const ids = effectiveSelection(p, ui().selection).filter((id) => !p.tracks[p.clips[id].trackId]?.locked);
+      const ids = effectiveSelection(p, ui().selection).filter(
+        (id) => !p.tracks[p.clips[id].trackId]?.locked,
+      );
       if (ids.includes(clip.id) && editable) {
-        drag.current = { kind: 'move', ids, anchor: clip.id, f0: f, x0: e.clientX, y0: e.clientY, moved: false, reselect };
+        drag.current = {
+          kind: 'move',
+          ids,
+          anchor: clip.id,
+          f0: f,
+          x0: e.clientX,
+          y0: e.clientY,
+          moved: false,
+          reselect,
+        };
       }
       return;
     }
 
     // Empty space: marquee, or click to move the playhead.
-    drag.current = { kind: 'marquee', x0: f * ui().ppf, y0: toY(e.clientY), keep: e.shiftKey ? ui().selection : [], moved: false, frame: Math.round(f) };
+    drag.current = {
+      kind: 'marquee',
+      x0: f * ui().ppf,
+      y0: toY(e.clientY),
+      keep: e.shiftKey ? ui().selection : [],
+      moved: false,
+      frame: Math.round(f),
+    };
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -292,7 +369,12 @@ export function Lanes({ lanes, height, width, live }: Props) {
         const plan = planMove(d, e);
         setPreview(plan.edits, plan.line);
         session.setPresence({
-          dragging: plan.placements.map((m) => ({ id: m.id, start: m.start, duration: p.clips[m.id].duration, trackId: m.trackId })),
+          dragging: plan.placements.map((m) => ({
+            id: m.id,
+            start: m.start,
+            duration: p.clips[m.id].duration,
+            trackId: m.trackId,
+          })),
         });
         break;
       }
@@ -334,7 +416,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
         if (!c) break;
         const df = Math.round(toFrame(e.clientX) - d.f0);
         const v = clamp(d.side === 'in' ? d.base + df : d.base - df, 0, c.duration);
-        commit([{ op: 'updateClip', id: d.id, patch: d.side === 'in' ? { fadeIn: v } : { fadeOut: v } }], true);
+        commit(
+          [{ op: 'updateClip', id: d.id, patch: d.side === 'in' ? { fadeIn: v } : { fadeOut: v } }],
+          true,
+        );
         break;
       }
       case 'trans': {
@@ -345,7 +430,16 @@ export function Lanes({ lanes, height, width, live }: Props) {
         const twoSided = d.side === 'in' && !!adjacentPrev(p, c);
         const raw = d.side === 'in' ? d.base + df * (twoSided ? 2 : 1) : d.base - df;
         const duration = clamp(raw, 1, maxTransitionDuration(p, c, d.side));
-        commit([{ op: 'updateClip', id: d.id, patch: d.side === 'in' ? { transIn: { ...t, duration } } : { transOut: { ...t, duration } } }], true);
+        commit(
+          [
+            {
+              op: 'updateClip',
+              id: d.id,
+              patch: d.side === 'in' ? { transIn: { ...t, duration } } : { transOut: { ...t, duration } },
+            },
+          ],
+          true,
+        );
         break;
       }
       case 'marquee': {
@@ -353,7 +447,12 @@ export function Lanes({ lanes, height, width, live }: Props) {
         const y = toY(e.clientY);
         if (!d.moved && Math.hypot(x - d.x0, y - d.y0) < 4) return;
         d.moved = true;
-        const box = { x: Math.min(x, d.x0), y: Math.min(y, d.y0), w: Math.abs(x - d.x0), h: Math.abs(y - d.y0) };
+        const box = {
+          x: Math.min(x, d.x0),
+          y: Math.min(y, d.y0),
+          w: Math.abs(x - d.x0),
+          h: Math.abs(y - d.y0),
+        };
         setMarquee(box);
         const hit: ID[] = [];
         for (const lane of lanes) {
@@ -379,12 +478,17 @@ export function Lanes({ lanes, height, width, live }: Props) {
       case 'move':
         if (!d.moved) {
           // A click on an already-selected clip narrows the selection to it.
-          if (d.reselect && !cancelled) ui().select(ui().linkedSelection ? withLinked(p, [d.anchor]) : [d.anchor]);
+          if (d.reselect && !cancelled)
+            ui().select(ui().linkedSelection ? withLinked(p, [d.anchor]) : [d.anchor]);
         } else if (!cancelled && e) {
           const plan = planMove(d, e);
           if (e.altKey) {
             // Alt-drop duplicates instead of moving.
-            const copies = plan.placements.map((m) => ({ ...p.clips[m.id], start: m.start, trackId: m.trackId }));
+            const copies = plan.placements.map((m) => ({
+              ...p.clips[m.id],
+              start: m.start,
+              trackId: m.trackId,
+            }));
             const r = pasteClips(plan.project, copies, Math.min(...copies.map((c) => c.start)));
             commit([...(plan.prefix ?? []), ...r.edits]);
             ui().select(r.created);
@@ -408,7 +512,9 @@ export function Lanes({ lanes, height, width, live }: Props) {
       case 'slip':
         if (!cancelled && preview) {
           const edits: Edit[] = [];
-          for (const id of d.ids) if (preview.clips[id]) edits.push({ op: 'updateClip', id, patch: { sourceIn: preview.clips[id].sourceIn } });
+          for (const id of d.ids)
+            if (preview.clips[id])
+              edits.push({ op: 'updateClip', id, patch: { sourceIn: preview.clips[id].sourceIn } });
           commit(edits);
         }
         session.player?.seek(d.restore);
@@ -438,7 +544,11 @@ export function Lanes({ lanes, height, width, live }: Props) {
   });
 
   // ─────────────────────────────────────────────── drops from the library ──
-  const dropPlan = (payload: DragPayload, x: number, y: number): { edits: Edit[]; select?: ID[]; hint?: typeof dropHint; line?: number | null } | null => {
+  const dropPlan = (
+    payload: DragPayload,
+    x: number,
+    y: number,
+  ): { edits: Edit[]; select?: ID[]; hint?: typeof dropHint; line?: number | null } | null => {
     const el = ref.current;
     if (!el || !insideRect(el.getBoundingClientRect(), x, y)) return null;
     const p = store();
@@ -451,22 +561,29 @@ export function Lanes({ lanes, height, width, live }: Props) {
     }
     if (payload.kind === 'transition') {
       if (!over || over.type === 'audio') return { edits: [] };
-      const mid = (over.start + over.duration / 2) * ui().ppf - ui().scrollX + el.getBoundingClientRect().left;
+      const mid =
+        (over.start + over.duration / 2) * ui().ppf - ui().scrollX + el.getBoundingClientRect().left;
       return { edits: [], hint: { clipId: over.id, side: x < mid ? 'in' : 'out' } };
     }
     let frame = Math.max(0, Math.round(toFrame(x)));
     if (payload.kind === 'asset') {
       const asset = p.assets[payload.assetId];
       if (!asset || asset.kind === 'lut') {
-        return over && over.type !== 'audio' ? { edits: [], hint: { clipId: over.id, side: 'all' } } : { edits: [] };
+        return over && over.type !== 'audio'
+          ? { edits: [], hint: { clipId: over.id, side: 'all' } }
+          : { edits: [] };
       }
-      const len = asset.kind === 'image' ? Math.round(5 * (p.settings.fpsNum / p.settings.fpsDen)) : Math.round(asset.duration * (p.settings.fpsNum / p.settings.fpsDen));
+      const len =
+        asset.kind === 'image'
+          ? Math.round(5 * (p.settings.fpsNum / p.settings.fpsDen))
+          : Math.round(asset.duration * (p.settings.fpsNum / p.settings.fpsDen));
       const s = snap(p, new Set(), [frame, frame + len], false);
       frame = Math.max(0, Math.round(frame + s.adjust));
       const visual = asset.kind !== 'audio';
       const r = addAssetToTimeline(p, asset, {
         frame,
-        videoTrackId: visual && lane?.track.kind === 'video' && !lane.track.locked ? lane.track.id : undefined,
+        videoTrackId:
+          visual && lane?.track.kind === 'video' && !lane.track.locked ? lane.track.id : undefined,
         audioTrackId: lane?.track.kind === 'audio' && !lane.track.locked ? lane.track.id : undefined,
       });
       return { edits: r.edits, select: r.created, line: s.line };
@@ -516,7 +633,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
       setDropHint(null);
       if (plan.hint) {
         if (payload.kind === 'effect') cmd.applyEffect(payload.type, [plan.hint.clipId]);
-        else if (payload.kind === 'transition') cmd.applyTransition(payload.type, plan.hint.clipId, plan.hint.side === 'out' ? 'out' : 'in');
+        else if (payload.kind === 'transition')
+          cmd.applyTransition(payload.type, plan.hint.clipId, plan.hint.side === 'out' ? 'out' : 'in');
         else if (payload.kind === 'asset') {
           ui().select([plan.hint.clipId]);
           cmd.applyLut(payload.assetId);
@@ -539,13 +657,16 @@ export function Lanes({ lanes, height, width, live }: Props) {
   // ───────────────────────────────────────────────────────────── render ──
   const peerSel = useMemo(() => {
     const m = new Map<ID, { color: string; name: string }>();
-    for (const peer of peers) for (const id of peer.selection ?? []) if (!m.has(id)) m.set(id, { color: peer.user.color, name: peer.user.name });
+    for (const peer of peers)
+      for (const id of peer.selection ?? [])
+        if (!m.has(id)) m.set(id, { color: peer.user.color, name: peer.user.name });
     return m;
   }, [peers]);
 
   const viewL = scrollX - 300;
   const viewR = scrollX + width + 300;
-  const cursor = tool === 'blade' ? 'crosshair' : tool === 'hand' ? 'grab' : tool === 'slip' ? 'ew-resize' : undefined;
+  const cursor =
+    tool === 'blade' ? 'crosshair' : tool === 'hand' ? 'grab' : tool === 'slip' ? 'ew-resize' : undefined;
 
   return (
     <div
@@ -568,8 +689,22 @@ export function Lanes({ lanes, height, width, live }: Props) {
       {lanes.map((lane) => {
         const clips = clipsOnTrack(live, lane.track.id);
         return (
-          <div key={lane.track.id} className="lane" data-kind={lane.track.kind} data-locked={lane.track.locked} data-hidden={lane.track.hidden || lane.track.muted} style={{ top: lane.top, height: lane.height }}>
-            <LaneCanvas project={live} clips={clips} width={width} height={lane.height} scrollX={scrollX} ppf={ppf} />
+          <div
+            key={lane.track.id}
+            className="lane"
+            data-kind={lane.track.kind}
+            data-locked={lane.track.locked}
+            data-hidden={lane.track.hidden || lane.track.muted}
+            style={{ top: lane.top, height: lane.height }}
+          >
+            <LaneCanvas
+              project={live}
+              clips={clips}
+              width={width}
+              height={lane.height}
+              scrollX={scrollX}
+              ppf={ppf}
+            />
             <div className="lane__clips" style={{ transform: `translate3d(${-scrollX}px, 0, 0)` }}>
               {clips.map((c, i) => {
                 const x = c.start * ppf;
@@ -609,7 +744,13 @@ export function Lanes({ lanes, height, width, live }: Props) {
             <div
               key={`${peer.clientId}:${g.id}`}
               className="peer-ghost"
-              style={{ left: g.start * ppf - scrollX, width: Math.max(2, g.duration * ppf), top: lane.top, height: lane.height, ['--c' as string]: peer.user.color }}
+              style={{
+                left: g.start * ppf - scrollX,
+                width: Math.max(2, g.duration * ppf),
+                top: lane.top,
+                height: lane.height,
+                ['--c' as string]: peer.user.color,
+              }}
             >
               <span>{peer.user.name}</span>
             </div>
@@ -621,9 +762,23 @@ export function Lanes({ lanes, height, width, live }: Props) {
         const lane = lanes.find((l) => l.track.id === peer.cursor!.y);
         if (!lane) return null;
         return (
-          <div key={peer.clientId} className="peer-cursor peer-cursor--tl" style={{ left: peer.cursor.x * ppf - scrollX, top: lane.top + lane.height / 2, ['--c' as string]: peer.user.color }}>
+          <div
+            key={peer.clientId}
+            className="peer-cursor peer-cursor--tl"
+            style={{
+              left: peer.cursor.x * ppf - scrollX,
+              top: lane.top + lane.height / 2,
+              ['--c' as string]: peer.user.color,
+            }}
+          >
             <svg viewBox="0 0 16 16" width="14" height="14">
-              <path d="M2 1.5l11 5.2-4.700 1.400-1.700 4.700L2 1.500z" fill="var(--c)" stroke="#0b0b0d" strokeWidth="1" strokeLinejoin="round" />
+              <path
+                d="M2 1.5l11 5.2-4.700 1.400-1.700 4.700L2 1.500z"
+                fill="var(--c)"
+                stroke="#0b0b0d"
+                strokeWidth="1"
+                strokeLinejoin="round"
+              />
             </svg>
             <span>{peer.user.name}</span>
           </div>
@@ -631,14 +786,31 @@ export function Lanes({ lanes, height, width, live }: Props) {
       })}
 
       {snapLine !== null && <div className="snapline" style={{ left: snapLine * ppf - scrollX }} />}
-      {marquee && <div className="marquee" style={{ left: marquee.x - scrollX, top: marquee.y, width: marquee.w, height: marquee.h }} />}
+      {marquee && (
+        <div
+          className="marquee"
+          style={{ left: marquee.x - scrollX, top: marquee.y, width: marquee.w, height: marquee.h }}
+        />
+      )}
     </div>
   );
 }
 
 // ───────────────────────────────────────────────────────────────── menus ──
 
-const LABEL_NAMES = ['Blue', 'Violet', 'Pink', 'Red', 'Orange', 'Amber', 'Lime', 'Emerald', 'Teal', 'Cyan', 'Slate'];
+const LABEL_NAMES = [
+  'Blue',
+  'Violet',
+  'Pink',
+  'Red',
+  'Orange',
+  'Amber',
+  'Lime',
+  'Emerald',
+  'Teal',
+  'Cyan',
+  'Slate',
+];
 
 function clipMenu(p: Project, id: ID): MenuEntry[] {
   const c = p.clips[id];
@@ -652,20 +824,39 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
     { label: 'Duplicate', keys: 'mod+d', onSelect: cmd.duplicate },
     'separator',
     { label: 'Split at playhead', keys: 'mod+b', onSelect: cmd.split },
-    c.type === 'video' && !c.freeze ? { label: 'Freeze frame at playhead', keys: 'shift+f', onSelect: cmd.freezeFrame } : null,
+    c.type === 'video' && !c.freeze
+      ? { label: 'Freeze frame at playhead', keys: 'shift+f', onSelect: cmd.freezeFrame }
+      : null,
     { label: 'Delete', keys: 'delete', onSelect: () => cmd.delete(false) },
     { label: 'Ripple delete', keys: 'shift+delete', onSelect: () => cmd.delete(true) },
     'separator',
     { label: c.enabled ? 'Disable' : 'Enable', keys: 'd', onSelect: cmd.toggleEnabled },
-    c.linkId ? { label: 'Unlink', icon: <Link2 />, keys: 'mod+shift+g', onSelect: cmd.unlink } : { label: 'Link selected', icon: <Link2 />, keys: 'mod+g', onSelect: cmd.link, disabled: ui.selection.length < 2 },
-    timed ? { label: c.reverse ? 'Play forwards' : 'Reverse', onSelect: () => cmd.setSpeed(c.speed, !c.reverse) } : null,
+    c.linkId
+      ? { label: 'Unlink', icon: <Link2 />, keys: 'mod+shift+g', onSelect: cmd.unlink }
+      : {
+          label: 'Link selected',
+          icon: <Link2 />,
+          keys: 'mod+g',
+          onSelect: cmd.link,
+          disabled: ui.selection.length < 2,
+        },
+    timed
+      ? { label: c.reverse ? 'Play forwards' : 'Reverse', onSelect: () => cmd.setSpeed(c.speed, !c.reverse) }
+      : null,
     timed ? { label: 'Speed: 50%', onSelect: () => cmd.setSpeed(0.5) } : null,
     timed ? { label: 'Speed: 100%', onSelect: () => cmd.setSpeed(1) } : null,
     timed ? { label: 'Speed: 200%', onSelect: () => cmd.setSpeed(2) } : null,
-    c.type === 'audio' ? { label: 'Normalize loudness (−14 LUFS)', onSelect: () => void cmd.normalizeLoudness(-14) } : null,
+    c.type === 'audio'
+      ? { label: 'Normalize loudness (−14 LUFS)', onSelect: () => void cmd.normalizeLoudness(-14) }
+      : null,
     'separator',
     { label: 'Copy attributes', keys: 'mod+alt+c', onSelect: cmd.copyAttributes },
-    { label: 'Paste attributes', keys: 'mod+alt+v', onSelect: () => cmd.pasteAttributes('all'), disabled: !ui.attributes },
+    {
+      label: 'Paste attributes',
+      keys: 'mod+alt+v',
+      onSelect: () => cmd.pasteAttributes('all'),
+      disabled: !ui.attributes,
+    },
     'separator',
     { heading: 'Label' },
     {
@@ -695,7 +886,21 @@ function laneMenu(): MenuEntry[] {
 
 // ─────────────────────────────────────────────────────────────── canvas ──
 
-function LaneCanvas({ project, clips, width, height, scrollX, ppf }: { project: Project; clips: readonly Clip[]; width: number; height: number; scrollX: number; ppf: number }) {
+function LaneCanvas({
+  project,
+  clips,
+  width,
+  height,
+  scrollX,
+  ppf,
+}: {
+  project: Project;
+  clips: readonly Clip[];
+  width: number;
+  height: number;
+  scrollX: number;
+  ppf: number;
+}) {
   const session = useSession();
   const ref = useRef<HTMLCanvasElement>(null);
   const [bump, setBump] = useState(0);
@@ -743,7 +948,19 @@ interface ClipViewProps {
   missing: boolean;
 }
 
-const ClipView = memo(function ClipView({ clip, ppf, height, selected, transSel, transBefore, transLen, peerColor, peerName, hint, missing }: ClipViewProps) {
+const ClipView = memo(function ClipView({
+  clip,
+  ppf,
+  height,
+  selected,
+  transSel,
+  transBefore,
+  transLen,
+  peerColor,
+  peerName,
+  hint,
+  missing,
+}: ClipViewProps) {
   const w = Math.max(2, clip.duration * ppf - 1);
   const Icon = ICONS[clip.type];
   const color = clip.label ?? CLIP_TYPE_COLORS[clip.type];
@@ -753,10 +970,12 @@ const ClipView = memo(function ClipView({ clip, ppf, height, selected, transSel,
   const keyTimes = useMemo(() => {
     if (!selected) return [];
     const s = new Set<number>();
-    for (const list of Object.values(clip.keyframes)) for (const k of list) if (k.t >= 0 && k.t <= clip.duration) s.add(k.t);
+    for (const list of Object.values(clip.keyframes))
+      for (const k of list) if (k.t >= 0 && k.t <= clip.duration) s.add(k.t);
     return Array.from(s);
   }, [clip.keyframes, clip.duration, selected]);
-  const label = clip.type === 'text' && clip.text ? clip.text.content.replace(/\s+/g, ' ') : clip.name || clip.type;
+  const label =
+    clip.type === 'text' && clip.text ? clip.text.content.replace(/\s+/g, ' ') : clip.name || clip.type;
 
   return (
     <div
@@ -768,7 +987,13 @@ const ClipView = memo(function ClipView({ clip, ppf, height, selected, transSel,
       data-hint={hint ?? undefined}
       data-missing={missing}
       data-compact={height < 40}
-      style={{ left: clip.start * ppf, width: w, height, ['--c' as string]: color, ['--peer' as string]: peerColor ?? 'transparent' }}
+      style={{
+        left: clip.start * ppf,
+        width: w,
+        height,
+        ['--c' as string]: color,
+        ['--peer' as string]: peerColor ?? 'transparent',
+      }}
     >
       {roomy && (
         <div className="clip__label">
@@ -798,19 +1023,37 @@ const ClipView = memo(function ClipView({ clip, ppf, height, selected, transSel,
         </div>
       )}
       {clip.transIn && transLen > 0 && (
-        <div className="clip__trans clip__trans--in" data-handle="trans-in" data-selected={transSel === 'in'} style={{ left: -transBefore * ppf, width: Math.max(6, transLen * ppf) }}>
+        <div
+          className="clip__trans clip__trans--in"
+          data-handle="trans-in"
+          data-selected={transSel === 'in'}
+          style={{ left: -transBefore * ppf, width: Math.max(6, transLen * ppf) }}
+        >
           <i data-trans-edge />
         </div>
       )}
       {clip.transOut && (
-        <div className="clip__trans clip__trans--out" data-handle="trans-out" data-selected={transSel === 'out'} style={{ width: Math.max(6, Math.min(clip.transOut.duration, clip.duration) * ppf) }}>
+        <div
+          className="clip__trans clip__trans--out"
+          data-handle="trans-out"
+          data-selected={transSel === 'out'}
+          style={{ width: Math.max(6, Math.min(clip.transOut.duration, clip.duration) * ppf) }}
+        >
           <i data-trans-edge />
         </div>
       )}
       {clip.type === 'audio' && roomy && (
         <>
-          <div className="clip__fade clip__fade--in" data-handle="fade-in" style={{ left: clip.fadeIn * ppf }} />
-          <div className="clip__fade clip__fade--out" data-handle="fade-out" style={{ right: clip.fadeOut * ppf }} />
+          <div
+            className="clip__fade clip__fade--in"
+            data-handle="fade-in"
+            style={{ left: clip.fadeIn * ppf }}
+          />
+          <div
+            className="clip__fade clip__fade--out"
+            data-handle="fade-out"
+            style={{ right: clip.fadeOut * ppf }}
+          />
         </>
       )}
       {keyTimes.map((t) => (

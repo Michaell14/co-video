@@ -24,7 +24,14 @@ export interface MediaStatus {
   error: string | null;
 }
 
-const EMPTY: MediaStatus = { local: false, uploading: null, downloading: null, proxy: false, proxying: null, error: null };
+const EMPTY: MediaStatus = {
+  local: false,
+  uploading: null,
+  downloading: null,
+  proxy: false,
+  proxying: null,
+  error: null,
+};
 const PROXY_SUFFIX = '.proxy';
 const CHUNK = 8 * 1024 * 1024;
 
@@ -249,8 +256,13 @@ export class MediaStore {
       return true;
     } catch (err) {
       await dir?.removeEntry(partName).catch(() => {});
-      if ((err as Error)?.name === 'ProxyCancelled' || ctrl.signal.aborted) this.patch(assetId, { proxying: null });
-      else this.patch(assetId, { proxying: null, error: err instanceof Error ? err.message : 'Could not make a proxy' });
+      if ((err as Error)?.name === 'ProxyCancelled' || ctrl.signal.aborted)
+        this.patch(assetId, { proxying: null });
+      else
+        this.patch(assetId, {
+          proxying: null,
+          error: err instanceof Error ? err.message : 'Could not make a proxy',
+        });
       return false;
     } finally {
       this.proxyJobs.delete(assetId);
@@ -328,7 +340,12 @@ export class MediaStore {
         const end = Math.min(file.size, offset + CHUNK);
         const res = await fetch(url, {
           method: 'PUT',
-          headers: { ...auth, 'Upload-Offset': String(offset), 'Upload-Length': String(file.size), 'Content-Type': mime || 'application/octet-stream' },
+          headers: {
+            ...auth,
+            'Upload-Offset': String(offset),
+            'Upload-Length': String(file.size),
+            'Content-Type': mime || 'application/octet-stream',
+          },
           body: file.slice(offset, end),
           signal: ctrl.signal,
         });
@@ -348,7 +365,8 @@ export class MediaStore {
       return true;
     } catch (err) {
       if (ctrl.signal.aborted) this.patch(assetId, { uploading: null });
-      else this.patch(assetId, { uploading: null, error: err instanceof Error ? err.message : 'Upload failed' });
+      else
+        this.patch(assetId, { uploading: null, error: err instanceof Error ? err.message : 'Upload failed' });
       return false;
     } finally {
       this.uploads.delete(assetId);
@@ -402,7 +420,11 @@ export class MediaStore {
     } catch (err) {
       await dir.removeEntry(partName).catch(() => {});
       if (ctrl.signal.aborted) this.patch(assetId, { downloading: null });
-      else this.patch(assetId, { downloading: null, error: err instanceof Error ? err.message : 'Download failed' });
+      else
+        this.patch(assetId, {
+          downloading: null,
+          error: err instanceof Error ? err.message : 'Download failed',
+        });
       return false;
     } finally {
       this.downloads.delete(assetId);
@@ -440,7 +462,9 @@ export async function moveProjectMedia(fromId: string, toId: string): Promise<vo
     const entries = (from as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries();
     for await (const [name, handle] of entries) {
       if (handle.kind !== 'file') continue;
-      const file = handle as FileSystemFileHandle & { move?: (dir: FileSystemDirectoryHandle, name: string) => Promise<void> };
+      const file = handle as FileSystemFileHandle & {
+        move?: (dir: FileSystemDirectoryHandle, name: string) => Promise<void>;
+      };
       try {
         if (!file.move) throw new Error('no move');
         await file.move(to, name);

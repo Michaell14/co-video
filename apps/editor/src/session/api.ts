@@ -64,17 +64,30 @@ async function call<T>(path: string, token: string | null, init: RequestInit = {
 }
 
 export const api = {
-  createProject: (name: string) => call<{ id: string; token: string }>('/api/projects', null, { method: 'POST', body: JSON.stringify({ name }) }),
+  createProject: (name: string) =>
+    call<{ id: string; token: string }>('/api/projects', null, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
   projectInfo: (id: string, token: string) => call<ProjectInfo>(`/api/projects/${id}`, token),
   invite: (id: string, token: string, role: Role) =>
-    call<{ token: string }>(`/api/projects/${id}/invites`, token, { method: 'POST', body: JSON.stringify({ role }) }),
+    call<{ token: string }>(`/api/projects/${id}/invites`, token, {
+      method: 'POST',
+      body: JSON.stringify({ role }),
+    }),
   versions: (id: string, token: string) => call<VersionInfo[]>(`/api/projects/${id}/versions`, token),
   saveVersion: (id: string, token: string, name: string, author: string) =>
-    call<VersionInfo>(`/api/projects/${id}/versions`, token, { method: 'POST', body: JSON.stringify({ name, author }) }),
+    call<VersionInfo>(`/api/projects/${id}/versions`, token, {
+      method: 'POST',
+      body: JSON.stringify({ name, author }),
+    }),
   async versionData(id: string, token: string, versionId: string): Promise<Uint8Array> {
-    const res = await fetch(`${serverBase()}/api/projects/${id}/versions/${versionId}`, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(`${serverBase()}/api/projects/${id}/versions/${versionId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     if (!res.ok) throw new Error(`Could not load version (${res.status})`);
     return new Uint8Array(await res.arrayBuffer());
   },
-  mediaUrl: (id: string, assetId: string, token: string) => `${serverBase()}/api/projects/${id}/media/${assetId}?t=${encodeURIComponent(token)}`,
+  mediaUrl: (id: string, assetId: string, token: string) =>
+    `${serverBase()}/api/projects/${id}/media/${assetId}?t=${encodeURIComponent(token)}`,
 };

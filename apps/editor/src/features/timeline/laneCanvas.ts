@@ -18,7 +18,13 @@ function tint(hex: string, alpha: number): string {
   return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${alpha})`;
 }
 
-export function drawLane(ctx: CanvasRenderingContext2D, project: Project, clips: readonly Clip[], view: LaneView, media: TimelineMedia): void {
+export function drawLane(
+  ctx: CanvasRenderingContext2D,
+  project: Project,
+  clips: readonly Clip[],
+  view: LaneView,
+  media: TimelineMedia,
+): void {
   const { scrollX, ppf, width, height, dpr } = view;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
@@ -46,7 +52,15 @@ export function drawLane(ctx: CanvasRenderingContext2D, project: Project, clips:
     ctx.fillRect(visL, 0, visR - visL, height);
 
     if (clip.type === 'audio') {
-      drawWaveform(ctx, project, clip, asset?.duration ?? 0, { x0, visL, visR, top, bodyH, fps, ppf }, media, color);
+      drawWaveform(
+        ctx,
+        project,
+        clip,
+        asset?.duration ?? 0,
+        { x0, visL, visR, top, bodyH, fps, ppf },
+        media,
+        color,
+      );
     } else if (asset && bodyH > 8) {
       const aspect = asset.width > 0 && asset.height > 0 ? asset.width / asset.height : 16 / 9;
       const th = bodyH;
@@ -61,8 +75,14 @@ export function drawLane(ctx: CanvasRenderingContext2D, project: Project, clips:
         let img: CanvasImageSource | null = null;
         if (clip.type === 'video' && clip.assetId) {
           const local = (i * tw) / ppf;
-          const t = clip.reverse ? clip.sourceIn + (clip.duration - local) * per : clip.sourceIn + local * per;
-          img = media.film.get(clip.assetId, Math.max(0, Math.min(t, Math.max(0, asset.duration - 0.05))), step);
+          const t = clip.reverse
+            ? clip.sourceIn + (clip.duration - local) * per
+            : clip.sourceIn + local * per;
+          img = media.film.get(
+            clip.assetId,
+            Math.max(0, Math.min(t, Math.max(0, asset.duration - 0.05))),
+            step,
+          );
         }
         img ??= poster;
         if (img) ctx.drawImage(img, tx, top, tw, th);

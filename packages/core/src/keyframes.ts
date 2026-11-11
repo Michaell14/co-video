@@ -143,7 +143,11 @@ export function scaleKeyframes(
   return out;
 }
 
-export function nearestKeyframe(kfs: readonly Keyframe[] | undefined, t: number, dir: -1 | 1): Keyframe | null {
+export function nearestKeyframe(
+  kfs: readonly Keyframe[] | undefined,
+  t: number,
+  dir: -1 | 1,
+): Keyframe | null {
   if (!kfs) return null;
   let best: Keyframe | null = null;
   for (const k of kfs) {

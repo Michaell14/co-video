@@ -90,7 +90,17 @@ export class Session {
     this.awareness = new Awareness(this.doc);
     this.media = new MediaStore(id);
     this.thumbs = new TimelineMedia(this.previewResolver());
-    this.meta = { role: 'owner', status: 'offline', online: false, shared: false, synced: false, player: null, user: getUser(), denied: false, proxies: readProxyPref() };
+    this.meta = {
+      role: 'owner',
+      status: 'offline',
+      online: false,
+      shared: false,
+      synced: false,
+      player: null,
+      user: getUser(),
+      denied: false,
+      proxies: readProxyPref(),
+    };
   }
 
   /** Where the player and the timeline thumbnails read media: proxies allowed. */
@@ -111,7 +121,12 @@ export class Session {
 
   /** Whether a proxy would help: a local SDR video noticeably larger than a preview. */
   canProxy(asset: Asset): boolean {
-    return asset.kind === 'video' && !asset.hdr && this.media.get(asset.id).local && proxySize(asset.width, asset.height) !== null;
+    return (
+      asset.kind === 'video' &&
+      !asset.hdr &&
+      this.media.get(asset.id).local &&
+      proxySize(asset.width, asset.height) !== null
+    );
   }
 
   async createProxy(assetId: string): Promise<boolean> {
@@ -140,7 +155,8 @@ export class Session {
       // Private mode: the choice lasts for this session only.
     }
     this.setMeta({ proxies: on });
-    for (const id of Object.keys(this.store.get().assets)) if (this.media.get(id).proxy) this.refreshMedia(id);
+    for (const id of Object.keys(this.store.get().assets))
+      if (this.media.get(id).proxy) this.refreshMedia(id);
   }
 
   private refreshMedia(assetId: string): void {
@@ -170,7 +186,9 @@ export class Session {
     await this.media.init(Object.keys(this.store.get().assets), !this.store.isEmpty());
     this.media.onUploaded = (assetId) => {
       if (this.store.get().assets[assetId]) {
-        this.store.commit([{ op: 'updateAsset', id: assetId, patch: { uploaded: true } }], { undoable: false });
+        this.store.commit([{ op: 'updateAsset', id: assetId, patch: { uploaded: true } }], {
+          undoable: false,
+        });
       }
     };
     this.media.onLocal = (assetId) => this.refreshMedia(assetId);
@@ -217,7 +235,10 @@ export class Session {
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
       if (this.token) this.scheduleReconnect();
-      else void serverAvailable(true).then((up) => !this.destroyed && up !== this.meta.online && this.setMeta({ online: up }));
+      else
+        void serverAvailable(true).then(
+          (up) => !this.destroyed && up !== this.meta.online && this.setMeta({ online: up }),
+        );
     };
     window.addEventListener('online', onNetwork);
     this.unsubs.push(() => window.removeEventListener('online', onNetwork));
@@ -253,7 +274,8 @@ export class Session {
     } catch (err) {
       console.warn('[session] project not reachable on server', err);
       // Only a real refusal is final; a network failure is retried by scheduleReconnect.
-      if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429) this.refused = true;
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429)
+        this.refused = true;
       // Nothing local to show either way; if this was only the network, a later attempt clears it.
       if (this.store.isEmpty()) this.setMeta({ denied: true });
       return;
@@ -264,7 +286,8 @@ export class Session {
     const q = `?t=${encodeURIComponent(token)}`;
     const project = new SyncProvider(`${wsBase()}/ws/${this.id}/project${q}`, this.doc, {
       awareness: this.awareness,
-      onStatus: (status) => this.setMeta({ status, synced: status === 'connected' ? this.meta.synced : false }),
+      onStatus: (status) =>
+        this.setMeta({ status, synced: status === 'connected' ? this.meta.synced : false }),
       onSynced: () => {
         this.setMeta({ synced: true });
         this.scheduleMediaSync();
@@ -366,7 +389,11 @@ export class Session {
   }
 
   renameUser(name: string, color?: string): void {
-    const user = { ...this.meta.user, name: name.trim() || this.meta.user.name, color: color ?? this.meta.user.color };
+    const user = {
+      ...this.meta.user,
+      name: name.trim() || this.meta.user.name,
+      color: color ?? this.meta.user.color,
+    };
     setUser(user);
     this.setMeta({ user });
     this.awareness.setLocalStateField('user', user);
@@ -485,14 +512,17 @@ export class Session {
       const edits: Edit[] = [{ op: 'addAsset', asset }];
       for (const c of Object.values(p.clips)) {
         if (c.assetId === assetId) edits.push({ op: 'updateClip', id: c.id, patch: { assetId: asset.id } });
-        else if (c.grade?.lutId === assetId) edits.push({ op: 'updateClip', id: c.id, patch: { grade: { ...c.grade, lutId: asset.id } } });
+        else if (c.grade?.lutId === assetId)
+          edits.push({ op: 'updateClip', id: c.id, patch: { grade: { ...c.grade, lutId: asset.id } } });
       }
       edits.push({ op: 'removeAsset', id: assetId });
       this.store.commit(edits);
       this.scheduleMediaSync();
       for (const w of probe.warnings) toast(w, 'error');
       if (old.duration > 0 && asset.duration > 0 && asset.duration < old.duration - 0.05) {
-        toast('The new file is shorter than the old one; clips that run past its end will hold the last frame.');
+        toast(
+          'The new file is shorter than the old one; clips that run past its end will hold the last frame.',
+        );
       }
       return asset;
     } catch (err) {

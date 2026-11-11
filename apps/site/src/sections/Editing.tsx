@@ -1,4 +1,20 @@
-import { AudioLines, ChevronsLeftRight, Flag, Gauge, Keyboard, Layers, Link2, Magnet, Mic, Play, Scissors, Search, Spline, WifiOff, Zap } from 'lucide-react';
+import {
+  AudioLines,
+  ChevronsLeftRight,
+  Flag,
+  Gauge,
+  Keyboard,
+  Layers,
+  Link2,
+  Magnet,
+  Mic,
+  Play,
+  Scissors,
+  Search,
+  Spline,
+  WifiOff,
+  Zap,
+} from 'lucide-react';
 import { useReducedMotion } from 'motion/react';
 import { useRef } from 'react';
 import type { ReactNode } from 'react';

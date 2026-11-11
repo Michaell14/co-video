@@ -46,8 +46,34 @@ export const USER_COLORS = [
   '#fd7e14',
 ];
 
-const ADJECTIVES = ['Swift', 'Bright', 'Bold', 'Calm', 'Clever', 'Lucky', 'Mellow', 'Nimble', 'Quiet', 'Vivid', 'Witty', 'Golden'];
-const ANIMALS = ['Falcon', 'Otter', 'Lynx', 'Heron', 'Panda', 'Fox', 'Koala', 'Orca', 'Finch', 'Gecko', 'Ibex', 'Wren'];
+const ADJECTIVES = [
+  'Swift',
+  'Bright',
+  'Bold',
+  'Calm',
+  'Clever',
+  'Lucky',
+  'Mellow',
+  'Nimble',
+  'Quiet',
+  'Vivid',
+  'Witty',
+  'Golden',
+];
+const ANIMALS = [
+  'Falcon',
+  'Otter',
+  'Lynx',
+  'Heron',
+  'Panda',
+  'Fox',
+  'Koala',
+  'Orca',
+  'Finch',
+  'Gecko',
+  'Ibex',
+  'Wren',
+];
 
 export function randomUserName(): string {
   const a = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];

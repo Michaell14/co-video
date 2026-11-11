@@ -177,7 +177,8 @@ function resolveTrack(p: Project, track: Track, frame: number): Layer | null {
     if (w) {
       outgoingCut = true;
       const winStart = next.start - w.before;
-      if (frame >= winStart) return mk(cur, next, next.transIn, (frame - winStart + 1) / (w.duration + 1), next.id);
+      if (frame >= winStart)
+        return mk(cur, next, next.transIn, (frame - winStart + 1) / (w.duration + 1), next.id);
     }
   }
   // One-sided fades from / to nothing.

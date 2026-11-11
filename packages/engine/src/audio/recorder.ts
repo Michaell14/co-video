@@ -33,7 +33,11 @@ export class VoiceRecorder {
       if (!track) throw new Error('No microphone was found.');
       const target = new BufferTarget();
       const output = new Output({ format: new WavOutputFormat(), target });
-      const source = new MediaStreamAudioTrackSource(track as MediaStreamAudioTrack, { codec: 'pcm-s16' }, { timestampBase: 'zero' });
+      const source = new MediaStreamAudioTrackSource(
+        track as MediaStreamAudioTrack,
+        { codec: 'pcm-s16' },
+        { timestampBase: 'zero' },
+      );
       output.addAudioTrack(source);
       await output.start();
 
@@ -48,7 +52,14 @@ export class VoiceRecorder {
         // No meter is not a reason to refuse to record.
       }
       const latency = Number((track.getSettings() as { latency?: number }).latency ?? 0);
-      return new VoiceRecorder(stream, output, target, ctx, analyser, Number.isFinite(latency) ? Math.min(Math.max(latency, 0), 0.5) : 0);
+      return new VoiceRecorder(
+        stream,
+        output,
+        target,
+        ctx,
+        analyser,
+        Number.isFinite(latency) ? Math.min(Math.max(latency, 0), 0.5) : 0,
+      );
     } catch (err) {
       for (const t of stream.getTracks()) t.stop();
       throw err;

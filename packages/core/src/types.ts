@@ -175,7 +175,8 @@ export interface EffectInstance {
   params: Record<string, ParamValue>;
 }
 
-export type Easing = 'linear' | 'hold' | 'ease' | 'easeIn' | 'easeOut' | 'easeInOut' | [number, number, number, number];
+export type Easing =
+  'linear' | 'hold' | 'ease' | 'easeIn' | 'easeOut' | 'easeInOut' | [number, number, number, number];
 
 export interface Keyframe {
   /** Frame offset from the clip's start. */

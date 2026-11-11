@@ -30,7 +30,15 @@ export function CommentsPanel() {
   const post = () => {
     const body = text.trim();
     if (!body) return;
-    session.review.add({ frame, text: body, authorId: meta.user.id, authorName: meta.user.name, authorColor: meta.user.color, x: null, y: null });
+    session.review.add({
+      frame,
+      text: body,
+      authorId: meta.user.id,
+      authorName: meta.user.name,
+      authorColor: meta.user.color,
+      x: null,
+      y: null,
+    });
     setText('');
   };
 
@@ -41,10 +49,19 @@ export function CommentsPanel() {
         <div className="panel__title">Comments</div>
         {open.length > 0 && <span className="badge badge--accent">{open.length}</span>}
         <span className="panel__spacer" />
-        <button className="chip" aria-pressed={showResolved} onClick={() => setShowResolved(!showResolved)} {...tip('Show resolved comments')}>
+        <button
+          className="chip"
+          aria-pressed={showResolved}
+          onClick={() => setShowResolved(!showResolved)}
+          {...tip('Show resolved comments')}
+        >
           Resolved
         </button>
-        <IconButton small label="Close comments" onClick={() => useUI.getState().set({ commentsOpen: false })}>
+        <IconButton
+          small
+          label="Close comments"
+          onClick={() => useUI.getState().set({ commentsOpen: false })}
+        >
           <X />
         </IconButton>
       </div>
@@ -56,7 +73,14 @@ export function CommentsPanel() {
             Leave a note at the playhead. Comments are pinned to a timecode and sync to everyone instantly.
           </div>
         ) : (
-          list.map((c) => <CommentCard key={c.id} comment={c} current={Math.abs(c.frame - frame) < 1} tc={formatTimecode(c.frame, settings)} />)
+          list.map((c) => (
+            <CommentCard
+              key={c.id}
+              comment={c}
+              current={Math.abs(c.frame - frame) < 1}
+              tc={formatTimecode(c.frame, settings)}
+            />
+          ))
         )}
       </div>
       <div className="composer">
@@ -95,7 +119,12 @@ function CommentCard({ comment: c, current, tc }: { comment: Comment; current: b
   const send = () => {
     const body = reply.trim();
     if (!body) return;
-    session.review.reply(c.id, { text: body, authorId: meta.user.id, authorName: meta.user.name, authorColor: meta.user.color });
+    session.review.reply(c.id, {
+      text: body,
+      authorId: meta.user.id,
+      authorName: meta.user.name,
+      authorColor: meta.user.color,
+    });
     setReply('');
     setReplying(false);
   };
@@ -108,7 +137,11 @@ function CommentCard({ comment: c, current, tc }: { comment: Comment; current: b
         <b>{c.authorName}</b>
         <span className="comment__ago">{ago(c.createdAt)}</span>
         <span style={{ flex: 1 }} />
-        <button className="comment__tc mono" onClick={() => cmd.seek(c.frame)} {...tip('Jump to this moment')}>
+        <button
+          className="comment__tc mono"
+          onClick={() => cmd.seek(c.frame)}
+          {...tip('Jump to this moment')}
+        >
           {tc}
         </button>
       </div>
@@ -117,7 +150,8 @@ function CommentCard({ comment: c, current, tc }: { comment: Comment; current: b
         <div key={r.id} className="comment__reply">
           <CornerDownRight />
           <div>
-            <b style={{ color: r.authorColor }}>{r.authorName}</b> <span className="comment__ago">{ago(r.createdAt)}</span>
+            <b style={{ color: r.authorColor }}>{r.authorName}</b>{' '}
+            <span className="comment__ago">{ago(r.createdAt)}</span>
             <div>{r.text}</div>
           </div>
         </div>

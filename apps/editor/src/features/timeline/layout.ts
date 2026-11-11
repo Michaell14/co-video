@@ -35,14 +35,33 @@ export function laneAt(lanes: Lane[], y: number): Lane | null {
 /** Ruler tick spacing: returns major interval in frames and number of minor subdivisions. */
 export function tickInterval(ppf: number, fps: number): { major: number; minor: number } {
   const f = Math.max(1, Math.round(fps));
-  const candidates = [1, 2, 5, 10, f / 2, f, 2 * f, 5 * f, 10 * f, 15 * f, 30 * f, 60 * f, 120 * f, 300 * f, 600 * f, 1800 * f, 3600 * f]
+  const candidates = [
+    1,
+    2,
+    5,
+    10,
+    f / 2,
+    f,
+    2 * f,
+    5 * f,
+    10 * f,
+    15 * f,
+    30 * f,
+    60 * f,
+    120 * f,
+    300 * f,
+    600 * f,
+    1800 * f,
+    3600 * f,
+  ]
     .map((v) => Math.round(v))
     .filter((v, i, a) => v >= 1 && a.indexOf(v) === i)
     .sort((a, b) => a - b);
   const want = 96;
   for (const c of candidates) {
     if (c * ppf >= want) {
-      const minor = c >= f ? (c % (5 * f) === 0 ? 5 : c === f ? Math.min(f, 5) : 4) : c >= 10 ? 5 : c >= 2 ? 2 : 1;
+      const minor =
+        c >= f ? (c % (5 * f) === 0 ? 5 : c === f ? Math.min(f, 5) : 4) : c >= 10 ? 5 : c >= 2 ? 2 : 1;
       return { major: c, minor };
     }
   }

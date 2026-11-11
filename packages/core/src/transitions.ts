@@ -135,7 +135,10 @@ export const TRANSITIONS: TransitionDef[] = [
     category: 'dissolve',
     description: 'The brightest areas of the outgoing shot give way first.',
     ease: 'linear',
-    params: [f('softness', 'Softness', 0.01, 1, 0.25), { key: 'invert', label: 'Darks first', type: 'bool', default: false }],
+    params: [
+      f('softness', 'Softness', 0.01, 1, 0.25),
+      { key: 'invert', label: 'Darks first', type: 'bool', default: false },
+    ],
     glsl: `vec4 transition(vec2 uv) {
   vec4 a = A(uv);
   float l = clamp(luma(a.rgb), 0.0, 1.0);
@@ -167,7 +170,10 @@ export const TRANSITIONS: TransitionDef[] = [
     category: 'wipe',
     description: 'A line sweeps across the frame at any angle.',
     ease: 'inOut',
-    params: [{ key: 'angle', label: 'Angle', type: 'angle', default: 0 }, f('softness', 'Softness', 0, 1, 0.05)],
+    params: [
+      { key: 'angle', label: 'Angle', type: 'angle', default: 0 },
+      f('softness', 'Softness', 0, 1, 0.05),
+    ],
     glsl: `vec4 transition(vec2 uv) {
   vec2 d = vec2(cos(u_angle), sin(u_angle));
   float proj = dot(uv - 0.5, d) / (abs(d.x) + abs(d.y)) + 0.5;
@@ -182,7 +188,10 @@ export const TRANSITIONS: TransitionDef[] = [
     category: 'wipe',
     description: 'A circle opens from a point to reveal the next shot.',
     ease: 'inOut',
-    params: [f('softness', 'Softness', 0, 1, 0.05), { key: 'center', label: 'Center', type: 'point', default: [0.5, 0.5] }],
+    params: [
+      f('softness', 'Softness', 0, 1, 0.05),
+      { key: 'center', label: 'Center', type: 'point', default: [0.5, 0.5] },
+    ],
     glsl: `vec4 transition(vec2 uv) {
   vec2 p = (uv - u_center) * vec2(u_aspect, 1.0);
   float maxR = length(vec2(u_aspect, 1.0) * (0.5 + abs(u_center - 0.5)));
@@ -213,7 +222,10 @@ export const TRANSITIONS: TransitionDef[] = [
     category: 'wipe',
     description: 'Two doors part from the centre.',
     ease: 'inOut',
-    params: [{ key: 'vertical', label: 'Vertical', type: 'bool', default: false }, f('softness', 'Softness', 0, 1, 0.03)],
+    params: [
+      { key: 'vertical', label: 'Vertical', type: 'bool', default: false },
+      f('softness', 'Softness', 0, 1, 0.03),
+    ],
     glsl: `vec4 transition(vec2 uv) {
   float d = abs((u_vertical > 0.5 ? uv.y : uv.x) - 0.5) * 2.0;
   float edge = u_progress * (1.0 + u_softness) - u_softness;
@@ -227,7 +239,10 @@ export const TRANSITIONS: TransitionDef[] = [
     category: 'wipe',
     description: 'Slats rotate open.',
     ease: 'linear',
-    params: [f('count', 'Slats', 2, 40, 10, 1), { key: 'vertical', label: 'Vertical', type: 'bool', default: false }],
+    params: [
+      f('count', 'Slats', 2, 40, 10, 1),
+      { key: 'vertical', label: 'Vertical', type: 'bool', default: false },
+    ],
     glsl: `vec4 transition(vec2 uv) {
   float v = fract((u_vertical > 0.5 ? uv.x : uv.y) * floor(u_count));
   float edge = u_progress * 1.04 - 0.02;
@@ -405,7 +420,10 @@ vec4 transition(vec2 uv) {
     category: 'stylize',
     description: 'A camera-flash pop on the cut.',
     ease: 'linear',
-    params: [f('intensity', 'Intensity', 0, 3, 1.2), { key: 'color', label: 'Color', type: 'color', default: '#ffffff' }],
+    params: [
+      f('intensity', 'Intensity', 0, 3, 1.2),
+      { key: 'color', label: 'Color', type: 'color', default: '#ffffff' },
+    ],
     glsl: `vec4 transition(vec2 uv) {
   float fl = pow(1.0 - abs(u_progress * 2.0 - 1.0), 2.0) * u_intensity;
   vec4 c = mix(A(uv), B(uv), smoothstep(0.4, 0.6, u_progress));

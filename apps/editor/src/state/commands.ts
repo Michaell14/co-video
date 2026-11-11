@@ -110,7 +110,8 @@ export function revealFrame(f: number): void {
   const x = f * ppf;
   const margin = Math.min(120, timelineWidth * 0.15);
   if (x < scrollX + margin) ui().set({ scrollX: Math.max(0, x - margin) });
-  else if (x > scrollX + timelineWidth - margin) ui().set({ scrollX: Math.max(0, x - timelineWidth + margin) });
+  else if (x > scrollX + timelineWidth - margin)
+    ui().set({ scrollX: Math.max(0, x - timelineWidth + margin) });
 }
 
 function pickFiles(accept: string, multiple: boolean): Promise<File[]> {
@@ -162,7 +163,8 @@ async function measureClip(s: Session, clip: Clip, p: Project): Promise<Loudness
     const to = Math.min(buffer.length, Math.round((end - timestamp) * buffer.sampleRate));
     if (to <= from) continue;
     const planes: Float32Array[] = [];
-    for (let c = 0; c < Math.min(meter.channels, buffer.numberOfChannels); c++) planes.push(buffer.getChannelData(c).subarray(from, to));
+    for (let c = 0; c < Math.min(meter.channels, buffer.numberOfChannels); c++)
+      planes.push(buffer.getChannelData(c).subarray(from, to));
     meter.push(planes);
     if (performance.now() - lastYield > 12) {
       await new Promise((r) => setTimeout(r, 0));
@@ -297,7 +299,11 @@ export const cmd = {
         return c && c.start < f && f < clipEnd(c);
       });
       // With nothing selected under the playhead, cut straight through every unlocked track.
-      const ids = sel.length ? sel : ui().linkedSelection ? withLinked(p, clipsUnderFrame(p, f)) : clipsUnderFrame(p, f);
+      const ids = sel.length
+        ? sel
+        : ui().linkedSelection
+          ? withLinked(p, clipsUnderFrame(p, f))
+          : clipsUnderFrame(p, f);
       const r = splitClips(p, ids, f);
       if (!r.edits.length) return;
       s.store.commit(r.edits);
@@ -316,7 +322,9 @@ export const cmd = {
         // No selection: delete the marked range, if any.
         const range = s.player?.getState().range;
         if (range) {
-          const tracks = Object.values(p.tracks).filter((t) => !t.locked).map((t) => t.id);
+          const tracks = Object.values(p.tracks)
+            .filter((t) => !t.locked)
+            .map((t) => t.id);
           s.store.commit(deleteRange(p, tracks, range.in, range.out, ripple));
           if (ripple) s.player?.setRange(null);
         }
@@ -366,7 +374,12 @@ export const cmd = {
       const min = Math.min(...ids.map((id) => p.clips[id].start));
       const d = Math.max(delta, -min);
       if (d === 0) return;
-      s.store.commit(placeClips(p, ids.map((id) => ({ id, start: p.clips[id].start + d, trackId: p.clips[id].trackId }))));
+      s.store.commit(
+        placeClips(
+          p,
+          ids.map((id) => ({ id, start: p.clips[id].start + d, trackId: p.clips[id].trackId })),
+        ),
+      );
     });
   },
   /** Move the selection one track up (+1) or down (-1) in stacking order. */
@@ -444,12 +457,26 @@ export const cmd = {
   updateSelected(patch: Partial<Clip>, merge = false): void {
     editing((s, p) => {
       const clips = selectedClips(p);
-      if (clips.length) s.store.commit(clips.map((c) => ({ op: 'updateClip', id: c.id, patch }) as Edit), { merge });
+      if (clips.length)
+        s.store.commit(
+          clips.map((c) => ({ op: 'updateClip', id: c.id, patch }) as Edit),
+          { merge },
+        );
     });
   },
 
   // ───────────────────────────────────────────────────── adding content ──
-  addAsset(asset: Asset, opts: { frame?: number; videoTrackId?: ID | null; audioTrackId?: ID | null; sourceIn?: number; sourceOut?: number; insert?: boolean } = {}): void {
+  addAsset(
+    asset: Asset,
+    opts: {
+      frame?: number;
+      videoTrackId?: ID | null;
+      audioTrackId?: ID | null;
+      sourceIn?: number;
+      sourceOut?: number;
+      insert?: boolean;
+    } = {},
+  ): void {
     editing((s, p) => {
       if (asset.kind === 'lut') {
         cmd.applyLut(asset.id);
@@ -459,8 +486,13 @@ export const cmd = {
       let working = p;
       const pre: Edit[] = [];
       if (opts.insert) {
-        const len = asset.kind === 'image' ? secondsToFrame(5, p.settings) : secondsToFrame((opts.sourceOut ?? asset.duration) - (opts.sourceIn ?? 0), p.settings);
-        const tracks = Object.values(p.tracks).filter((t) => !t.locked).map((t) => t.id);
+        const len =
+          asset.kind === 'image'
+            ? secondsToFrame(5, p.settings)
+            : secondsToFrame((opts.sourceOut ?? asset.duration) - (opts.sourceIn ?? 0), p.settings);
+        const tracks = Object.values(p.tracks)
+          .filter((t) => !t.locked)
+          .map((t) => t.id);
         pre.push(...openGap(p, tracks, at, Math.max(1, len)));
         // Compute placement against the timeline as it will look once the gap is open.
         working = applyPreview(p, pre);
@@ -515,7 +547,18 @@ export const cmd = {
         return;
       }
       const n = Object.keys(p.markers).length;
-      s.store.commit([{ op: 'setMarker', marker: { id: newId(8), frame: f, name: `Marker ${n + 1}`, color: MARKER_COLORS[n % MARKER_COLORS.length], note: '' } }]);
+      s.store.commit([
+        {
+          op: 'setMarker',
+          marker: {
+            id: newId(8),
+            frame: f,
+            name: `Marker ${n + 1}`,
+            color: MARKER_COLORS[n % MARKER_COLORS.length],
+            note: '',
+          },
+        },
+      ]);
     });
   },
 
@@ -529,7 +572,16 @@ export const cmd = {
         toast('Select a clip to apply the effect to.', 'info');
         return;
       }
-      s.store.commit(ids.map((id) => ({ op: 'updateClip', id, patch: { effects: [...p.clips[id].effects, makeEffect(type)] } }) as Edit));
+      s.store.commit(
+        ids.map(
+          (id) =>
+            ({
+              op: 'updateClip',
+              id,
+              patch: { effects: [...p.clips[id].effects, makeEffect(type)] },
+            }) as Edit,
+        ),
+      );
       if (!clipIds) toast(`${def.name} added`, 'success');
     });
   },
@@ -569,7 +621,14 @@ export const cmd = {
         return;
       }
       s.store.commit(
-        clips.map((c) => ({ op: 'updateClip', id: c.id, patch: { grade: { ...(c.grade ?? defaultGrade()), lutId: assetId, enabled: true } } }) as Edit),
+        clips.map(
+          (c) =>
+            ({
+              op: 'updateClip',
+              id: c.id,
+              patch: { grade: { ...(c.grade ?? defaultGrade()), lutId: assetId, enabled: true } },
+            }) as Edit,
+        ),
       );
     });
   },
@@ -582,7 +641,19 @@ export const cmd = {
       attributes: {
         effects: c.effects,
         grade: c.grade,
-        transform: { x: c.x, y: c.y, scaleX: c.scaleX, scaleY: c.scaleY, rotation: c.rotation, opacity: c.opacity, blend: c.blend, cropL: c.cropL, cropT: c.cropT, cropR: c.cropR, cropB: c.cropB },
+        transform: {
+          x: c.x,
+          y: c.y,
+          scaleX: c.scaleX,
+          scaleY: c.scaleY,
+          rotation: c.rotation,
+          opacity: c.opacity,
+          blend: c.blend,
+          cropL: c.cropL,
+          cropT: c.cropT,
+          cropR: c.cropR,
+          cropB: c.cropB,
+        },
       },
     });
     toast('Attributes copied', 'info');
@@ -608,7 +679,7 @@ export const cmd = {
   zoom(factor: number, anchorX?: number): void {
     const { ppf, scrollX } = ui();
     const next = clampPpf(ppf * factor);
-    const ax = anchorX ?? (frame() * ppf - scrollX);
+    const ax = anchorX ?? frame() * ppf - scrollX;
     const f = (scrollX + ax) / ppf;
     ui().set({ ppf: next, scrollX: Math.max(0, f * next - ax) });
   },
@@ -669,7 +740,10 @@ export const cmd = {
       const [asset] = await s.importFiles([new File([blob], `Voiceover ${n}.wav`, { type: 'audio/wav' })]);
       if (!asset) return;
       // Start the clip where recording began; skip the input latency so speech lines up with picture.
-      const r = addAssetToTimeline(s.store.get(), asset, { frame: info?.startFrame ?? 0, sourceIn: rec.latency });
+      const r = addAssetToTimeline(s.store.get(), asset, {
+        frame: info?.startFrame ?? 0,
+        sourceIn: rec.latency,
+      });
       s.store.commit(r.edits);
       ui().select(r.created);
       toast('Voiceover added to the timeline.', 'success');
@@ -724,7 +798,11 @@ export const cmd = {
         skipped++;
         continue;
       }
-      edits.push({ op: 'updateClip', id: clip.id, patch: { volume: clamp(Math.round(gain * 10) / 10, -48, 24) } });
+      edits.push({
+        op: 'updateClip',
+        id: clip.id,
+        patch: { volume: clamp(Math.round(gain * 10) / 10, -48, 24) },
+      });
     }
     // The measurement was asynchronous: only touch clips that still exist.
     const now = s.store.get();
@@ -745,7 +823,9 @@ export const cmd = {
     if (!s) return;
     const n = s.createProxies();
     if (n) {
-      toast(`Making ${n === 1 ? 'a proxy' : `${n} proxies`} in the background. Exports always use the originals.`);
+      toast(
+        `Making ${n === 1 ? 'a proxy' : `${n} proxies`} in the background. Exports always use the originals.`,
+      );
       if (!s.getMeta().proxies) s.setProxies(true);
     } else toast('Nothing to do: no large videos without a proxy.');
   },
@@ -754,7 +834,9 @@ export const cmd = {
     const s = session();
     if (!s) return;
     s.setProxies(!s.getMeta().proxies);
-    toast(s.getMeta().proxies ? 'Previewing from proxies where they exist.' : 'Previewing from original media.');
+    toast(
+      s.getMeta().proxies ? 'Previewing from proxies where they exist.' : 'Previewing from original media.',
+    );
   },
 
   /** Pick a file to stand in for an asset: relink offline media or drop in a new version. */
@@ -762,7 +844,14 @@ export const cmd = {
     const s = session();
     const asset = s?.store.get().assets[assetId];
     if (!s || !asset) return;
-    const accept = asset.kind === 'video' ? 'video/*,.mkv,.mov,.ts' : asset.kind === 'audio' ? 'audio/*' : asset.kind === 'image' ? 'image/*' : '.cube';
+    const accept =
+      asset.kind === 'video'
+        ? 'video/*,.mkv,.mov,.ts'
+        : asset.kind === 'audio'
+          ? 'audio/*'
+          : asset.kind === 'image'
+            ? 'image/*'
+            : '.cube';
     const [file] = await pickFiles(accept, false);
     if (!file) return;
     const next = await s.replaceAsset(assetId, file);
@@ -786,7 +875,10 @@ export const cmd = {
     if (assets.length) toast(`Imported ${assets.length} file${assets.length > 1 ? 's' : ''}`, 'success');
     // Footage beyond 1080p is where proxies start to pay off: offer, never impose.
     if (assets.some((a) => s.canProxy(a) && Math.min(a.width, a.height) > 1100)) {
-      toast('Large footage imported. Proxies make it lighter to edit.', 'info', { label: 'Create proxies', run: () => cmd.createProxies() });
+      toast('Large footage imported. Proxies make it lighter to edit.', 'info', {
+        label: 'Create proxies',
+        run: () => cmd.createProxies(),
+      });
     }
     return assets;
   },
@@ -825,8 +917,18 @@ export const cmd = {
     const fps = p.settings.fpsNum / p.settings.fpsDen;
     const { video, audio } = tracksOf(p);
     const edits: Edit[] = [];
-    const place = (asset: Asset, start: number, track: ID | undefined, extra: Partial<AddAssetOptions> = {}) => {
-      const r = addAssetToTimeline(p, asset, { frame: start, videoTrackId: track, audioTrackId: audio[0]?.id, ...extra });
+    const place = (
+      asset: Asset,
+      start: number,
+      track: ID | undefined,
+      extra: Partial<AddAssetOptions> = {},
+    ) => {
+      const r = addAssetToTimeline(p, asset, {
+        frame: start,
+        videoTrackId: track,
+        audioTrackId: audio[0]?.id,
+        ...extra,
+      });
       edits.push(...r.edits);
       p = applyPreview(p, r.edits);
       return r.created;
@@ -839,20 +941,48 @@ export const cmd = {
     const dur = Math.round(0.8 * fps);
     edits.push(
       { op: 'updateClip', id: cb, patch: { transIn: makeTransition('crossZoom', dur) } },
-      { op: 'updateClip', id: cc, patch: { transIn: makeTransition('lumaFade', dur), transOut: makeTransition('dipToBlack', dur) } },
-      { op: 'updateClip', id: ca, patch: { transIn: makeTransition('dipToBlack', Math.round(0.5 * fps)), effects: [makeEffect('filmGrain')] } },
+      {
+        op: 'updateClip',
+        id: cc,
+        patch: { transIn: makeTransition('lumaFade', dur), transOut: makeTransition('dipToBlack', dur) },
+      },
+      {
+        op: 'updateClip',
+        id: ca,
+        patch: {
+          transIn: makeTransition('dipToBlack', Math.round(0.5 * fps)),
+          effects: [makeEffect('filmGrain')],
+        },
+      },
     );
     p = applyPreview(p, edits.slice(-3));
     const musicClip = Object.values(p.clips).find((x) => x.type === 'audio');
-    if (musicClip) edits.push({ op: 'updateClip', id: musicClip.id, patch: { fadeIn: Math.round(0.5 * fps), fadeOut: Math.round(1.5 * fps), volume: -4 } });
+    if (musicClip)
+      edits.push({
+        op: 'updateClip',
+        id: musicClip.id,
+        patch: { fadeIn: Math.round(0.5 * fps), fadeOut: Math.round(1.5 * fps), volume: -4 },
+      });
     const title = addGenerator(p, 'text', {
       frame: Math.round(0.6 * fps),
       duration: Math.round(3 * fps),
       trackId: video[1]?.id,
-      text: { ...DEFAULT_TEXT, content: 'Edit in tandem', size: 0.13, weight: 800, letterSpacing: -0.02, animIn: { type: 'slideUp', duration: Math.round(0.5 * fps) }, animOut: { type: 'fade', duration: Math.round(0.4 * fps) }, shadow: { ...DEFAULT_TEXT.shadow, enabled: true } },
+      text: {
+        ...DEFAULT_TEXT,
+        content: 'Edit in tandem',
+        size: 0.13,
+        weight: 800,
+        letterSpacing: -0.02,
+        animIn: { type: 'slideUp', duration: Math.round(0.5 * fps) },
+        animOut: { type: 'fade', duration: Math.round(0.4 * fps) },
+        shadow: { ...DEFAULT_TEXT.shadow, enabled: true },
+      },
     });
     edits.push(...title.edits);
-    edits.push({ op: 'setMarker', marker: { id: newId(8), frame: len, name: 'First cut', color: MARKER_COLORS[0], note: '' } });
+    edits.push({
+      op: 'setMarker',
+      marker: { id: newId(8), frame: len, name: 'First cut', color: MARKER_COLORS[0], note: '' },
+    });
     s.store.commit(edits);
     cmd.seek(Math.round(1.5 * fps));
     cmd.zoomFit();
@@ -875,7 +1005,14 @@ export const cmd = {
           frame: start,
           trackId: t.trackId,
           duration: Math.max(1, secondsToFrame(cue.end, p.settings) - start),
-          text: { ...DEFAULT_TEXT, content: cue.text, size: 0.05, weight: 600, boxWidth: 0.8, bg: { ...DEFAULT_TEXT.bg, enabled: true } },
+          text: {
+            ...DEFAULT_TEXT,
+            content: cue.text,
+            size: 0.05,
+            weight: 600,
+            boxWidth: 0.8,
+            bg: { ...DEFAULT_TEXT.bg, enabled: true },
+          },
           init: { y: 0.36, name: cue.text.slice(0, 40) },
         });
         edits.push(...r.edits);
@@ -906,18 +1043,28 @@ export const cmd = {
     const cues = Object.values(p.clips)
       .filter((c) => c.type === 'text' && c.text && c.enabled)
       .sort((a, b) => a.start - b.start)
-      .map((c) => ({ start: framesToSeconds(c.start, p.settings), end: framesToSeconds(clipEnd(c), p.settings), text: c.text!.content }));
+      .map((c) => ({
+        start: framesToSeconds(c.start, p.settings),
+        end: framesToSeconds(clipEnd(c), p.settings),
+        text: c.text!.content,
+      }));
     if (!cues.length) {
       toast('There are no text clips to export.', 'info');
       return;
     }
-    downloadBlob(new Blob([toSrt(cues)], { type: 'application/x-subrip' }), `${safeName(p.settings.name)}.srt`);
+    downloadBlob(
+      new Blob([toSrt(cues)], { type: 'application/x-subrip' }),
+      `${safeName(p.settings.name)}.srt`,
+    );
   },
   saveProjectFile(): void {
     const s = session();
     if (!s) return;
     const p = s.store.get();
-    downloadBlob(new Blob([serializeProject(p)], { type: 'application/json' }), `${safeName(p.settings.name)}.tandem`);
+    downloadBlob(
+      new Blob([serializeProject(p)], { type: 'application/json' }),
+      `${safeName(p.settings.name)}.tandem`,
+    );
   },
   async openProjectFile(): Promise<void> {
     const [file] = await pickFiles('.tandem,application/json', false);
@@ -930,7 +1077,10 @@ export const cmd = {
     editing((s) => {
       s.store.replaceAll(parsed);
       ui().clearSelection();
-      toast('Project loaded. Media that is not on this device or the server will show as offline.', 'success');
+      toast(
+        'Project loaded. Media that is not on this device or the server will show as offline.',
+        'success',
+      );
     });
   },
   async captureStill(): Promise<void> {

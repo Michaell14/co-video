@@ -33,10 +33,10 @@ pnpm install
 pnpm dev
 ```
 
-| | |
-| --- | --- |
-| Editor | http://localhost:5173 |
-| Website | http://localhost:5174 |
+|                      |                       |
+| -------------------- | --------------------- |
+| Editor               | http://localhost:5173 |
+| Website              | http://localhost:5174 |
 | Collaboration server | http://localhost:8787 |
 
 Requires Node 20+ and pnpm 10. Use a Chromium-based browser (Chrome, Edge, Arc, Brave) — see
@@ -48,6 +48,7 @@ with projects stored in your browser.
 ## What it does
 
 ### Editing
+
 - Unlimited video and audio tracks; clips are **resolution independent**, so a project can switch
   between 1080p, 4K, 8K or vertical without redoing anything
 - Overwrite, insert, **ripple**, **roll**, **slip** and blade edits; magnetic snapping; linked
@@ -64,6 +65,7 @@ with projects stored in your browser.
 - Per-user undo and redo, a command palette, and a complete keyboard workflow
 
 ### Effects
+
 - **50 GPU effects** — blurs, glow, sharpen, clarity, chroma and luma keys, film grain, VHS, CRT,
   glitch, halftone, lens distortion, kaleidoscope, drop shadow, outline and more
 - **25 transitions** — dissolves, wipes, pushes, cross zoom, whip pan, film burn, glitch…
@@ -71,6 +73,7 @@ with projects stored in your browser.
   entry in a file
 
 ### Colour
+
 - 16-bit float compositing end to end
 - Lift / gamma / gain / offset wheels, 12 primary sliders, RGB curves, hue-vs-sat, hue-vs-hue and
   luma-vs-sat curves, six-zone tonal exposure, 3D `.cube` LUTs
@@ -82,6 +85,7 @@ with projects stored in your browser.
 ![Colour workspace with wheels and scopes](docs/images/color.webp)
 
 ### Audio
+
 - Per-clip gain, pan and equal-power fades (all keyframeable); per-track fader, pan, mute, solo,
   three-band EQ and compressor; live peak meters; waveforms on the timeline
 - **Loudness normalisation** to −14, −16 or −23 LUFS, measured to ITU-R BS.1770 with a peak
@@ -91,6 +95,7 @@ with projects stored in your browser.
 - The same mixer graph renders the preview and the export, so what you hear is what you deliver
 
 ### Multiplayer
+
 - Real-time co-editing on a CRDT (Yjs): two people can move, trim and grade the same clip at once
   and every field converges
 - Live cursors, playheads, selections and in-flight drags; follow someone's playhead with one click
@@ -105,6 +110,7 @@ with projects stored in your browser.
 ![Three people editing one project](docs/images/multiplayer.webp)
 
 ### Heavy footage
+
 - The viewer renders only as many pixels as it shows, and steps its resolution down while playing
   if the machine cannot keep up
 - **Proxy media**: one click makes a small, quick-to-seek stand-in for 4K / 8K / high-frame-rate
@@ -112,6 +118,7 @@ with projects stored in your browser.
 - Sources that are drawn small are mipmapped, so downscaled 4K stays clean
 
 ### Export
+
 - H.264, HEVC, VP9 and AV1 into MP4, MOV, WebM or MKV; WAV for audio; PNG stills
 - Captions as `.srt`, and the cut itself as a CMX 3600 **EDL** for conforming in Resolve, Premiere
   or Avid
@@ -124,10 +131,10 @@ with projects stored in your browser.
 
 Tandem is built on WebCodecs, WebGL2 float render targets and the Origin Private File System.
 
-| Browser | Status |
-| --- | --- |
-| Chrome / Edge / other Chromium 120+ | Supported. This is what the test suite runs on. |
-| Safari 17+, Firefox 130+ | The required APIs exist but are **untested**; expect rough edges. |
+| Browser                             | Status                                                            |
+| ----------------------------------- | ----------------------------------------------------------------- |
+| Chrome / Edge / other Chromium 120+ | Supported. This is what the test suite runs on.                   |
+| Safari 17+, Firefox 130+            | The required APIs exist but are **untested**; expect rough edges. |
 
 Which codecs you can import and export depends on the browser and your GPU. Tandem asks the
 browser what it can really encode at the chosen size and only offers those options. HEVC and
@@ -201,7 +208,7 @@ Three ideas carry most of the weight:
 - Tested on Chromium only (see above).
 - No account system: access control is by capability link. Fine for teams; not a public SaaS
   permission model.
-- HDR *display* preview is tone-mapped to SDR in the viewer; scopes read true PQ nits and exports
+- HDR _display_ preview is tone-mapped to SDR in the viewer; scopes read true PQ nits and exports
   are true HDR. Wide-gamut canvas output is not wired up yet.
 - Speed changes resample audio (pitch follows speed); there is no pitch-preserving time stretch,
   and no keyframed speed ramps.

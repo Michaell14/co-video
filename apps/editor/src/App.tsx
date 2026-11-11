@@ -78,10 +78,22 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
       <div className="splash" role="alert">
         <Logo size={40} />
         <div style={{ fontWeight: 600, fontSize: 15 }}>Something went wrong</div>
-        <div style={{ color: 'var(--fg-3)', maxWidth: 420, textAlign: 'center', lineHeight: 1.5, fontSize: 13 }}>
+        <div
+          style={{ color: 'var(--fg-3)', maxWidth: 420, textAlign: 'center', lineHeight: 1.5, fontSize: 13 }}
+        >
           Your project is safe — every edit is saved as you make it. Reloading will bring you right back.
         </div>
-        <code style={{ color: 'var(--fg-4)', fontSize: 11, maxWidth: 520, textAlign: 'center', userSelect: 'text' }}>{this.state.error.message.split('\n')[0]}</code>
+        <code
+          style={{
+            color: 'var(--fg-4)',
+            fontSize: 11,
+            maxWidth: 520,
+            textAlign: 'center',
+            userSelect: 'text',
+          }}
+        >
+          {this.state.error.message.split('\n')[0]}
+        </code>
         <button className="btn btn--primary btn--lg" onClick={() => location.reload()}>
           Reload
         </button>
@@ -105,8 +117,15 @@ export function Splash({ label }: { label: string }) {
 export function Logo({ size = 22 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 64 64" fill="none" aria-hidden>
-      <path d="M17 18.500c0-2.300 2.500-3.700 4.500-2.600l19 11c2 1.200 2 4 0 5.200l-19 11c-2 1.100-4.500-.3-4.500-2.600v-22z" fill="#8b7cff" fillOpacity=".9" />
-      <path d="M27 21.500c0-2.300 2.500-3.700 4.500-2.600l19 11c2 1.200 2 4 0 5.200l-19 11c-2 1.100-4.500-.3-4.500-2.600v-22z" fill="#c6f84f" />
+      <path
+        d="M17 18.500c0-2.300 2.500-3.700 4.500-2.600l19 11c2 1.200 2 4 0 5.200l-19 11c-2 1.100-4.500-.3-4.500-2.600v-22z"
+        fill="#8b7cff"
+        fillOpacity=".9"
+      />
+      <path
+        d="M27 21.500c0-2.300 2.500-3.700 4.500-2.600l19 11c2 1.200 2 4 0 5.200l-19 11c-2 1.100-4.500-.3-4.500-2.600v-22z"
+        fill="#c6f84f"
+      />
     </svg>
   );
 }

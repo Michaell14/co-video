@@ -116,7 +116,13 @@
   aspect-ratio: 1;
   border-radius: 50%;
   background:
-    radial-gradient(circle, var(--bg-1) 0, rgba(12, 12, 14, 0.94) 38%, rgba(12, 12, 14, 0.55) 62%, rgba(12, 12, 14, 0) 76%),
+    radial-gradient(
+      circle,
+      var(--bg-1) 0,
+      rgba(12, 12, 14, 0.94) 38%,
+      rgba(12, 12, 14, 0.55) 62%,
+      rgba(12, 12, 14, 0) 76%
+    ),
     conic-gradient(#ff4d4d, #ffd43b, #51cf66, #22d3ee, #4f6bff, #e05df5, #ff4d4d);
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.1),

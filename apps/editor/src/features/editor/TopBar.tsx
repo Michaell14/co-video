@@ -1,8 +1,36 @@
-import { Camera, Download, FileDown, FileUp, FolderInput, History, Keyboard, ListOrdered, LogOut, Menu, MessageSquare, Palette, Redo2, Scissors, Search, Settings2, Share2, SlidersHorizontal, Subtitles, Undo2 } from 'lucide-react';
+import {
+  Camera,
+  Download,
+  FileDown,
+  FileUp,
+  FolderInput,
+  History,
+  Keyboard,
+  ListOrdered,
+  LogOut,
+  Menu,
+  MessageSquare,
+  Palette,
+  Redo2,
+  Scissors,
+  Search,
+  Settings2,
+  Share2,
+  SlidersHorizontal,
+  Subtitles,
+  Undo2,
+} from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { describeSettings, initials } from '@tandem/core';
 import { Logo, navigate } from '../../App';
-import { useComments, usePeers, useProject, useSession, useSessionMeta, useUndoState } from '../../session/hooks';
+import {
+  useComments,
+  usePeers,
+  useProject,
+  useSession,
+  useSessionMeta,
+  useUndoState,
+} from '../../session/hooks';
 import { cmd } from '../../state/commands';
 import { useUI } from '../../state/ui';
 import { Button, IconButton, MenuButton, Segmented, tip } from '../../ui/core';
@@ -40,7 +68,12 @@ export function TopBar() {
 
   return (
     <header className="topbar">
-      <button className="topbar__home" onClick={() => navigate(null)} {...tip('All projects')} aria-label="All projects">
+      <button
+        className="topbar__home"
+        onClick={() => navigate(null)}
+        {...tip('All projects')}
+        aria-label="All projects"
+      >
         <Logo size={22} />
       </button>
       <MenuButton
@@ -48,19 +81,49 @@ export function TopBar() {
         label="Menu"
         items={[
           { heading: 'File' },
-          { label: 'Import media…', icon: <FolderInput />, keys: 'mod+i', onSelect: () => void cmd.importMedia() },
+          {
+            label: 'Import media…',
+            icon: <FolderInput />,
+            keys: 'mod+i',
+            onSelect: () => void cmd.importMedia(),
+          },
           { label: 'Export…', icon: <Download />, keys: 'mod+e', onSelect: () => set({ dialog: 'export' }) },
-          { label: 'Export frame as PNG', icon: <Camera />, keys: 'mod+shift+e', onSelect: () => void cmd.captureStill() },
+          {
+            label: 'Export frame as PNG',
+            icon: <Camera />,
+            keys: 'mod+shift+e',
+            onSelect: () => void cmd.captureStill(),
+          },
           { label: 'Export captions (.srt)', icon: <Subtitles />, onSelect: () => cmd.exportSubtitles() },
           { label: 'Export edit list (.edl)', icon: <ListOrdered />, onSelect: () => cmd.exportEdl() },
           'separator',
-          { label: 'Save project file', icon: <FileDown />, keys: 'mod+s', onSelect: () => cmd.saveProjectFile() },
-          { label: 'Open project file…', icon: <FileUp />, keys: 'mod+o', onSelect: () => void cmd.openProjectFile() },
+          {
+            label: 'Save project file',
+            icon: <FileDown />,
+            keys: 'mod+s',
+            onSelect: () => cmd.saveProjectFile(),
+          },
+          {
+            label: 'Open project file…',
+            icon: <FileUp />,
+            keys: 'mod+o',
+            onSelect: () => void cmd.openProjectFile(),
+          },
           { label: 'Version history…', icon: <History />, onSelect: () => set({ dialog: 'versions' }) },
           'separator',
           { label: 'Project settings…', icon: <Settings2 />, onSelect: () => set({ dialog: 'project' }) },
-          { label: 'Keyboard shortcuts', icon: <Keyboard />, keys: 'shift+slash', onSelect: () => set({ dialog: 'shortcuts' }) },
-          { label: 'Command palette', icon: <Search />, keys: 'mod+k', onSelect: () => set({ dialog: 'palette' }) },
+          {
+            label: 'Keyboard shortcuts',
+            icon: <Keyboard />,
+            keys: 'shift+slash',
+            onSelect: () => set({ dialog: 'shortcuts' }),
+          },
+          {
+            label: 'Command palette',
+            icon: <Search />,
+            keys: 'mod+k',
+            onSelect: () => set({ dialog: 'palette' }),
+          },
           'separator',
           { label: 'Back to projects', icon: <LogOut />, onSelect: () => navigate(null) },
         ]}
@@ -83,7 +146,11 @@ export function TopBar() {
           e.stopPropagation();
         }}
       />
-      <button className="topbar__meta mono" onClick={() => set({ dialog: 'project' })} {...tip('Project settings')}>
+      <button
+        className="topbar__meta mono"
+        onClick={() => set({ dialog: 'project' })}
+        {...tip('Project settings')}
+      >
         {describeSettings(settings)}
         {settings.colorMode !== 'sdr' && (
           <span className="badge badge--amber" style={{ marginLeft: 6 }}>
@@ -92,10 +159,20 @@ export function TopBar() {
         )}
       </button>
       <div className="topbar__sep" />
-      <IconButton label="Undo" keys="mod+z" disabled={!canUndo || !session.canEdit} onClick={() => cmd.undo()}>
+      <IconButton
+        label="Undo"
+        keys="mod+z"
+        disabled={!canUndo || !session.canEdit}
+        onClick={() => cmd.undo()}
+      >
         <Undo2 />
       </IconButton>
-      <IconButton label="Redo" keys="mod+shift+z" disabled={!canRedo || !session.canEdit} onClick={() => cmd.redo()}>
+      <IconButton
+        label="Redo"
+        keys="mod+shift+z"
+        disabled={!canRedo || !session.canEdit}
+        onClick={() => cmd.redo()}
+      >
         <Redo2 />
       </IconButton>
 
@@ -106,7 +183,13 @@ export function TopBar() {
           options={[
             { value: 'edit', label: 'Edit', icon: <Scissors />, tip: 'Edit workspace', keys: 'shift+1' },
             { value: 'color', label: 'Color', icon: <Palette />, tip: 'Color workspace', keys: 'shift+2' },
-            { value: 'audio', label: 'Audio', icon: <SlidersHorizontal />, tip: 'Audio workspace', keys: 'shift+3' },
+            {
+              value: 'audio',
+              label: 'Audio',
+              icon: <SlidersHorizontal />,
+              tip: 'Audio workspace',
+              keys: 'shift+3',
+            },
           ]}
         />
       </div>
@@ -117,7 +200,12 @@ export function TopBar() {
           <span>{statusLabel}</span>
         </div>
         <Presence />
-        <IconButton label="Comments" keys="shift+c" active={commentsOpen} onClick={() => set({ commentsOpen: !commentsOpen })}>
+        <IconButton
+          label="Comments"
+          keys="shift+c"
+          active={commentsOpen}
+          onClick={() => set({ commentsOpen: !commentsOpen })}
+        >
           <MessageSquare />
           {open > 0 && <span className="dot-count">{open > 9 ? '9+' : open}</span>}
         </IconButton>
@@ -155,7 +243,11 @@ function Presence() {
             set({ following: next });
             if (next !== null) session.player?.seek(p.playhead);
           }}
-          {...tip(following === p.clientId ? `Following ${p.user.name} — click to stop` : `${p.user.name} · click to follow`)}
+          {...tip(
+            following === p.clientId
+              ? `Following ${p.user.name} — click to stop`
+              : `${p.user.name} · click to follow`,
+          )}
         >
           {initials(p.user.name)}
         </button>
@@ -165,7 +257,12 @@ function Presence() {
           +{unique.length - 6}
         </span>
       )}
-      <button className="avatar avatar--me" style={{ background: meta.user.color }} onClick={() => set({ dialog: 'profile' })} {...tip(`${meta.user.name} (you)`)}>
+      <button
+        className="avatar avatar--me"
+        style={{ background: meta.user.color }}
+        onClick={() => set({ dialog: 'profile' })}
+        {...tip(`${meta.user.name} (you)`)}
+      >
         {initials(meta.user.name)}
       </button>
     </div>

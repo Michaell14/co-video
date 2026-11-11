@@ -50,7 +50,14 @@ export function Editor({ projectId, token }: { projectId: string; token: string 
     return () => {
       cancelled = true;
       cmd.cancelVoiceover();
-      useUI.getState().set({ selection: [], selectedTransition: null, preview: null, dialog: null, following: null, sourceAsset: null });
+      useUI.getState().set({
+        selection: [],
+        selectedTransition: null,
+        preview: null,
+        dialog: null,
+        following: null,
+        sourceAsset: null,
+      });
       if (opened) {
         setCurrentSession(null);
         opened.destroy();
@@ -97,16 +104,20 @@ function Workspace() {
       <div className="splash">
         <div style={{ fontWeight: 600, fontSize: 15 }}>This project is not available</div>
         <div style={{ color: 'var(--fg-3)', maxWidth: 380, textAlign: 'center', lineHeight: 1.5 }}>
-          It is not stored on this device, and the link either expired or the collaboration server cannot be reached.
+          It is not stored on this device, and the link either expired or the collaboration server cannot be
+          reached.
         </div>
-        {!meta.online && <div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Still trying to reach the server…</div>}
+        {!meta.online && (
+          <div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Still trying to reach the server…</div>
+        )}
         <Button onClick={() => navigate(null)}>Back to projects</Button>
       </div>
     );
   }
 
   const closeDialog = () => set({ dialog: null });
-  const rightWide = workspace === 'color' ? Math.max(right, 400) : workspace === 'audio' ? Math.max(right, 360) : right;
+  const rightWide =
+    workspace === 'color' ? Math.max(right, 400) : workspace === 'audio' ? Math.max(right, 360) : right;
 
   return (
     <div
@@ -130,15 +141,28 @@ function Workspace() {
     >
       <TopBar />
       <div className="work">
-        <div className="work__top" style={{ gridTemplateColumns: `${left}px minmax(0, 1fr) ${rightWide}px${comments ? ' 300px' : ''}` }}>
+        <div
+          className="work__top"
+          style={{
+            gridTemplateColumns: `${left}px minmax(0, 1fr) ${rightWide}px${comments ? ' 300px' : ''}`,
+          }}
+        >
           <section className="panel" aria-label={workspace === 'color' ? 'Scopes' : 'Library'}>
             {workspace === 'color' ? <Scopes /> : <Library />}
           </section>
-          <Resizer axis="x" onDrag={(d) => set({ leftWidth: clampW(useUI.getState().leftWidth + d, 220, 560) })} style={{ left: left }} />
+          <Resizer
+            axis="x"
+            onDrag={(d) => set({ leftWidth: clampW(useUI.getState().leftWidth + d, 220, 560) })}
+            style={{ left: left }}
+          />
           <section className="panel panel--viewer" aria-label="Viewer">
             <Viewer />
           </section>
-          <Resizer axis="x" onDrag={(d) => set({ rightWidth: clampW(useUI.getState().rightWidth - d, 260, 560) })} style={{ right: rightWide + (comments ? 306 : 0) }} />
+          <Resizer
+            axis="x"
+            onDrag={(d) => set({ rightWidth: clampW(useUI.getState().rightWidth - d, 260, 560) })}
+            style={{ right: rightWide + (comments ? 306 : 0) }}
+          />
           <section className="panel" aria-label="Inspector">
             {workspace === 'color' ? <ColorPanel /> : workspace === 'audio' ? <Mixer /> : <Inspector />}
           </section>
@@ -148,7 +172,18 @@ function Workspace() {
             </section>
           )}
         </div>
-        <Resizer axis="y" onDrag={(d) => set({ timelineHeight: clampW(useUI.getState().timelineHeight - d, 160, Math.max(200, window.innerHeight - 280)) })} />
+        <Resizer
+          axis="y"
+          onDrag={(d) =>
+            set({
+              timelineHeight: clampW(
+                useUI.getState().timelineHeight - d,
+                160,
+                Math.max(200, window.innerHeight - 280),
+              ),
+            })
+          }
+        />
         <section className="panel panel--timeline" style={{ height: tlHeight }} aria-label="Timeline">
           <Timeline />
         </section>
@@ -176,7 +211,15 @@ function Workspace() {
 
 const clampW = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-function Resizer({ axis, onDrag, style }: { axis: 'x' | 'y'; onDrag: (delta: number) => void; style?: React.CSSProperties }) {
+function Resizer({
+  axis,
+  onDrag,
+  style,
+}: {
+  axis: 'x' | 'y';
+  onDrag: (delta: number) => void;
+  style?: React.CSSProperties;
+}) {
   const last = useRef(0);
   const [active, setActive] = useState(false);
   return (

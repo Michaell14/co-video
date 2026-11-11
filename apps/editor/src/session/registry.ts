@@ -45,7 +45,10 @@ function write(list: ProjectEntry[]): void {
 }
 
 export const registry = {
-  list: (): ProjectEntry[] => read().slice().sort((a, b) => b.updatedAt - a.updatedAt),
+  list: (): ProjectEntry[] =>
+    read()
+      .slice()
+      .sort((a, b) => b.updatedAt - a.updatedAt),
   get: (id: string): ProjectEntry | undefined => read().find((p) => p.id === id),
   upsert(entry: Partial<ProjectEntry> & { id: string }): ProjectEntry {
     const list = read().slice();
@@ -54,7 +57,18 @@ export const registry = {
     const base: ProjectEntry =
       i >= 0
         ? list[i]
-        : { id: entry.id, name: 'Untitled project', createdAt: now, updatedAt: now, token: null, thumb: null, width: 1920, height: 1080, fps: 30, duration: 0 };
+        : {
+            id: entry.id,
+            name: 'Untitled project',
+            createdAt: now,
+            updatedAt: now,
+            token: null,
+            thumb: null,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            duration: 0,
+          };
     const next = { ...base, ...entry };
     if (i >= 0) list[i] = next;
     else list.push(next);

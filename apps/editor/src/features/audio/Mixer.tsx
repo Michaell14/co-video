@@ -1,6 +1,15 @@
 import { SlidersHorizontal } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { clamp, DEFAULT_COMPRESSOR, DEFAULT_EQ, trackLabel, tracksOf, type Track, type TrackCompressor, type TrackEQ } from '@tandem/core';
+import {
+  clamp,
+  DEFAULT_COMPRESSOR,
+  DEFAULT_EQ,
+  trackLabel,
+  tracksOf,
+  type Track,
+  type TrackCompressor,
+  type TrackEQ,
+} from '@tandem/core';
 import { usePlayer, useProject, useSession } from '../../session/hooks';
 import { beginGesture, commit } from '../../state/props';
 import { cx, NumberField, Slider, Switch, tip } from '../../ui/core';
@@ -106,7 +115,11 @@ function Fader({ value, onChange }: { value: number; onChange: (db: number) => v
     >
       <div className="fader__scale">
         {[12, 6, 0, -6, -12, -24, -48].map((db) => (
-          <span key={db} style={{ bottom: `calc(8px + ${dbToPos(db)} * (100% - 16px))` }} data-zero={db === 0}>
+          <span
+            key={db}
+            style={{ bottom: `calc(8px + ${dbToPos(db)} * (100% - 16px))` }}
+            data-zero={db === 0}
+          >
             {db > 0 ? `+${db}` : db}
           </span>
         ))}
@@ -120,14 +133,16 @@ function Fader({ value, onChange }: { value: number; onChange: (db: number) => v
 function Strip({ track: t, label }: { track: Track; label: string }) {
   const player = usePlayer();
   const [open, setOpen] = useState(false);
-  const update = (patch: Partial<Track>, merge = false) => commit([{ op: 'updateTrack', id: t.id, patch }], merge);
+  const update = (patch: Partial<Track>, merge = false) =>
+    commit([{ op: 'updateTrack', id: t.id, patch }], merge);
   const read = useRef(() => [player?.levels().tracks[t.id] ?? 0]);
   read.current = () => [player?.levels().tracks[t.id] ?? 0];
   const reader = useRef(() => read.current()).current;
   const eq = t.eq ?? DEFAULT_EQ;
   const comp = t.compressor ?? DEFAULT_COMPRESSOR;
   const setEq = (patch: Partial<TrackEQ>, merge = true) => update({ eq: { ...eq, ...patch } }, merge);
-  const setComp = (patch: Partial<TrackCompressor>, merge = true) => update({ compressor: { ...comp, ...patch } }, merge);
+  const setComp = (patch: Partial<TrackCompressor>, merge = true) =>
+    update({ compressor: { ...comp, ...patch } }, merge);
   return (
     <div className="strip" data-muted={t.muted}>
       <div className="strip__name">
@@ -135,53 +150,131 @@ function Strip({ track: t, label }: { track: Track; label: string }) {
         <span>{t.name}</span>
       </div>
       <div className="strip__pan">
-        <Slider value={t.pan} min={-1} max={1} origin={0} defaultValue={0} onStart={beginGesture} onChange={(pan) => update({ pan: Math.round(pan * 100) / 100 }, true)} />
-        <span className="mono">{t.pan === 0 ? 'C' : t.pan < 0 ? `L${Math.round(-t.pan * 100)}` : `R${Math.round(t.pan * 100)}`}</span>
+        <Slider
+          value={t.pan}
+          min={-1}
+          max={1}
+          origin={0}
+          defaultValue={0}
+          onStart={beginGesture}
+          onChange={(pan) => update({ pan: Math.round(pan * 100) / 100 }, true)}
+        />
+        <span className="mono">
+          {t.pan === 0 ? 'C' : t.pan < 0 ? `L${Math.round(-t.pan * 100)}` : `R${Math.round(t.pan * 100)}`}
+        </span>
       </div>
       <div className="strip__main">
         <Meter channels={1} read={reader} />
         <Fader value={t.volume} onChange={(volume) => update({ volume }, true)} />
       </div>
-      <NumberField value={t.volume} onChange={(volume) => update({ volume }, true)} onStart={beginGesture} min={DB_MIN} max={DB_MAX} step={0.1} precision={1} suffix="dB" defaultValue={0} ariaLabel="Track volume" />
+      <NumberField
+        value={t.volume}
+        onChange={(volume) => update({ volume }, true)}
+        onStart={beginGesture}
+        min={DB_MIN}
+        max={DB_MAX}
+        step={0.1}
+        precision={1}
+        suffix="dB"
+        defaultValue={0}
+        ariaLabel="Track volume"
+      />
       <div className="strip__btns">
-        <button className={cx('strip__btn', t.muted && 'strip__btn--mute')} aria-pressed={t.muted} onClick={() => update({ muted: !t.muted })} {...tip('Mute')}>
+        <button
+          className={cx('strip__btn', t.muted && 'strip__btn--mute')}
+          aria-pressed={t.muted}
+          onClick={() => update({ muted: !t.muted })}
+          {...tip('Mute')}
+        >
           M
         </button>
-        <button className={cx('strip__btn', t.solo && 'strip__btn--solo')} aria-pressed={t.solo} onClick={() => update({ solo: !t.solo })} {...tip('Solo')}>
+        <button
+          className={cx('strip__btn', t.solo && 'strip__btn--solo')}
+          aria-pressed={t.solo}
+          onClick={() => update({ solo: !t.solo })}
+          {...tip('Solo')}
+        >
           S
         </button>
-        <button className={cx('strip__btn', (eq.enabled || comp.enabled) && 'strip__btn--fx')} aria-pressed={open} onClick={() => setOpen(!open)} {...tip('EQ & compressor')}>
+        <button
+          className={cx('strip__btn', (eq.enabled || comp.enabled) && 'strip__btn--fx')}
+          aria-pressed={open}
+          onClick={() => setOpen(!open)}
+          {...tip('EQ & compressor')}
+        >
           FX
         </button>
       </div>
       {open && (
         <div className="strip__fx">
           <div className="strip__fxhead">
-            EQ <Switch checked={eq.enabled} onChange={(enabled) => setEq({ enabled }, false)} label="Enable EQ" />
+            EQ{' '}
+            <Switch
+              checked={eq.enabled}
+              onChange={(enabled) => setEq({ enabled }, false)}
+              label="Enable EQ"
+            />
           </div>
           {(['high', 'mid', 'low'] as const).map((band) => (
             <label key={band} className="strip__knob">
               <span>{band[0].toUpperCase() + band.slice(1)}</span>
-              <Slider value={eq[band]} min={-18} max={18} origin={0} defaultValue={0} onStart={beginGesture} onChange={(v) => setEq({ [band]: Math.round(v * 10) / 10, enabled: true })} />
-              <em className="mono">{eq[band] > 0 ? '+' : ''}{eq[band].toFixed(1)}</em>
+              <Slider
+                value={eq[band]}
+                min={-18}
+                max={18}
+                origin={0}
+                defaultValue={0}
+                onStart={beginGesture}
+                onChange={(v) => setEq({ [band]: Math.round(v * 10) / 10, enabled: true })}
+              />
+              <em className="mono">
+                {eq[band] > 0 ? '+' : ''}
+                {eq[band].toFixed(1)}
+              </em>
             </label>
           ))}
           <div className="strip__fxhead">
-            Comp <Switch checked={comp.enabled} onChange={(enabled) => setComp({ enabled }, false)} label="Enable compressor" />
+            Comp{' '}
+            <Switch
+              checked={comp.enabled}
+              onChange={(enabled) => setComp({ enabled }, false)}
+              label="Enable compressor"
+            />
           </div>
           <label className="strip__knob">
             <span>Thresh</span>
-            <Slider value={comp.threshold} min={-60} max={0} defaultValue={-18} onStart={beginGesture} onChange={(v) => setComp({ threshold: Math.round(v), enabled: true })} />
+            <Slider
+              value={comp.threshold}
+              min={-60}
+              max={0}
+              defaultValue={-18}
+              onStart={beginGesture}
+              onChange={(v) => setComp({ threshold: Math.round(v), enabled: true })}
+            />
             <em className="mono">{comp.threshold}</em>
           </label>
           <label className="strip__knob">
             <span>Ratio</span>
-            <Slider value={comp.ratio} min={1} max={20} defaultValue={3} onStart={beginGesture} onChange={(v) => setComp({ ratio: Math.round(v * 10) / 10, enabled: true })} />
+            <Slider
+              value={comp.ratio}
+              min={1}
+              max={20}
+              defaultValue={3}
+              onStart={beginGesture}
+              onChange={(v) => setComp({ ratio: Math.round(v * 10) / 10, enabled: true })}
+            />
             <em className="mono">{comp.ratio.toFixed(1)}:1</em>
           </label>
           <label className="strip__knob">
             <span>Makeup</span>
-            <Slider value={comp.makeup} min={0} max={24} defaultValue={0} onStart={beginGesture} onChange={(v) => setComp({ makeup: Math.round(v * 10) / 10, enabled: true })} />
+            <Slider
+              value={comp.makeup}
+              min={0}
+              max={24}
+              defaultValue={0}
+              onStart={beginGesture}
+              onChange={(v) => setComp({ makeup: Math.round(v * 10) / 10, enabled: true })}
+            />
             <em className="mono">+{comp.makeup.toFixed(1)}</em>
           </label>
         </div>

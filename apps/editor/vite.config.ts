@@ -22,7 +22,14 @@ function serviceWorker(): Plugin {
         .filter((f) => /\.(js|css)$/.test(f))
         .sort();
       const version = createHash('sha256').update(precache.join('\n')).digest('hex').slice(0, 12);
-      this.emitFile({ type: 'asset', fileName: 'sw.js', source: SW_SOURCE.replace('__VERSION__', version).replace('__PRECACHE__', JSON.stringify(['./', ...precache])) });
+      this.emitFile({
+        type: 'asset',
+        fileName: 'sw.js',
+        source: SW_SOURCE.replace('__VERSION__', version).replace(
+          '__PRECACHE__',
+          JSON.stringify(['./', ...precache]),
+        ),
+      });
     },
   };
 }

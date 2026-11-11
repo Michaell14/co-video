@@ -82,10 +82,19 @@ Object.assign(lab, {
   /** Export a project and return the encoded file as a base64 string (tests only: small files). */
   async exportBase64(project: core.Project, settings: engine.ExportSettings) {
     const progress: engine.ExportProgress[] = [];
-    const result = await engine.exportProject(project, resolver, settings, { onProgress: (p) => progress.push({ ...p }) });
+    const result = await engine.exportProject(project, resolver, settings, {
+      onProgress: (p) => progress.push({ ...p }),
+    });
     const buf = new Uint8Array(await result.blob!.arrayBuffer());
     let bin = '';
     for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-    return { base64: btoa(bin), mimeType: result.mimeType, extension: result.extension, frames: result.frames, seconds: result.seconds, phases: Array.from(new Set(progress.map((p) => p.phase))) };
+    return {
+      base64: btoa(bin),
+      mimeType: result.mimeType,
+      extension: result.extension,
+      frames: result.frames,
+      seconds: result.seconds,
+      phases: Array.from(new Set(progress.map((p) => p.phase))),
+    };
   },
 });

@@ -35,7 +35,13 @@ function kWeighting(sampleRate: number): [Biquad, Biquad] {
   const q2 = 0.5003270373238773;
   const k2 = Math.tan((Math.PI * f2) / sampleRate);
   const d2 = 1 + k2 / q2 + k2 * k2;
-  const highpass: Biquad = { b0: 1, b1: -2, b2: 1, a1: (2 * (k2 * k2 - 1)) / d2, a2: (1 - k2 / q2 + k2 * k2) / d2 };
+  const highpass: Biquad = {
+    b0: 1,
+    b1: -2,
+    b2: 1,
+    a1: (2 * (k2 * k2 - 1)) / d2,
+    a2: (1 - k2 / q2 + k2 * k2) / d2,
+  };
   return [shelf, highpass];
 }
 
@@ -126,7 +132,8 @@ export class LoudnessMeter {
       blocks.push((this.steps[i] + this.steps[i + 1] + this.steps[i + 2] + this.steps[i + 3]) / 4);
     }
     // Too short to gate: the plain K-weighted level is the best available answer.
-    if (!blocks.length) return { lufs: energyToLufs(this.total ? this.sumAll / this.total : 0), peakDb, seconds };
+    if (!blocks.length)
+      return { lufs: energyToLufs(this.total ? this.sumAll / this.total : 0), peakDb, seconds };
     const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length;
     const audible = blocks.filter((e) => energyToLufs(e) > -70);
     if (!audible.length) return { lufs: -Infinity, peakDb, seconds };

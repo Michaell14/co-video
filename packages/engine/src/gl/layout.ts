@@ -28,7 +28,14 @@ const DEG = Math.PI / 180;
  * @param W / H        frame size being laid out into
  * @param nativeScale  frame pixels per sequence pixel (render height ÷ project height)
  */
-export function layoutLayer(L: ClipLayer, srcW: number, srcH: number, W: number, H: number, nativeScale: number): LayerBox {
+export function layoutLayer(
+  L: ClipLayer,
+  srcW: number,
+  srcH: number,
+  W: number,
+  H: number,
+  nativeScale: number,
+): LayerBox {
   const clip = L.clip;
   const media = clip.type === 'video' || clip.type === 'image';
   let boxW: number;

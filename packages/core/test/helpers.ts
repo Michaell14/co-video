@@ -36,7 +36,13 @@ export function fixture(): Fixture {
   return { p, v1, v2, a1, asset };
 }
 
-export function addClip(p: Project, trackId: string, start: number, duration: number, init: Partial<Clip> = {}): { p: Project; clip: Clip } {
+export function addClip(
+  p: Project,
+  trackId: string,
+  start: number,
+  duration: number,
+  init: Partial<Clip> = {},
+): { p: Project; clip: Clip } {
   const clip = makeClip('video', trackId, { assetId: 'asset1', start, duration, ...init });
   return { p: applyEdits(p, [{ op: 'addClip', clip }]), clip };
 }
@@ -53,7 +59,8 @@ export function overlaps(p: Project): string[] {
   for (const [t, list] of byTrack) {
     list.sort((a, b) => a.start - b.start);
     for (let i = 1; i < list.length; i++) {
-      if (list[i].start < list[i - 1].start + list[i - 1].duration) out.push(`${t}: ${list[i - 1].id} / ${list[i].id}`);
+      if (list[i].start < list[i - 1].start + list[i - 1].duration)
+        out.push(`${t}: ${list[i - 1].id} / ${list[i].id}`);
     }
   }
   return out;

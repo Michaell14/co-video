@@ -2,3 +2,8 @@ node_modules
 dist
 pnpm-lock.yaml
 data
+test-results
+playwright-report
+docs/images
+e2e/fixtures
+apps/editor/public/samples

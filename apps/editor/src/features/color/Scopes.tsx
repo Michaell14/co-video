@@ -11,7 +11,12 @@ import { MenuButton } from '../../ui/core';
 
 type ScopeKind = 'waveform' | 'parade' | 'vectorscope' | 'histogram';
 
-const LABELS: Record<ScopeKind, string> = { waveform: 'Waveform', parade: 'RGB Parade', vectorscope: 'Vectorscope', histogram: 'Histogram' };
+const LABELS: Record<ScopeKind, string> = {
+  waveform: 'Waveform',
+  parade: 'RGB Parade',
+  vectorscope: 'Vectorscope',
+  histogram: 'Histogram',
+};
 const N = 256;
 
 interface Frame {
@@ -101,7 +106,8 @@ function drawHistogram(f: Frame, ctx: CanvasRenderingContext2D, w: number, h: nu
   bins.forEach((b, c) => {
     ctx.beginPath();
     ctx.moveTo(0, h);
-    for (let i = 0; i < N; i++) ctx.lineTo((i / (N - 1)) * w, h - Math.min(1, Math.sqrt(b[i] / peak)) * (h - 4));
+    for (let i = 0; i < N; i++)
+      ctx.lineTo((i / (N - 1)) * w, h - Math.min(1, Math.sqrt(b[i] / peak)) * (h - 4));
     ctx.lineTo(w, h);
     ctx.closePath();
     ctx.fillStyle = colors[c];
@@ -117,11 +123,14 @@ function graticule(ctx: CanvasRenderingContext2D, kind: ScopeKind, w: number, h:
   ctx.lineWidth = 1;
   if (kind === 'waveform' || kind === 'parade') {
     const marks: [number, string][] = pq
-      ? [1, 10, 100, 203, 1000, 4000, 10000].map((n) => [nitsToPq(n), n >= 1000 ? `${n / 1000}k` : String(n)] as [number, string])
+      ? [1, 10, 100, 203, 1000, 4000, 10000].map(
+          (n) => [nitsToPq(n), n >= 1000 ? `${n / 1000}k` : String(n)] as [number, string],
+        )
       : [0, 25, 50, 75, 100].map((p) => [p / 100, String(p)] as [number, string]);
     for (const [v, label] of marks) {
       const y = Math.round((1 - v) * (h - 1)) + 0.5;
-      ctx.strokeStyle = v === 1 || v === 0 || label === '203' ? 'rgba(198,248,79,0.28)' : 'rgba(255,255,255,0.1)';
+      ctx.strokeStyle =
+        v === 1 || v === 0 || label === '203' ? 'rgba(198,248,79,0.28)' : 'rgba(255,255,255,0.1)';
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(w, y);
@@ -179,7 +188,15 @@ function graticule(ctx: CanvasRenderingContext2D, kind: ScopeKind, w: number, h:
   ctx.restore();
 }
 
-function Scope({ kind, frameRef, version }: { kind: ScopeKind; frameRef: React.RefObject<Frame | null>; version: React.RefObject<number> }) {
+function Scope({
+  kind,
+  frameRef,
+  version,
+}: {
+  kind: ScopeKind;
+  frameRef: React.RefObject<Frame | null>;
+  version: React.RefObject<number>;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scratch = useRef<{ canvas: HTMLCanvasElement; img: ImageData } | null>(null);
   useEffect(() => {
@@ -276,7 +293,11 @@ export function Scopes() {
           className="btn btn--ghost btn--sm"
           label="Choose scopes"
           align="end"
-          items={(Object.keys(LABELS) as ScopeKind[]).map((k) => ({ label: LABELS[k], checked: enabled[k], onSelect: () => set({ scopes: { ...enabled, [k]: !enabled[k] } }) }))}
+          items={(Object.keys(LABELS) as ScopeKind[]).map((k) => ({
+            label: LABELS[k],
+            checked: enabled[k],
+            onSelect: () => set({ scopes: { ...enabled, [k]: !enabled[k] } }),
+          }))}
         >
           {kinds.length} shown
         </MenuButton>

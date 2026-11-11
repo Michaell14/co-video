@@ -25,7 +25,8 @@ export const IDENTITY3: Mat3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 export function mul3(a: Mat3, b: Mat3): Mat3 {
   const o = new Array(9).fill(0) as Mat3;
   for (let r = 0; r < 3; r++)
-    for (let c = 0; c < 3; c++) o[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
+    for (let c = 0; c < 3; c++)
+      o[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
   return o;
 }
 
@@ -36,11 +37,25 @@ export function inv3(m: Mat3): Mat3 {
   const C = d * h - e * g;
   const det = a * A + b * B + c * C;
   const s = 1 / det;
-  return [A * s, (c * h - b * i) * s, (b * f - c * e) * s, B * s, (a * i - c * g) * s, (c * d - a * f) * s, C * s, (b * g - a * h) * s, (a * e - b * d) * s];
+  return [
+    A * s,
+    (c * h - b * i) * s,
+    (b * f - c * e) * s,
+    B * s,
+    (a * i - c * g) * s,
+    (c * d - a * f) * s,
+    C * s,
+    (b * g - a * h) * s,
+    (a * e - b * d) * s,
+  ];
 }
 
 export function mulVec3(m: Mat3, v: [number, number, number]): [number, number, number] {
-  return [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]];
+  return [
+    m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+    m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+    m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
+  ];
 }
 
 const xyToXYZ = (x: number, y: number): [number, number, number] => [x / y, 1, (1 - x - y) / y];
@@ -54,7 +69,17 @@ export function rgbToXyz(p: Primaries): Mat3 {
   const w = xyToXYZ(D65[0], D65[1]);
   const m: Mat3 = [r[0], g[0], b[0], r[1], g[1], b[1], r[2], g[2], b[2]];
   const s = mulVec3(inv3(m), w);
-  return [r[0] * s[0], g[0] * s[1], b[0] * s[2], r[1] * s[0], g[1] * s[1], b[1] * s[2], r[2] * s[0], g[2] * s[1], b[2] * s[2]];
+  return [
+    r[0] * s[0],
+    g[0] * s[1],
+    b[0] * s[2],
+    r[1] * s[0],
+    g[1] * s[1],
+    b[1] * s[2],
+    r[2] * s[0],
+    g[2] * s[1],
+    b[2] * s[2],
+  ];
 }
 
 /** Matrix converting linear RGB between two sets of primaries. */
@@ -102,9 +127,11 @@ export function nitsToPq(nits: number): number {
 const HLG = { a: 0.17883277, b: 0.28466892, c: 0.55991073 };
 
 /** HLG signal → scene linear (0…1). */
-export const hlgToScene = (e: number): number => (e <= 0.5 ? (e * e) / 3 : (Math.exp((e - HLG.c) / HLG.a) + HLG.b) / 12);
+export const hlgToScene = (e: number): number =>
+  e <= 0.5 ? (e * e) / 3 : (Math.exp((e - HLG.c) / HLG.a) + HLG.b) / 12;
 
-export const sceneToHlg = (s: number): number => (s <= 1 / 12 ? Math.sqrt(3 * Math.max(s, 0)) : HLG.a * Math.log(12 * s - HLG.b) + HLG.c);
+export const sceneToHlg = (s: number): number =>
+  s <= 1 / 12 ? Math.sqrt(3 * Math.max(s, 0)) : HLG.a * Math.log(12 * s - HLG.b) + HLG.c;
 
 // ── Colour space descriptions ───────────────────────────────────────────────
 
@@ -129,7 +156,9 @@ export const INPUT_COLOR_SPACES: Record<Exclude<InputColorSpace, 'auto'>, ColorS
 };
 
 /** Resolve an asset's effective input colour space from its override or container metadata. */
-export function resolveInputSpace(asset: Pick<Asset, 'inputColorSpace' | 'color'> | undefined): Exclude<InputColorSpace, 'auto'> {
+export function resolveInputSpace(
+  asset: Pick<Asset, 'inputColorSpace' | 'color'> | undefined,
+): Exclude<InputColorSpace, 'auto'> {
   if (!asset) return 'rec709';
   if (asset.inputColorSpace !== 'auto') return asset.inputColorSpace;
   const c = asset.color;
@@ -140,9 +169,11 @@ export function resolveInputSpace(asset: Pick<Asset, 'inputColorSpace' | 'color'
   return 'rec709';
 }
 
-export const isHdrSpace = (s: Exclude<InputColorSpace, 'auto'>): boolean => s === 'rec2020-pq' || s === 'rec2020-hlg';
+export const isHdrSpace = (s: Exclude<InputColorSpace, 'auto'>): boolean =>
+  s === 'rec2020-pq' || s === 'rec2020-hlg';
 
-export const isLogSpace = (s: Exclude<InputColorSpace, 'auto'>): boolean => s === 'slog3' || s === 'logc3' || s === 'vlog';
+export const isLogSpace = (s: Exclude<InputColorSpace, 'auto'>): boolean =>
+  s === 'slog3' || s === 'logc3' || s === 'vlog';
 
 /** Primaries of the timeline working space for a colour mode. */
 export const workingPrimaries = (mode: ColorMode): Primaries => (mode === 'sdr' ? 'rec709' : 'rec2020');

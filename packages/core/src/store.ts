@@ -101,7 +101,10 @@ function readAsset(id: ID, json: Record<string, unknown>): Asset | null {
     name: typeof json.name === 'string' ? json.name : 'Untitled',
     // A poster is an inline image. Anything else (a remote URL a peer slipped in) would make every
     // collaborator's browser call out to it.
-    thumb: typeof asset.thumb === 'string' && /^data:image\/(png|jpeg|webp|avif);/.test(asset.thumb) ? asset.thumb : null,
+    thumb:
+      typeof asset.thumb === 'string' && /^data:image\/(png|jpeg|webp|avif);/.test(asset.thumb)
+        ? asset.thumb
+        : null,
   };
 }
 
@@ -195,7 +198,8 @@ export class ProjectStore {
       this.yMeta.set('schema', SCHEMA_VERSION);
       const s = { ...DEFAULT_SETTINGS, ...settings };
       for (const [k, v] of Object.entries(s)) this.ySettings.set(k, v);
-      for (const t of starterTracks()) this.writeEntity(this.yTracks, t as unknown as Record<string, unknown>);
+      for (const t of starterTracks())
+        this.writeEntity(this.yTracks, t as unknown as Record<string, unknown>);
     }, this.systemOrigin);
   }
 
@@ -238,13 +242,23 @@ export class ProjectStore {
   replaceAll(next: Project): void {
     this.undoManager.stopCapturing();
     this.doc.transact(() => {
-      for (const m of [this.ySettings, this.yAssets, this.yTracks, this.yClips, this.yFolders, this.yMarkers]) {
+      for (const m of [
+        this.ySettings,
+        this.yAssets,
+        this.yTracks,
+        this.yClips,
+        this.yFolders,
+        this.yMarkers,
+      ]) {
         for (const k of Array.from(m.keys())) m.delete(k);
       }
       for (const [k, v] of Object.entries(next.settings)) this.ySettings.set(k, v);
-      for (const a of Object.values(next.assets)) this.writeEntity(this.yAssets, a as unknown as Record<string, unknown>);
-      for (const t of Object.values(next.tracks)) this.writeEntity(this.yTracks, t as unknown as Record<string, unknown>);
-      for (const c of Object.values(next.clips)) this.writeEntity(this.yClips, c as unknown as Record<string, unknown>, CLIP_DEFAULTS);
+      for (const a of Object.values(next.assets))
+        this.writeEntity(this.yAssets, a as unknown as Record<string, unknown>);
+      for (const t of Object.values(next.tracks))
+        this.writeEntity(this.yTracks, t as unknown as Record<string, unknown>);
+      for (const c of Object.values(next.clips))
+        this.writeEntity(this.yClips, c as unknown as Record<string, unknown>, CLIP_DEFAULTS);
       for (const f of Object.values(next.folders)) this.yFolders.set(f.id, f);
       for (const m of Object.values(next.markers)) this.yMarkers.set(m.id, m);
     }, this.origin);
@@ -281,7 +295,10 @@ export class ProjectStore {
   }
 
   private readAll(): Project {
-    const read = <T>(map: Y.Map<Y.Map<unknown>>, reader: (id: ID, json: Record<string, unknown>) => T | null) => {
+    const read = <T>(
+      map: Y.Map<Y.Map<unknown>>,
+      reader: (id: ID, json: Record<string, unknown>) => T | null,
+    ) => {
       const out: Record<ID, T> = {};
       map.forEach((value, id) => {
         if (!(value instanceof Y.Map)) return;

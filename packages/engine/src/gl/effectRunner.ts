@@ -34,7 +34,13 @@ function effectProgram(glx: Glx, def: EffectDef, index: number): Program | null 
   try {
     return glx.program(
       key,
-      GLSL_EFFECT_HEADER + GLSL_COMMON + GLSL_EFFECT_SAMPLERS + paramUniformDecls(def.params) + '\n' + def.passes[index].glsl + GLSL_EFFECT_FOOTER,
+      GLSL_EFFECT_HEADER +
+        GLSL_COMMON +
+        GLSL_EFFECT_SAMPLERS +
+        paramUniformDecls(def.params) +
+        '\n' +
+        def.passes[index].glsl +
+        GLSL_EFFECT_FOOTER,
     );
   } catch (err) {
     // A broken shader must never take the whole render down; skip the effect and say so once.
@@ -114,7 +120,13 @@ export function transitionProgram(glx: Glx, def: TransitionDef): Program | null 
   try {
     return glx.program(
       key,
-      GLSL_TRANSITION_HEADER + GLSL_COMMON + GLSL_TRANSITION_SAMPLERS + paramUniformDecls(def.params) + '\n' + def.glsl + GLSL_TRANSITION_FOOTER,
+      GLSL_TRANSITION_HEADER +
+        GLSL_COMMON +
+        GLSL_TRANSITION_SAMPLERS +
+        paramUniformDecls(def.params) +
+        '\n' +
+        def.glsl +
+        GLSL_TRANSITION_FOOTER,
     );
   } catch (err) {
     failed.add(key);
@@ -128,7 +140,11 @@ export function transitionProgram(glx: Glx, def: TransitionDef): Program | null 
  * when there was nothing left to do. Called from idle time so that the first frame which uses an
  * effect does not pay for its shader compile in the middle of playback.
  */
-export function warmNext(glx: Glx, effects: Iterable<EffectDef>, transitions: Iterable<TransitionDef>): boolean {
+export function warmNext(
+  glx: Glx,
+  effects: Iterable<EffectDef>,
+  transitions: Iterable<TransitionDef>,
+): boolean {
   for (const e of effects) {
     for (let i = 0; i < e.passes.length; i++) {
       const key = `fx:${e.id}:${i}`;

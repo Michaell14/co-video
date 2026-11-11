@@ -19,7 +19,9 @@ test.describe('collaboration', () => {
       cmd.addText({ content: 'Shared edit' });
     });
     // The owner's media uploads on its own.
-    await page.waitForFunction(() => Object.values((window as any).tandem.session.store.get().assets).every((a: any) => a.uploaded));
+    await page.waitForFunction(() =>
+      Object.values((window as any).tandem.session.store.get().assets).every((a: any) => a.uploaded),
+    );
     const editorLink: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('editor'));
     const viewerLink: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('viewer'));
 
@@ -28,7 +30,9 @@ test.describe('collaboration', () => {
     const b = await ctxB.newPage();
     const errorsB = trackErrors(b);
     await b.goto(editorLink);
-    await b.waitForFunction(() => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 3);
+    await b.waitForFunction(
+      () => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 3,
+    );
     expect(await b.evaluate(() => (window as any).tandem.session.getMeta().role)).toBe('editor');
     // The token is a capability; it must not linger in the address bar.
     expect(b.url()).not.toContain('t=');
@@ -50,7 +54,11 @@ test.describe('collaboration', () => {
       ui.getState().select([t.id]);
       cmd.nudge(30);
     });
-    await page.waitForFunction(() => (Object.values((window as any).tandem.session.store.get().clips) as any[]).some((c) => c.type === 'text' && c.start === 45));
+    await page.waitForFunction(() =>
+      (Object.values((window as any).tandem.session.store.get().clips) as any[]).some(
+        (c) => c.type === 'text' && c.start === 45,
+      ),
+    );
     await expect(page.locator('.clip__peer')).toBeVisible();
 
     // Concurrent edits to different properties of the same clip both survive.
@@ -68,7 +76,9 @@ test.describe('collaboration', () => {
     ]);
     for (const p of [page, b]) {
       await p.waitForFunction(() => {
-        const t = (Object.values((window as any).tandem.session.store.get().clips) as any[]).find((c) => c.type === 'text');
+        const t = (Object.values((window as any).tandem.session.store.get().clips) as any[]).find(
+          (c) => c.type === 'text',
+        );
         return t.opacity === 0.5 && t.rotation === 15;
       });
     }
@@ -77,7 +87,15 @@ test.describe('collaboration', () => {
     await b.evaluate(() => {
       const s = (window as any).tandem.session;
       const u = s.getMeta().user;
-      s.review.add({ frame: 20, text: 'Tighten this', authorId: u.id, authorName: u.name, authorColor: u.color, x: null, y: null });
+      s.review.add({
+        frame: 20,
+        text: 'Tighten this',
+        authorId: u.id,
+        authorName: u.name,
+        authorColor: u.color,
+        x: null,
+        y: null,
+      });
     });
     await page.waitForFunction(() => (window as any).tandem.session.review.get().length === 1);
 
@@ -85,7 +103,9 @@ test.describe('collaboration', () => {
     const ctxC = await browser.newContext();
     const c = await ctxC.newPage();
     await c.goto(viewerLink);
-    await c.waitForFunction(() => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 3);
+    await c.waitForFunction(
+      () => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 3,
+    );
     expect(await c.evaluate(() => (window as any).tandem.session.getMeta().role)).toBe('viewer');
     // The polite path: commands refuse.
     await c.evaluate(() => {

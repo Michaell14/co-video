@@ -86,16 +86,32 @@ export function ColorPanel() {
           <div className="tabs__ink" style={{ width: ink.w, transform: `translateX(${ink.x}px)` }} />
         </div>
         <span className="panel__spacer" />
-        <IconButton small label={grade.enabled ? 'Bypass grade' : 'Enable grade'} disabled={!clip?.grade} active={!!clip?.grade && !grade.enabled} onClick={() => set({ enabled: !grade.enabled }, false)}>
+        <IconButton
+          small
+          label={grade.enabled ? 'Bypass grade' : 'Enable grade'}
+          disabled={!clip?.grade}
+          active={!!clip?.grade && !grade.enabled}
+          onClick={() => set({ enabled: !grade.enabled }, false)}
+        >
           {grade.enabled ? <Eye /> : <EyeOff />}
         </IconButton>
         <IconButton small label="Copy grade" disabled={!clip} onClick={() => cmd.copyAttributes()}>
           <ClipboardCopy />
         </IconButton>
-        <IconButton small label="Paste grade" disabled={!clip || !useUI.getState().attributes} onClick={() => cmd.pasteAttributes('grade')}>
+        <IconButton
+          small
+          label="Paste grade"
+          disabled={!clip || !useUI.getState().attributes}
+          onClick={() => cmd.pasteAttributes('grade')}
+        >
           <ClipboardPaste />
         </IconButton>
-        <IconButton small label="Reset grade" disabled={!clip?.grade} onClick={() => clip && patchClips([clip.id], { grade: null })}>
+        <IconButton
+          small
+          label="Reset grade"
+          disabled={!clip?.grade}
+          onClick={() => clip && patchClips([clip.id], { grade: null })}
+        >
           <RotateCcw />
         </IconButton>
       </div>
@@ -108,7 +124,11 @@ export function ColorPanel() {
           </div>
         ) : (
           <>
-            <button className="color__clip" onClick={() => useUI.getState().select([clip.id])} {...tip('Click to select this clip')}>
+            <button
+              className="color__clip"
+              onClick={() => useUI.getState().select([clip.id])}
+              {...tip('Click to select this clip')}
+            >
               <i style={{ background: 'var(--accent)' }} />
               <span>{clip.name || clip.type}</span>
               {!grade.enabled && <span className="badge badge--amber">Bypassed</span>}
@@ -148,10 +168,25 @@ function puckToWheel(x: number, y: number, master: number): Wheel {
   const r = Math.min(1, Math.hypot(x, y));
   const a = Math.atan2(x, -y); // clockwise from the top, matching the conic gradient
   const round = (v: number) => Math.round(v * 10000) / 10000;
-  return [round(r * WHEEL_RANGE * Math.cos(a - PHI[0])), round(r * WHEEL_RANGE * Math.cos(a - PHI[1])), round(r * WHEEL_RANGE * Math.cos(a - PHI[2])), master];
+  return [
+    round(r * WHEEL_RANGE * Math.cos(a - PHI[0])),
+    round(r * WHEEL_RANGE * Math.cos(a - PHI[1])),
+    round(r * WHEEL_RANGE * Math.cos(a - PHI[2])),
+    master,
+  ];
 }
 
-function ColorWheel({ label, value, onChange, hint }: { label: string; value: Wheel; onChange: (w: Wheel, merge: boolean) => void; hint: string }) {
+function ColorWheel({
+  label,
+  value,
+  onChange,
+  hint,
+}: {
+  label: string;
+  value: Wheel;
+  onChange: (w: Wheel, merge: boolean) => void;
+  hint: string;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const [active, setActive] = useState(false);
@@ -161,7 +196,12 @@ function ColorWheel({ label, value, onChange, hint }: { label: string; value: Wh
     <div className="wheel" data-active={active}>
       <div className="wheel__head">
         <span {...tip(hint)}>{label}</span>
-        <button className="wheel__reset" onClick={() => onChange([0, 0, 0, 0], false)} disabled={neutral} aria-label={`Reset ${label}`}>
+        <button
+          className="wheel__reset"
+          onClick={() => onChange([0, 0, 0, 0], false)}
+          disabled={neutral}
+          aria-label={`Reset ${label}`}
+        >
           <RotateCcw />
         </button>
       </div>
@@ -201,7 +241,15 @@ function ColorWheel({ label, value, onChange, hint }: { label: string; value: Wh
         <div className="wheel__puck" style={{ left: `${50 + puck.x * 46}%`, top: `${50 + puck.y * 46}%` }} />
       </div>
       <div className="wheel__master">
-        <Slider value={value[3]} min={-1} max={1} origin={0} defaultValue={0} onStart={beginGesture} onChange={(m) => onChange([value[0], value[1], value[2], Math.round(m * 1000) / 1000], true)} />
+        <Slider
+          value={value[3]}
+          min={-1}
+          max={1}
+          origin={0}
+          defaultValue={0}
+          onStart={beginGesture}
+          onChange={(m) => onChange([value[0], value[1], value[2], Math.round(m * 1000) / 1000], true)}
+        />
       </div>
       <div className="wheel__read mono">
         <span style={{ color: '#ff7a7a' }}>{(value[0] + value[3]).toFixed(2)}</span>
@@ -212,12 +260,56 @@ function ColorWheel({ label, value, onChange, hint }: { label: string; value: Wh
   );
 }
 
-function GradeSlider({ label, value, min, max, def, onChange, precision = 2, unit, gradient }: { label: string; value: number; min: number; max: number; def: number; onChange: (v: number) => void; precision?: number; unit?: string; gradient?: string }) {
+function GradeSlider({
+  label,
+  value,
+  min,
+  max,
+  def,
+  onChange,
+  precision = 2,
+  unit,
+  gradient,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  def: number;
+  onChange: (v: number) => void;
+  precision?: number;
+  unit?: string;
+  gradient?: string;
+}) {
   return (
-    <div className="gslider" style={gradient ? ({ ['--track' as string]: gradient } as React.CSSProperties) : undefined} data-tinted={!!gradient}>
+    <div
+      className="gslider"
+      style={gradient ? ({ ['--track' as string]: gradient } as React.CSSProperties) : undefined}
+      data-tinted={!!gradient}
+    >
       <span className="gslider__label">{label}</span>
-      <Slider value={value} min={min} max={max} origin={min < 0 ? 0 : def} defaultValue={def} onStart={beginGesture} onChange={onChange} />
-      <NumberField value={value} onChange={onChange} onStart={beginGesture} min={min} max={max} step={(max - min) / 400} precision={precision} suffix={unit} defaultValue={def} ariaLabel={label} style={{ flex: '0 0 58px' }} />
+      <Slider
+        value={value}
+        min={min}
+        max={max}
+        origin={min < 0 ? 0 : def}
+        defaultValue={def}
+        onStart={beginGesture}
+        onChange={onChange}
+      />
+      <NumberField
+        value={value}
+        onChange={onChange}
+        onStart={beginGesture}
+        min={min}
+        max={max}
+        step={(max - min) / 400}
+        precision={precision}
+        suffix={unit}
+        defaultValue={def}
+        ariaLabel={label}
+        style={{ flex: '0 0 58px' }}
+      />
     </div>
   );
 }
@@ -226,24 +318,135 @@ function WheelsTab({ grade, set }: { grade: Grade; set: SetGrade }) {
   return (
     <div className="color__scroll">
       <div className="wheels">
-        <ColorWheel label="Lift" hint="Shadows: raises or tints the darkest tones" value={grade.lift} onChange={(lift, m) => set({ lift }, m)} />
-        <ColorWheel label="Gamma" hint="Mid-tones" value={grade.gamma} onChange={(gamma, m) => set({ gamma }, m)} />
-        <ColorWheel label="Gain" hint="Highlights: scales the brightest tones" value={grade.gain} onChange={(gain, m) => set({ gain }, m)} />
-        <ColorWheel label="Offset" hint="Shifts the whole image" value={grade.offset} onChange={(offset, m) => set({ offset }, m)} />
+        <ColorWheel
+          label="Lift"
+          hint="Shadows: raises or tints the darkest tones"
+          value={grade.lift}
+          onChange={(lift, m) => set({ lift }, m)}
+        />
+        <ColorWheel
+          label="Gamma"
+          hint="Mid-tones"
+          value={grade.gamma}
+          onChange={(gamma, m) => set({ gamma }, m)}
+        />
+        <ColorWheel
+          label="Gain"
+          hint="Highlights: scales the brightest tones"
+          value={grade.gain}
+          onChange={(gain, m) => set({ gain }, m)}
+        />
+        <ColorWheel
+          label="Offset"
+          hint="Shifts the whole image"
+          value={grade.offset}
+          onChange={(offset, m) => set({ offset }, m)}
+        />
       </div>
       <div className="gsliders">
-        <GradeSlider label="Temp" value={grade.temperature} min={-1} max={1} def={0} onChange={(temperature) => set({ temperature })} gradient="linear-gradient(90deg,#4f9dff,#e9e9ee,#ffb347)" />
-        <GradeSlider label="Tint" value={grade.tint} min={-1} max={1} def={0} onChange={(tint) => set({ tint })} gradient="linear-gradient(90deg,#51cf66,#e9e9ee,#e05df5)" />
-        <GradeSlider label="Exposure" value={grade.exposure} min={-5} max={5} def={0} onChange={(exposure) => set({ exposure })} unit="EV" />
-        <GradeSlider label="Contrast" value={grade.contrast} min={-1} max={1} def={0} onChange={(contrast) => set({ contrast })} />
-        <GradeSlider label="Pivot" value={grade.pivot} min={0.1} max={0.9} def={0.435} onChange={(pivot) => set({ pivot })} />
-        <GradeSlider label="Highlights" value={grade.highlights} min={-1} max={1} def={0} onChange={(highlights) => set({ highlights })} />
-        <GradeSlider label="Shadows" value={grade.shadows} min={-1} max={1} def={0} onChange={(shadows) => set({ shadows })} />
-        <GradeSlider label="Whites" value={grade.whites} min={-1} max={1} def={0} onChange={(whites) => set({ whites })} />
-        <GradeSlider label="Blacks" value={grade.blacks} min={-1} max={1} def={0} onChange={(blacks) => set({ blacks })} />
-        <GradeSlider label="Saturation" value={grade.saturation} min={0} max={2} def={1} onChange={(saturation) => set({ saturation })} gradient="linear-gradient(90deg,#8a8a8a,#ff5d8f)" />
-        <GradeSlider label="Vibrance" value={grade.vibrance} min={-1} max={1} def={0} onChange={(vibrance) => set({ vibrance })} />
-        <GradeSlider label="Hue" value={grade.hue} min={-180} max={180} def={0} precision={0} unit="°" onChange={(hue) => set({ hue })} gradient="linear-gradient(90deg,#22d3ee,#4f6bff,#e05df5,#ff5d5d,#ffd43b,#51cf66,#22d3ee)" />
+        <GradeSlider
+          label="Temp"
+          value={grade.temperature}
+          min={-1}
+          max={1}
+          def={0}
+          onChange={(temperature) => set({ temperature })}
+          gradient="linear-gradient(90deg,#4f9dff,#e9e9ee,#ffb347)"
+        />
+        <GradeSlider
+          label="Tint"
+          value={grade.tint}
+          min={-1}
+          max={1}
+          def={0}
+          onChange={(tint) => set({ tint })}
+          gradient="linear-gradient(90deg,#51cf66,#e9e9ee,#e05df5)"
+        />
+        <GradeSlider
+          label="Exposure"
+          value={grade.exposure}
+          min={-5}
+          max={5}
+          def={0}
+          onChange={(exposure) => set({ exposure })}
+          unit="EV"
+        />
+        <GradeSlider
+          label="Contrast"
+          value={grade.contrast}
+          min={-1}
+          max={1}
+          def={0}
+          onChange={(contrast) => set({ contrast })}
+        />
+        <GradeSlider
+          label="Pivot"
+          value={grade.pivot}
+          min={0.1}
+          max={0.9}
+          def={0.435}
+          onChange={(pivot) => set({ pivot })}
+        />
+        <GradeSlider
+          label="Highlights"
+          value={grade.highlights}
+          min={-1}
+          max={1}
+          def={0}
+          onChange={(highlights) => set({ highlights })}
+        />
+        <GradeSlider
+          label="Shadows"
+          value={grade.shadows}
+          min={-1}
+          max={1}
+          def={0}
+          onChange={(shadows) => set({ shadows })}
+        />
+        <GradeSlider
+          label="Whites"
+          value={grade.whites}
+          min={-1}
+          max={1}
+          def={0}
+          onChange={(whites) => set({ whites })}
+        />
+        <GradeSlider
+          label="Blacks"
+          value={grade.blacks}
+          min={-1}
+          max={1}
+          def={0}
+          onChange={(blacks) => set({ blacks })}
+        />
+        <GradeSlider
+          label="Saturation"
+          value={grade.saturation}
+          min={0}
+          max={2}
+          def={1}
+          onChange={(saturation) => set({ saturation })}
+          gradient="linear-gradient(90deg,#8a8a8a,#ff5d8f)"
+        />
+        <GradeSlider
+          label="Vibrance"
+          value={grade.vibrance}
+          min={-1}
+          max={1}
+          def={0}
+          onChange={(vibrance) => set({ vibrance })}
+        />
+        <GradeSlider
+          label="Hue"
+          value={grade.hue}
+          min={-180}
+          max={180}
+          def={0}
+          precision={0}
+          unit="°"
+          onChange={(hue) => set({ hue })}
+          gradient="linear-gradient(90deg,#22d3ee,#4f6bff,#e05df5,#ff5d5d,#ffd43b,#51cf66,#22d3ee)"
+        />
       </div>
     </div>
   );
@@ -258,7 +461,13 @@ const CURVES: { id: CurveId; label: string; color: string; group: 'tone' | 'hue'
   { id: 'r', label: 'R', color: '#ff6b6b', group: 'tone', hint: 'Red' },
   { id: 'g', label: 'G', color: '#51cf66', group: 'tone', hint: 'Green' },
   { id: 'b', label: 'B', color: '#5aa2ff', group: 'tone', hint: 'Blue' },
-  { id: 'hueSat', label: 'Hue → Sat', color: '#f2f2f4', group: 'hue', hint: 'Saturate or mute individual hues' },
+  {
+    id: 'hueSat',
+    label: 'Hue → Sat',
+    color: '#f2f2f4',
+    group: 'hue',
+    hint: 'Saturate or mute individual hues',
+  },
   { id: 'hueHue', label: 'Hue → Hue', color: '#f2f2f4', group: 'hue', hint: 'Shift individual hues' },
   { id: 'lumSat', label: 'Luma → Sat', color: '#f2f2f4', group: 'hue', hint: 'Saturation by brightness' },
 ];
@@ -280,17 +489,41 @@ function CurvesTab({ grade, set }: { grade: Grade; set: SetGrade }) {
     <div className="color__scroll">
       <div className="curve__tabs">
         {CURVES.map((c) => {
-          const edited = JSON.stringify(getCurve(grade, c.id)) !== JSON.stringify(c.group === 'tone' ? IDENTITY_CURVE : FLAT_CURVE);
+          const edited =
+            JSON.stringify(getCurve(grade, c.id)) !==
+            JSON.stringify(c.group === 'tone' ? IDENTITY_CURVE : FLAT_CURVE);
           return (
-            <button key={c.id} className="chip" aria-pressed={id === c.id} onClick={() => setId(c.id)} {...tip(c.hint)}>
-              {c.group === 'tone' && <i style={{ width: 7, height: 7, borderRadius: '50%', background: c.color, display: 'inline-block' }} />}
+            <button
+              key={c.id}
+              className="chip"
+              aria-pressed={id === c.id}
+              onClick={() => setId(c.id)}
+              {...tip(c.hint)}
+            >
+              {c.group === 'tone' && (
+                <i
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    background: c.color,
+                    display: 'inline-block',
+                  }}
+                />
+              )}
               {c.label}
               {edited && <b className="curve__dot" />}
             </button>
           );
         })}
       </div>
-      <CurveEditor points={points} color={def.color} hue={id === 'hueSat' || id === 'hueHue'} flat={def.group === 'hue'} onChange={write} />
+      <CurveEditor
+        points={points}
+        color={def.color}
+        hue={id === 'hueSat' || id === 'hueHue'}
+        flat={def.group === 'hue'}
+        onChange={write}
+      />
       <div className="curve__foot">
         <span>Click to add a point · drag to shape · double-click a point to remove it</span>
         <Button size="sm" variant="ghost" icon={<RotateCcw />} onClick={() => write(neutral, false)}>
@@ -301,7 +534,19 @@ function CurvesTab({ grade, set }: { grade: Grade; set: SetGrade }) {
   );
 }
 
-function CurveEditor({ points, color, hue, flat, onChange }: { points: CurvePoint[]; color: string; hue: boolean; flat: boolean; onChange: (pts: CurvePoint[], merge?: boolean) => void }) {
+function CurveEditor({
+  points,
+  color,
+  hue,
+  flat,
+  onChange,
+}: {
+  points: CurvePoint[];
+  color: string;
+  hue: boolean;
+  flat: boolean;
+  onChange: (pts: CurvePoint[], merge?: boolean) => void;
+}) {
   const ref = useRef<SVGSVGElement>(null);
   const drag = useRef<number | null>(null);
   const S = 256;
@@ -309,7 +554,8 @@ function CurveEditor({ points, color, hue, flat, onChange }: { points: CurvePoin
   const path = useMemo(() => {
     const samples = sampleCurve(sorted, 129);
     let d = '';
-    for (let i = 0; i < samples.length; i++) d += `${i === 0 ? 'M' : 'L'}${((i / 128) * S).toFixed(2)} ${((1 - Math.min(1, Math.max(0, samples[i]))) * S).toFixed(2)}`;
+    for (let i = 0; i < samples.length; i++)
+      d += `${i === 0 ? 'M' : 'L'}${((i / 128) * S).toFixed(2)} ${((1 - Math.min(1, Math.max(0, samples[i]))) * S).toFixed(2)}`;
     return d;
   }, [sorted]);
 
@@ -350,7 +596,14 @@ function CurveEditor({ points, color, hue, flat, onChange }: { points: CurvePoin
         // End points stay pinned to their side; inner points cannot cross their neighbours.
         const lo = i === 0 ? 0 : next[i - 1][0] + 0.004;
         const hi = i === next.length - 1 ? 1 : next[i + 1][0] - 0.004;
-        next[i] = [i === 0 && !flat ? Math.min(p[0], hi) : i === next.length - 1 && !flat ? Math.max(p[0], lo) : Math.min(hi, Math.max(lo, p[0])), p[1]];
+        next[i] = [
+          i === 0 && !flat
+            ? Math.min(p[0], hi)
+            : i === next.length - 1 && !flat
+              ? Math.max(p[0], lo)
+              : Math.min(hi, Math.max(lo, p[0])),
+          p[1],
+        ];
         if (flat && (i === 0 || i === next.length - 1)) {
           next[i][0] = i === 0 ? 0 : 1;
           // Hue wraps around, so the two ends move together.
@@ -365,8 +618,14 @@ function CurveEditor({ points, color, hue, flat, onChange }: { points: CurvePoin
       onDoubleClick={(e) => {
         const p = at(e);
         const r = ref.current!.getBoundingClientRect();
-        const idx = sorted.findIndex((q) => Math.hypot((q[0] - p[0]) * r.width, (q[1] - p[1]) * r.height) < 12);
-        if (idx > 0 && idx < sorted.length - 1) onChange(sorted.filter((_, i) => i !== idx), false);
+        const idx = sorted.findIndex(
+          (q) => Math.hypot((q[0] - p[0]) * r.width, (q[1] - p[1]) * r.height) < 12,
+        );
+        if (idx > 0 && idx < sorted.length - 1)
+          onChange(
+            sorted.filter((_, i) => i !== idx),
+            false,
+          );
       }}
     >
       <defs>
@@ -384,11 +643,37 @@ function CurveEditor({ points, color, hue, flat, onChange }: { points: CurvePoin
             <line x1={0} y1={v * S} x2={S} y2={v * S} vectorEffect="non-scaling-stroke" />
           </g>
         ))}
-        {flat ? <line className="curve__ref" x1={0} y1={S / 2} x2={S} y2={S / 2} vectorEffect="non-scaling-stroke" /> : <line className="curve__ref" x1={0} y1={S} x2={S} y2={0} vectorEffect="non-scaling-stroke" />}
+        {flat ? (
+          <line
+            className="curve__ref"
+            x1={0}
+            y1={S / 2}
+            x2={S}
+            y2={S / 2}
+            vectorEffect="non-scaling-stroke"
+          />
+        ) : (
+          <line className="curve__ref" x1={0} y1={S} x2={S} y2={0} vectorEffect="non-scaling-stroke" />
+        )}
       </g>
-      <path d={path} fill="none" stroke={color} strokeWidth={2} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+      <path
+        d={path}
+        fill="none"
+        stroke={color}
+        strokeWidth={2}
+        vectorEffect="non-scaling-stroke"
+        strokeLinejoin="round"
+      />
       {sorted.map((p, i) => (
-        <circle key={i} className="curve__pt" cx={p[0] * S} cy={(1 - p[1]) * S} r={4.5} stroke={color} vectorEffect="non-scaling-stroke" />
+        <circle
+          key={i}
+          className="curve__pt"
+          cx={p[0] * S}
+          cy={(1 - p[1]) * S}
+          r={4.5}
+          stroke={color}
+          vectorEffect="non-scaling-stroke"
+        />
       ))}
     </svg>
   );
@@ -410,13 +695,23 @@ function HdrTab({ grade, set, hdr }: { grade: Grade; set: SetGrade; hdr: boolean
     <div className="color__scroll">
       <div className="color__note">
         <b>Tonal zones</b>
-        Each fader is an exposure offset in stops applied in linear light to one band of scene luminance, centred on the stop shown beneath it (relative to mid-grey). Use them to shape highlights and shadows independently — essential on HDR timelines, useful on any.
+        Each fader is an exposure offset in stops applied in linear light to one band of scene luminance,
+        centred on the stop shown beneath it (relative to mid-grey). Use them to shape highlights and shadows
+        independently — essential on HDR timelines, useful on any.
       </div>
       <div className="zones">
         {ZONES.map((z) => (
           <div key={z.key} className="zone">
-            <div className="zone__val mono">{grade.zones[z.key] > 0 ? '+' : ''}{grade.zones[z.key].toFixed(2)}</div>
-            <VFader value={grade.zones[z.key]} min={-4} max={4} onChange={(v) => set({ zones: { ...grade.zones, [z.key]: Math.round(v * 100) / 100 } })} />
+            <div className="zone__val mono">
+              {grade.zones[z.key] > 0 ? '+' : ''}
+              {grade.zones[z.key].toFixed(2)}
+            </div>
+            <VFader
+              value={grade.zones[z.key]}
+              min={-4}
+              max={4}
+              onChange={(v) => set({ zones: { ...grade.zones, [z.key]: Math.round(v * 100) / 100 } })}
+            />
             <div className="zone__label">{z.label}</div>
             <div className="zone__stops mono">{z.stops}</div>
           </div>
@@ -433,7 +728,17 @@ function HdrTab({ grade, set, hdr }: { grade: Grade; set: SetGrade; hdr: boolean
   );
 }
 
-function VFader({ value, min, max, onChange }: { value: number; min: number; max: number; onChange: (v: number) => void }) {
+function VFader({
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  onChange: (v: number) => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(false);
   const pct = ((value - min) / (max - min)) * 100;
@@ -461,7 +766,10 @@ function VFader({ value, min, max, onChange }: { value: number; min: number; max
     >
       <div className="vfader__track" />
       <div className="vfader__zero" />
-      <div className="vfader__fill" style={{ bottom: `${Math.min(50, pct)}%`, height: `${Math.abs(pct - 50)}%` }} />
+      <div
+        className="vfader__fill"
+        style={{ bottom: `${Math.min(50, pct)}%`, height: `${Math.abs(pct - 50)}%` }}
+      />
       <div className="vfader__thumb" style={{ bottom: `${pct}%` }} />
     </div>
   );
@@ -469,7 +777,17 @@ function VFader({ value, min, max, onChange }: { value: number; min: number; max
 
 // ─────────────────────────────────────────────────────────── LUT & input ──
 
-function LutTab({ grade, set, project, clip }: { grade: Grade; set: SetGrade; project: Project; clip: Clip }) {
+function LutTab({
+  grade,
+  set,
+  project,
+  clip,
+}: {
+  grade: Grade;
+  set: SetGrade;
+  project: Project;
+  clip: Clip;
+}) {
   const luts = Object.values(project.assets).filter((a) => a.kind === 'lut');
   const asset = clip.assetId ? project.assets[clip.assetId] : undefined;
   const detected = resolveInputSpace(asset ? { inputColorSpace: 'auto', color: asset.color } : undefined);
@@ -479,7 +797,10 @@ function LutTab({ grade, set, project, clip }: { grade: Grade; set: SetGrade; pr
       <Row label="LUT">
         <Select
           value={grade.lutId ?? 'none'}
-          options={[{ value: 'none', label: 'None' }, ...luts.map((l) => ({ value: l.id, label: l.name.replace(/\.cube$/i, '') }))]}
+          options={[
+            { value: 'none', label: 'None' },
+            ...luts.map((l) => ({ value: l.id, label: l.name.replace(/\.cube$/i, '') })),
+          ]}
           onChange={(v) => set({ lutId: v === 'none' ? null : v }, false)}
         />
         <IconButton
@@ -506,10 +827,32 @@ function LutTab({ grade, set, project, clip }: { grade: Grade; set: SetGrade; pr
         )}
       </Row>
       <Row label="Intensity">
-        <Slider value={grade.lutIntensity} min={0} max={1} defaultValue={1} onStart={beginGesture} onChange={(lutIntensity) => set({ lutIntensity })} disabled={!grade.lutId} />
-        <NumberField value={grade.lutIntensity} onChange={(lutIntensity) => set({ lutIntensity })} onStart={beginGesture} min={0} max={1} step={0.005} scale={100} precision={0} suffix="%" disabled={!grade.lutId} />
+        <Slider
+          value={grade.lutIntensity}
+          min={0}
+          max={1}
+          defaultValue={1}
+          onStart={beginGesture}
+          onChange={(lutIntensity) => set({ lutIntensity })}
+          disabled={!grade.lutId}
+        />
+        <NumberField
+          value={grade.lutIntensity}
+          onChange={(lutIntensity) => set({ lutIntensity })}
+          onStart={beginGesture}
+          min={0}
+          max={1}
+          step={0.005}
+          scale={100}
+          precision={0}
+          suffix="%"
+          disabled={!grade.lutId}
+        />
       </Row>
-      <p className="form__hint">LUTs are applied after the grade, in the timeline’s display encoding. 3D .cube files up to 129³ are supported.</p>
+      <p className="form__hint">
+        LUTs are applied after the grade, in the timeline’s display encoding. 3D .cube files up to 129³ are
+        supported.
+      </p>
 
       <div className="color__group" style={{ marginTop: 18 }}>
         Source colour space
@@ -524,17 +867,27 @@ function LutTab({ grade, set, project, clip }: { grade: Grade; set: SetGrade; pr
                 ...(Object.keys(INPUT_COLOR_SPACES) as Exclude<InputColorSpace, 'auto'>[]).map((k) => ({
                   value: k as InputColorSpace,
                   label: INPUT_COLOR_SPACES[k].label,
-                  group: k === 'slog3' || k === 'logc3' || k === 'vlog' ? 'Camera log' : k.startsWith('rec2020') ? 'HDR' : 'Standard',
+                  group:
+                    k === 'slog3' || k === 'logc3' || k === 'vlog'
+                      ? 'Camera log'
+                      : k.startsWith('rec2020')
+                        ? 'HDR'
+                        : 'Standard',
                 })),
               ]}
               onChange={(inputColorSpace) => {
                 commit([{ op: 'updateAsset', id: asset.id, patch: { inputColorSpace } }]);
-                toast(`${asset.name} is now interpreted as ${inputColorSpace === 'auto' ? INPUT_COLOR_SPACES[detected].label : INPUT_COLOR_SPACES[inputColorSpace].label}`, 'info');
+                toast(
+                  `${asset.name} is now interpreted as ${inputColorSpace === 'auto' ? INPUT_COLOR_SPACES[detected].label : INPUT_COLOR_SPACES[inputColorSpace].label}`,
+                  'info',
+                );
               }}
             />
           </Row>
           <p className="form__hint">
-            Applies to every clip that uses <b>{asset.name}</b>. Log footage is linearised with the camera’s published transfer function and gamut, then mapped into the timeline — rolled off on SDR timelines, kept at full range on HDR ones.
+            Applies to every clip that uses <b>{asset.name}</b>. Log footage is linearised with the camera’s
+            published transfer function and gamut, then mapped into the timeline — rolled off on SDR
+            timelines, kept at full range on HDR ones.
             {asset.hdr && ' This file is tagged as HDR.'}
           </p>
         </>

@@ -74,7 +74,12 @@ export interface TextureSource {
 
 export interface SourceProvider {
   /** Latest available picture for a clip, or null when nothing can be drawn yet. */
-  getTexture(layer: ClipLayer, project: Project, frameWidth: number, frameHeight: number): TextureSource | null;
+  getTexture(
+    layer: ClipLayer,
+    project: Project,
+    frameWidth: number,
+    frameHeight: number,
+  ): TextureSource | null;
   getLut(assetId: string): { tex: WebGLTexture; size: number } | null;
 }
 
@@ -127,7 +132,10 @@ export class Compositor {
   private readonly outputProgram: Program;
   private readonly presentProgram: Program;
   private readonly yuvProgram: Program;
-  private readonly curveCache = new Map<string, { tex: WebGLTexture; curves: object; hueSat: object; hueHue: object; lumSat: object }>();
+  private readonly curveCache = new Map<
+    string,
+    { tex: WebGLTexture; curves: object; hueSat: object; hueHue: object; lumSat: object }
+  >();
   private readonly outMat = toGlMat3(gamutMatrix('rec2020', 'rec709'));
   private readonly dummy2d: WebGLTexture;
   private readonly dummy3d: WebGLTexture;
@@ -181,10 +189,31 @@ export class Compositor {
     this.yuvProgram = this.glx.program('yuvpack', YUV_PACK_FS);
 
     this.dummy2d = this.glx.createTexture();
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA8,
+      1,
+      1,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 0]),
+    );
     this.dummy3d = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_3D, this.dummy3d);
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+    gl.texImage3D(
+      gl.TEXTURE_3D,
+      0,
+      gl.RGBA8,
+      1,
+      1,
+      1,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 255]),
+    );
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   }
@@ -244,7 +273,10 @@ export class Compositor {
     if (this.last && this.project) this.present(this.last, opts);
   }
 
-  private outputUniforms(mode: OutputMode, falseColor: boolean): Record<string, number | Float32Array | number[]> {
+  private outputUniforms(
+    mode: OutputMode,
+    falseColor: boolean,
+  ): Record<string, number | Float32Array | number[]> {
     const s = this.project!.settings;
     const hdr = isHdrMode(s.colorMode);
     let outMode = 0;
@@ -321,7 +353,10 @@ export class Compositor {
     return rt;
   }
 
-  private compositeTransition(layer: Extract<Layer, { kind: 'transition' }>, acc: RenderTarget): RenderTarget {
+  private compositeTransition(
+    layer: Extract<Layer, { kind: 'transition' }>,
+    acc: RenderTarget,
+  ): RenderTarget {
     const { glx } = this;
     const def = getTransitionDef(layer.transition.type);
     const program = def ? transitionProgram(glx, def) : null;
@@ -586,7 +621,9 @@ export class Compositor {
       u_opacity: opacity,
       u_maskType: mask ? (mask.type === 'rect' ? 1 : 2) : 0,
       u_maskRect: mask ? [mask.x, mask.y, mask.w, mask.h] : [0.5, 0.5, 1, 1],
-      u_maskParams: mask ? [mask.rotation * DEG, mask.feather, mask.radius, mask.invert ? 1 : 0] : [0, 0, 0, 0],
+      u_maskParams: mask
+        ? [mask.rotation * DEG, mask.feather, mask.radius, mask.invert ? 1 : 0]
+        : [0, 0, 0, 0],
       u_wipe: L.anim.wipe,
     });
     if (blend) {
@@ -605,7 +642,13 @@ export class Compositor {
     // Curve arrays are replaced (never mutated) when edited, so identity is a cheap dirty check.
     const gl = this.gl;
     let entry = this.curveCache.get(clipId);
-    if (entry && entry.curves === g.curves && entry.hueSat === g.hueSat && entry.hueHue === g.hueHue && entry.lumSat === g.lumSat) {
+    if (
+      entry &&
+      entry.curves === g.curves &&
+      entry.hueSat === g.hueSat &&
+      entry.hueHue === g.hueHue &&
+      entry.lumSat === g.lumSat
+    ) {
       return entry.tex;
     }
     if (!entry) {
@@ -617,7 +660,13 @@ export class Compositor {
           }
         }
       }
-      entry = { tex: this.glx.createTexture(), curves: g.curves, hueSat: g.hueSat, hueHue: g.hueHue, lumSat: g.lumSat };
+      entry = {
+        tex: this.glx.createTexture(),
+        curves: g.curves,
+        hueSat: g.hueSat,
+        hueHue: g.hueHue,
+        lumSat: g.lumSat,
+      };
       this.curveCache.set(clipId, entry);
     }
     entry.curves = g.curves;
@@ -633,7 +682,14 @@ export class Compositor {
    * Input transform (optional) + grade (optional) from `src` into `dst`.
    * `rot` un-rotates container rotation metadata while we are at it.
    */
-  private gradePass(src: TextureSource | Img, dst: RenderTarget, L: ClipLayer, input: boolean, grade = true, rot = 0): void {
+  private gradePass(
+    src: TextureSource | Img,
+    dst: RenderTarget,
+    L: ClipLayer,
+    input: boolean,
+    grade = true,
+    rot = 0,
+  ): void {
     const { glx } = this;
     const project = this.project!;
     const s = project.settings;
@@ -729,7 +785,11 @@ export class Compositor {
     const wasFloat = glx.useFloat;
     glx.useFloat = false;
     const rt = glx.acquire(this.width, this.height);
-    glx.pass(this.outputProgram, rt, { u_tex: this.last.tex, ...this.outputUniforms(this.lastOutput, false), u_dither: wasFloat ? 1 / 255 : 0 });
+    glx.pass(this.outputProgram, rt, {
+      u_tex: this.last.tex,
+      ...this.outputUniforms(this.lastOutput, false),
+      u_dither: wasFloat ? 1 / 255 : 0,
+    });
     gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, out);
     glx.release(rt);
     glx.useFloat = wasFloat;
@@ -752,7 +812,11 @@ export class Compositor {
 
     // 1. HDR code values in a float target.
     const rgb = glx.acquire(W, H);
-    glx.pass(this.outputProgram, rgb, { u_tex: this.last.tex, ...this.outputUniforms(mode, false), u_dither: 0 });
+    glx.pass(this.outputProgram, rgb, {
+      u_tex: this.last.tex,
+      ...this.outputUniforms(mode, false),
+      u_dither: 0,
+    });
 
     // 2. Pack to 8-bit pairs.
     glx.useFloat = false;
@@ -789,7 +853,9 @@ export class Compositor {
    * Small display-referred copy of the last frame for scopes. Asynchronous (PBO + fence) so it never
    * stalls the render loop. Resolves null when a read is already in flight.
    */
-  async readScope(maxWidth = 320): Promise<{ data: Uint8Array; width: number; height: number; pq: boolean } | null> {
+  async readScope(
+    maxWidth = 320,
+  ): Promise<{ data: Uint8Array; width: number; height: number; pq: boolean } | null> {
     const { gl, glx } = this;
     if (!this.last || !this.project || this.scopeBusy || glx.contextLost) return null;
     const w = Math.max(2, Math.min(maxWidth, this.width));

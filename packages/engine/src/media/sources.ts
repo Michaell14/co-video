@@ -14,7 +14,14 @@
 import { VideoSampleSink, type VideoSample } from 'mediabunny';
 
 type PlaneLayout = { offset: number; stride: number };
-import { isHdrMode, isHdrSpace, resolveInputSpace, type ClipLayer, type FrameDesc, type Project } from '@tandem/core';
+import {
+  isHdrMode,
+  isHdrSpace,
+  resolveInputSpace,
+  type ClipLayer,
+  type FrameDesc,
+  type Project,
+} from '@tandem/core';
 import type { Glx } from '../gl/glx';
 import type { SourceProvider, TextureSource } from '../gl/compositor';
 import { parseCubeLut } from '../gl/grade';
@@ -54,14 +61,25 @@ const PLANAR_FORMATS: Record<string, { bits: number; subX: number; subY: number 
 };
 
 /** Y'CbCr → R'G'B' (column-major), including limited-range expansion. */
-function yuvToRgb(matrix: string | null, bits: number, fullRange: boolean): { m: Float32Array; offset: [number, number, number] } {
-  const [kr, kb] = matrix === 'bt2020-ncl' || matrix === 'bt2020-cl' ? [0.2627, 0.0593] : matrix === 'smpte170m' || matrix === 'bt470bg' ? [0.299, 0.114] : [0.2126, 0.0722];
+function yuvToRgb(
+  matrix: string | null,
+  bits: number,
+  fullRange: boolean,
+): { m: Float32Array; offset: [number, number, number] } {
+  const [kr, kb] =
+    matrix === 'bt2020-ncl' || matrix === 'bt2020-cl'
+      ? [0.2627, 0.0593]
+      : matrix === 'smpte170m' || matrix === 'bt470bg'
+        ? [0.299, 0.114]
+        : [0.2126, 0.0722];
   const kg = 1 - kr - kb;
   const max = (1 << bits) - 1;
   const unit = 1 << (bits - 8);
   const sy = fullRange ? 1 : max / (219 * unit);
   const sc = fullRange ? 1 : max / (224 * unit);
-  const offset: [number, number, number] = fullRange ? [0, (128 * unit) / max, (128 * unit) / max] : [(16 * unit) / max, (128 * unit) / max, (128 * unit) / max];
+  const offset: [number, number, number] = fullRange
+    ? [0, (128 * unit) / max, (128 * unit) / max]
+    : [(16 * unit) / max, (128 * unit) / max, (128 * unit) / max];
   const rCr = 2 * (1 - kr);
   const bCb = 2 * (1 - kb);
   const gCb = (-2 * kb * (1 - kb)) / kg;
@@ -167,7 +185,12 @@ class VideoCursor {
 
   private uploadPlanes(p: PlaneSet): void {
     const gl = this.glx.gl;
-    if (!this.planeTex) this.planeTex = { y: this.glx.createTexture(), u: this.glx.createTexture(), v: this.glx.createTexture() };
+    if (!this.planeTex)
+      this.planeTex = {
+        y: this.glx.createTexture(),
+        u: this.glx.createTexture(),
+        v: this.glx.createTexture(),
+      };
     const put = (tex: WebGLTexture, plane: PlaneLayout, w: number, h: number) => {
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.pixelStorei(gl.UNPACK_ROW_LENGTH, plane.stride >> 1);
@@ -499,12 +522,20 @@ export class SourceManager implements SourceProvider {
         cur.setRaw(wantsRaw(project, clip.assetId));
         if (!cur.upload(layer.sourceTime)) return null;
         // Layout is in the original's pixels even when the texture is a smaller proxy.
-        return { tex: cur.tex, width: cur.width * cur.scale, height: cur.height * cur.scale, rotation: cur.rotation, yuv: cur.yuv };
+        return {
+          tex: cur.tex,
+          width: cur.width * cur.scale,
+          height: cur.height * cur.scale,
+          rotation: cur.rotation,
+          yuv: cur.yuv,
+        };
       }
       case 'image': {
         if (!clip.assetId) return null;
         const img = this.image(clip.assetId);
-        return img.state === 'ready' && img.tex ? { tex: img.tex, width: img.width, height: img.height } : null;
+        return img.state === 'ready' && img.tex
+          ? { tex: img.tex, width: img.width, height: img.height }
+          : null;
       }
       case 'text':
       case 'shape':
@@ -635,7 +666,13 @@ export class SourceManager implements SourceProvider {
   private image(assetId: string): ImageEntry {
     let e = this.images.get(assetId);
     if (e) return e;
-    const entry: ImageEntry = { tex: null, width: 0, height: 0, state: 'loading', promise: Promise.resolve() };
+    const entry: ImageEntry = {
+      tex: null,
+      width: 0,
+      height: 0,
+      state: 'loading',
+      promise: Promise.resolve(),
+    };
     entry.promise = (async () => {
       try {
         const blob = await this.library.blob(assetId);
@@ -694,7 +731,18 @@ export class SourceManager implements SourceProvider {
         const gl = this.glx.gl;
         const tex = gl.createTexture()!;
         gl.bindTexture(gl.TEXTURE_3D, tex);
-        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, parsed.size, parsed.size, parsed.size, 0, gl.RGB, gl.FLOAT, parsed.data);
+        gl.texImage3D(
+          gl.TEXTURE_3D,
+          0,
+          gl.RGB16F,
+          parsed.size,
+          parsed.size,
+          parsed.size,
+          0,
+          gl.RGB,
+          gl.FLOAT,
+          parsed.data,
+        );
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);

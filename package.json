@@ -6,7 +6,9 @@
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.28.0",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "pnpm --parallel --filter @tandem/server --filter @tandem/editor --filter @tandem/site dev",
     "dev:editor": "pnpm --filter @tandem/editor dev",

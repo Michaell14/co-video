@@ -238,12 +238,7 @@ export function emptyProject(settings: Partial<ProjectSettings> = {}): Project {
 
 /** A fresh project gets two video tracks and two audio tracks, like every NLE since the dawn of time. */
 export function starterTracks(): Track[] {
-  return [
-    makeTrack('video', 0),
-    makeTrack('video', 1),
-    makeTrack('audio', 0),
-    makeTrack('audio', 1),
-  ];
+  return [makeTrack('video', 0), makeTrack('video', 1), makeTrack('audio', 0), makeTrack('audio', 1)];
 }
 
 /** Colours used for clip chips on the timeline, per type. */

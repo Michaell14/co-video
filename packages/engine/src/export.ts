@@ -123,20 +123,69 @@ export const AUDIO_CODEC_LABELS: Record<string, string> = {
 };
 
 /** Full codec strings for 10-bit HDR encodes; `transfer` is the CICP transfer code (16 = PQ, 18 = HLG). */
-function hdrCodecString(codec: VideoCodec, width: number, height: number, fps: number, transfer: 16 | 18): string | undefined {
+function hdrCodecString(
+  codec: VideoCodec,
+  width: number,
+  height: number,
+  fps: number,
+  transfer: 16 | 18,
+): string | undefined {
   const rate = width * height * fps;
   if (codec === 'vp9') {
-    const level = rate <= 36864 * 1000 ? 31 : rate <= 83558400 ? 40 : rate <= 160432128 ? 41 : rate <= 311951360 ? 50 : rate <= 588251136 ? 51 : rate <= 1176502272 ? 52 : 61;
+    const level =
+      rate <= 36864 * 1000
+        ? 31
+        : rate <= 83558400
+          ? 40
+          : rate <= 160432128
+            ? 41
+            : rate <= 311951360
+              ? 50
+              : rate <= 588251136
+                ? 51
+                : rate <= 1176502272
+                  ? 52
+                  : 61;
     return `vp09.02.${level}.10.01.09.${transfer}.09.00`;
   }
   if (codec === 'av1') {
     const pixels = width * height;
-    const idx = pixels <= 2228224 ? (fps <= 30 ? 8 : 9) : pixels <= 8912896 ? (fps <= 30 ? 12 : fps <= 60 ? 13 : 14) : fps <= 30 ? 16 : fps <= 60 ? 17 : 18;
+    const idx =
+      pixels <= 2228224
+        ? fps <= 30
+          ? 8
+          : 9
+        : pixels <= 8912896
+          ? fps <= 30
+            ? 12
+            : fps <= 60
+              ? 13
+              : 14
+          : fps <= 30
+            ? 16
+            : fps <= 60
+              ? 17
+              : 18;
     return `av01.0.${String(idx).padStart(2, '0')}M.10.0.110.09.${transfer}.09.0`;
   }
   if (codec === 'hevc') {
     const pixels = width * height;
-    const level = pixels <= 2228224 ? (fps <= 30 ? 120 : 123) : pixels <= 8912896 ? (fps <= 30 ? 150 : fps <= 60 ? 153 : 156) : fps <= 30 ? 180 : fps <= 60 ? 183 : 186;
+    const level =
+      pixels <= 2228224
+        ? fps <= 30
+          ? 120
+          : 123
+        : pixels <= 8912896
+          ? fps <= 30
+            ? 150
+            : fps <= 60
+              ? 153
+              : 156
+          : fps <= 30
+            ? 180
+            : fps <= 60
+              ? 183
+              : 186;
     return `hvc1.2.4.L${level}.B0`;
   }
   return undefined;
@@ -148,7 +197,12 @@ export interface CodecSupport {
 }
 
 /** Which codecs can this browser encode into `container` at the given size? */
-export async function probeEncoders(container: ExportContainer, width: number, height: number, hdr: boolean): Promise<CodecSupport> {
+export async function probeEncoders(
+  container: ExportContainer,
+  width: number,
+  height: number,
+  hdr: boolean,
+): Promise<CodecSupport> {
   const format = outputFormatFor(container);
   const video: VideoCodec[] = [];
   for (const codec of format.getSupportedVideoCodecs()) {
@@ -174,7 +228,14 @@ export async function probeEncoders(container: ExportContainer, width: number, h
 }
 
 /** A sensible bitrate (bits/s) for a resolution, frame rate and codec. */
-export function suggestBitrate(width: number, height: number, fps: number, codec: VideoCodec, quality: 'low' | 'medium' | 'high' | 'max', hdr = false): number {
+export function suggestBitrate(
+  width: number,
+  height: number,
+  fps: number,
+  codec: VideoCodec,
+  quality: 'low' | 'medium' | 'high' | 'max',
+  hdr = false,
+): number {
   const bpp = { low: 0.045, medium: 0.08, high: 0.13, max: 0.22 }[quality];
   const efficiency = codec === 'avc' || codec === 'vp8' ? 1 : codec === 'av1' ? 0.6 : 0.7;
   // Bits do not need to scale linearly with motion sampling; damp very high frame rates.
@@ -206,7 +267,10 @@ export async function exportProject(
   const projFps = project.settings.fpsNum / project.settings.fpsDen;
   const outFps = settings.fpsNum / settings.fpsDen;
   const startFrame = Math.max(0, settings.range?.in ?? 0);
-  const endFrame = Math.max(startFrame, Math.min(settings.range?.out ?? sequenceEnd(project), sequenceEnd(project)));
+  const endFrame = Math.max(
+    startFrame,
+    Math.min(settings.range?.out ?? sequenceEnd(project), sequenceEnd(project)),
+  );
   const startSec = startFrame / projFps;
   const durationSec = (endFrame - startFrame) / projFps;
   if (durationSec <= 0) throw new Error('Nothing to export: the timeline is empty.');
@@ -252,7 +316,13 @@ export async function exportProject(
     if (hdr) {
       sampleSource = new VideoSampleSource({
         ...common,
-        fullCodecString: hdrCodecString(settings.videoCodec, settings.width, settings.height, outFps, settings.dynamicRange === 'pq' ? 16 : 18),
+        fullCodecString: hdrCodecString(
+          settings.videoCodec,
+          settings.width,
+          settings.height,
+          outFps,
+          settings.dynamicRange === 'pq' ? 16 : 18,
+        ),
       });
       output.addVideoTrack(sampleSource, { frameRate: outFps });
     } else {
@@ -265,7 +335,9 @@ export async function exportProject(
   let audioSource: AudioBufferSource | null = null;
   if (wantAudio) {
     audioSource = new AudioBufferSource(
-      settings.container === 'wav' ? { codec: 'pcm-s16' } : { codec: settings.audioCodec, bitrate: settings.audioBitrate },
+      settings.container === 'wav'
+        ? { codec: 'pcm-s16' }
+        : { codec: settings.audioCodec, bitrate: settings.audioBitrate },
     );
     output.addAudioTrack(audioSource);
   }
@@ -301,7 +373,13 @@ export async function exportProject(
     while (audioRenderedTo < durationSec && (flush || audioRenderedTo + AUDIO_CHUNK_SECONDS <= upToSec)) {
       check();
       const len = Math.min(AUDIO_CHUNK_SECONDS, durationSec - audioRenderedTo);
-      const buf = await renderAudioChunk(project, library, startSec + audioRenderedTo, len, project.settings.sampleRate);
+      const buf = await renderAudioChunk(
+        project,
+        library,
+        startSec + audioRenderedTo,
+        len,
+        project.settings.sampleRate,
+      );
       await audioSource.add(buf);
       audioRenderedTo += len;
     }

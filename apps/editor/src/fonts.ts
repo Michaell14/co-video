@@ -24,19 +24,44 @@ export interface FontChoice {
 }
 
 export const FONTS: FontChoice[] = [
-  { family: 'Inter Variable', label: 'Inter', category: 'Sans', weights: [300, 400, 500, 600, 700, 800, 900] },
-  { family: 'Montserrat Variable', label: 'Montserrat', category: 'Sans', weights: [300, 400, 500, 600, 700, 800, 900] },
-  { family: 'Space Grotesk Variable', label: 'Space Grotesk', category: 'Sans', weights: [300, 400, 500, 600, 700] },
+  {
+    family: 'Inter Variable',
+    label: 'Inter',
+    category: 'Sans',
+    weights: [300, 400, 500, 600, 700, 800, 900],
+  },
+  {
+    family: 'Montserrat Variable',
+    label: 'Montserrat',
+    category: 'Sans',
+    weights: [300, 400, 500, 600, 700, 800, 900],
+  },
+  {
+    family: 'Space Grotesk Variable',
+    label: 'Space Grotesk',
+    category: 'Sans',
+    weights: [300, 400, 500, 600, 700],
+  },
   { family: 'Oswald Variable', label: 'Oswald', category: 'Display', weights: [300, 400, 500, 600, 700] },
   { family: 'Bebas Neue', label: 'Bebas Neue', category: 'Display', weights: [400] },
   { family: 'Anton', label: 'Anton', category: 'Display', weights: [400] },
   { family: 'Archivo Black', label: 'Archivo Black', category: 'Display', weights: [400] },
-  { family: 'Playfair Display Variable', label: 'Playfair Display', category: 'Serif', weights: [400, 500, 600, 700, 800, 900] },
+  {
+    family: 'Playfair Display Variable',
+    label: 'Playfair Display',
+    category: 'Serif',
+    weights: [400, 500, 600, 700, 800, 900],
+  },
   { family: 'DM Serif Display', label: 'DM Serif Display', category: 'Serif', weights: [400] },
   { family: 'Caveat Variable', label: 'Caveat', category: 'Script', weights: [400, 500, 600, 700] },
   { family: 'Pacifico', label: 'Pacifico', category: 'Script', weights: [400] },
   { family: 'Permanent Marker', label: 'Permanent Marker', category: 'Script', weights: [400] },
-  { family: 'JetBrains Mono Variable', label: 'JetBrains Mono', category: 'Mono', weights: [400, 500, 700, 800] },
+  {
+    family: 'JetBrains Mono Variable',
+    label: 'JetBrains Mono',
+    category: 'Mono',
+    weights: [400, 500, 700, 800],
+  },
 ];
 
 export const fontByFamily = (family: string): FontChoice | undefined =>

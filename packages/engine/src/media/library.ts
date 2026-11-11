@@ -111,7 +111,20 @@ export class MediaLibrary {
     const rotation = video ? await video.getRotation().catch(() => 0 as const) : 0;
     const videoStart = video ? await video.getFirstTimestamp().catch(() => 0) : 0;
     const audioStart = audio ? await audio.getFirstTimestamp().catch(() => 0) : 0;
-    return { assetId, input, video, audio, videoDecodable, audioDecodable, rotation, videoStart, audioStart, local: !!loc.blob, videoScale, proxyInput };
+    return {
+      assetId,
+      input,
+      video,
+      audio,
+      videoDecodable,
+      audioDecodable,
+      rotation,
+      videoStart,
+      audioStart,
+      local: !!loc.blob,
+      videoScale,
+      proxyInput,
+    };
   }
 
   /** Whole-file bytes for small assets (images, LUTs). */
@@ -168,7 +181,10 @@ export function guessKind(file: { name: string; type: string }): AssetKind | nul
   return null;
 }
 
-async function posterFromBitmap(bmp: ImageBitmap | HTMLCanvasElement | OffscreenCanvas, maxW = 320): Promise<string | null> {
+async function posterFromBitmap(
+  bmp: ImageBitmap | HTMLCanvasElement | OffscreenCanvas,
+  maxW = 320,
+): Promise<string | null> {
   try {
     const scale = Math.min(1, maxW / bmp.width);
     const w = Math.max(2, Math.round(bmp.width * scale));
@@ -256,7 +272,9 @@ export async function probeFile(file: File): Promise<ProbeResult> {
         /* colour metadata is optional */
       }
       if (!decodable) {
-        warnings.push(`This browser cannot decode the video codec (${asset.videoCodec ?? (await video.getCodec()) ?? 'unknown'}) in “${file.name}”.`);
+        warnings.push(
+          `This browser cannot decode the video codec (${asset.videoCodec ?? (await video.getCodec()) ?? 'unknown'}) in “${file.name}”.`,
+        );
       } else {
         try {
           const sink = new CanvasSink(video, { width: 320, poolSize: 1 });
@@ -274,7 +292,9 @@ export async function probeFile(file: File): Promise<ProbeResult> {
       asset.audioChannels = await audio.getNumberOfChannels().catch(() => 2);
       asset.audioSampleRate = await audio.getSampleRate().catch(() => 48000);
       if (!(await audio.canDecode().catch(() => false))) {
-        warnings.push(`This browser cannot decode the audio codec (${asset.audioCodec ?? 'unknown'}) in “${file.name}”.`);
+        warnings.push(
+          `This browser cannot decode the audio codec (${asset.audioCodec ?? 'unknown'}) in “${file.name}”.`,
+        );
       }
     }
     return { asset, warnings };

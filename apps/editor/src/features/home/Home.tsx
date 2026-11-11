@@ -1,6 +1,12 @@
 import { Clock, Film, FolderOpen, MoreHorizontal, Plus, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { describeFps, FRAME_RATE_PRESETS, formatClock, RESOLUTION_PRESETS, type ProjectSettings } from '@tandem/core';
+import {
+  describeFps,
+  FRAME_RATE_PRESETS,
+  formatClock,
+  RESOLUTION_PRESETS,
+  type ProjectSettings,
+} from '@tandem/core';
 import { Logo, navigate } from '../../App';
 import { serverAvailable } from '../../session/api';
 import { getUser, registry, setUser, type ProjectEntry } from '../../session/registry';
@@ -8,7 +14,14 @@ import { createProject, deleteLocalProject } from '../../session/projects';
 import { Button, Dialog, MenuButton, NumberField, Select, TextField, toast } from '../../ui/core';
 import './home.css';
 
-const STARTERS: { label: string; hint: string; w: number; h: number; fps: [number, number]; aspect: string }[] = [
+const STARTERS: {
+  label: string;
+  hint: string;
+  w: number;
+  h: number;
+  fps: [number, number];
+  aspect: string;
+}[] = [
   { label: 'Landscape', hint: '1920 × 1080 · 30 fps', w: 1920, h: 1080, fps: [30, 1], aspect: '16 / 9' },
   { label: 'Vertical', hint: '1080 × 1920 · 30 fps', w: 1080, h: 1920, fps: [30, 1], aspect: '9 / 16' },
   { label: '4K UHD', hint: '3840 × 2160 · 24 fps', w: 3840, h: 2160, fps: [24, 1], aspect: '16 / 9' },
@@ -62,7 +75,11 @@ export function Home() {
         </div>
         <div className="home__status" data-online={online === true}>
           {online === null ? <span className="spinner" /> : online ? <Wifi /> : <WifiOff />}
-          {online === null ? 'Checking server' : online ? 'Collaboration server connected' : 'Working offline — projects stay on this device'}
+          {online === null
+            ? 'Checking server'
+            : online
+              ? 'Collaboration server connected'
+              : 'Working offline — projects stay on this device'}
         </div>
         <div className="home__me">
           <span>You are</span>
@@ -86,12 +103,20 @@ export function Home() {
           <h1>
             Start cutting<span className="home__dot">.</span>
           </h1>
-          <p>Pick a canvas. Invite people when you are ready — everything syncs live, and exports render right here in your browser.</p>
+          <p>
+            Pick a canvas. Invite people when you are ready — everything syncs live, and exports render right
+            here in your browser.
+          </p>
         </section>
 
         <section className="home__starters" aria-label="New project">
           {STARTERS.map((s) => (
-            <button key={s.label} className="starter" disabled={creating} onClick={() => create({ width: s.w, height: s.h, fpsNum: s.fps[0], fpsDen: s.fps[1] })}>
+            <button
+              key={s.label}
+              className="starter"
+              disabled={creating}
+              onClick={() => create({ width: s.w, height: s.h, fpsNum: s.fps[0], fpsDen: s.fps[1] })}
+            >
               <div className="starter__frame">
                 <div className="starter__shape" style={{ aspectRatio: s.aspect }}>
                   <Plus />
@@ -170,7 +195,11 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
             icon: <Trash2 />,
             danger: true,
             onSelect: () => {
-              if (confirm(`Delete “${p.name}” and its locally stored media from this device?${p.token ? '\n\nThe shared copy on the server is not affected.' : ''}`)) {
+              if (
+                confirm(
+                  `Delete “${p.name}” and its locally stored media from this device?${p.token ? '\n\nThe shared copy on the server is not affected.' : ''}`,
+                )
+              ) {
                 void deleteLocalProject(p.id);
               }
             },
@@ -183,7 +212,15 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
   );
 }
 
-function CustomProjectDialog({ onClose, onCreate, busy }: { onClose: () => void; onCreate: (s: Partial<ProjectSettings>) => void; busy: boolean }) {
+function CustomProjectDialog({
+  onClose,
+  onCreate,
+  busy,
+}: {
+  onClose: () => void;
+  onCreate: (s: Partial<ProjectSettings>) => void;
+  busy: boolean;
+}) {
   const [name, setName] = useState('Untitled project');
   const [width, setWidth] = useState(1920);
   const [height, setHeight] = useState(1080);
@@ -230,7 +267,11 @@ function CustomProjectDialog({ onClose, onCreate, busy }: { onClose: () => void;
           <Select
             value={preset ? `${preset.width}x${preset.height}` : 'custom'}
             options={[
-              ...RESOLUTION_PRESETS.map((r) => ({ value: `${r.width}x${r.height}`, label: `${r.label} — ${r.width} × ${r.height}`, group: r.group })),
+              ...RESOLUTION_PRESETS.map((r) => ({
+                value: `${r.width}x${r.height}`,
+                label: `${r.label} — ${r.width} × ${r.height}`,
+                group: r.group,
+              })),
               { value: 'custom', label: 'Custom', group: 'Other' },
             ]}
             onChange={(v) => {
@@ -245,13 +286,31 @@ function CustomProjectDialog({ onClose, onCreate, busy }: { onClose: () => void;
         <div className="form__row">
           <span>Size</span>
           <div className="form__pair">
-            <NumberField value={width} onChange={(v) => setWidth(Math.round(v))} min={16} max={8192} suffix="px" prefix="W" />
-            <NumberField value={height} onChange={(v) => setHeight(Math.round(v))} min={16} max={8192} suffix="px" prefix="H" />
+            <NumberField
+              value={width}
+              onChange={(v) => setWidth(Math.round(v))}
+              min={16}
+              max={8192}
+              suffix="px"
+              prefix="W"
+            />
+            <NumberField
+              value={height}
+              onChange={(v) => setHeight(Math.round(v))}
+              min={16}
+              max={8192}
+              suffix="px"
+              prefix="H"
+            />
           </div>
         </div>
         <div className="form__row">
           <span>Frame rate</span>
-          <Select value={fps} options={FRAME_RATE_PRESETS.map((f) => ({ value: f.label, label: `${describeFps(f)} fps` }))} onChange={setFps} />
+          <Select
+            value={fps}
+            options={FRAME_RATE_PRESETS.map((f) => ({ value: f.label, label: `${describeFps(f)} fps` }))}
+            onChange={setFps}
+          />
         </div>
         <div className="form__row">
           <span>Colour</span>
@@ -265,7 +324,10 @@ function CustomProjectDialog({ onClose, onCreate, busy }: { onClose: () => void;
             onChange={setColor}
           />
         </div>
-        <p className="form__hint">Everything is resolution independent, so you can change any of this later without re-doing your edit.</p>
+        <p className="form__hint">
+          Everything is resolution independent, so you can change any of this later without re-doing your
+          edit.
+        </p>
       </div>
     </Dialog>
   );
@@ -298,7 +360,8 @@ function JoinDialog({ onClose }: { onClose: () => void }) {
     >
       <div className="form">
         <p className="form__hint" style={{ marginTop: 0 }}>
-          Paste the link someone shared with you. The link itself carries your access level — treat it like a key.
+          Paste the link someone shared with you. The link itself carries your access level — treat it like a
+          key.
         </p>
         <TextField value={link} onChange={setLink} placeholder="https://…/app/#/p/…" autoFocus onEnter={go} />
       </div>

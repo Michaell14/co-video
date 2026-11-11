@@ -24,12 +24,20 @@ test.describe('render engine', () => {
       const gl = lab.compositor.gl;
       const glErrors: string[] = [];
       for (const def of core.EFFECTS) {
-        await lab.renderFrame(core.applyEdits(p, [{ op: 'updateClip', id: a.id, patch: { effects: [core.makeEffect(def.id)] } }]), 10);
+        await lab.renderFrame(
+          core.applyEdits(p, [{ op: 'updateClip', id: a.id, patch: { effects: [core.makeEffect(def.id)] } }]),
+          10,
+        );
         const e = gl.getError();
         if (e) glErrors.push(`${def.id}:${e}`);
       }
       for (const def of core.TRANSITIONS) {
-        await lab.renderFrame(core.applyEdits(p, [{ op: 'updateClip', id: b.id, patch: { transIn: core.makeTransition(def.id, 10) } }]), 30);
+        await lab.renderFrame(
+          core.applyEdits(p, [
+            { op: 'updateClip', id: b.id, patch: { transIn: core.makeTransition(def.id, 10) } },
+          ]),
+          30,
+        );
         const e = gl.getError();
         if (e) glErrors.push(`${def.id}:${e}`);
       }
@@ -57,12 +65,34 @@ test.describe('render engine', () => {
         { op: 'addAsset', asset: png },
         { op: 'addClip', clip: core.makeClip('video', v1.id, { assetId: 'red', start: 0, duration: 30 }) },
         // A square still, scaled to half and moved to the top-left quadrant.
-        { op: 'addClip', clip: core.makeClip('image', v2.id, { assetId: 'png', start: 0, duration: 30, scaleX: 0.5, scaleY: 0.5, x: -0.25, y: -0.25 }) },
-        { op: 'addClip', clip: core.makeClip('text', v3.id, { start: 0, duration: 30, fit: 'none', y: 0.25, text: { ...core.DEFAULT_TEXT, content: 'TANDEM', size: 0.2 } }) },
+        {
+          op: 'addClip',
+          clip: core.makeClip('image', v2.id, {
+            assetId: 'png',
+            start: 0,
+            duration: 30,
+            scaleX: 0.5,
+            scaleY: 0.5,
+            x: -0.25,
+            y: -0.25,
+          }),
+        },
+        {
+          op: 'addClip',
+          clip: core.makeClip('text', v3.id, {
+            start: 0,
+            duration: 30,
+            fit: 'none',
+            y: 0.25,
+            text: { ...core.DEFAULT_TEXT, content: 'TANDEM', size: 0.2 },
+          }),
+        },
       ]);
       const f = await lab.renderFrame(p, 5);
       let white = 0;
-      for (let y = 200; y < 340; y++) for (let x = 0; x < 640; x++) if (f.pixels[(y * 640 + x) * 4] > 240 && f.pixels[(y * 640 + x) * 4 + 1] > 240) white++;
+      for (let y = 200; y < 340; y++)
+        for (let x = 0; x < 640; x++)
+          if (f.pixels[(y * 640 + x) * 4] > 240 && f.pixels[(y * 640 + x) * 4 + 1] > 240) white++;
       return {
         stats: f.stats,
         background: lab.sample(f.pixels, 640, 600, 20),
@@ -100,7 +130,17 @@ test.describe('render engine', () => {
       const p = core.applyEdits(core.emptyProject({ width: 640, height: 360 }), [
         { op: 'addTrack', track: v1 },
         { op: 'addAsset', asset },
-        { op: 'addClip', clip: core.makeClip('image', v1.id, { assetId: 'stripes', start: 0, duration: 30, fit: 'none', scaleX: 0.125, scaleY: 0.125 }) },
+        {
+          op: 'addClip',
+          clip: core.makeClip('image', v1.id, {
+            assetId: 'stripes',
+            start: 0,
+            duration: 30,
+            fit: 'none',
+            scaleX: 0.125,
+            scaleY: 0.125,
+          }),
+        },
       ]);
       const spread = (pixels: Uint8Array) => {
         let min = 255;
@@ -115,7 +155,12 @@ test.describe('render engine', () => {
       const best = await lab.renderFrame(p, 0);
       const fast = await lab.renderFrame(p, 0, { fast: true });
       const again = await lab.renderFrame(p, 0);
-      return { best: spread(best.pixels), fast: spread(fast.pixels), again: spread(again.pixels), glError: lab.compositor.gl.getError() };
+      return {
+        best: spread(best.pixels),
+        fast: spread(fast.pixels),
+        again: spread(again.pixels),
+        glError: lab.compositor.gl.getError(),
+      };
     });
     expect(r.glError).toBe(0);
     expect(r.fast).toBeGreaterThan(100); // plain bilinear: strong beating
@@ -141,7 +186,8 @@ test.describe('render engine', () => {
       const grab = async (f: number): Promise<Uint8Array> => (await lab.renderFrame(p, f)).pixels.slice();
       const diff = (a: Uint8Array, b: Uint8Array) => {
         let n = 0;
-        for (let i = 0; i < a.length; i += 4) if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 24) n++;
+        for (let i = 0; i < a.length; i += 4)
+          if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 24) n++;
         return n;
       };
       // Step forwards frame by frame (the export path), jump away, then come back.
@@ -173,11 +219,14 @@ test.describe('render engine', () => {
       lab.init(640, 360);
       const hdr = await lab.addFile('hdr', '/fixtures/hdr-pq-ramp.webm', 'hdr-pq-ramp.webm');
       const v1 = core.makeTrack('video', 0);
-      const p = core.applyEdits(core.emptyProject({ width: 640, height: 360, colorMode: 'hdr-pq', peakNits: 10000 }), [
-        { op: 'addTrack', track: v1 },
-        { op: 'addAsset', asset: hdr },
-        { op: 'addClip', clip: core.makeClip('video', v1.id, { assetId: 'hdr', start: 0, duration: 30 }) },
-      ]);
+      const p = core.applyEdits(
+        core.emptyProject({ width: 640, height: 360, colorMode: 'hdr-pq', peakNits: 10000 }),
+        [
+          { op: 'addTrack', track: v1 },
+          { op: 'addAsset', asset: hdr },
+          { op: 'addClip', clip: core.makeClip('video', v1.id, { assetId: 'hdr', start: 0, duration: 30 }) },
+        ],
+      );
       await lab.renderFrame(p, 6);
       const yuv: Uint16Array = lab.compositor.readYuv10('pq');
       const xs = [8, 24, 40, 56, 72, 88, 104, 120, 300, 600];
@@ -196,38 +245,102 @@ test.describe('render engine', () => {
     expect(r.transfer).toBe('pq');
     expect(r.format).toBe('I420P10');
     expect(Math.max(...r.source) - Math.min(...r.source)).toBeGreaterThan(500); // a real ramp
-    for (let i = 0; i < r.source.length; i++) expect(Math.abs(r.rendered[i] - r.source[i])).toBeLessThanOrEqual(1);
+    for (let i = 0; i < r.source.length; i++)
+      expect(Math.abs(r.rendered[i] - r.source[i])).toBeLessThanOrEqual(1);
   });
 
   for (const variant of [
     // Chromium tags frames captured from an sRGB canvas with the sRGB transfer; both are valid SDR.
-    { name: 'SDR WebM (VP9 + Opus)', settings: {}, project: {}, pix: 'yuv420p', transfer: /^(bt709|iec61966-2-1)$/ },
-    { name: 'HDR10 (VP9 10-bit PQ)', settings: { dynamicRange: 'pq' }, project: { colorMode: 'hdr-pq' }, pix: 'yuv420p10le', transfer: /^smpte2084$/ },
-    { name: 'HLG (VP9 10-bit)', settings: { dynamicRange: 'hlg', container: 'mkv' }, project: { colorMode: 'hdr-hlg' }, pix: 'yuv420p10le', transfer: /^arib-std-b67$/ },
+    {
+      name: 'SDR WebM (VP9 + Opus)',
+      settings: {},
+      project: {},
+      pix: 'yuv420p',
+      transfer: /^(bt709|iec61966-2-1)$/,
+    },
+    {
+      name: 'HDR10 (VP9 10-bit PQ)',
+      settings: { dynamicRange: 'pq' },
+      project: { colorMode: 'hdr-pq' },
+      pix: 'yuv420p10le',
+      transfer: /^smpte2084$/,
+    },
+    {
+      name: 'HLG (VP9 10-bit)',
+      settings: { dynamicRange: 'hlg', container: 'mkv' },
+      project: { colorMode: 'hdr-hlg' },
+      pix: 'yuv420p10le',
+      transfer: /^arib-std-b67$/,
+    },
   ]) {
     test(`exports ${variant.name}`, async ({ page }, info) => {
       await openLab(page);
-      const out = await page.evaluate(async ({ settings, project }) => {
-        const { lab } = window as any;
-        const { core } = lab;
-        const vid = await lab.addFile('vid', '/fixtures/testsrc.webm', 'testsrc.webm');
-        const v1 = core.makeTrack('video', 0);
-        const v2 = core.makeTrack('video', 1);
-        const a1 = core.makeTrack('audio', 0);
-        const p = core.applyEdits(core.emptyProject({ width: 320, height: 180, ...project }), [
-          ...[v1, v2, a1].map((track: unknown) => ({ op: 'addTrack', track })),
-          { op: 'addAsset', asset: vid },
-          { op: 'addClip', clip: core.makeClip('video', v1.id, { assetId: 'vid', start: 0, duration: 20 }) },
-          { op: 'addClip', clip: core.makeClip('video', v1.id, { assetId: 'vid', start: 20, duration: 25, sourceIn: 1, transIn: core.makeTransition('crossDissolve', 8) }) },
-          { op: 'addClip', clip: core.makeClip('text', v2.id, { start: 5, duration: 30, fit: 'none', text: { ...core.DEFAULT_TEXT, content: 'Export' } }) },
-          { op: 'addClip', clip: core.makeClip('audio', a1.id, { assetId: 'vid', start: 0, duration: 45, fadeIn: 5, fadeOut: 5 }) },
-        ]);
-        return lab.exportBase64(p, {
-          container: 'webm', videoCodec: 'vp9', audioCodec: 'opus', width: 320, height: 180, fpsNum: 30, fpsDen: 1,
-          videoBitrate: 800_000, audioBitrate: 96_000, range: null, includeVideo: true, includeAudio: true,
-          dynamicRange: 'sdr', keyFrameInterval: 1, hardwareAcceleration: 'no-preference', ...settings,
-        });
-      }, { settings: variant.settings, project: variant.project });
+      const out = await page.evaluate(
+        async ({ settings, project }) => {
+          const { lab } = window as any;
+          const { core } = lab;
+          const vid = await lab.addFile('vid', '/fixtures/testsrc.webm', 'testsrc.webm');
+          const v1 = core.makeTrack('video', 0);
+          const v2 = core.makeTrack('video', 1);
+          const a1 = core.makeTrack('audio', 0);
+          const p = core.applyEdits(core.emptyProject({ width: 320, height: 180, ...project }), [
+            ...[v1, v2, a1].map((track: unknown) => ({ op: 'addTrack', track })),
+            { op: 'addAsset', asset: vid },
+            {
+              op: 'addClip',
+              clip: core.makeClip('video', v1.id, { assetId: 'vid', start: 0, duration: 20 }),
+            },
+            {
+              op: 'addClip',
+              clip: core.makeClip('video', v1.id, {
+                assetId: 'vid',
+                start: 20,
+                duration: 25,
+                sourceIn: 1,
+                transIn: core.makeTransition('crossDissolve', 8),
+              }),
+            },
+            {
+              op: 'addClip',
+              clip: core.makeClip('text', v2.id, {
+                start: 5,
+                duration: 30,
+                fit: 'none',
+                text: { ...core.DEFAULT_TEXT, content: 'Export' },
+              }),
+            },
+            {
+              op: 'addClip',
+              clip: core.makeClip('audio', a1.id, {
+                assetId: 'vid',
+                start: 0,
+                duration: 45,
+                fadeIn: 5,
+                fadeOut: 5,
+              }),
+            },
+          ]);
+          return lab.exportBase64(p, {
+            container: 'webm',
+            videoCodec: 'vp9',
+            audioCodec: 'opus',
+            width: 320,
+            height: 180,
+            fpsNum: 30,
+            fpsDen: 1,
+            videoBitrate: 800_000,
+            audioBitrate: 96_000,
+            range: null,
+            includeVideo: true,
+            includeAudio: true,
+            dynamicRange: 'sdr',
+            keyFrameInterval: 1,
+            hardwareAcceleration: 'no-preference',
+            ...settings,
+          });
+        },
+        { settings: variant.settings, project: variant.project },
+      );
       expect(out.frames).toBe(45);
       expect(out.phases).toContain('done');
       test.skip(!hasFfprobe(), 'ffprobe not installed: skipping container inspection');

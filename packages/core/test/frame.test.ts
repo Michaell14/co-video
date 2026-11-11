@@ -70,7 +70,8 @@ describe('resolveFrame', () => {
     const start = resolveFrame(p, 90).layers[0];
     const mid = resolveFrame(p, 100).layers[0];
     const end = resolveFrame(p, 109).layers[0];
-    if (start.kind !== 'transition' || mid.kind !== 'transition' || end.kind !== 'transition') throw new Error('expected transitions');
+    if (start.kind !== 'transition' || mid.kind !== 'transition' || end.kind !== 'transition')
+      throw new Error('expected transitions');
     expect(start.progress).toBeGreaterThan(0);
     expect(start.progress).toBeLessThan(0.1);
     expect(mid.progress).toBeCloseTo(11 / 21);
@@ -157,8 +158,18 @@ describe('colour science', () => {
   });
 
   it('detects input colour spaces from metadata', () => {
-    expect(resolveInputSpace({ inputColorSpace: 'auto', color: { primaries: 'bt2020', transfer: 'pq', matrix: 'bt2020-ncl', fullRange: false } })).toBe('rec2020-pq');
-    expect(resolveInputSpace({ inputColorSpace: 'auto', color: { primaries: 'bt2020', transfer: 'hlg', matrix: null, fullRange: null } })).toBe('rec2020-hlg');
+    expect(
+      resolveInputSpace({
+        inputColorSpace: 'auto',
+        color: { primaries: 'bt2020', transfer: 'pq', matrix: 'bt2020-ncl', fullRange: false },
+      }),
+    ).toBe('rec2020-pq');
+    expect(
+      resolveInputSpace({
+        inputColorSpace: 'auto',
+        color: { primaries: 'bt2020', transfer: 'hlg', matrix: null, fullRange: null },
+      }),
+    ).toBe('rec2020-hlg');
     expect(resolveInputSpace({ inputColorSpace: 'auto', color: null })).toBe('rec709');
     expect(resolveInputSpace({ inputColorSpace: 'slog3', color: null })).toBe('slog3');
   });

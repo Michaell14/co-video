@@ -27,24 +27,42 @@ export function fontSpec(t: TextProps, px: number): string {
 
 function hexA(hex: string, alpha: number): string {
   let h = hex.replace('#', '');
-  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  if (h.length === 3)
+    h = h
+      .split('')
+      .map((c) => c + c)
+      .join('');
   const n = parseInt(h.slice(0, 6), 16) || 0;
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${Math.max(0, Math.min(1, alpha))})`;
 }
 
-function gradientFor(ctx: Ctx2D, x: number, y: number, w: number, h: number, g: { from: string; to: string; angle: number }) {
+function gradientFor(
+  ctx: Ctx2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  g: { from: string; to: string; angle: number },
+) {
   const a = (g.angle * Math.PI) / 180;
   const cx = x + w / 2;
   const cy = y + h / 2;
   const r = (Math.abs(Math.cos(a)) * w + Math.abs(Math.sin(a)) * h) / 2;
-  const grad = ctx.createLinearGradient(cx - Math.cos(a) * r, cy - Math.sin(a) * r, cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+  const grad = ctx.createLinearGradient(
+    cx - Math.cos(a) * r,
+    cy - Math.sin(a) * r,
+    cx + Math.cos(a) * r,
+    cy + Math.sin(a) * r,
+  );
   grad.addColorStop(0, g.from);
   grad.addColorStop(1, g.to);
   return grad;
 }
 
 const segmenter: Intl.Segmenter | null =
-  typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+  typeof Intl !== 'undefined' && 'Segmenter' in Intl
+    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    : null;
 
 /** Split into user-perceived characters so emoji and combining marks survive the typewriter. */
 function graphemes(s: string): string[] {
@@ -106,7 +124,9 @@ export function rasterizeText(t: TextProps, frameW: number, frameH: number, char
   const textH = Math.max(lineH, lines.length * lineH);
 
   const strokePad = t.stroke.enabled ? t.stroke.width * px : 0;
-  const shadowPad = t.shadow.enabled ? t.shadow.blur * px * 2 + Math.max(Math.abs(t.shadow.x), Math.abs(t.shadow.y)) * px : 0;
+  const shadowPad = t.shadow.enabled
+    ? t.shadow.blur * px * 2 + Math.max(Math.abs(t.shadow.x), Math.abs(t.shadow.y)) * px
+    : 0;
   const bgPadX = t.bg.enabled ? t.bg.padX * px : 0;
   const bgPadY = t.bg.enabled ? t.bg.padY * px : 0;
   const overhang = px * 0.25;
@@ -260,13 +280,20 @@ export function rasterizeSolid(s: ShapeProps | null): Raster {
 }
 
 /** Cache key covering everything that affects a generator's pixels. */
-export function generatorKey(clip: Clip, frameW: number, frameH: number, chars: number, fontEpoch: number): string {
+export function generatorKey(
+  clip: Clip,
+  frameW: number,
+  frameH: number,
+  chars: number,
+  fontEpoch: number,
+): string {
   if (clip.type === 'text' && clip.text) {
     const c = chars >= 1 ? 1 : Math.round(chars * 1000);
     return `t|${frameW}x${frameH}|${c}|${fontEpoch}|${JSON.stringify(clip.text, (k, v) => (k === 'animIn' || k === 'animOut' ? undefined : v))}`;
   }
   if (clip.type === 'shape' && clip.shape) return `s|${frameW}x${frameH}|${JSON.stringify(clip.shape)}`;
-  if (clip.type === 'solid') return `c|${JSON.stringify(clip.shape?.gradient.enabled ? clip.shape : clip.shape?.fill)}`;
+  if (clip.type === 'solid')
+    return `c|${JSON.stringify(clip.shape?.gradient.enabled ? clip.shape : clip.shape?.fill)}`;
   return '';
 }
 

@@ -75,7 +75,12 @@ const isIdentity = (pts: readonly CurvePoint[]): boolean =>
 const isFlat = (pts: readonly CurvePoint[]): boolean => pts.every((p) => Math.abs(p[1] - 0.5) < 1e-4);
 
 export function hasRgbCurves(g: Grade): boolean {
-  return !(isIdentity(g.curves.m) && isIdentity(g.curves.r) && isIdentity(g.curves.g) && isIdentity(g.curves.b));
+  return !(
+    isIdentity(g.curves.m) &&
+    isIdentity(g.curves.r) &&
+    isIdentity(g.curves.g) &&
+    isIdentity(g.curves.b)
+  );
 }
 
 export function hasHueCurves(g: Grade): boolean {
@@ -144,11 +149,18 @@ export function isNeutralGrade(g: Grade | null): boolean {
 }
 
 /** Uniform values for the wheel / slider part of a grade. */
-export function gradeUniforms(g: Grade, lumaW: readonly [number, number, number]): Record<string, number | number[]> {
+export function gradeUniforms(
+  g: Grade,
+  lumaW: readonly [number, number, number],
+): Record<string, number | number[]> {
   // Temperature / tint as luminance-preserving channel gains.
   const wb = [1 + 0.35 * g.temperature, 1 - 0.3 * g.tint, 1 - 0.35 * g.temperature];
   const y = wb[0] * lumaW[0] + wb[1] * lumaW[1] + wb[2] * lumaW[2];
-  const wheel = (w: readonly number[], scale: number) => [(w[0] + w[3]) * scale, (w[1] + w[3]) * scale, (w[2] + w[3]) * scale];
+  const wheel = (w: readonly number[], scale: number) => [
+    (w[0] + w[3]) * scale,
+    (w[1] + w[3]) * scale,
+    (w[2] + w[3]) * scale,
+  ];
   const lift = wheel(g.lift, 0.5);
   const gain = wheel(g.gain, 1).map((v) => 1 + v);
   const offset = wheel(g.offset, 0.5);

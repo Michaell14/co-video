@@ -32,7 +32,17 @@ import {
   type Project,
 } from '@tandem/core';
 import { layerCorners, layoutLayer, measureClip, type LayerBox } from '@tandem/engine';
-import { useFrame, useLiveProject, usePeers, usePlayer, usePlayerState, useProject, useSession, useSessionMeta, useThrottledFrame } from '../../session/hooks';
+import {
+  useFrame,
+  useLiveProject,
+  usePeers,
+  usePlayer,
+  usePlayerState,
+  useProject,
+  useSession,
+  useSessionMeta,
+  useThrottledFrame,
+} from '../../session/hooks';
 import { cmd } from '../../state/commands';
 import { beginGesture, setClipValues } from '../../state/props';
 import { useUI } from '../../state/ui';
@@ -99,13 +109,23 @@ export function Viewer() {
             <svg className="viewer__guides" viewBox="0 0 100 100" preserveAspectRatio="none">
               {showGrid && (
                 <g>
-                  <path d="M33.333 0V100M66.667 0V100M0 33.333H100M0 66.667H100" vectorEffect="non-scaling-stroke" />
+                  <path
+                    d="M33.333 0V100M66.667 0V100M0 33.333H100M0 66.667H100"
+                    vectorEffect="non-scaling-stroke"
+                  />
                 </g>
               )}
               {showSafe && (
                 <g>
                   <rect x="5" y="5" width="90" height="90" vectorEffect="non-scaling-stroke" />
-                  <rect x="10" y="10" width="80" height="80" vectorEffect="non-scaling-stroke" strokeDasharray="4 3" />
+                  <rect
+                    x="10"
+                    y="10"
+                    width="80"
+                    height="80"
+                    vectorEffect="non-scaling-stroke"
+                    strokeDasharray="4 3"
+                  />
                   <path d="M48 50H52M50 47V53" vectorEffect="non-scaling-stroke" />
                 </g>
               )}
@@ -266,7 +286,11 @@ function Gizmo({ scale }: { scale: number }) {
     } else {
       const k = Math.max(0.01, Math.hypot(x - d.px, y - d.py) / d.dist);
       const r = (v: number) => Math.round(v * 1000) / 1000;
-      if (d.mode === 'scale') setClipValues([d.id], e.shiftKey ? { scaleX: r(d.sx * k) } : { scaleX: r(d.sx * k), scaleY: r(d.sy * k) });
+      if (d.mode === 'scale')
+        setClipValues(
+          [d.id],
+          e.shiftKey ? { scaleX: r(d.sx * k) } : { scaleX: r(d.sx * k), scaleY: r(d.sy * k) },
+        );
       else if (d.mode === 'scale-x') setClipValues([d.id], { scaleX: r(d.sx * k) });
       else setClipValues([d.id], { scaleY: r(d.sy * k) });
     }
@@ -306,7 +330,10 @@ function Gizmo({ scale }: { scale: number }) {
   let shape: React.ReactNode = null;
   if (target && !playing) {
     const q = layerCorners(target.box);
-    const mid = (a: [number, number], b: [number, number]): [number, number] => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const mid = (a: [number, number], b: [number, number]): [number, number] => [
+      (a[0] + b[0]) / 2,
+      (a[1] + b[1]) / 2,
+    ];
     const top = mid(q[0], q[1]);
     const right = mid(q[1], q[2]);
     const bottom = mid(q[2], q[3]);
@@ -381,9 +408,23 @@ function PeerCursors() {
     <>
       {peers.map((p) =>
         p.cursor && p.cursor.area === 'viewer' && typeof p.cursor.y === 'number' ? (
-          <div key={p.clientId} className="peer-cursor" style={{ left: `${p.cursor.x * 100}%`, top: `${p.cursor.y * 100}%`, ['--c' as string]: p.user.color }}>
+          <div
+            key={p.clientId}
+            className="peer-cursor"
+            style={{
+              left: `${p.cursor.x * 100}%`,
+              top: `${p.cursor.y * 100}%`,
+              ['--c' as string]: p.user.color,
+            }}
+          >
             <svg viewBox="0 0 16 16" width="16" height="16">
-              <path d="M2 1.5l11 5.2-4.700 1.400-1.700 4.700L2 1.500z" fill="var(--c)" stroke="#0b0b0d" strokeWidth="1" strokeLinejoin="round" />
+              <path
+                d="M2 1.5l11 5.2-4.700 1.400-1.700 4.700L2 1.500z"
+                fill="var(--c)"
+                stroke="#0b0b0d"
+                strokeWidth="1"
+                strokeLinejoin="round"
+              />
             </svg>
             <span>{p.user.name}</span>
           </div>
@@ -435,7 +476,9 @@ function Stats() {
         {s.renderWidth}×{s.renderHeight}
       </div>
       <div>{player.getState().playing ? `${s.fps} fps` : 'paused'}</div>
-      <div>{s.renderMs.toFixed(1)} ms · {s.passes} passes</div>
+      <div>
+        {s.renderMs.toFixed(1)} ms · {s.passes} passes
+      </div>
       <div>dropped {s.dropped}</div>
     </div>
   );
@@ -516,17 +559,36 @@ function Transport() {
         <IconButton label="Go to end" keys="end" tipPlace="top" onClick={() => cmd.goEnd()}>
           <ChevronLast />
         </IconButton>
-        <IconButton label="Loop playback" keys="mod+l" tipPlace="top" active={state.loop} onClick={() => cmd.toggleLoop()}>
+        <IconButton
+          label="Loop playback"
+          keys="mod+l"
+          tipPlace="top"
+          active={state.loop}
+          onClick={() => cmd.toggleLoop()}
+        >
           <Repeat />
         </IconButton>
       </div>
       <div className="transport__right">
         <div className="vol">
-          <IconButton label={state.muted ? 'Unmute' : 'Mute'} tipPlace="top" onClick={() => player?.setMuted(!state.muted)}>
+          <IconButton
+            label={state.muted ? 'Unmute' : 'Mute'}
+            tipPlace="top"
+            onClick={() => player?.setMuted(!state.muted)}
+          >
             {state.muted || state.volume === 0 ? <VolumeX /> : <Volume2 />}
           </IconButton>
           <div className="vol__slider">
-            <Slider value={state.muted ? 0 : state.volume} min={0} max={1} onChange={(v) => { player?.setVolume(v); if (state.muted && v > 0) player?.setMuted(false); }} defaultValue={1} />
+            <Slider
+              value={state.muted ? 0 : state.volume}
+              min={0}
+              max={1}
+              onChange={(v) => {
+                player?.setVolume(v);
+                if (state.muted && v > 0) player?.setMuted(false);
+              }}
+              defaultValue={1}
+            />
           </div>
         </div>
         <MenuButton
@@ -535,18 +597,32 @@ function Transport() {
           align="end"
           items={[
             { heading: 'Preview resolution' },
-            { label: 'Auto (match viewer)', checked: state.quality === 'auto', onSelect: () => player?.setQuality('auto') },
+            {
+              label: 'Auto (match viewer)',
+              checked: state.quality === 'auto',
+              onSelect: () => player?.setQuality('auto'),
+            },
             { label: 'Full', checked: state.quality === 1, onSelect: () => player?.setQuality(1) },
             { label: 'Half', checked: state.quality === 0.5, onSelect: () => player?.setQuality(0.5) },
             { label: 'Quarter', checked: state.quality === 0.25, onSelect: () => player?.setQuality(0.25) },
             'separator',
             { heading: 'Proxy media' },
-            { label: 'Preview from proxies', checked: meta.proxies, onSelect: () => session.setProxies(!meta.proxies) },
+            {
+              label: 'Preview from proxies',
+              checked: meta.proxies,
+              onSelect: () => session.setProxies(!meta.proxies),
+            },
             { label: 'Create proxies for large media', onSelect: () => cmd.createProxies() },
           ]}
         >
           <Gauge />
-          {state.quality === 'auto' ? 'Auto' : state.quality === 1 ? 'Full' : state.quality === 0.5 ? '1/2' : '1/4'}
+          {state.quality === 'auto'
+            ? 'Auto'
+            : state.quality === 1
+              ? 'Full'
+              : state.quality === 0.5
+                ? '1/2'
+                : '1/4'}
         </MenuButton>
         <MenuButton
           className="btn btn--ghost btn--sm"
@@ -554,7 +630,11 @@ function Transport() {
           align="end"
           items={[
             { label: 'Fit', checked: zoom === 'fit', onSelect: () => set({ viewerZoom: 'fit' }) },
-            ...[0.25, 0.5, 1, 2, 4].map((z) => ({ label: `${z * 100}%`, checked: zoom === z, onSelect: () => set({ viewerZoom: z }) })),
+            ...[0.25, 0.5, 1, 2, 4].map((z) => ({
+              label: `${z * 100}%`,
+              checked: zoom === z,
+              onSelect: () => set({ viewerZoom: z }),
+            })),
           ]}
         >
           {zoom === 'fit' ? 'Fit' : `${zoom * 100}%`}
@@ -564,10 +644,30 @@ function Transport() {
           label="View options"
           align="end"
           items={[
-            { label: 'Safe areas', icon: <Frame />, checked: showSafe, onSelect: () => set({ showSafeAreas: !showSafe }) },
-            { label: 'Rule of thirds', icon: <Grid3x3 />, checked: showGrid, onSelect: () => set({ showGrid: !showGrid }) },
-            { label: 'Clipping warnings', icon: <ScanEye />, checked: state.falseColor, onSelect: () => player?.setFalseColor(!state.falseColor) },
-            { label: 'Performance stats', icon: <Gauge />, checked: showStats, onSelect: () => set({ showStats: !showStats }) },
+            {
+              label: 'Safe areas',
+              icon: <Frame />,
+              checked: showSafe,
+              onSelect: () => set({ showSafeAreas: !showSafe }),
+            },
+            {
+              label: 'Rule of thirds',
+              icon: <Grid3x3 />,
+              checked: showGrid,
+              onSelect: () => set({ showGrid: !showGrid }),
+            },
+            {
+              label: 'Clipping warnings',
+              icon: <ScanEye />,
+              checked: state.falseColor,
+              onSelect: () => player?.setFalseColor(!state.falseColor),
+            },
+            {
+              label: 'Performance stats',
+              icon: <Gauge />,
+              checked: showStats,
+              onSelect: () => set({ showStats: !showStats }),
+            },
           ]}
         >
           <ScanEye />
@@ -660,16 +760,27 @@ function SourceMonitor({ assetId }: { assetId: string }) {
       <div className="source__foot">
         {asset.kind !== 'image' && (
           <>
-            <Button size="sm" onClick={() => setMarks((m) => ({ ...m, in: clamp(time(), 0, asset.duration) }))}>
+            <Button
+              size="sm"
+              onClick={() => setMarks((m) => ({ ...m, in: clamp(time(), 0, asset.duration) }))}
+            >
               Mark in <span className="mono">{fmt(marks.in)}</span>
             </Button>
-            <Button size="sm" onClick={() => setMarks((m) => ({ ...m, out: clamp(time(), 0, asset.duration) }))}>
+            <Button
+              size="sm"
+              onClick={() => setMarks((m) => ({ ...m, out: clamp(time(), 0, asset.duration) }))}
+            >
               Mark out <span className="mono">{fmt(marks.out ?? asset.duration)}</span>
             </Button>
           </>
         )}
         <span style={{ flex: 1 }} />
-        <Button size="sm" icon={<CornerDownRight />} onClick={() => add(true)} {...tip('Ripple-insert at the playhead')}>
+        <Button
+          size="sm"
+          icon={<CornerDownRight />}
+          onClick={() => add(true)}
+          {...tip('Ripple-insert at the playhead')}
+        >
           Insert
         </Button>
         <Button size="sm" variant="primary" icon={<ArrowDownToLine />} onClick={() => add(false)}>
@@ -679,5 +790,3 @@ function SourceMonitor({ assetId }: { assetId: string }) {
     </div>
   );
 }
-
-

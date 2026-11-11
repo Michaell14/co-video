@@ -6,10 +6,7 @@
  *   track:       ◄──────────────────────────────────────────────────────────┘
  *                input ─► [3-band EQ] ─► [compressor ─► make-up] ─► fader ─► pan ─► meter ─► master
  */
-import {
-  AudioBufferSink,
-  type WrappedAudioBuffer,
-} from 'mediabunny';
+import { AudioBufferSink, type WrappedAudioBuffer } from 'mediabunny';
 import {
   animated,
   audibleTracks,
@@ -250,10 +247,16 @@ export class AudioGraph {
       // Sample just inside the clip so the last point does not read the post-clip silence.
       g.linearRampToValueAtTime(clipGainAt(clip, Math.min(f, clip.duration - 1e-3)), t);
     }
-    v.pan.pan.setValueAtTime(Math.max(-1, Math.min(1, animated(clip, 'pan', f0, clip.pan))), Math.max(0, from));
+    v.pan.pan.setValueAtTime(
+      Math.max(-1, Math.min(1, animated(clip, 'pan', f0, clip.pan))),
+      Math.max(0, from),
+    );
     for (const k of clip.keyframes.pan ?? []) {
       if (k.t <= f0) continue;
-      v.pan.pan.linearRampToValueAtTime(Math.max(-1, Math.min(1, k.v)), this.ctxTime(startSec + k.t / this.fps));
+      v.pan.pan.linearRampToValueAtTime(
+        Math.max(-1, Math.min(1, k.v)),
+        this.ctxTime(startSec + k.t / this.fps),
+      );
     }
   }
 
@@ -270,7 +273,16 @@ export class AudioGraph {
     const pan = ctx.createStereoPanner();
     gain.connect(pan);
     pan.connect(this.trackNodes(track).input);
-    return { clip, gain, pan, sources: new Set(), cancelled: false, scheduledUntil: 0, feeding: false, done: false };
+    return {
+      clip,
+      gain,
+      pan,
+      sources: new Set(),
+      cancelled: false,
+      scheduledUntil: 0,
+      feeding: false,
+      done: false,
+    };
   }
 
   private killVoice(v: Voice): void {
@@ -305,11 +317,16 @@ export class AudioGraph {
     let b = Math.min(bufEnd, srcB);
     // …clipped to what the session will actually play.
     const s = this.session!;
-    const sessFrom = clip.reverse ? srcB - (Math.min(s.endSec, clipEndSec) - clipStartSec) * per : srcA + (Math.max(s.startSec, clipStartSec) - clipStartSec) * per;
-    const sessTo = clip.reverse ? srcB - (Math.max(s.startSec, clipStartSec) - clipStartSec) * per : srcA + (Math.min(s.endSec, clipEndSec) - clipStartSec) * per;
+    const sessFrom = clip.reverse
+      ? srcB - (Math.min(s.endSec, clipEndSec) - clipStartSec) * per
+      : srcA + (Math.max(s.startSec, clipStartSec) - clipStartSec) * per;
+    const sessTo = clip.reverse
+      ? srcB - (Math.max(s.startSec, clipStartSec) - clipStartSec) * per
+      : srcA + (Math.min(s.endSec, clipEndSec) - clipStartSec) * per;
     a = Math.max(a, Math.min(sessFrom, sessTo));
     b = Math.min(b, Math.max(sessFrom, sessTo));
-    if (b - a < 1e-4) return this.ctxTime(clipStartSec + ((clip.reverse ? srcB - bufStart : bufEnd - srcA) / per));
+    if (b - a < 1e-4)
+      return this.ctxTime(clipStartSec + (clip.reverse ? srcB - bufStart : bufEnd - srcA) / per);
 
     let buffer = wb.buffer;
     let offset = a - bufStart;
@@ -366,8 +383,12 @@ export class AudioGraph {
         return;
       }
       const srcB = clip.sourceIn + (clipEndSec - clipStartSec) * per;
-      const srcFrom = clip.reverse ? srcB - (toTl - clipStartSec) * per : clip.sourceIn + (fromTl - clipStartSec) * per;
-      const srcTo = clip.reverse ? srcB - (fromTl - clipStartSec) * per : clip.sourceIn + (toTl - clipStartSec) * per;
+      const srcFrom = clip.reverse
+        ? srcB - (toTl - clipStartSec) * per
+        : clip.sourceIn + (fromTl - clipStartSec) * per;
+      const srcTo = clip.reverse
+        ? srcB - (fromTl - clipStartSec) * per
+        : clip.sourceIn + (toTl - clipStartSec) * per;
 
       if (clip.reverse) {
         // Reverse playback needs the buffers in descending order: collect, then schedule backwards.
@@ -420,7 +441,9 @@ export class AudioGraph {
     if (!project || !session) return;
     const ctx = this.ctx;
     const nowTl = this.realtime ? this.timelineSec(ctx.currentTime) : session.startSec;
-    const untilTl = this.realtime ? Math.min(session.endSec, nowTl + aheadSec * session.rate) : session.endSec;
+    const untilTl = this.realtime
+      ? Math.min(session.endSec, nowTl + aheadSec * session.rate)
+      : session.endSec;
     const audible = audibleTracks(project);
     const horizon = () => ctx.currentTime + aheadSec;
     const jobs: Promise<void>[] = [];
@@ -557,5 +580,7 @@ export async function renderAudioChunk(
 /** Does anything in the project make sound? */
 export function hasAudibleAudio(project: Project): boolean {
   const audible = audibleTracks(project);
-  return Object.values(project.clips).some((c) => c.type === 'audio' && c.enabled && !c.audioMuted && audible.has(c.trackId));
+  return Object.values(project.clips).some(
+    (c) => c.type === 'audio' && c.enabled && !c.audioMuted && audible.has(c.trackId),
+  );
 }

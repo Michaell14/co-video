@@ -56,7 +56,7 @@ active (and its eased progress), each clip's source time, transform and text-ani
 The compositor never looks at tracks, keyframes or transition windows — it draws what it is given.
 That boundary is why the renderer is deterministic and why frame logic is unit-testable.
 
-Two-sided transitions are centred on the cut and use *handles* (media beyond the clip's in / out
+Two-sided transitions are centred on the cut and use _handles_ (media beyond the clip's in / out
 points). When a clip has no handle left the source time clamps, which holds the last frame.
 
 ## 2. Collaboration
@@ -77,7 +77,7 @@ can never crash a peer's renderer.
 
 ### Undo
 
-`Y.UndoManager` tracks only the local origin, so undo reverts *your* edits and leaves everyone
+`Y.UndoManager` tracks only the local origin, so undo reverts _your_ edits and leaves everyone
 else's alone. Continuous gestures (dragging a slider) commit with `merge: true` and collapse into
 one step; `beginGesture()` starts the next.
 
@@ -155,7 +155,7 @@ linear light → highlights / shadows / contrast → lift, gamma, gain, offset �
 
 **HDR.** On an HDR timeline, working-space 1.0 is diffuse white (203 nits by default) and values
 above it are kept through every pass. SDR sources are converted into Rec.2020 and placed at diffuse
-white. HDR sources are *not* taken through the browser's 8-bit path: 10/12-bit frames are read back
+white. HDR sources are _not_ taken through the browser's 8-bit path: 10/12-bit frames are read back
 as planes, uploaded as packed RG8 textures (low byte, high byte — which keeps bilinear filtering
 exact) and converted Y'CbCr → R'G'B' in the shader. For export the compositor packs 10-bit
 limited-range Y'CbCr on the GPU and the encoder receives real `I420P10` frames tagged BT.2020 / PQ
@@ -168,10 +168,10 @@ gamut and rolled off with the project's tone-map operator.
 
 ### Decoding
 
-Each video clip on screen has a *cursor*: a forward-running WebCodecs pipeline (via Mediabunny)
+Each video clip on screen has a _cursor_: a forward-running WebCodecs pipeline (via Mediabunny)
 with a few frames of look-ahead and back-pressure. Sequential playback never seeks; scrubbing
 restarts the pipeline at the nearest keyframe, and a restart that is already in flight is allowed to
-land before the next one starts so fast scrubbing always shows *something*. Reverse playback
+land before the next one starts so fast scrubbing always shows _something_. Reverse playback
 decodes a short run forwards and steps back through it. Clips that are about to start are warmed up
 a second ahead so cuts play cleanly.
 
@@ -232,12 +232,12 @@ bundle; the editor chunk is warmed in the background while you choose a project.
 
 ## 5. Testing strategy
 
-| Layer | What is checked | Where |
-| --- | --- | --- |
-| Model | timecode, keyframes, every edit operation, CRDT convergence, per-user undo, hostile input | `packages/core/test` |
-| Server | auth, roles, sync, persistence across restart and torn logs, resumable media, versions | `apps/server/test` |
-| Engine | all shaders compile and draw, geometry and colour, frame accuracy, HDR exactness, exports inspected with ffprobe | `e2e/engine.spec.ts` |
-| Product | mouse-driven editing, reload persistence, export dialog, multi-user sessions with roles | `e2e/editor.spec.ts`, `e2e/collab.spec.ts` |
+| Layer   | What is checked                                                                                                  | Where                                      |
+| ------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Model   | timecode, keyframes, every edit operation, CRDT convergence, per-user undo, hostile input                        | `packages/core/test`                       |
+| Server  | auth, roles, sync, persistence across restart and torn logs, resumable media, versions                           | `apps/server/test`                         |
+| Engine  | all shaders compile and draw, geometry and colour, frame accuracy, HDR exactness, exports inspected with ffprobe | `e2e/engine.spec.ts`                       |
+| Product | mouse-driven editing, reload persistence, export dialog, multi-user sessions with roles                          | `e2e/editor.spec.ts`, `e2e/collab.spec.ts` |
 
 The engine tests run through a bare "lab" page (`apps/editor/lab.html`) that exposes the engine
 without the editor around it. WebGL runs on SwiftShader, so the suite needs no GPU.

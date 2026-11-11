@@ -11,7 +11,10 @@ import './collab.css';
 
 const ROLE_COPY: Record<Exclude<Role, 'owner'>, { label: string; text: string }> = {
   editor: { label: 'Can edit', text: 'Full access to the timeline, media and settings.' },
-  commenter: { label: 'Can comment', text: 'Can watch, scrub and leave time-coded comments. Cannot change the edit.' },
+  commenter: {
+    label: 'Can comment',
+    text: 'Can watch, scrub and leave time-coded comments. Cannot change the edit.',
+  },
   viewer: { label: 'Can view', text: 'Read-only. Sees edits live, cannot change or comment.' },
 };
 
@@ -61,7 +64,9 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
         <CloudOff />
         <b>No collaboration server found</b>
         <p>
-          Tandem is running in local mode: this project lives in your browser only. To edit with other people, run the bundled server (<code>pnpm start</code>) or host it somewhere everyone can reach, then reload.
+          Tandem is running in local mode: this project lives in your browser only. To edit with other people,
+          run the bundled server (<code>pnpm start</code>) or host it somewhere everyone can reach, then
+          reload.
         </p>
       </div>
     );
@@ -70,8 +75,17 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
       <div className="share__state">
         <UploadCloud />
         <b>This project is only on this device</b>
-        <p>Publishing uploads the project and its media to your collaboration server so others can join. You stay the owner.</p>
-        <Button variant="primary" size="lg" icon={<UploadCloud />} disabled={busy} onClick={() => void publish()}>
+        <p>
+          Publishing uploads the project and its media to your collaboration server so others can join. You
+          stay the owner.
+        </p>
+        <Button
+          variant="primary"
+          size="lg"
+          icon={<UploadCloud />}
+          disabled={busy}
+          onClick={() => void publish()}
+        >
           {busy ? 'Publishing…' : 'Publish and share'}
         </Button>
       </div>
@@ -84,7 +98,10 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
             <Segmented
               block
               value={role}
-              options={(Object.keys(ROLE_COPY) as Exclude<Role, 'owner'>[]).map((r) => ({ value: r, label: ROLE_COPY[r].label }))}
+              options={(Object.keys(ROLE_COPY) as Exclude<Role, 'owner'>[]).map((r) => ({
+                value: r,
+                label: ROLE_COPY[r].label,
+              }))}
               onChange={(r) => {
                 setRole(r);
                 setLink(null);
@@ -94,7 +111,15 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
               {ROLE_COPY[role].text}
             </p>
             <div className="hstack">
-              <TextField value={link ?? ''} onChange={() => {}} readOnly placeholder="Create a link to invite people" prefix={<Link2 size={13} />} style={{ flex: 1 }} ariaLabel="Share link" />
+              <TextField
+                value={link ?? ''}
+                onChange={() => {}}
+                readOnly
+                placeholder="Create a link to invite people"
+                prefix={<Link2 size={13} />}
+                style={{ flex: 1 }}
+                ariaLabel="Share link"
+              />
               <Button variant="primary" icon={<Copy />} disabled={busy} onClick={() => void copy()}>
                 {link ? 'Copy again' : 'Copy link'}
               </Button>
@@ -103,7 +128,10 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
         ) : (
           <div className="callout">
             <ShieldCheck />
-            <div>You have {meta.role === 'commenter' ? 'comment-only' : 'view-only'} access. Ask an editor for an invite link if you need to share this project.</div>
+            <div>
+              You have {meta.role === 'commenter' ? 'comment-only' : 'view-only'} access. Ask an editor for an
+              invite link if you need to share this project.
+            </div>
           </div>
         )}
         <div>
@@ -131,7 +159,10 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
         </div>
         <div className="callout">
           <ShieldCheck />
-          <div>Links are keys: anyone holding one gets that access level, with no account needed. Share them the way you would share a password.</div>
+          <div>
+            Links are keys: anyone holding one gets that access level, with no account needed. Share them the
+            way you would share a password.
+          </div>
         </div>
       </div>
     );
@@ -162,7 +193,12 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
     if (!token) return;
     setBusy(true);
     try {
-      await api.saveVersion(session.id, token, name.trim() || `Version ${new Date().toLocaleString()}`, meta.user.name);
+      await api.saveVersion(
+        session.id,
+        token,
+        name.trim() || `Version ${new Date().toLocaleString()}`,
+        meta.user.name,
+      );
       setName('');
       load();
       toast('Version saved', 'success');
@@ -175,7 +211,8 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
 
   const restore = async (v: VersionInfo) => {
     if (!token) return;
-    if (!confirm(`Restore “${v.name}”? The current state is replaced for everyone — you can undo it.`)) return;
+    if (!confirm(`Restore “${v.name}”? The current state is replaced for everyone — you can undo it.`))
+      return;
     setBusy(true);
     try {
       const data = await api.versionData(session.id, token, v.id);
@@ -198,13 +235,22 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
         <div className="share__state">
           <History />
           <b>Versions live on the collaboration server</b>
-          <p>Publish this project to get named versions and automatic snapshots. Meanwhile, “Save project file” in the menu makes a portable backup.</p>
+          <p>
+            Publish this project to get named versions and automatic snapshots. Meanwhile, “Save project file”
+            in the menu makes a portable backup.
+          </p>
         </div>
       ) : (
         <div className="vstack" style={{ gap: 12 }}>
           {session.canEdit && (
             <div className="hstack">
-              <TextField value={name} onChange={setName} placeholder="Name this version (e.g. Rough cut v2)" style={{ flex: 1 }} onEnter={() => void save()} />
+              <TextField
+                value={name}
+                onChange={setName}
+                placeholder="Name this version (e.g. Rough cut v2)"
+                style={{ flex: 1 }}
+                onEnter={() => void save()}
+              />
               <Button variant="primary" disabled={busy} onClick={() => void save()}>
                 Save version
               </Button>
@@ -276,15 +322,31 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
           <span className="avatar avatar--lg" style={{ background: color }}>
             {initials(name || '?')}
           </span>
-          <TextField value={name} onChange={setName} autoFocus ariaLabel="Display name" style={{ flex: 1, height: 32 }} />
+          <TextField
+            value={name}
+            onChange={setName}
+            autoFocus
+            ariaLabel="Display name"
+            style={{ flex: 1, height: 32 }}
+          />
         </div>
         <div className="hstack" style={{ flexWrap: 'wrap' }}>
           {USER_COLORS.map((c) => (
-            <button key={c} aria-label={`Colour ${c}`} onClick={() => setColor(c)} className="swatch-btn" style={{ background: c, boxShadow: c === color ? '0 0 0 2px var(--bg-3), 0 0 0 4px #fff' : 'none' }} />
+            <button
+              key={c}
+              aria-label={`Colour ${c}`}
+              onClick={() => setColor(c)}
+              className="swatch-btn"
+              style={{
+                background: c,
+                boxShadow: c === color ? '0 0 0 2px var(--bg-3), 0 0 0 4px #fff' : 'none',
+              }}
+            />
           ))}
         </div>
         <p className="form__hint" style={{ margin: 0 }}>
-          This is how collaborators see your cursor, playhead and comments. It is stored in this browser only — there are no accounts.
+          This is how collaborators see your cursor, playhead and comments. It is stored in this browser only
+          — there are no accounts.
         </p>
       </div>
     </Dialog>

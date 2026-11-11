@@ -127,7 +127,9 @@ export class FilmstripCache extends Emitter {
         }
         try {
           let i = 0;
-          for await (const wrapped of opened.sink.canvasesAtTimestamps(batch.map((p) => p.time + opened.start))) {
+          for await (const wrapped of opened.sink.canvasesAtTimestamps(
+            batch.map((p) => p.time + opened.start),
+          )) {
             const req = batch[i++];
             if (!wrapped || this.disposed) continue;
             const bmp = await createImageBitmap(wrapped.canvas);
@@ -195,7 +197,12 @@ export class WaveformCache extends Emitter {
   get(assetId: string, duration: number): Waveform | null {
     let w = this.waves.get(assetId);
     if (!w) {
-      w = { peaks: new Float32Array(Math.max(1, Math.ceil(duration * PEAKS_PER_SECOND) + 2)), perSecond: PEAKS_PER_SECOND, loaded: 0, done: false };
+      w = {
+        peaks: new Float32Array(Math.max(1, Math.ceil(duration * PEAKS_PER_SECOND) + 2)),
+        perSecond: PEAKS_PER_SECOND,
+        loaded: 0,
+        done: false,
+      };
       this.waves.set(assetId, w);
       this.queue.push(assetId);
       void this.work();

@@ -19,7 +19,10 @@ interface Stage {
 let stage: Stage | null | undefined;
 
 function sample(variant: 0 | 1): OffscreenCanvas | HTMLCanvasElement {
-  const c = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(W, H) : Object.assign(document.createElement('canvas'), { width: W, height: H });
+  const c =
+    typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(W, H)
+      : Object.assign(document.createElement('canvas'), { width: W, height: H });
   const g = c.getContext('2d') as CanvasRenderingContext2D;
   const sky = g.createLinearGradient(0, 0, 0, H);
   if (variant === 0) {
@@ -61,8 +64,15 @@ function sample(variant: 0 | 1): OffscreenCanvas | HTMLCanvasElement {
 function getStage(): Stage | null {
   if (stage !== undefined) return stage;
   try {
-    const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(W, H) : Object.assign(document.createElement('canvas'), { width: W, height: H });
-    const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true }) as WebGL2RenderingContext | null;
+    const canvas =
+      typeof OffscreenCanvas !== 'undefined'
+        ? new OffscreenCanvas(W, H)
+        : Object.assign(document.createElement('canvas'), { width: W, height: H });
+    const gl = canvas.getContext('webgl2', {
+      alpha: false,
+      antialias: false,
+      preserveDrawingBuffer: true,
+    }) as WebGL2RenderingContext | null;
     if (!gl) return (stage = null);
     const glx = new Glx(gl, false);
     const upload = (src: OffscreenCanvas | HTMLCanvasElement) => {
@@ -78,7 +88,12 @@ function getStage(): Stage | null {
 }
 
 /** Draw a preview into `target`. `t` is 0…1 (transition progress, or animation phase for effects). */
-function render(kind: 'effect' | 'transition', id: string, t: number, target: CanvasRenderingContext2D): boolean {
+function render(
+  kind: 'effect' | 'transition',
+  id: string,
+  t: number,
+  target: CanvasRenderingContext2D,
+): boolean {
   const s = getStage();
   if (!s) return false;
   const { glx } = s;
@@ -90,7 +105,13 @@ function render(kind: 'effect' | 'transition', id: string, t: number, target: Ca
       const def = getEffectDef(id);
       if (!def) return false;
       const params = resolveParams(def.params, defaultParams(def.params));
-      const out = runEffect(glx, def, params, { tex: s.a, width: W, height: H }, { px: H / 1080 * 4, time: t * 2, frame: Math.floor(t * 48), seed: 0.37, lumaW });
+      const out = runEffect(
+        glx,
+        def,
+        params,
+        { tex: s.a, width: W, height: H },
+        { px: (H / 1080) * 4, time: t * 2, frame: Math.floor(t * 48), seed: 0.37, lumaW },
+      );
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, W, H);
       gl.clearColor(0.07, 0.07, 0.08, 1);
@@ -148,11 +169,14 @@ export function FxThumb({ kind, id }: { kind: 'effect' | 'transition'; id: strin
     }
     if (cached === 'failed') return;
     // Stagger first-time renders so opening the panel never janks.
-    const handle = setTimeout(() => {
-      if (render(kind, id, kind === 'transition' ? 0.5 : 0.3, ctx)) {
-        void createImageBitmap(canvas).then((bmp) => stills.set(key, bmp));
-      } else stills.set(key, 'failed');
-    }, 20 + Math.random() * 180);
+    const handle = setTimeout(
+      () => {
+        if (render(kind, id, kind === 'transition' ? 0.5 : 0.3, ctx)) {
+          void createImageBitmap(canvas).then((bmp) => stills.set(key, bmp));
+        } else stills.set(key, 'failed');
+      },
+      20 + Math.random() * 180,
+    );
     return () => clearTimeout(handle);
   }, [kind, id, hover]);
 
@@ -174,5 +198,14 @@ export function FxThumb({ kind, id }: { kind: 'effect' | 'transition'; id: strin
     return () => cancelAnimationFrame(raf);
   }, [hover, kind, id]);
 
-  return <canvas ref={ref} width={W} height={H} className="fx__thumb" onPointerEnter={() => setHover(true)} onPointerLeave={() => setHover(false)} />;
+  return (
+    <canvas
+      ref={ref}
+      width={W}
+      height={H}
+      className="fx__thumb"
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
+    />
+  );
 }

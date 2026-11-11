@@ -99,7 +99,10 @@ async function openFile(path: string): Promise<OpenFile | null> {
  */
 export function documentSecurityHeaders(req: IncomingMessage): Record<string, string> {
   // Older engines do not let 'self' cover WebSockets, so name our own host explicitly.
-  const host = typeof req.headers.host === 'string' && /^[A-Za-z0-9.-]+(:\d{1,5})?$/.test(req.headers.host) ? req.headers.host : null;
+  const host =
+    typeof req.headers.host === 'string' && /^[A-Za-z0-9.-]+(:\d{1,5})?$/.test(req.headers.host)
+      ? req.headers.host
+      : null;
   const sockets = host ? ` ws://${host} wss://${host}` : '';
   return {
     'Content-Security-Policy': [

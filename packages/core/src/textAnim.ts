@@ -96,7 +96,11 @@ export const TEXT_ANIMATIONS: TextAnimDef[] = [
   {
     id: 'spin',
     name: 'Spin',
-    apply: (p) => ({ opacity: Math.min(1, p * 2), rotation: (1 - easeOutCubic(p)) * -90, scale: 0.5 + 0.5 * easeOutCubic(p) }),
+    apply: (p) => ({
+      opacity: Math.min(1, p * 2),
+      rotation: (1 - easeOutCubic(p)) * -90,
+      scale: 0.5 + 0.5 * easeOutCubic(p),
+    }),
   },
   {
     id: 'drop',

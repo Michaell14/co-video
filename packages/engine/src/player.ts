@@ -154,7 +154,8 @@ export class Player {
     const prev = this.project;
     this.project = project;
     this.dirty = true;
-    if (prev.settings.width !== project.settings.width || prev.settings.height !== project.settings.height) this.applySize();
+    if (prev.settings.width !== project.settings.width || prev.settings.height !== project.settings.height)
+      this.applySize();
     if (this.state.playing && this.graph) {
       if (this.graph.update(project)) this.restartAudio();
     }
@@ -217,7 +218,10 @@ export class Player {
     const even = (v: number): number => Math.max(2, Math.round(v / 2) * 2);
     let scale: number;
     if (this.state.quality === 'auto') {
-      const fit = Math.min((this.viewport.w * this.viewport.dpr) / width, (this.viewport.h * this.viewport.dpr) / height);
+      const fit = Math.min(
+        (this.viewport.w * this.viewport.dpr) / width,
+        (this.viewport.h * this.viewport.dpr) / height,
+      );
       // Never render more pixels than the project has; quantise so small layout jitters do not
       // reallocate every buffer.
       scale = Math.max(0.1, Math.min(1, Math.ceil(fit * 8) / 8));
@@ -229,7 +233,12 @@ export class Player {
     const render = this.state.quality === 'auto' ? Math.max(0.1, scale * this.adaptive) : scale;
     const w = even(width * render);
     const h = even(height * render);
-    if (w !== this.compositor.width || h !== this.compositor.height || cw !== this.compositor.canvas.width || ch !== this.compositor.canvas.height) {
+    if (
+      w !== this.compositor.width ||
+      h !== this.compositor.height ||
+      cw !== this.compositor.canvas.width ||
+      ch !== this.compositor.canvas.height
+    ) {
       this.compositor.setSize(w, h, cw, ch);
       this.dirty = true;
     }
@@ -383,7 +392,10 @@ export class Player {
   private ensureAudio(): void {
     if (this.audioCtx || typeof AudioContext === 'undefined') return;
     try {
-      this.audioCtx = new AudioContext({ latencyHint: 'interactive', sampleRate: this.project.settings.sampleRate });
+      this.audioCtx = new AudioContext({
+        latencyHint: 'interactive',
+        sampleRate: this.project.settings.sampleRate,
+      });
     } catch {
       try {
         this.audioCtx = new AudioContext({ latencyHint: 'interactive' });

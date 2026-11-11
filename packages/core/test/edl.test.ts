@@ -25,7 +25,9 @@ describe('EDL export', () => {
     const f = fixture();
     let { p, clip } = addClip(f.p, f.v1.id, 0, 60, { sourceIn: 4 });
     p = applyEdits(p, setSpeed(p, [clip.id], 2, true));
-    p = applyEdits(p, [{ op: 'updateClip', id: clip.id, patch: { transIn: makeTransition('crossDissolve', 12) } }]);
+    p = applyEdits(p, [
+      { op: 'updateClip', id: clip.id, patch: { transIn: makeTransition('crossDissolve', 12) } },
+    ]);
     const out = toEdl(p);
     // 30 frames on the timeline at 200 % consume 60 source frames, played backwards.
     expect(out).toContain('001  CLIP     V     C        00:00:04:00 00:00:06:00 01:00:00:00 01:00:01:00');
@@ -42,6 +44,10 @@ describe('EDL export', () => {
     expect(out).toContain('FCM: DROP FRAME');
     expect(out.split('\r\n').filter((l) => /^\d{3} /.test(l))).toHaveLength(1);
     expect(out).toMatch(/01:00:00;00 01:00:01;00/);
-    expect(toEdl(f.p).split('\r\n').filter((l) => /^\d{3} /.test(l))).toHaveLength(0);
+    expect(
+      toEdl(f.p)
+        .split('\r\n')
+        .filter((l) => /^\d{3} /.test(l)),
+    ).toHaveLength(0);
   });
 });

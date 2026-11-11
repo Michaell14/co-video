@@ -35,7 +35,12 @@ export function onDrop(handler: DropHandler): () => void {
 }
 
 /** Begin a drag from a pointerdown. A plain click (no movement) calls `onClick` instead. */
-export function beginDrag(e: React.PointerEvent, payload: DragPayload, label: string, onClick?: () => void): void {
+export function beginDrag(
+  e: React.PointerEvent,
+  payload: DragPayload,
+  label: string,
+  onClick?: () => void,
+): void {
   if (e.button !== 0) return;
   const startX = e.clientX;
   const startY = e.clientY;
@@ -93,4 +98,5 @@ export function DragLayer() {
   );
 }
 
-export const insideRect = (r: DOMRect, x: number, y: number): boolean => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+export const insideRect = (r: DOMRect, x: number, y: number): boolean =>
+  x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;

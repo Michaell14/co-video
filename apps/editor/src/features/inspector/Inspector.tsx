@@ -48,7 +48,19 @@ import { currentSession, useLiveProject, useSession, useThrottledFrame } from '.
 import { cmd } from '../../state/commands';
 import { beginGesture, localFrameOf, patchClips, setClipValues } from '../../state/props';
 import { useUI } from '../../state/ui';
-import { Button, ColorField, IconButton, MenuButton, NumberField, Segmented, Select, Slider, Switch, TextField, tip } from '../../ui/core';
+import {
+  Button,
+  ColorField,
+  IconButton,
+  MenuButton,
+  NumberField,
+  Segmented,
+  Select,
+  Slider,
+  Switch,
+  TextField,
+  tip,
+} from '../../ui/core';
 import { NumericRow, ParamControl, Row, Section, valueOf } from './controls';
 import { ProjectSettingsForm } from './ProjectSettings';
 import './inspector.css';
@@ -88,7 +100,9 @@ export function Inspector() {
   let body: React.ReactNode;
   if (selTrans && project.clips[selTrans.clipId]) {
     title = 'Transition';
-    body = <TransitionInspector project={project} clip={project.clips[selTrans.clipId]} side={selTrans.side} />;
+    body = (
+      <TransitionInspector project={project} clip={project.clips[selTrans.clipId]} side={selTrans.side} />
+    );
   } else if (clips.length) {
     title = clips.length === 1 ? clips[0].name || labelFor(clips[0]) : `${clips.length} clips`;
     body = <ClipInspector project={project} clips={clips} />;
@@ -96,7 +110,9 @@ export function Inspector() {
     body = (
       <div className="insp__project">
         <ProjectSettingsForm />
-        <p className="form__hint">Select a clip to see its properties. Hold Shift to select several and edit them together.</p>
+        <p className="form__hint">
+          Select a clip to see its properties. Hold Shift to select several and edit them together.
+        </p>
       </div>
     );
   }
@@ -157,7 +173,17 @@ function TransformSection({ clips, project }: { clips: Clip[]; project: Project 
   const [linked, setLinked] = useState(true);
   const first = clips[0];
   const { width, height } = project.settings;
-  const reset = () => patchClips(ids, (c) => ({ x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, anchorX: 0.5, anchorY: 0.5, keyframes: stripKeys(c, ['x', 'y', 'scaleX', 'scaleY', 'rotation']) }));
+  const reset = () =>
+    patchClips(ids, (c) => ({
+      x: 0,
+      y: 0,
+      scaleX: 1,
+      scaleY: 1,
+      rotation: 0,
+      anchorX: 0.5,
+      anchorY: 0.5,
+      keyframes: stripKeys(c, ['x', 'y', 'scaleX', 'scaleY', 'rotation']),
+    }));
   return (
     <Section
       id="transform"
@@ -168,14 +194,56 @@ function TransformSection({ clips, project }: { clips: Clip[]; project: Project 
         </IconButton>
       }
     >
-      <NumericRow clips={clips} path="x" label="Position X" scale={width} step={1 / width} precision={0} suffix="px" defaultValue={0} />
-      <NumericRow clips={clips} path="y" label="Position Y" scale={height} step={1 / height} precision={0} suffix="px" defaultValue={0} />
+      <NumericRow
+        clips={clips}
+        path="x"
+        label="Position X"
+        scale={width}
+        step={1 / width}
+        precision={0}
+        suffix="px"
+        defaultValue={0}
+      />
+      <NumericRow
+        clips={clips}
+        path="y"
+        label="Position Y"
+        scale={height}
+        step={1 / height}
+        precision={0}
+        suffix="px"
+        defaultValue={0}
+      />
       {linked ? (
         <LinkedScale clips={clips} onUnlink={() => setLinked(false)} />
       ) : (
         <>
-          <NumericRow clips={clips} path="scaleX" label="Scale X" scale={100} step={0.005} precision={1} suffix="%" defaultValue={1} slider min={0} max={4} />
-          <NumericRow clips={clips} path="scaleY" label="Scale Y" scale={100} step={0.005} precision={1} suffix="%" defaultValue={1} slider min={0} max={4} />
+          <NumericRow
+            clips={clips}
+            path="scaleX"
+            label="Scale X"
+            scale={100}
+            step={0.005}
+            precision={1}
+            suffix="%"
+            defaultValue={1}
+            slider
+            min={0}
+            max={4}
+          />
+          <NumericRow
+            clips={clips}
+            path="scaleY"
+            label="Scale Y"
+            scale={100}
+            step={0.005}
+            precision={1}
+            suffix="%"
+            defaultValue={1}
+            slider
+            min={0}
+            max={4}
+          />
           <Row label="">
             <Button size="sm" variant="ghost" icon={<Link2 />} onClick={() => setLinked(true)}>
               Link scale
@@ -183,7 +251,19 @@ function TransformSection({ clips, project }: { clips: Clip[]; project: Project 
           </Row>
         </>
       )}
-      <NumericRow clips={clips} path="rotation" label="Rotation" step={0.25} precision={1} suffix="°" defaultValue={0} slider min={-180} max={180} origin={0} />
+      <NumericRow
+        clips={clips}
+        path="rotation"
+        label="Rotation"
+        step={0.25}
+        precision={1}
+        suffix="°"
+        defaultValue={0}
+        slider
+        min={-180}
+        max={180}
+        origin={0}
+      />
       {(first.type === 'video' || first.type === 'image') && (
         <Row label="Fit">
           <Select<FitMode>
@@ -199,10 +279,18 @@ function TransformSection({ clips, project }: { clips: Clip[]; project: Project 
         </Row>
       )}
       <Row label="Flip">
-        <IconButton label="Flip horizontally" active={first.flipH} onClick={() => patchClips(ids, { flipH: !first.flipH })}>
+        <IconButton
+          label="Flip horizontally"
+          active={first.flipH}
+          onClick={() => patchClips(ids, { flipH: !first.flipH })}
+        >
           <FlipHorizontal2 />
         </IconButton>
-        <IconButton label="Flip vertically" active={first.flipV} onClick={() => patchClips(ids, { flipV: !first.flipV })}>
+        <IconButton
+          label="Flip vertically"
+          active={first.flipV}
+          onClick={() => patchClips(ids, { flipV: !first.flipV })}
+        >
           <FlipVertical2 />
         </IconButton>
       </Row>
@@ -223,7 +311,11 @@ function LinkedScale({ clips, onUnlink }: { clips: Clip[]; onUnlink: () => void 
     if (!p) return;
     for (const id of ids) {
       const c = p.clips[id];
-      if (c) setClipValues([id], { scaleX: Math.sign(c.scaleX || 1) * val, scaleY: Math.sign(c.scaleY || 1) * val });
+      if (c)
+        setClipValues([id], {
+          scaleX: Math.sign(c.scaleX || 1) * val,
+          scaleY: Math.sign(c.scaleY || 1) * val,
+        });
     }
   };
   return (
@@ -237,7 +329,10 @@ function LinkedScale({ clips, onUnlink }: { clips: Clip[]; onUnlink: () => void 
           onClick={() =>
             patchClips(ids, (c) => {
               const a = toggleKeyframe(c, 'scaleX', localFrameOf(c), valueOf(c, 'scaleX', 1));
-              return { ...a, ...toggleKeyframe({ ...c, ...a }, 'scaleY', localFrameOf(c), valueOf(c, 'scaleY', 1)) };
+              return {
+                ...a,
+                ...toggleKeyframe({ ...c, ...a }, 'scaleY', localFrameOf(c), valueOf(c, 'scaleY', 1)),
+              };
             })
           }
           {...tip(animatedNow ? 'Add / remove keyframe' : 'Animate: add a keyframe')}
@@ -247,9 +342,33 @@ function LinkedScale({ clips, onUnlink }: { clips: Clip[]; onUnlink: () => void 
         <span>Scale</span>
       </div>
       <div className="row__ctrl">
-        <Slider value={Math.min(4, v)} min={0} max={4} onChange={set} onStart={beginGesture} defaultValue={1} />
-        <NumberField value={v} onChange={set} onStart={beginGesture} min={0} max={50} step={0.005} scale={100} precision={1} suffix="%" defaultValue={1} ariaLabel="Scale" />
-        <button className="insp__link" onClick={onUnlink} aria-label="Unlink scale axes" {...tip('Scale X and Y separately')}>
+        <Slider
+          value={Math.min(4, v)}
+          min={0}
+          max={4}
+          onChange={set}
+          onStart={beginGesture}
+          defaultValue={1}
+        />
+        <NumberField
+          value={v}
+          onChange={set}
+          onStart={beginGesture}
+          min={0}
+          max={50}
+          step={0.005}
+          scale={100}
+          precision={1}
+          suffix="%"
+          defaultValue={1}
+          ariaLabel="Scale"
+        />
+        <button
+          className="insp__link"
+          onClick={onUnlink}
+          aria-label="Unlink scale axes"
+          {...tip('Scale X and Y separately')}
+        >
           <Unlink2 />
         </button>
       </div>
@@ -261,10 +380,26 @@ function CompositeSection({ clips }: { clips: Clip[] }) {
   const ids = clips.map((c) => c.id);
   return (
     <Section id="composite" title="Opacity & Blend">
-      <NumericRow clips={clips} path="opacity" label="Opacity" scale={100} step={0.005} precision={0} suffix="%" defaultValue={1} slider min={0} max={1} />
+      <NumericRow
+        clips={clips}
+        path="opacity"
+        label="Opacity"
+        scale={100}
+        step={0.005}
+        precision={0}
+        suffix="%"
+        defaultValue={1}
+        slider
+        min={0}
+        max={1}
+      />
       {clips[0].type !== 'adjustment' && (
         <Row label="Blend mode">
-          <Select<BlendMode> value={clips[0].blend} options={BLEND_MODES} onChange={(blend) => patchClips(ids, { blend })} />
+          <Select<BlendMode>
+            value={clips[0].blend}
+            options={BLEND_MODES}
+            onChange={(blend) => patchClips(ids, { blend })}
+          />
         </Row>
       )}
     </Section>
@@ -272,7 +407,16 @@ function CompositeSection({ clips }: { clips: Clip[] }) {
 }
 
 function CropSection({ clips }: { clips: Clip[] }) {
-  const p = { scale: 100, step: 0.002, precision: 1, suffix: '%', defaultValue: 0, slider: true, min: 0, max: 1 } as const;
+  const p = {
+    scale: 100,
+    step: 0.002,
+    precision: 1,
+    suffix: '%',
+    defaultValue: 0,
+    slider: true,
+    min: 0,
+    max: 1,
+  } as const;
   return (
     <Section id="crop" title="Crop" defaultCollapsed>
       <NumericRow clips={clips} path="cropL" label="Left" {...p} />
@@ -286,11 +430,29 @@ function CropSection({ clips }: { clips: Clip[] }) {
 function MaskSection({ clips }: { clips: Clip[] }) {
   const ids = clips.map((c) => c.id);
   const mask = clips[0].mask;
-  const set = (patch: Partial<Mask>, merge = true) => patchClips(ids, (c) => ({ mask: { ...(c.mask ?? DEFAULT_MASK), ...patch } }), merge);
+  const set = (patch: Partial<Mask>, merge = true) =>
+    patchClips(ids, (c) => ({ mask: { ...(c.mask ?? DEFAULT_MASK), ...patch } }), merge);
   const num = (key: keyof Mask, label: string, min: number, max: number, scale = 100, suffix = '%') => (
     <Row label={label}>
-      <Slider value={(mask?.[key] as number) ?? 0} min={min} max={max} onChange={(v) => set({ [key]: v })} onStart={beginGesture} defaultValue={DEFAULT_MASK[key] as number} />
-      <NumberField value={(mask?.[key] as number) ?? 0} onChange={(v) => set({ [key]: v })} onStart={beginGesture} min={min} max={max} step={(max - min) / 400} scale={scale} precision={scale === 1 ? 0 : 0} suffix={suffix} />
+      <Slider
+        value={(mask?.[key] as number) ?? 0}
+        min={min}
+        max={max}
+        onChange={(v) => set({ [key]: v })}
+        onStart={beginGesture}
+        defaultValue={DEFAULT_MASK[key] as number}
+      />
+      <NumberField
+        value={(mask?.[key] as number) ?? 0}
+        onChange={(v) => set({ [key]: v })}
+        onStart={beginGesture}
+        min={min}
+        max={max}
+        step={(max - min) / 400}
+        scale={scale}
+        precision={scale === 1 ? 0 : 0}
+        suffix={suffix}
+      />
     </Row>
   );
   return (
@@ -304,7 +466,9 @@ function MaskSection({ clips }: { clips: Clip[] }) {
             { value: 'rect', label: 'Rectangle' },
             { value: 'ellipse', label: 'Ellipse' },
           ]}
-          onChange={(v) => patchClips(ids, (c) => ({ mask: v === 'none' ? null : { ...(c.mask ?? DEFAULT_MASK), type: v } }))}
+          onChange={(v) =>
+            patchClips(ids, (c) => ({ mask: v === 'none' ? null : { ...(c.mask ?? DEFAULT_MASK), type: v } }))
+          }
         />
       </Row>
       {mask && (
@@ -332,8 +496,29 @@ function SpeedSection({ clips, project }: { clips: Clip[]; project: Project }) {
   return (
     <Section id="speed" title="Speed" defaultCollapsed={first.speed === 1 && !first.reverse}>
       <Row label="Speed">
-        <Slider value={Math.log2(speed)} min={-3} max={4} onChange={(v) => setDraft(Math.round(Math.pow(2, v) * 100) / 100)} onEnd={() => { if (draft !== null) cmd.setSpeed(draft); setDraft(null); }} origin={0} defaultValue={0} />
-        <NumberField value={speed} onChange={(v) => cmd.setSpeed(v)} min={0.05} max={100} step={0.01} scale={100} precision={0} suffix="%" defaultValue={1} />
+        <Slider
+          value={Math.log2(speed)}
+          min={-3}
+          max={4}
+          onChange={(v) => setDraft(Math.round(Math.pow(2, v) * 100) / 100)}
+          onEnd={() => {
+            if (draft !== null) cmd.setSpeed(draft);
+            setDraft(null);
+          }}
+          origin={0}
+          defaultValue={0}
+        />
+        <NumberField
+          value={speed}
+          onChange={(v) => cmd.setSpeed(v)}
+          min={0.05}
+          max={100}
+          step={0.01}
+          scale={100}
+          precision={0}
+          suffix="%"
+          defaultValue={1}
+        />
       </Row>
       <Row label="Presets">
         {[0.25, 0.5, 1, 2, 4].map((v) => (
@@ -358,18 +543,64 @@ function AudioSection({ clips, project }: { clips: Clip[]; project: Project }) {
   const fps = project.settings.fpsNum / project.settings.fpsDen;
   const fade = (key: 'fadeIn' | 'fadeOut', label: string) => (
     <Row label={label}>
-      <Slider value={first[key] / fps} min={0} max={Math.min(10, first.duration / fps)} onChange={(v) => patchClips(ids, (c) => ({ [key]: Math.min(c.duration, Math.round(v * fps)) }), true)} onStart={beginGesture} defaultValue={0} />
-      <NumberField value={first[key] / fps} onChange={(v) => patchClips(ids, (c) => ({ [key]: Math.min(c.duration, Math.max(0, Math.round(v * fps))) }), true)} onStart={beginGesture} min={0} max={first.duration / fps} step={0.02} precision={2} suffix="s" defaultValue={0} />
+      <Slider
+        value={first[key] / fps}
+        min={0}
+        max={Math.min(10, first.duration / fps)}
+        onChange={(v) => patchClips(ids, (c) => ({ [key]: Math.min(c.duration, Math.round(v * fps)) }), true)}
+        onStart={beginGesture}
+        defaultValue={0}
+      />
+      <NumberField
+        value={first[key] / fps}
+        onChange={(v) =>
+          patchClips(ids, (c) => ({ [key]: Math.min(c.duration, Math.max(0, Math.round(v * fps))) }), true)
+        }
+        onStart={beginGesture}
+        min={0}
+        max={first.duration / fps}
+        step={0.02}
+        precision={2}
+        suffix="s"
+        defaultValue={0}
+      />
     </Row>
   );
   return (
     <Section id="audio" title="Audio">
-      <NumericRow clips={clips} path="volume" label="Volume" step={0.1} precision={1} suffix="dB" defaultValue={0} slider min={-48} max={12} origin={0} />
-      <NumericRow clips={clips} path="pan" label="Pan" step={0.01} precision={2} defaultValue={0} slider min={-1} max={1} origin={0} />
+      <NumericRow
+        clips={clips}
+        path="volume"
+        label="Volume"
+        step={0.1}
+        precision={1}
+        suffix="dB"
+        defaultValue={0}
+        slider
+        min={-48}
+        max={12}
+        origin={0}
+      />
+      <NumericRow
+        clips={clips}
+        path="pan"
+        label="Pan"
+        step={0.01}
+        precision={2}
+        defaultValue={0}
+        slider
+        min={-1}
+        max={1}
+        origin={0}
+      />
       {fade('fadeIn', 'Fade in')}
       {fade('fadeOut', 'Fade out')}
       <Row label="Mute">
-        <Switch checked={first.audioMuted} onChange={(audioMuted) => patchClips(ids, { audioMuted })} label="Mute clip" />
+        <Switch
+          checked={first.audioMuted}
+          onChange={(audioMuted) => patchClips(ids, { audioMuted })}
+          label="Mute clip"
+        />
       </Row>
       <Row label="Loudness">
         <MenuButton
@@ -399,7 +630,13 @@ function ColorSummary({ clips }: { clips: Clip[] }) {
         <span className="insp__read">{active ? 'Graded' : 'No grade'}</span>
         <span style={{ flex: 1 }} />
         {first.grade && (
-          <Switch checked={first.grade.enabled} onChange={(enabled) => patchClips(ids, (c) => (c.grade ? { grade: { ...c.grade, enabled } } : {}))} label="Enable grade" />
+          <Switch
+            checked={first.grade.enabled}
+            onChange={(enabled) =>
+              patchClips(ids, (c) => (c.grade ? { grade: { ...c.grade, enabled } } : {}))
+            }
+            label="Enable grade"
+          />
         )}
       </Row>
       <Button block icon={<Palette />} onClick={() => useUI.getState().set({ workspace: 'color' })}>
@@ -425,11 +662,20 @@ function EffectsSection({ clip }: { clip: Clip }) {
       id="effects"
       title={
         <>
-          Effects {clip.effects.length > 0 && <span className="badge badge--accent" style={{ marginLeft: 4 }}>{clip.effects.length}</span>}
+          Effects{' '}
+          {clip.effects.length > 0 && (
+            <span className="badge badge--accent" style={{ marginLeft: 4 }}>
+              {clip.effects.length}
+            </span>
+          )}
         </>
       }
       actions={
-        <IconButton small label="Browse effects" onClick={() => useUI.getState().set({ workspace: 'edit', libraryTab: 'effects' })}>
+        <IconButton
+          small
+          label="Browse effects"
+          onClick={() => useUI.getState().set({ workspace: 'edit', libraryTab: 'effects' })}
+        >
           <Sparkles />
         </IconButton>
       }
@@ -437,7 +683,10 @@ function EffectsSection({ clip }: { clip: Clip }) {
       {clip.effects.length === 0 && (
         <div className="insp__empty">
           Drag an effect from the library onto a clip, or
-          <button className="insp__linkbtn" onClick={() => useUI.getState().set({ workspace: 'edit', libraryTab: 'effects' })}>
+          <button
+            className="insp__linkbtn"
+            onClick={() => useUI.getState().set({ workspace: 'edit', libraryTab: 'effects' })}
+          >
             browse effects
           </button>
           .
@@ -448,15 +697,32 @@ function EffectsSection({ clip }: { clip: Clip }) {
         return (
           <div key={fx.id} className="fxitem" data-off={!fx.enabled}>
             <div className="fxitem__head">
-              <Switch checked={fx.enabled} onChange={(enabled) => patchClips(ids, (c) => ({ effects: c.effects.map((e) => (e.id === fx.id ? { ...e, enabled } : e)) }))} label={`Enable ${def?.name ?? fx.type}`} />
+              <Switch
+                checked={fx.enabled}
+                onChange={(enabled) =>
+                  patchClips(ids, (c) => ({
+                    effects: c.effects.map((e) => (e.id === fx.id ? { ...e, enabled } : e)),
+                  }))
+                }
+                label={`Enable ${def?.name ?? fx.type}`}
+              />
               <span className="fxitem__name">{def?.name ?? fx.type}</span>
               <IconButton small label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
                 <ArrowUp />
               </IconButton>
-              <IconButton small label="Move down" disabled={i === clip.effects.length - 1} onClick={() => move(i, 1)}>
+              <IconButton
+                small
+                label="Move down"
+                disabled={i === clip.effects.length - 1}
+                onClick={() => move(i, 1)}
+              >
                 <ArrowDown />
               </IconButton>
-              <IconButton small label="Remove effect" onClick={() => patchClips(ids, (c) => removeEffect(c, fx.id))}>
+              <IconButton
+                small
+                label="Remove effect"
+                onClick={() => patchClips(ids, (c) => removeEffect(c, fx.id))}
+              >
                 <Trash2 />
               </IconButton>
             </div>
@@ -477,7 +743,9 @@ function EffectsSection({ clip }: { clip: Clip }) {
                         min={d.type === 'angle' ? -360 : d.min}
                         max={d.type === 'angle' ? 360 : d.max}
                         step={d.type === 'angle' ? 1 : (d.step ?? 0.01)}
-                        precision={d.type === 'angle' || (d.type === 'float' && (d.step ?? 0.01) >= 1) ? 0 : 2}
+                        precision={
+                          d.type === 'angle' || (d.type === 'float' && (d.step ?? 0.01) >= 1) ? 0 : 2
+                        }
                         suffix={d.type === 'angle' ? '°' : d.unit}
                         defaultValue={d.default}
                         slider
@@ -500,30 +768,78 @@ function EffectsSection({ clip }: { clip: Clip }) {
 function TextSection({ clip }: { clip: Clip }) {
   const t = clip.text!;
   const ids = [clip.id];
-  const set = (patch: Partial<TextProps>, merge = false) => patchClips(ids, (c) => ({ text: { ...(c.text ?? DEFAULT_TEXT), ...patch } }), merge);
+  const set = (patch: Partial<TextProps>, merge = false) =>
+    patchClips(ids, (c) => ({ text: { ...(c.text ?? DEFAULT_TEXT), ...patch } }), merge);
   const font = fontByFamily(t.font) ?? FONTS[0];
-  const num = (label: string, value: number, apply: (v: number) => Partial<TextProps>, min: number, max: number, opts: { scale?: number; suffix?: string; precision?: number; def?: number } = {}) => (
+  const num = (
+    label: string,
+    value: number,
+    apply: (v: number) => Partial<TextProps>,
+    min: number,
+    max: number,
+    opts: { scale?: number; suffix?: string; precision?: number; def?: number } = {},
+  ) => (
     <Row label={label}>
-      <Slider value={value} min={min} max={max} onChange={(v) => set(apply(v), true)} onStart={beginGesture} defaultValue={opts.def} />
-      <NumberField value={value} onChange={(v) => set(apply(v), true)} onStart={beginGesture} min={min} max={max} step={(max - min) / 300} scale={opts.scale ?? 1} precision={opts.precision ?? 2} suffix={opts.suffix} defaultValue={opts.def} />
+      <Slider
+        value={value}
+        min={min}
+        max={max}
+        onChange={(v) => set(apply(v), true)}
+        onStart={beginGesture}
+        defaultValue={opts.def}
+      />
+      <NumberField
+        value={value}
+        onChange={(v) => set(apply(v), true)}
+        onStart={beginGesture}
+        min={min}
+        max={max}
+        step={(max - min) / 300}
+        scale={opts.scale ?? 1}
+        precision={opts.precision ?? 2}
+        suffix={opts.suffix}
+        defaultValue={opts.def}
+      />
     </Row>
   );
   return (
     <>
       <Section id="text" title="Text">
-        <TextField value={t.content} onChange={(content) => set({ content }, true)} onFocus={beginGesture} multiline rows={3} ariaLabel="Text content" placeholder="Type something" />
+        <TextField
+          value={t.content}
+          onChange={(content) => set({ content }, true)}
+          onFocus={beginGesture}
+          multiline
+          rows={3}
+          ariaLabel="Text content"
+          placeholder="Type something"
+        />
         <Row label="Font">
           <Select
             value={font.family}
-            options={FONTS.map((f) => ({ value: f.family, label: f.label, group: f.category, style: { fontFamily: `"${f.family}"` } }))}
+            options={FONTS.map((f) => ({
+              value: f.family,
+              label: f.label,
+              group: f.category,
+              style: { fontFamily: `"${f.family}"` },
+            }))}
             onChange={(family) => {
               const next = fontByFamily(family)!;
-              set({ font: family, weight: next.weights.includes(t.weight) ? t.weight : next.weights.reduce((a, b) => (Math.abs(b - t.weight) < Math.abs(a - t.weight) ? b : a)) });
+              set({
+                font: family,
+                weight: next.weights.includes(t.weight)
+                  ? t.weight
+                  : next.weights.reduce((a, b) => (Math.abs(b - t.weight) < Math.abs(a - t.weight) ? b : a)),
+              });
             }}
           />
         </Row>
         <Row label="Weight">
-          <Select value={t.weight} options={font.weights.map((w) => ({ value: w, label: WEIGHT_NAMES[w] ?? String(w) }))} onChange={(weight) => set({ weight })} />
+          <Select
+            value={t.weight}
+            options={font.weights.map((w) => ({ value: w, label: WEIGHT_NAMES[w] ?? String(w) }))}
+            onChange={(weight) => set({ weight })}
+          />
           <IconButton label="Italic" active={t.italic} onClick={() => set({ italic: !t.italic })}>
             <Italic />
           </IconButton>
@@ -531,7 +847,11 @@ function TextSection({ clip }: { clip: Clip }) {
             <CaseUpper />
           </IconButton>
         </Row>
-        {num('Size', t.size, (size) => ({ size }), 0.01, 0.5, { scale: 1000, precision: 0, def: DEFAULT_TEXT.size })}
+        {num('Size', t.size, (size) => ({ size }), 0.01, 0.5, {
+          scale: 1000,
+          precision: 0,
+          def: DEFAULT_TEXT.size,
+        })}
         <Row label="Align">
           <Segmented
             value={t.align}
@@ -544,97 +864,246 @@ function TextSection({ clip }: { clip: Clip }) {
           />
         </Row>
         <Row label="Colour">
-          <ColorField value={t.color.slice(0, 7)} onChange={(color) => set({ color }, true)} onStart={beginGesture} />
+          <ColorField
+            value={t.color.slice(0, 7)}
+            onChange={(color) => set({ color }, true)}
+            onStart={beginGesture}
+          />
         </Row>
-        {num('Line height', t.lineHeight, (lineHeight) => ({ lineHeight }), 0.7, 2.5, { def: DEFAULT_TEXT.lineHeight })}
-        {num('Tracking', t.letterSpacing, (letterSpacing) => ({ letterSpacing }), -0.1, 0.6, { scale: 100, precision: 0, def: 0 })}
+        {num('Line height', t.lineHeight, (lineHeight) => ({ lineHeight }), 0.7, 2.5, {
+          def: DEFAULT_TEXT.lineHeight,
+        })}
+        {num('Tracking', t.letterSpacing, (letterSpacing) => ({ letterSpacing }), -0.1, 0.6, {
+          scale: 100,
+          precision: 0,
+          def: 0,
+        })}
         <Row label="Wrap width">
-          <Switch checked={t.boxWidth !== null} onChange={(on) => set({ boxWidth: on ? 0.8 : null })} label="Wrap text" />
+          <Switch
+            checked={t.boxWidth !== null}
+            onChange={(on) => set({ boxWidth: on ? 0.8 : null })}
+            label="Wrap text"
+          />
           {t.boxWidth !== null && (
-            <NumberField value={t.boxWidth} onChange={(boxWidth) => set({ boxWidth }, true)} onStart={beginGesture} min={0.05} max={1} step={0.002} scale={100} precision={0} suffix="%" />
+            <NumberField
+              value={t.boxWidth}
+              onChange={(boxWidth) => set({ boxWidth }, true)}
+              onStart={beginGesture}
+              min={0.05}
+              max={1}
+              step={0.002}
+              scale={100}
+              precision={0}
+              suffix="%"
+            />
           )}
         </Row>
       </Section>
       <Section id="text-style" title="Text style" defaultCollapsed>
         <Row label="Gradient">
-          <Switch checked={t.gradient.enabled} onChange={(enabled) => set({ gradient: { ...t.gradient, enabled } })} label="Gradient fill" />
+          <Switch
+            checked={t.gradient.enabled}
+            onChange={(enabled) => set({ gradient: { ...t.gradient, enabled } })}
+            label="Gradient fill"
+          />
         </Row>
         {t.gradient.enabled && (
           <>
             <Row label="From">
-              <ColorField value={t.gradient.from} onChange={(from) => set({ gradient: { ...t.gradient, from } }, true)} onStart={beginGesture} />
+              <ColorField
+                value={t.gradient.from}
+                onChange={(from) => set({ gradient: { ...t.gradient, from } }, true)}
+                onStart={beginGesture}
+              />
             </Row>
             <Row label="To">
-              <ColorField value={t.gradient.to} onChange={(to) => set({ gradient: { ...t.gradient, to } }, true)} onStart={beginGesture} />
+              <ColorField
+                value={t.gradient.to}
+                onChange={(to) => set({ gradient: { ...t.gradient, to } }, true)}
+                onStart={beginGesture}
+              />
             </Row>
-            {num('Angle', t.gradient.angle, (angle) => ({ gradient: { ...t.gradient, angle } }), 0, 360, { precision: 0, suffix: '°' })}
+            {num('Angle', t.gradient.angle, (angle) => ({ gradient: { ...t.gradient, angle } }), 0, 360, {
+              precision: 0,
+              suffix: '°',
+            })}
           </>
         )}
         <Row label="Outline">
-          <Switch checked={t.stroke.enabled} onChange={(enabled) => set({ stroke: { ...t.stroke, enabled } })} label="Outline" />
+          <Switch
+            checked={t.stroke.enabled}
+            onChange={(enabled) => set({ stroke: { ...t.stroke, enabled } })}
+            label="Outline"
+          />
         </Row>
         {t.stroke.enabled && (
           <>
             <Row label="Colour">
-              <ColorField value={t.stroke.color} onChange={(color) => set({ stroke: { ...t.stroke, color } }, true)} onStart={beginGesture} />
+              <ColorField
+                value={t.stroke.color}
+                onChange={(color) => set({ stroke: { ...t.stroke, color } }, true)}
+                onStart={beginGesture}
+              />
             </Row>
-            {num('Width', t.stroke.width, (width) => ({ stroke: { ...t.stroke, width } }), 0, 0.3, { scale: 100, precision: 1 })}
+            {num('Width', t.stroke.width, (width) => ({ stroke: { ...t.stroke, width } }), 0, 0.3, {
+              scale: 100,
+              precision: 1,
+            })}
           </>
         )}
         <Row label="Shadow">
-          <Switch checked={t.shadow.enabled} onChange={(enabled) => set({ shadow: { ...t.shadow, enabled } })} label="Shadow" />
+          <Switch
+            checked={t.shadow.enabled}
+            onChange={(enabled) => set({ shadow: { ...t.shadow, enabled } })}
+            label="Shadow"
+          />
         </Row>
         {t.shadow.enabled && (
           <>
             <Row label="Colour">
-              <ColorField value={t.shadow.color} onChange={(color) => set({ shadow: { ...t.shadow, color } }, true)} onStart={beginGesture} />
+              <ColorField
+                value={t.shadow.color}
+                onChange={(color) => set({ shadow: { ...t.shadow, color } }, true)}
+                onStart={beginGesture}
+              />
             </Row>
-            {num('Opacity', t.shadow.opacity, (opacity) => ({ shadow: { ...t.shadow, opacity } }), 0, 1, { scale: 100, precision: 0, suffix: '%' })}
-            {num('Blur', t.shadow.blur, (blur) => ({ shadow: { ...t.shadow, blur } }), 0, 1, { scale: 100, precision: 0 })}
-            {num('Offset X', t.shadow.x, (x) => ({ shadow: { ...t.shadow, x } }), -0.5, 0.5, { scale: 100, precision: 0 })}
-            {num('Offset Y', t.shadow.y, (y) => ({ shadow: { ...t.shadow, y } }), -0.5, 0.5, { scale: 100, precision: 0 })}
+            {num('Opacity', t.shadow.opacity, (opacity) => ({ shadow: { ...t.shadow, opacity } }), 0, 1, {
+              scale: 100,
+              precision: 0,
+              suffix: '%',
+            })}
+            {num('Blur', t.shadow.blur, (blur) => ({ shadow: { ...t.shadow, blur } }), 0, 1, {
+              scale: 100,
+              precision: 0,
+            })}
+            {num('Offset X', t.shadow.x, (x) => ({ shadow: { ...t.shadow, x } }), -0.5, 0.5, {
+              scale: 100,
+              precision: 0,
+            })}
+            {num('Offset Y', t.shadow.y, (y) => ({ shadow: { ...t.shadow, y } }), -0.5, 0.5, {
+              scale: 100,
+              precision: 0,
+            })}
           </>
         )}
         <Row label="Background">
-          <Switch checked={t.bg.enabled} onChange={(enabled) => set({ bg: { ...t.bg, enabled } })} label="Background box" />
+          <Switch
+            checked={t.bg.enabled}
+            onChange={(enabled) => set({ bg: { ...t.bg, enabled } })}
+            label="Background box"
+          />
         </Row>
         {t.bg.enabled && (
           <>
             <Row label="Colour">
-              <ColorField value={t.bg.color} onChange={(color) => set({ bg: { ...t.bg, color } }, true)} onStart={beginGesture} />
+              <ColorField
+                value={t.bg.color}
+                onChange={(color) => set({ bg: { ...t.bg, color } }, true)}
+                onStart={beginGesture}
+              />
             </Row>
-            {num('Opacity', t.bg.opacity, (opacity) => ({ bg: { ...t.bg, opacity } }), 0, 1, { scale: 100, precision: 0, suffix: '%' })}
-            {num('Padding X', t.bg.padX, (padX) => ({ bg: { ...t.bg, padX } }), 0, 2, { scale: 100, precision: 0 })}
-            {num('Padding Y', t.bg.padY, (padY) => ({ bg: { ...t.bg, padY } }), 0, 2, { scale: 100, precision: 0 })}
-            {num('Corners', t.bg.radius, (radius) => ({ bg: { ...t.bg, radius } }), 0, 1.5, { scale: 100, precision: 0 })}
+            {num('Opacity', t.bg.opacity, (opacity) => ({ bg: { ...t.bg, opacity } }), 0, 1, {
+              scale: 100,
+              precision: 0,
+              suffix: '%',
+            })}
+            {num('Padding X', t.bg.padX, (padX) => ({ bg: { ...t.bg, padX } }), 0, 2, {
+              scale: 100,
+              precision: 0,
+            })}
+            {num('Padding Y', t.bg.padY, (padY) => ({ bg: { ...t.bg, padY } }), 0, 2, {
+              scale: 100,
+              precision: 0,
+            })}
+            {num('Corners', t.bg.radius, (radius) => ({ bg: { ...t.bg, radius } }), 0, 1.5, {
+              scale: 100,
+              precision: 0,
+            })}
           </>
         )}
       </Section>
       <Section id="text-anim" title="Animation">
         <Row label="In">
-          <Select value={t.animIn.type} options={TEXT_ANIMATIONS.map((a) => ({ value: a.id, label: a.name }))} onChange={(type) => set({ animIn: { ...t.animIn, type } })} />
-          <NumberField value={t.animIn.duration} onChange={(d) => set({ animIn: { ...t.animIn, duration: Math.round(d) } }, true)} onStart={beginGesture} min={1} max={clip.duration} step={0.25} precision={0} suffix="f" />
+          <Select
+            value={t.animIn.type}
+            options={TEXT_ANIMATIONS.map((a) => ({ value: a.id, label: a.name }))}
+            onChange={(type) => set({ animIn: { ...t.animIn, type } })}
+          />
+          <NumberField
+            value={t.animIn.duration}
+            onChange={(d) => set({ animIn: { ...t.animIn, duration: Math.round(d) } }, true)}
+            onStart={beginGesture}
+            min={1}
+            max={clip.duration}
+            step={0.25}
+            precision={0}
+            suffix="f"
+          />
         </Row>
         <Row label="Out">
-          <Select value={t.animOut.type} options={TEXT_ANIMATIONS.map((a) => ({ value: a.id, label: a.name }))} onChange={(type) => set({ animOut: { ...t.animOut, type } })} />
-          <NumberField value={t.animOut.duration} onChange={(d) => set({ animOut: { ...t.animOut, duration: Math.round(d) } }, true)} onStart={beginGesture} min={1} max={clip.duration} step={0.25} precision={0} suffix="f" />
+          <Select
+            value={t.animOut.type}
+            options={TEXT_ANIMATIONS.map((a) => ({ value: a.id, label: a.name }))}
+            onChange={(type) => set({ animOut: { ...t.animOut, type } })}
+          />
+          <NumberField
+            value={t.animOut.duration}
+            onChange={(d) => set({ animOut: { ...t.animOut, duration: Math.round(d) } }, true)}
+            onStart={beginGesture}
+            min={1}
+            max={clip.duration}
+            step={0.25}
+            precision={0}
+            suffix="f"
+          />
         </Row>
       </Section>
     </>
   );
 }
 
-const WEIGHT_NAMES: Record<number, string> = { 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Extrabold', 900: 'Black' };
+const WEIGHT_NAMES: Record<number, string> = {
+  300: 'Light',
+  400: 'Regular',
+  500: 'Medium',
+  600: 'Semibold',
+  700: 'Bold',
+  800: 'Extrabold',
+  900: 'Black',
+};
 
 function ShapeSection({ clip }: { clip: Clip }) {
   const sh = clip.shape!;
   const ids = [clip.id];
-  const set = (patch: Partial<ShapeProps>, merge = false) => patchClips(ids, (c) => ({ shape: { ...(c.shape ?? DEFAULT_SHAPE), ...patch } }), merge);
+  const set = (patch: Partial<ShapeProps>, merge = false) =>
+    patchClips(ids, (c) => ({ shape: { ...(c.shape ?? DEFAULT_SHAPE), ...patch } }), merge);
   const open = sh.kind === 'line' || sh.kind === 'arrow';
-  const num = (label: string, key: 'w' | 'h' | 'strokeWidth' | 'radius' | 'sides', min: number, max: number, scale = 100, precision = 0) => (
+  const num = (
+    label: string,
+    key: 'w' | 'h' | 'strokeWidth' | 'radius' | 'sides',
+    min: number,
+    max: number,
+    scale = 100,
+    precision = 0,
+  ) => (
     <Row label={label}>
-      <Slider value={sh[key]} min={min} max={max} onChange={(v) => set({ [key]: key === 'sides' ? Math.round(v) : v }, true)} onStart={beginGesture} />
-      <NumberField value={sh[key]} onChange={(v) => set({ [key]: key === 'sides' ? Math.round(v) : v }, true)} onStart={beginGesture} min={min} max={max} step={(max - min) / 300} scale={scale} precision={precision} />
+      <Slider
+        value={sh[key]}
+        min={min}
+        max={max}
+        onChange={(v) => set({ [key]: key === 'sides' ? Math.round(v) : v }, true)}
+        onStart={beginGesture}
+      />
+      <NumberField
+        value={sh[key]}
+        onChange={(v) => set({ [key]: key === 'sides' ? Math.round(v) : v }, true)}
+        onStart={beginGesture}
+        min={min}
+        max={max}
+        step={(max - min) / 300}
+        scale={scale}
+        precision={precision}
+      />
     </Row>
   );
   return (
@@ -660,18 +1129,32 @@ function ShapeSection({ clip }: { clip: Clip }) {
         <>
           <Row label="Fill">
             <Switch checked={sh.fillEnabled} onChange={(fillEnabled) => set({ fillEnabled })} label="Fill" />
-            {sh.fillEnabled && !sh.gradient.enabled && <ColorField value={sh.fill} onChange={(fill) => set({ fill }, true)} onStart={beginGesture} />}
+            {sh.fillEnabled && !sh.gradient.enabled && (
+              <ColorField value={sh.fill} onChange={(fill) => set({ fill }, true)} onStart={beginGesture} />
+            )}
           </Row>
           <Row label="Gradient">
-            <Switch checked={sh.gradient.enabled} onChange={(enabled) => set({ gradient: { ...sh.gradient, enabled } })} label="Gradient fill" />
+            <Switch
+              checked={sh.gradient.enabled}
+              onChange={(enabled) => set({ gradient: { ...sh.gradient, enabled } })}
+              label="Gradient fill"
+            />
           </Row>
           {sh.gradient.enabled && (
             <>
               <Row label="From">
-                <ColorField value={sh.gradient.from} onChange={(from) => set({ gradient: { ...sh.gradient, from } }, true)} onStart={beginGesture} />
+                <ColorField
+                  value={sh.gradient.from}
+                  onChange={(from) => set({ gradient: { ...sh.gradient, from } }, true)}
+                  onStart={beginGesture}
+                />
               </Row>
               <Row label="To">
-                <ColorField value={sh.gradient.to} onChange={(to) => set({ gradient: { ...sh.gradient, to } }, true)} onStart={beginGesture} />
+                <ColorField
+                  value={sh.gradient.to}
+                  onChange={(to) => set({ gradient: { ...sh.gradient, to } }, true)}
+                  onStart={beginGesture}
+                />
               </Row>
             </>
           )}
@@ -690,25 +1173,44 @@ function ShapeSection({ clip }: { clip: Clip }) {
 function SolidSection({ clip }: { clip: Clip }) {
   const sh = clip.shape ?? DEFAULT_SHAPE;
   const ids = [clip.id];
-  const set = (patch: Partial<ShapeProps>, merge = false) => patchClips(ids, (c) => ({ shape: { ...(c.shape ?? DEFAULT_SHAPE), ...patch } }), merge);
+  const set = (patch: Partial<ShapeProps>, merge = false) =>
+    patchClips(ids, (c) => ({ shape: { ...(c.shape ?? DEFAULT_SHAPE), ...patch } }), merge);
   return (
     <Section id="solid" title="Solid">
       <Row label="Colour">
         <ColorField value={sh.fill} onChange={(fill) => set({ fill }, true)} onStart={beginGesture} />
       </Row>
       <Row label="Gradient">
-        <Switch checked={sh.gradient.enabled} onChange={(enabled) => set({ gradient: { ...sh.gradient, enabled } })} label="Gradient" />
+        <Switch
+          checked={sh.gradient.enabled}
+          onChange={(enabled) => set({ gradient: { ...sh.gradient, enabled } })}
+          label="Gradient"
+        />
       </Row>
       {sh.gradient.enabled && (
         <>
           <Row label="From">
-            <ColorField value={sh.gradient.from} onChange={(from) => set({ gradient: { ...sh.gradient, from } }, true)} onStart={beginGesture} />
+            <ColorField
+              value={sh.gradient.from}
+              onChange={(from) => set({ gradient: { ...sh.gradient, from } }, true)}
+              onStart={beginGesture}
+            />
           </Row>
           <Row label="To">
-            <ColorField value={sh.gradient.to} onChange={(to) => set({ gradient: { ...sh.gradient, to } }, true)} onStart={beginGesture} />
+            <ColorField
+              value={sh.gradient.to}
+              onChange={(to) => set({ gradient: { ...sh.gradient, to } }, true)}
+              onStart={beginGesture}
+            />
           </Row>
           <Row label="Angle">
-            <Slider value={sh.gradient.angle} min={0} max={360} onChange={(angle) => set({ gradient: { ...sh.gradient, angle } }, true)} onStart={beginGesture} />
+            <Slider
+              value={sh.gradient.angle}
+              min={0}
+              max={360}
+              onChange={(angle) => set({ gradient: { ...sh.gradient, angle } }, true)}
+              onStart={beginGesture}
+            />
           </Row>
         </>
       )}
@@ -721,30 +1223,56 @@ function SolidSection({ clip }: { clip: Clip }) {
 function TransitionInspector({ project, clip, side }: { project: Project; clip: Clip; side: 'in' | 'out' }) {
   const t = side === 'in' ? clip.transIn : clip.transOut;
   if (!t) {
-    return <div className="insp__empty" style={{ padding: 16 }}>This transition was removed.</div>;
+    return (
+      <div className="insp__empty" style={{ padding: 16 }}>
+        This transition was removed.
+      </div>
+    );
   }
   const def = getTransitionDef(t.type);
   const fps = project.settings.fpsNum / project.settings.fpsDen;
   const max = maxTransitionDuration(project, clip, side);
-  const write = (next: Transition, merge = false) => patchClips([clip.id], side === 'in' ? { transIn: next } : { transOut: next }, merge);
+  const write = (next: Transition, merge = false) =>
+    patchClips([clip.id], side === 'in' ? { transIn: next } : { transOut: next }, merge);
   return (
     <div className="rows">
       <Section id="transition" title={def?.name ?? t.type}>
         <Row label="Type">
           <Select
             value={t.type}
-            options={TRANSITIONS.map((x) => ({ value: x.id, label: x.name, group: x.category[0].toUpperCase() + x.category.slice(1) }))}
+            options={TRANSITIONS.map((x) => ({
+              value: x.id,
+              label: x.name,
+              group: x.category[0].toUpperCase() + x.category.slice(1),
+            }))}
             onChange={(type) => {
               const nd = getTransitionDef(type);
               const params: Transition['params'] = {};
-              for (const p of nd?.params ?? []) params[p.key] = Array.isArray(p.default) ? [...p.default] : p.default;
+              for (const p of nd?.params ?? [])
+                params[p.key] = Array.isArray(p.default) ? [...p.default] : p.default;
               write({ type, duration: t.duration, params });
             }}
           />
         </Row>
         <Row label="Duration">
-          <Slider value={t.duration} min={1} max={max} step={1} onChange={(d) => write({ ...t, duration: Math.round(d) }, true)} onStart={beginGesture} />
-          <NumberField value={t.duration / fps} onChange={(s) => write({ ...t, duration: Math.min(max, Math.max(1, Math.round(s * fps))) }, true)} onStart={beginGesture} min={1 / fps} max={max / fps} step={0.02} precision={2} suffix="s" />
+          <Slider
+            value={t.duration}
+            min={1}
+            max={max}
+            step={1}
+            onChange={(d) => write({ ...t, duration: Math.round(d) }, true)}
+            onStart={beginGesture}
+          />
+          <NumberField
+            value={t.duration / fps}
+            onChange={(s) => write({ ...t, duration: Math.min(max, Math.max(1, Math.round(s * fps))) }, true)}
+            onStart={beginGesture}
+            min={1 / fps}
+            max={max / fps}
+            step={0.02}
+            precision={2}
+            suffix="s"
+          />
         </Row>
         {def?.params.map((p) => (
           <ParamControl
@@ -778,5 +1306,3 @@ function stripKeys(c: Clip, paths: string[]): Clip['keyframes'] {
   for (const [k, v] of Object.entries(c.keyframes)) if (!paths.includes(k)) out[k] = v;
   return out;
 }
-
-

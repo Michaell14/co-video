@@ -51,7 +51,10 @@ export class ReviewStore {
   reply(id: ID, r: Omit<CommentReply, 'id' | 'createdAt'>): void {
     const c = this.yComments.get(id);
     if (!c) return;
-    this.yComments.set(id, { ...c, replies: [...(c.replies ?? []), { ...r, id: newId(8), createdAt: Date.now() }] });
+    this.yComments.set(id, {
+      ...c,
+      replies: [...(c.replies ?? []), { ...r, id: newId(8), createdAt: Date.now() }],
+    });
   }
 
   update(id: ID, patch: Partial<Pick<Comment, 'text' | 'resolved' | 'frame'>>): void {

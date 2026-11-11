@@ -55,7 +55,11 @@ export function setClipValues(ids: ID[], values: Record<string, number>, merge =
 }
 
 /** Patch arbitrary clip fields. */
-export function patchClips(ids: ID[], patch: Partial<Clip> | ((c: Clip) => Partial<Clip>), merge = false): void {
+export function patchClips(
+  ids: ID[],
+  patch: Partial<Clip> | ((c: Clip) => Partial<Clip>),
+  merge = false,
+): void {
   const s = guard();
   if (!s) return;
   const p = s.store.get();

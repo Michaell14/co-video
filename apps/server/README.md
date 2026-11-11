@@ -127,7 +127,7 @@ What the server enforces:
   `Content-Security-Policy: sandbox`, so an uploaded HTML or SVG file cannot run script in the app's origin.
 - The pages themselves (site and editor) are served with a Content-Security-Policy that allows scripts,
   styles, media and connections from their own origin only, `frame-ancestors 'none'` / `X-Frame-Options:
-  DENY`, and a Permissions-Policy that grants the microphone (voiceover) and nothing else.
+DENY`, and a Permissions-Policy that grants the microphone (voiceover) and nothing else.
 
 What it does **not** do — know this before exposing a server:
 

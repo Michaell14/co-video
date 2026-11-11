@@ -42,7 +42,11 @@ export class ProxyCancelled extends Error {
 const even = (v: number): number => Math.max(2, Math.round(v / 2) * 2);
 
 /** The proxy size for a picture of the given display size, or null when it is already small. */
-export function proxySize(width: number, height: number, shortSide = 540): { width: number; height: number } | null {
+export function proxySize(
+  width: number,
+  height: number,
+  shortSide = 540,
+): { width: number; height: number } | null {
   const short = Math.min(width, height);
   if (short <= shortSide * 1.34) return null;
   const k = shortSide / short;
@@ -53,11 +57,16 @@ export function proxySize(width: number, height: number, shortSide = 540): { wid
  * Transcode `source` into a proxy written to `writable` (an OPFS file stream). Resolves with what
  * was made; rejects with {@link ProxyCancelled} when aborted.
  */
-export async function createProxy(source: Blob, writable: FileSystemWritableFileStream, opts: ProxyOptions = {}): Promise<ProxyResult> {
+export async function createProxy(
+  source: Blob,
+  writable: FileSystemWritableFileStream,
+  opts: ProxyOptions = {},
+): Promise<ProxyResult> {
   const input = new Input({ source: new BlobSource(source), formats: ALL_FORMATS });
   try {
     const track = await input.getPrimaryVideoTrack();
-    if (!track || !(await track.canDecode())) throw new Error('This video cannot be decoded in this browser.');
+    if (!track || !(await track.canDecode()))
+      throw new Error('This video cannot be decoded in this browser.');
     const size = proxySize(track.displayWidth, track.displayHeight, opts.shortSide) ?? {
       width: even(track.displayWidth),
       height: even(track.displayHeight),

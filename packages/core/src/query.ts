@@ -7,8 +7,12 @@ export const clipEnd = (c: Clip): number => c.start + c.duration;
 
 const sortTracks = memoByRef((tracks: Project['tracks']) => {
   const all = Object.values(tracks);
-  const video = all.filter((t) => t.kind === 'video').sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : 1));
-  const audio = all.filter((t) => t.kind === 'audio').sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : 1));
+  const video = all
+    .filter((t) => t.kind === 'video')
+    .sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : 1));
+  const audio = all
+    .filter((t) => t.kind === 'audio')
+    .sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : 1));
   return { video, audio };
 });
 
@@ -122,7 +126,8 @@ export function sourceTimeAt(clip: Clip, localFrame: number, p: Project): number
 
 /** How many extra frames a clip could be extended by at its head and tail given its source media. */
 export function handles(clip: Clip, asset: Asset | undefined, p: Project): { head: number; tail: number } {
-  if (!hasSourceTime(clip.type) || clip.freeze || !asset || asset.duration <= 0) return { head: Infinity, tail: Infinity };
+  if (!hasSourceTime(clip.type) || clip.freeze || !asset || asset.duration <= 0)
+    return { head: Infinity, tail: Infinity };
   const per = sourcePerFrame(clip, p);
   const used = clip.duration * per;
   const before = Math.max(0, clip.sourceIn);
@@ -172,7 +177,13 @@ export function editPoints(p: Project): number[] {
 }
 
 /** Is the interval [start, end) free of clips on a track (ignoring `exclude`)? */
-export function isRegionFree(p: Project, trackId: ID, start: number, end: number, exclude?: ReadonlySet<ID>): boolean {
+export function isRegionFree(
+  p: Project,
+  trackId: ID,
+  start: number,
+  end: number,
+  exclude?: ReadonlySet<ID>,
+): boolean {
   for (const c of clipsOnTrack(p, trackId)) {
     if (exclude?.has(c.id)) continue;
     if (c.start >= end) break;

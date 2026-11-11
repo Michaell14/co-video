@@ -27,9 +27,15 @@ export async function newProject(page: Page): Promise<void> {
 }
 
 export async function importFixtures(page: Page, names: string[]): Promise<void> {
-  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.evaluate(() => void (window as any).tandem.cmd.importMedia())]);
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.evaluate(() => void (window as any).tandem.cmd.importMedia()),
+  ]);
   await chooser.setFiles(names.map((n) => join(FIXTURES, n)));
-  await page.waitForFunction((n) => Object.keys((window as any).tandem.session.store.get().assets).length >= n, names.length);
+  await page.waitForFunction(
+    (n) => Object.keys((window as any).tandem.session.store.get().assets).length >= n,
+    names.length,
+  );
 }
 
 /** Summarise the timeline as `type@start+duration` strings, sorted. */
@@ -52,16 +58,25 @@ export function hasFfprobe(): boolean {
 
 export function ffprobe(file: string): { streams: Record<string, string>[]; format: Record<string, string> } {
   const out = execFileSync('ffprobe', [
-    '-v', 'error', '-count_frames',
-    '-show_entries', 'stream=codec_name,codec_type,width,height,r_frame_rate,nb_read_frames,pix_fmt,color_transfer,color_primaries',
-    '-show_entries', 'format=duration,size', '-of', 'json', file,
+    '-v',
+    'error',
+    '-count_frames',
+    '-show_entries',
+    'stream=codec_name,codec_type,width,height,r_frame_rate,nb_read_frames,pix_fmt,color_transfer,color_primaries',
+    '-show_entries',
+    'format=duration,size',
+    '-of',
+    'json',
+    file,
   ]);
   return JSON.parse(out.toString());
 }
 
 /** Serve fixture files to the engine lab page. */
 export async function openLab(page: Page): Promise<void> {
-  await page.route('**/fixtures/*', (route) => route.fulfill({ path: join(FIXTURES, new URL(route.request().url()).pathname.split('/').pop()!) }));
+  await page.route('**/fixtures/*', (route) =>
+    route.fulfill({ path: join(FIXTURES, new URL(route.request().url()).pathname.split('/').pop()!) }),
+  );
   await page.goto('/lab.html');
   await page.waitForFunction(() => document.title === 'lab-ready');
 }

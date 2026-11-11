@@ -63,7 +63,13 @@ export function Library() {
       <div className="panel__head">
         <div className="tabs" role="tablist" ref={tabsRef}>
           {TABS.map((t) => (
-            <button key={t.id} role="tab" aria-selected={tab === t.id} className="tab" onClick={() => set({ libraryTab: t.id })}>
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={tab === t.id}
+              className="tab"
+              onClick={() => set({ libraryTab: t.id })}
+            >
               <t.icon />
               {t.label}
             </button>
@@ -102,10 +108,18 @@ function MediaPool() {
         <FolderInput />
         <b>No media yet</b>
         Drop files anywhere in the window, or
-        <Button variant="primary" icon={<Plus />} onClick={() => void cmd.importMedia()} disabled={!session.canEdit} style={{ marginTop: 4 }}>
+        <Button
+          variant="primary"
+          icon={<Plus />}
+          onClick={() => void cmd.importMedia()}
+          disabled={!session.canEdit}
+          style={{ marginTop: 4 }}
+        >
           Import media
         </Button>
-        <span style={{ fontSize: 11, color: 'var(--fg-4)', marginTop: 4 }}>Video · audio · images · .cube LUTs · .srt captions</span>
+        <span style={{ fontSize: 11, color: 'var(--fg-4)', marginTop: 4 }}>
+          Video · audio · images · .cube LUTs · .srt captions
+        </span>
         <button className="lib__sample" onClick={() => void cmd.loadSample()} disabled={!session.canEdit}>
           <Sparkles /> No footage handy? Load a sample project
         </button>
@@ -119,9 +133,20 @@ function MediaPool() {
           <span className="field__prefix">
             <Search size={13} />
           </span>
-          <input placeholder="Search media" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.stopPropagation()} aria-label="Search media" />
+          <input
+            placeholder="Search media"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.stopPropagation()}
+            aria-label="Search media"
+          />
         </div>
-        <IconButton label="Import media" keys="mod+i" onClick={() => void cmd.importMedia()} disabled={!session.canEdit}>
+        <IconButton
+          label="Import media"
+          keys="mod+i"
+          onClick={() => void cmd.importMedia()}
+          disabled={!session.canEdit}
+        >
           <Plus />
         </IconButton>
       </div>
@@ -152,16 +177,27 @@ function AssetCard({ asset }: { asset: Asset }) {
   const meta = useSessionMeta();
   const status = useMediaStatus(asset.id);
   const usage = useProject((p) => p.clips);
-  const used = useMemo(() => Object.values(usage).some((c) => c.assetId === asset.id || c.grade?.lutId === asset.id), [usage, asset.id]);
+  const used = useMemo(
+    () => Object.values(usage).some((c) => c.assetId === asset.id || c.grade?.lutId === asset.id),
+    [usage, asset.id],
+  );
   const available = status.local || (asset.uploaded && meta.shared);
-  const Icon = asset.kind === 'audio' ? AudioLines : asset.kind === 'image' ? ImageIcon : asset.kind === 'lut' ? Wand2 : Film;
+  const Icon =
+    asset.kind === 'audio'
+      ? AudioLines
+      : asset.kind === 'image'
+        ? ImageIcon
+        : asset.kind === 'lut'
+          ? Wand2
+          : Film;
 
   const remove = () => {
     const p = session.store.get();
     const edits: Edit[] = [];
     for (const c of Object.values(p.clips)) {
       if (c.assetId === asset.id) edits.push({ op: 'removeClip', id: c.id });
-      else if (c.grade?.lutId === asset.id) edits.push({ op: 'updateClip', id: c.id, patch: { grade: { ...c.grade, lutId: null } } });
+      else if (c.grade?.lutId === asset.id)
+        edits.push({ op: 'updateClip', id: c.id, patch: { grade: { ...c.grade, lutId: null } } });
     }
     edits.push({ op: 'removeAsset', id: asset.id });
     commit(edits);
@@ -176,24 +212,51 @@ function AssetCard({ asset }: { asset: Asset }) {
         if ((e.target as HTMLElement).closest('button')) return;
         beginDrag(e, { kind: 'asset', assetId: asset.id }, asset.name);
       }}
-      onDoubleClick={() => (asset.kind === 'lut' ? cmd.applyLut(asset.id) : useUI.getState().set({ sourceAsset: asset.id }))}
+      onDoubleClick={() =>
+        asset.kind === 'lut' ? cmd.applyLut(asset.id) : useUI.getState().set({ sourceAsset: asset.id })
+      }
       onContextMenu={(e) =>
         openContextMenu(e, [
           asset.kind === 'lut'
             ? { label: 'Apply to selected clips', icon: <Wand2 />, onSelect: () => cmd.applyLut(asset.id) }
             : { label: 'Add to timeline', icon: <Plus />, onSelect: () => cmd.addAsset(asset) },
-          asset.kind !== 'lut' ? { label: 'Open in source monitor', icon: <MonitorPlay />, onSelect: () => useUI.getState().set({ sourceAsset: asset.id }) } : null,
-          asset.kind === 'video' && asset.hasAudio ? { label: 'Add video only', onSelect: () => cmd.addAsset(asset) } : null,
-          { label: available ? 'Replace media…' : 'Relink media…', icon: <RefreshCw />, onSelect: () => void cmd.replaceMedia(asset.id) },
+          asset.kind !== 'lut'
+            ? {
+                label: 'Open in source monitor',
+                icon: <MonitorPlay />,
+                onSelect: () => useUI.getState().set({ sourceAsset: asset.id }),
+              }
+            : null,
+          asset.kind === 'video' && asset.hasAudio
+            ? { label: 'Add video only', onSelect: () => cmd.addAsset(asset) }
+            : null,
+          {
+            label: available ? 'Replace media…' : 'Relink media…',
+            icon: <RefreshCw />,
+            onSelect: () => void cmd.replaceMedia(asset.id),
+          },
           status.proxying !== null
             ? { label: 'Cancel proxy', icon: <Gauge />, onSelect: () => session.media.cancelProxy(asset.id) }
             : status.proxy
-              ? { label: 'Delete proxy', icon: <Gauge />, onSelect: () => void session.media.removeProxy(asset.id) }
+              ? {
+                  label: 'Delete proxy',
+                  icon: <Gauge />,
+                  onSelect: () => void session.media.removeProxy(asset.id),
+                }
               : session.canProxy(asset)
-                ? { label: 'Create proxy', icon: <Gauge />, onSelect: () => void session.createProxy(asset.id) }
+                ? {
+                    label: 'Create proxy',
+                    icon: <Gauge />,
+                    onSelect: () => void session.createProxy(asset.id),
+                  }
                 : null,
           'separator',
-          { label: used ? 'Remove (and its clips)' : 'Remove from project', icon: <Trash2 />, danger: true, onSelect: remove },
+          {
+            label: used ? 'Remove (and its clips)' : 'Remove from project',
+            icon: <Trash2 />,
+            danger: true,
+            onSelect: remove,
+          },
         ])
       }
     >
@@ -225,17 +288,34 @@ function AssetCard({ asset }: { asset: Asset }) {
           ) : null}
         </span>
         {status.proxy && (
-          <span className="asset__proxy badge" {...tip(meta.proxies ? 'Previewing from a proxy. Exports use the original.' : 'A proxy exists but proxies are switched off.')} data-off={!meta.proxies}>
+          <span
+            className="asset__proxy badge"
+            {...tip(
+              meta.proxies
+                ? 'Previewing from a proxy. Exports use the original.'
+                : 'A proxy exists but proxies are switched off.',
+            )}
+            data-off={!meta.proxies}
+          >
             Proxy
           </span>
         )}
         {(status.uploading !== null || status.downloading !== null || status.proxying !== null) && (
           <div className="asset__progress">
-            <i style={{ width: `${Math.round((status.uploading ?? status.downloading ?? status.proxying ?? 0) * 100)}%` }} />
+            <i
+              style={{
+                width: `${Math.round((status.uploading ?? status.downloading ?? status.proxying ?? 0) * 100)}%`,
+              }}
+            />
           </div>
         )}
         {asset.kind !== 'lut' && (
-          <button className="asset__add" onClick={() => cmd.addAsset(asset)} aria-label={`Add ${asset.name} to timeline`} {...tip('Add at playhead')}>
+          <button
+            className="asset__add"
+            onClick={() => cmd.addAsset(asset)}
+            aria-label={`Add ${asset.name} to timeline`}
+            {...tip('Add at playhead')}
+          >
             <Plus />
           </button>
         )}
@@ -245,7 +325,11 @@ function AssetCard({ asset }: { asset: Asset }) {
         {asset.name}
       </div>
       <div className="asset__meta mono">
-        {asset.kind === 'video' || asset.kind === 'image' ? `${asset.width}×${asset.height}` : asset.kind === 'audio' ? `${(asset.audioSampleRate / 1000).toFixed(1)} kHz` : '3D LUT'}
+        {asset.kind === 'video' || asset.kind === 'image'
+          ? `${asset.width}×${asset.height}`
+          : asset.kind === 'audio'
+            ? `${(asset.audioSampleRate / 1000).toFixed(1)} kHz`
+            : '3D LUT'}
         {asset.fps > 0 && ` · ${Number.isInteger(asset.fps) ? asset.fps : asset.fps.toFixed(2)}`}
         <span>{formatBytes(asset.size)}</span>
       </div>
@@ -255,48 +339,145 @@ function AssetCard({ asset }: { asset: Asset }) {
 
 // ──────────────────────────────────────────────────────────────── titles ──
 
-const TEXT_PRESETS: { name: string; sample: string; style: React.CSSProperties; text: Partial<TextProps>; y?: number }[] = [
-  { name: 'Title', sample: 'Title', style: { fontWeight: 800, fontSize: 22, letterSpacing: '-0.03em' }, text: { content: 'Your title', size: 0.12, weight: 800, letterSpacing: -0.02 } },
-  { name: 'Subtitle', sample: 'Subtitle', style: { fontWeight: 500, fontSize: 15 }, text: { content: 'A line of supporting text', size: 0.055, weight: 500 }, y: 0.12 },
+const TEXT_PRESETS: {
+  name: string;
+  sample: string;
+  style: React.CSSProperties;
+  text: Partial<TextProps>;
+  y?: number;
+}[] = [
+  {
+    name: 'Title',
+    sample: 'Title',
+    style: { fontWeight: 800, fontSize: 22, letterSpacing: '-0.03em' },
+    text: { content: 'Your title', size: 0.12, weight: 800, letterSpacing: -0.02 },
+  },
+  {
+    name: 'Subtitle',
+    sample: 'Subtitle',
+    style: { fontWeight: 500, fontSize: 15 },
+    text: { content: 'A line of supporting text', size: 0.055, weight: 500 },
+    y: 0.12,
+  },
   {
     name: 'Lower third',
     sample: 'Name here',
-    style: { fontWeight: 700, fontSize: 13, background: '#c6f84f', color: '#0c0f04', padding: '2px 8px', borderRadius: 4 },
-    text: { content: 'Name Surname', size: 0.045, weight: 700, color: '#0c0f04', align: 'left', bg: { enabled: true, color: '#c6f84f', opacity: 1, padX: 0.5, padY: 0.25, radius: 0.18 } },
+    style: {
+      fontWeight: 700,
+      fontSize: 13,
+      background: '#c6f84f',
+      color: '#0c0f04',
+      padding: '2px 8px',
+      borderRadius: 4,
+    },
+    text: {
+      content: 'Name Surname',
+      size: 0.045,
+      weight: 700,
+      color: '#0c0f04',
+      align: 'left',
+      bg: { enabled: true, color: '#c6f84f', opacity: 1, padX: 0.5, padY: 0.25, radius: 0.18 },
+    },
     y: 0.34,
   },
   {
     name: 'Caption',
     sample: 'Caption text',
-    style: { fontWeight: 600, fontSize: 12, background: 'rgba(0,0,0,.7)', padding: '2px 8px', borderRadius: 4 },
-    text: { content: 'Captions go here', size: 0.045, weight: 600, boxWidth: 0.8, bg: { enabled: true, color: '#000000', opacity: 0.65, padX: 0.4, padY: 0.2, radius: 0.2 } },
+    style: {
+      fontWeight: 600,
+      fontSize: 12,
+      background: 'rgba(0,0,0,.7)',
+      padding: '2px 8px',
+      borderRadius: 4,
+    },
+    text: {
+      content: 'Captions go here',
+      size: 0.045,
+      weight: 600,
+      boxWidth: 0.8,
+      bg: { enabled: true, color: '#000000', opacity: 0.65, padX: 0.4, padY: 0.2, radius: 0.2 },
+    },
     y: 0.38,
   },
   {
     name: 'Outline',
     sample: 'OUTLINE',
-    style: { fontFamily: 'Anton', fontSize: 22, color: 'transparent', WebkitTextStroke: '1px #fff', letterSpacing: '0.04em' },
-    text: { content: 'OUTLINE', font: 'Anton', size: 0.16, weight: 400, color: '#00000000', stroke: { enabled: true, color: '#ffffff', width: 0.03 }, letterSpacing: 0.03 },
+    style: {
+      fontFamily: 'Anton',
+      fontSize: 22,
+      color: 'transparent',
+      WebkitTextStroke: '1px #fff',
+      letterSpacing: '0.04em',
+    },
+    text: {
+      content: 'OUTLINE',
+      font: 'Anton',
+      size: 0.16,
+      weight: 400,
+      color: '#00000000',
+      stroke: { enabled: true, color: '#ffffff', width: 0.03 },
+      letterSpacing: 0.03,
+    },
   },
   {
     name: 'Bold impact',
     sample: 'IMPACT',
     style: { fontFamily: 'Bebas Neue', fontSize: 26, letterSpacing: '0.05em' },
-    text: { content: 'BIG NEWS', font: 'Bebas Neue', size: 0.2, weight: 400, letterSpacing: 0.04, shadow: { enabled: true, color: '#000000', blur: 0.2, x: 0, y: 0.06, opacity: 0.5 } },
+    text: {
+      content: 'BIG NEWS',
+      font: 'Bebas Neue',
+      size: 0.2,
+      weight: 400,
+      letterSpacing: 0.04,
+      shadow: { enabled: true, color: '#000000', blur: 0.2, x: 0, y: 0.06, opacity: 0.5 },
+    },
   },
   {
     name: 'Gradient',
     sample: 'Gradient',
-    style: { fontWeight: 800, fontSize: 20, background: 'linear-gradient(90deg,#c6f84f,#8b7cff)', WebkitBackgroundClip: 'text', color: 'transparent' },
-    text: { content: 'Gradient', size: 0.13, weight: 800, gradient: { enabled: true, from: '#c6f84f', to: '#8b7cff', angle: 0 } },
+    style: {
+      fontWeight: 800,
+      fontSize: 20,
+      background: 'linear-gradient(90deg,#c6f84f,#8b7cff)',
+      WebkitBackgroundClip: 'text',
+      color: 'transparent',
+    },
+    text: {
+      content: 'Gradient',
+      size: 0.13,
+      weight: 800,
+      gradient: { enabled: true, from: '#c6f84f', to: '#8b7cff', angle: 0 },
+    },
   },
-  { name: 'Elegant serif', sample: 'Elegant', style: { fontFamily: 'Playfair Display Variable', fontStyle: 'italic', fontSize: 21 }, text: { content: 'An elegant line', font: 'Playfair Display Variable', italic: true, size: 0.1, weight: 500 } },
-  { name: 'Handwritten', sample: 'Handwritten', style: { fontFamily: 'Caveat Variable', fontSize: 23, fontWeight: 600 }, text: { content: 'by hand', font: 'Caveat Variable', size: 0.14, weight: 600 } },
+  {
+    name: 'Elegant serif',
+    sample: 'Elegant',
+    style: { fontFamily: 'Playfair Display Variable', fontStyle: 'italic', fontSize: 21 },
+    text: {
+      content: 'An elegant line',
+      font: 'Playfair Display Variable',
+      italic: true,
+      size: 0.1,
+      weight: 500,
+    },
+  },
+  {
+    name: 'Handwritten',
+    sample: 'Handwritten',
+    style: { fontFamily: 'Caveat Variable', fontSize: 23, fontWeight: 600 },
+    text: { content: 'by hand', font: 'Caveat Variable', size: 0.14, weight: 600 },
+  },
   {
     name: 'Typewriter',
     sample: 'typing…',
     style: { fontFamily: 'JetBrains Mono Variable', fontSize: 14 },
-    text: { content: 'Typing this out…', font: 'JetBrains Mono Variable', size: 0.06, weight: 500, animIn: { type: 'typewriter', duration: 45 } },
+    text: {
+      content: 'Typing this out…',
+      font: 'JetBrains Mono Variable',
+      size: 0.06,
+      weight: 500,
+      animIn: { type: 'typewriter', duration: 45 },
+    },
   },
 ];
 
@@ -304,7 +485,11 @@ const SHAPES: { kind: ShapeKind; label: string; path: string }[] = [
   { kind: 'rect', label: 'Rectangle', path: 'M4 6h16v12H4z' },
   { kind: 'ellipse', label: 'Ellipse', path: 'M12 5a8 7 0 1 0 0 14 8 7 0 0 0 0-14z' },
   { kind: 'triangle', label: 'Triangle', path: 'M12 4l9 16H3z' },
-  { kind: 'star', label: 'Star', path: 'M12 3l2.6 5.800 6.400.600-4.800 4.300 1.400 6.300L12 16.800 6.400 20l1.400-6.300L3 9.400l6.400-.6z' },
+  {
+    kind: 'star',
+    label: 'Star',
+    path: 'M12 3l2.6 5.800 6.400.600-4.800 4.300 1.400 6.300L12 16.800 6.400 20l1.400-6.300L3 9.400l6.400-.6z',
+  },
   { kind: 'polygon', label: 'Polygon', path: 'M12 3l8.500 6.200-3.200 10H6.700L3.500 9.200z' },
   { kind: 'line', label: 'Line', path: 'M3 12h18' },
   { kind: 'arrow', label: 'Arrow', path: 'M3 12h17m-6-6 6 6-6 6' },
@@ -322,7 +507,9 @@ function Titles() {
             {...tip(`${p.name} — click to add, or drag to the timeline`)}
             onPointerDown={(e) => {
               hideTip();
-              beginDrag(e, { kind: 'text', text: p.text }, p.name, () => cmd.addText(p.text, p.y ? { y: p.y } : {}));
+              beginDrag(e, { kind: 'text', text: p.text }, p.name, () =>
+                cmd.addText(p.text, p.y ? { y: p.y } : {}),
+              );
             }}
           >
             <span style={p.style}>{p.sample}</span>
@@ -339,11 +526,25 @@ function Titles() {
             {...tip(s.label)}
             onPointerDown={(e) => {
               hideTip();
-              const shape = { kind: s.kind, ...(s.kind === 'line' || s.kind === 'arrow' ? { w: 0.4, h: 0.08, strokeWidth: 0.008, stroke: '#ffffff' } : s.kind === 'rect' ? { w: 0.4, h: 0.3 } : { w: 0.25, h: 0.444 }) };
+              const shape = {
+                kind: s.kind,
+                ...(s.kind === 'line' || s.kind === 'arrow'
+                  ? { w: 0.4, h: 0.08, strokeWidth: 0.008, stroke: '#ffffff' }
+                  : s.kind === 'rect'
+                    ? { w: 0.4, h: 0.3 }
+                    : { w: 0.25, h: 0.444 }),
+              };
               beginDrag(e, { kind: 'shape', shape }, s.label, () => cmd.addShape(shape));
             }}
           >
-            <svg viewBox="0 0 24 24" fill={s.kind === 'line' || s.kind === 'arrow' ? 'none' : 'currentColor'} stroke="currentColor" strokeWidth={s.kind === 'line' || s.kind === 'arrow' ? 2 : 0} strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              viewBox="0 0 24 24"
+              fill={s.kind === 'line' || s.kind === 'arrow' ? 'none' : 'currentColor'}
+              stroke="currentColor"
+              strokeWidth={s.kind === 'line' || s.kind === 'arrow' ? 2 : 0}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <path d={s.path} />
             </svg>
           </button>
@@ -351,14 +552,26 @@ function Titles() {
       </div>
       <div className="lib__heading">Generators</div>
       <div className="gens">
-        <button className="gen" onPointerDown={(e) => beginDrag(e, { kind: 'generator', type: 'solid' }, 'Solid colour', () => cmd.addSolid())}>
+        <button
+          className="gen"
+          onPointerDown={(e) =>
+            beginDrag(e, { kind: 'generator', type: 'solid' }, 'Solid colour', () => cmd.addSolid())
+          }
+        >
           <Square />
           <div>
             <b>Solid colour</b>
             <span>A flat or gradient background</span>
           </div>
         </button>
-        <button className="gen" onPointerDown={(e) => beginDrag(e, { kind: 'generator', type: 'adjustment' }, 'Adjustment layer', () => cmd.addAdjustment())}>
+        <button
+          className="gen"
+          onPointerDown={(e) =>
+            beginDrag(e, { kind: 'generator', type: 'adjustment' }, 'Adjustment layer', () =>
+              cmd.addAdjustment(),
+            )
+          }
+        >
           <Layers />
           <div>
             <b>Adjustment layer</b>
@@ -375,7 +588,9 @@ function Titles() {
 function useSearch<T extends { name: string; description: string }>(items: T[], query: string): T[] {
   return useMemo(() => {
     const q = query.trim().toLowerCase();
-    return q ? items.filter((i) => i.name.toLowerCase().includes(q) || i.description.toLowerCase().includes(q)) : items;
+    return q
+      ? items.filter((i) => i.name.toLowerCase().includes(q) || i.description.toLowerCase().includes(q))
+      : items;
   }, [items, query]);
 }
 
@@ -391,7 +606,13 @@ function EffectsBrowser() {
           <span className="field__prefix">
             <Search size={13} />
           </span>
-          <input placeholder={`Search ${EFFECTS.length} effects`} value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.stopPropagation()} aria-label="Search effects" />
+          <input
+            placeholder={`Search ${EFFECTS.length} effects`}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.stopPropagation()}
+            aria-label="Search effects"
+          />
         </div>
       </div>
       <div className="chips">
@@ -437,7 +658,13 @@ function TransitionsBrowser() {
           <span className="field__prefix">
             <Search size={13} />
           </span>
-          <input placeholder={`Search ${TRANSITIONS.length} transitions`} value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.stopPropagation()} aria-label="Search transitions" />
+          <input
+            placeholder={`Search ${TRANSITIONS.length} transitions`}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.stopPropagation()}
+            aria-label="Search transitions"
+          />
         </div>
       </div>
       <div className="chips">
@@ -470,5 +697,3 @@ function TransitionsBrowser() {
     </div>
   );
 }
-
-

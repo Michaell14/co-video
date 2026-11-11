@@ -24,7 +24,13 @@ export type ParamDef =
   | { key: string; label: string; type: 'angle'; default: number }
   | { key: string; label: string; type: 'bool'; default: boolean }
   | { key: string; label: string; type: 'color'; default: string }
-  | { key: string; label: string; type: 'select'; options: { value: string; label: string }[]; default: string }
+  | {
+      key: string;
+      label: string;
+      type: 'select';
+      options: { value: string; label: string }[];
+      default: string;
+    }
   | { key: string; label: string; type: 'point'; default: [number, number] };
 
 /** Parameters after conversion to uniform-ready numbers. */
@@ -45,7 +51,8 @@ export interface EffectPass {
   skip?: (p: ResolvedParams, c: PassContext) => boolean;
 }
 
-export type EffectCategory = 'color' | 'blur' | 'stylize' | 'distort' | 'light' | 'retro' | 'keying' | 'utility';
+export type EffectCategory =
+  'color' | 'blur' | 'stylize' | 'distort' | 'light' | 'retro' | 'keying' | 'utility';
 
 export interface EffectDef {
   id: string;
@@ -75,7 +82,15 @@ export const EFFECT_CATEGORIES: { id: EffectCategory; label: string }[] = [
 
 // ─────────────────────────────────────────────────────────── shared passes ──
 
-const f = (key: string, label: string, min: number, max: number, def: number, step = 0.01, unit?: string): ParamDef => ({
+const f = (
+  key: string,
+  label: string,
+  min: number,
+  max: number,
+  def: number,
+  step = 0.01,
+  unit?: string,
+): ParamDef => ({
   key,
   label,
   type: 'float',
@@ -136,8 +151,16 @@ function blurPasses(sigmaOf: (p: ResolvedParams, c: PassContext) => number): Eff
     { glsl: DOWNSAMPLE_GLSL, scale: 0.5, skip: (p, c) => sc(p, c) > 0.5 },
     { glsl: DOWNSAMPLE_GLSL, scale: 0.25, skip: (p, c) => sc(p, c) > 0.25 },
     { glsl: DOWNSAMPLE_GLSL, scale: 0.125, skip: (p, c) => sc(p, c) > 0.125 },
-    { glsl: BLUR_GLSL, scale: sc, uniforms: (p, c) => ({ u_dir: [1, 0], u_sigma: sigmaOf(p, c) * sc(p, c) }) },
-    { glsl: BLUR_GLSL, scale: sc, uniforms: (p, c) => ({ u_dir: [0, 1], u_sigma: sigmaOf(p, c) * sc(p, c) }) },
+    {
+      glsl: BLUR_GLSL,
+      scale: sc,
+      uniforms: (p, c) => ({ u_dir: [1, 0], u_sigma: sigmaOf(p, c) * sc(p, c) }),
+    },
+    {
+      glsl: BLUR_GLSL,
+      scale: sc,
+      uniforms: (p, c) => ({ u_dir: [0, 1], u_sigma: sigmaOf(p, c) * sc(p, c) }),
+    },
   ];
 }
 
@@ -198,7 +221,8 @@ export const EFFECTS: EffectDef[] = [
     category: 'color',
     description: 'Warm or cool the image and correct green / magenta casts.',
     params: [f('temperature', 'Temperature', -1, 1, 0), f('tint', 'Tint', -1, 1, 0)],
-    passes: colorFx(`vec3 gain = vec3(1.0 + 0.35 * u_temperature, 1.0 - 0.3 * u_tint, 1.0 - 0.35 * u_temperature);
+    passes:
+      colorFx(`vec3 gain = vec3(1.0 + 0.35 * u_temperature, 1.0 - 0.3 * u_tint, 1.0 - 0.35 * u_temperature);
   gain /= dot(gain, u_lumaW);
   c.rgb = fromLinear(toLinear(c.rgb) * gain);`),
   },
@@ -231,7 +255,10 @@ export const EFFECTS: EffectDef[] = [
     name: 'Colorize',
     category: 'color',
     description: 'Map the image onto a single colour while preserving luminance.',
-    params: [{ key: 'color', label: 'Color', type: 'color', default: '#ff9a3c' }, f('amount', 'Amount', 0, 1, 1)],
+    params: [
+      { key: 'color', label: 'Color', type: 'color', default: '#ff9a3c' },
+      f('amount', 'Amount', 0, 1, 1),
+    ],
     passes: colorFx(`float l = clamp(luma(c.rgb), 0.0, 1.0);
   vec3 t = l < 0.5 ? mix(vec3(0.0), u_color, l * 2.0) : mix(u_color, vec3(1.0), (l - 0.5) * 2.0);
   c.rgb = mix(c.rgb, t, u_amount);`),
@@ -269,7 +296,8 @@ export const EFFECTS: EffectDef[] = [
     category: 'color',
     description: 'Warm brown antique toning.',
     params: [f('amount', 'Amount', 0, 1, 1)],
-    passes: colorFx(`vec3 s = vec3(dot(c.rgb, vec3(0.393, 0.769, 0.189)), dot(c.rgb, vec3(0.349, 0.686, 0.168)), dot(c.rgb, vec3(0.272, 0.534, 0.131)));
+    passes:
+      colorFx(`vec3 s = vec3(dot(c.rgb, vec3(0.393, 0.769, 0.189)), dot(c.rgb, vec3(0.349, 0.686, 0.168)), dot(c.rgb, vec3(0.272, 0.534, 0.131)));
   c.rgb = mix(c.rgb, s, u_amount);`),
   },
   {
@@ -300,7 +328,10 @@ export const EFFECTS: EffectDef[] = [
     name: 'Color Overlay',
     category: 'color',
     description: 'Flood the layer with a flat colour, keeping its alpha.',
-    params: [{ key: 'color', label: 'Color', type: 'color', default: '#ffffff' }, f('amount', 'Amount', 0, 1, 1)],
+    params: [
+      { key: 'color', label: 'Color', type: 'color', default: '#ffffff' },
+      f('amount', 'Amount', 0, 1, 1),
+    ],
     passes: colorFx(`c.rgb = mix(c.rgb, u_color, u_amount);`),
   },
 
@@ -318,7 +349,10 @@ export const EFFECTS: EffectDef[] = [
     name: 'Directional Blur',
     category: 'blur',
     description: 'Motion-style blur along an angle.',
-    params: [{ key: 'angle', label: 'Angle', type: 'angle', default: 0 }, f('distance', 'Distance', 0, 300, 40, 0.1, 'px')],
+    params: [
+      { key: 'angle', label: 'Angle', type: 'angle', default: 0 },
+      f('distance', 'Distance', 0, 300, 40, 0.1, 'px'),
+    ],
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -335,7 +369,10 @@ export const EFFECTS: EffectDef[] = [
     name: 'Zoom Blur',
     category: 'blur',
     description: 'Blur that streaks outward from a centre point.',
-    params: [f('amount', 'Amount', 0, 1, 0.25), { key: 'center', label: 'Center', type: 'point', default: [0.5, 0.5] }],
+    params: [
+      f('amount', 'Amount', 0, 1, 0.25),
+      { key: 'center', label: 'Center', type: 'point', default: [0.5, 0.5] },
+    ],
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -549,7 +586,10 @@ vec4 effect(vec2 uv) {
     name: 'RGB Split',
     category: 'stylize',
     description: 'Offset the colour channels in a chosen direction.',
-    params: [f('distance', 'Distance', 0, 100, 10, 0.1, 'px'), { key: 'angle', label: 'Angle', type: 'angle', default: 0 }],
+    params: [
+      f('distance', 'Distance', 0, 100, 10, 0.1, 'px'),
+      { key: 'angle', label: 'Angle', type: 'angle', default: 0 },
+    ],
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -639,7 +679,11 @@ vec4 effect(vec2 uv) {
     name: 'Edge Detect',
     category: 'stylize',
     description: 'Sobel outlines; blend to taste for a sketch look.',
-    params: [f('strength', 'Strength', 0, 8, 2), f('mix', 'Mix', 0, 1, 1), { key: 'invert', label: 'Invert', type: 'bool', default: false }],
+    params: [
+      f('strength', 'Strength', 0, 8, 2),
+      f('mix', 'Mix', 0, 1, 1),
+      { key: 'invert', label: 'Invert', type: 'bool', default: false },
+    ],
     passes: [
       {
         glsl: `float lm(vec2 uv) { return luma(src(uv).rgb); }
@@ -663,7 +707,10 @@ vec4 effect(vec2 uv) {
     name: 'Emboss',
     category: 'stylize',
     description: 'Raised relief shading.',
-    params: [f('strength', 'Strength', 0, 6, 2), { key: 'angle', label: 'Angle', type: 'angle', default: 135 }],
+    params: [
+      f('strength', 'Strength', 0, 6, 2),
+      { key: 'angle', label: 'Angle', type: 'angle', default: 135 },
+    ],
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -809,7 +856,11 @@ vec4 effect(vec2 uv) {
     name: 'CRT Monitor',
     category: 'retro',
     description: 'Curved glass, phosphor mask and scanlines of an old tube display.',
-    params: [f('curvature', 'Curvature', 0, 1, 0.35), f('scanlines', 'Scanlines', 0, 1, 0.4), f('mask', 'Phosphor mask', 0, 1, 0.3)],
+    params: [
+      f('curvature', 'Curvature', 0, 1, 0.35),
+      f('scanlines', 'Scanlines', 0, 1, 0.4),
+      f('mask', 'Phosphor mask', 0, 1, 0.3),
+    ],
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -835,7 +886,10 @@ vec4 effect(vec2 uv) {
     name: 'Static Noise',
     category: 'retro',
     description: 'Television snow.',
-    params: [f('amount', 'Amount', 0, 1, 0.3), { key: 'colored', label: 'Chromatic', type: 'bool', default: false }],
+    params: [
+      f('amount', 'Amount', 0, 1, 0.3),
+      { key: 'colored', label: 'Chromatic', type: 'bool', default: false },
+    ],
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -921,7 +975,10 @@ vec4 effect(vec2 uv) {
     name: 'Kaleidoscope',
     category: 'distort',
     description: 'Radial mirror symmetry.',
-    params: [f('segments', 'Segments', 2, 24, 6, 1), { key: 'angle', label: 'Rotation', type: 'angle', default: 0 }],
+    params: [
+      f('segments', 'Segments', 2, 24, 6, 1),
+      { key: 'angle', label: 'Rotation', type: 'angle', default: 0 },
+    ],
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -1038,7 +1095,10 @@ vec4 effect(vec2 uv) {
     name: 'Tile',
     category: 'distort',
     description: 'Repeat the picture in a grid.',
-    params: [f('count', 'Tiles', 1, 12, 2, 1), { key: 'mirror', label: 'Mirror edges', type: 'bool', default: false }],
+    params: [
+      f('count', 'Tiles', 1, 12, 2, 1),
+      { key: 'mirror', label: 'Mirror edges', type: 'bool', default: false },
+    ],
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -1054,7 +1114,11 @@ vec4 effect(vec2 uv) {
     name: 'Camera Shake',
     category: 'distort',
     description: 'Handheld jitter with a little rotation.',
-    params: [f('amplitude', 'Amplitude', 0, 1, 0.3), f('speed', 'Speed', 0.1, 20, 6, 0.1), f('rotation', 'Rotation', 0, 1, 0.3)],
+    params: [
+      f('amplitude', 'Amplitude', 0, 1, 0.3),
+      f('speed', 'Speed', 0.1, 20, 6, 0.1),
+      f('rotation', 'Rotation', 0, 1, 0.3),
+    ],
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -1116,7 +1180,8 @@ vec4 effect(vec2 uv) {
       f('softness', 'Softness', 0, 0.5, 0.1),
       { key: 'invert', label: 'Key out highlights', type: 'bool', default: false },
     ],
-    passes: colorFx(`float a = smoothstep(u_threshold - u_softness, u_threshold + u_softness + 1e-4, luma(c.rgb));
+    passes:
+      colorFx(`float a = smoothstep(u_threshold - u_softness, u_threshold + u_softness + 1e-4, luma(c.rgb));
   a = mix(a, 1.0 - a, u_invert);
   c.a *= a;`),
   },
@@ -1128,7 +1193,10 @@ vec4 effect(vec2 uv) {
     category: 'utility',
     description: 'Cinematic bars for a target aspect ratio.',
     space: 'frame',
-    params: [f('ratio', 'Aspect ratio', 1, 3, 2.39), { key: 'color', label: 'Color', type: 'color', default: '#000000' }],
+    params: [
+      f('ratio', 'Aspect ratio', 1, 3, 2.39),
+      { key: 'color', label: 'Color', type: 'color', default: '#000000' },
+    ],
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -1155,7 +1223,11 @@ export const getEffectDef = (id: string): EffectDef | undefined => EFFECT_INDEX.
 
 export function hexToRgb(hex: string): [number, number, number] {
   let h = hex.replace('#', '').trim();
-  if (h.length === 3) h = h.split('').map((ch) => ch + ch).join('');
+  if (h.length === 3)
+    h = h
+      .split('')
+      .map((ch) => ch + ch)
+      .join('');
   const n = parseInt(h.slice(0, 6), 16);
   if (Number.isNaN(n)) return [1, 1, 1];
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];

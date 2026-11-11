@@ -40,11 +40,29 @@ import {
   type Project,
   type Track,
 } from '@tandem/core';
-import { useComments, useLiveProject, usePeers, usePlayer, usePlayerState, useProject, useSession } from '../../session/hooks';
+import {
+  useComments,
+  useLiveProject,
+  usePeers,
+  usePlayer,
+  usePlayerState,
+  useProject,
+  useSession,
+} from '../../session/hooks';
 import { cmd, setTimelineWidth } from '../../state/commands';
 import { commit } from '../../state/props';
 import { clampPpf, MAX_PPF, MIN_PPF, useUI } from '../../state/ui';
-import { IconButton, openContextMenu, Popover, Slider, TextField, tip, Button, cx, hideTip } from '../../ui/core';
+import {
+  IconButton,
+  openContextMenu,
+  Popover,
+  Slider,
+  TextField,
+  tip,
+  Button,
+  cx,
+  hideTip,
+} from '../../ui/core';
 import { Lanes } from './Lanes';
 import { HEADER_W, layoutLanes, RULER_H, tickInterval, type Lane } from './layout';
 import './timeline.css';
@@ -93,7 +111,9 @@ export function Timeline() {
         e.preventDefault();
         const r = areaRef.current!.getBoundingClientRect();
         // Pinch gestures arrive as small ctrl+wheel deltas; mouse wheels as large ones.
-        const factor = Math.exp(-e.deltaY * (e.ctrlKey && !e.metaKey && Math.abs(e.deltaY) < 40 ? 0.02 : 0.004));
+        const factor = Math.exp(
+          -e.deltaY * (e.ctrlKey && !e.metaKey && Math.abs(e.deltaY) < 40 ? 0.02 : 0.004),
+        );
         cmd.zoom(factor, Math.max(0, e.clientX - r.left));
         return;
       }
@@ -171,16 +191,40 @@ function Toolbar() {
   return (
     <div className="tl__toolbar">
       <div className="tl__tools">
-        <IconButton label="Selection tool" keys="v" tipPlace="top" active={tool === 'select'} onClick={() => set({ tool: 'select' })}>
+        <IconButton
+          label="Selection tool"
+          keys="v"
+          tipPlace="top"
+          active={tool === 'select'}
+          onClick={() => set({ tool: 'select' })}
+        >
           <MousePointer2 />
         </IconButton>
-        <IconButton label="Blade tool" keys="b" tipPlace="top" active={tool === 'blade'} onClick={() => set({ tool: 'blade' })}>
+        <IconButton
+          label="Blade tool"
+          keys="b"
+          tipPlace="top"
+          active={tool === 'blade'}
+          onClick={() => set({ tool: 'blade' })}
+        >
           <Scissors />
         </IconButton>
-        <IconButton label="Slip tool" keys="y" tipPlace="top" active={tool === 'slip'} onClick={() => set({ tool: 'slip' })}>
+        <IconButton
+          label="Slip tool"
+          keys="y"
+          tipPlace="top"
+          active={tool === 'slip'}
+          onClick={() => set({ tool: 'slip' })}
+        >
           <MoveHorizontal />
         </IconButton>
-        <IconButton label="Hand tool" keys="h" tipPlace="top" active={tool === 'hand'} onClick={() => set({ tool: 'hand' })}>
+        <IconButton
+          label="Hand tool"
+          keys="h"
+          tipPlace="top"
+          active={tool === 'hand'}
+          onClick={() => set({ tool: 'hand' })}
+        >
           <Hand />
         </IconButton>
       </div>
@@ -188,20 +232,50 @@ function Toolbar() {
       <IconButton label="Split at playhead" keys="mod+b" tipPlace="top" onClick={() => cmd.split()}>
         <SquareSplitHorizontal />
       </IconButton>
-      <IconButton label="Delete" keys="delete" tipPlace="top" disabled={!hasSel} onClick={() => cmd.delete(false)}>
+      <IconButton
+        label="Delete"
+        keys="delete"
+        tipPlace="top"
+        disabled={!hasSel}
+        onClick={() => cmd.delete(false)}
+      >
         <Trash2 />
       </IconButton>
-      <IconButton label="Ripple delete" keys="shift+delete" tipPlace="top" disabled={!hasSel} onClick={() => cmd.delete(true)}>
+      <IconButton
+        label="Ripple delete"
+        keys="shift+delete"
+        tipPlace="top"
+        disabled={!hasSel}
+        onClick={() => cmd.delete(true)}
+      >
         <ChevronsLeftRight />
       </IconButton>
       <div className="topbar__sep" />
-      <IconButton label="Snapping" keys="n" tipPlace="top" active={snapping} onClick={() => set({ snapping: !snapping })}>
+      <IconButton
+        label="Snapping"
+        keys="n"
+        tipPlace="top"
+        active={snapping}
+        onClick={() => set({ snapping: !snapping })}
+      >
         <Magnet />
       </IconButton>
-      <IconButton label="Ripple editing" keys="r" tipPlace="top" active={ripple} onClick={() => set({ rippleMode: !ripple })}>
+      <IconButton
+        label="Ripple editing"
+        keys="r"
+        tipPlace="top"
+        active={ripple}
+        onClick={() => set({ rippleMode: !ripple })}
+      >
         <ArrowDownUp style={{ transform: 'rotate(90deg)' }} />
       </IconButton>
-      <IconButton label="Linked selection" keys="mod+shift+l" tipPlace="top" active={linked} onClick={() => set({ linkedSelection: !linked })}>
+      <IconButton
+        label="Linked selection"
+        keys="mod+shift+l"
+        tipPlace="top"
+        active={linked}
+        onClick={() => set({ linkedSelection: !linked })}
+      >
         <Link2 />
       </IconButton>
       <div className="topbar__sep" />
@@ -240,11 +314,19 @@ function Toolbar() {
 function TrackAdder() {
   return (
     <div className="tl__adder">
-      <button className="btn btn--ghost btn--sm" onClick={() => cmd.addTrack('video')} {...tip('Add video track')}>
+      <button
+        className="btn btn--ghost btn--sm"
+        onClick={() => cmd.addTrack('video')}
+        {...tip('Add video track')}
+      >
         <Plus />
         <Film />
       </button>
-      <button className="btn btn--ghost btn--sm" onClick={() => cmd.addTrack('audio')} {...tip('Add audio track')}>
+      <button
+        className="btn btn--ghost btn--sm"
+        onClick={() => cmd.addTrack('audio')}
+        {...tip('Add audio track')}
+      >
         <Plus />
         <AudioLines />
       </button>
@@ -263,7 +345,12 @@ function Ruler({ width, project }: { width: number; project: Project }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const comments = useComments();
   const [editing, setEditing] = useState<{ marker: Marker; rect: DOMRect } | null>(null);
-  const scrub = useRef<{ kind: 'seek' } | { kind: 'marker'; id: string; moved: boolean } | { kind: 'range'; edge: 'in' | 'out' } | null>(null);
+  const scrub = useRef<
+    | { kind: 'seek' }
+    | { kind: 'marker'; id: string; moved: boolean }
+    | { kind: 'range'; edge: 'in' | 'out' }
+    | null
+  >(null);
   const settings = project.settings;
   const fps = settings.fpsNum / settings.fpsDen;
 
@@ -303,7 +390,9 @@ function Ruler({ width, project }: { width: number; project: Project }) {
     const r = canvasRef.current!.getBoundingClientRect();
     let f = Math.max(0, Math.round((clientX - r.left + useUI.getState().scrollX) / useUI.getState().ppf));
     if (snapEdits && useUI.getState().snapping) {
-      const pts = [...editPoints(project), ...Object.values(project.markers).map((m) => m.frame)].sort((a, b) => a - b);
+      const pts = [...editPoints(project), ...Object.values(project.markers).map((m) => m.frame)].sort(
+        (a, b) => a - b,
+      );
       const s = snapTo(f, pts, 6 / useUI.getState().ppf);
       if (s !== null) f = s;
     }
@@ -345,7 +434,11 @@ function Ruler({ width, project }: { width: number; project: Project }) {
           }
         } else if (s.kind === 'range' && range && player) {
           const f = frameAt(e.clientX, true);
-          player.setRange(s.edge === 'in' ? { in: Math.min(f, range.out - 1), out: range.out } : { in: range.in, out: Math.max(f, range.in + 1) });
+          player.setRange(
+            s.edge === 'in'
+              ? { in: Math.min(f, range.out - 1), out: range.out }
+              : { in: range.in, out: Math.max(f, range.in + 1) },
+          );
         }
       }}
       onPointerUp={(e) => {
@@ -354,7 +447,8 @@ function Ruler({ width, project }: { width: number; project: Project }) {
       }}
       onDoubleClick={(e) => {
         const mk = (e.target as HTMLElement).closest<HTMLElement>('[data-marker]');
-        if (mk && session.canEdit) setEditing({ marker: project.markers[mk.dataset.marker!], rect: mk.getBoundingClientRect() });
+        if (mk && session.canEdit)
+          setEditing({ marker: project.markers[mk.dataset.marker!], rect: mk.getBoundingClientRect() });
       }}
       onContextMenu={(e) =>
         openContextMenu(e, [
@@ -367,13 +461,22 @@ function Ruler({ width, project }: { width: number; project: Project }) {
     >
       <canvas ref={canvasRef} style={{ width, height: RULER_H }} />
       {range && (
-        <div className="ruler__range" style={{ left: range.in * ppf - scrollX, width: Math.max(2, (range.out - range.in) * ppf) }}>
+        <div
+          className="ruler__range"
+          style={{ left: range.in * ppf - scrollX, width: Math.max(2, (range.out - range.in) * ppf) }}
+        >
           <i data-range="in" />
           <i data-range="out" />
         </div>
       )}
       {markers.map((m) => (
-        <div key={m.id} className="marker" data-marker={m.id} style={{ left: m.frame * ppf - scrollX, ['--c' as string]: m.color }} {...tip(m.note ? `${m.name} — ${m.note}` : m.name, undefined, 'top')}>
+        <div
+          key={m.id}
+          className="marker"
+          data-marker={m.id}
+          style={{ left: m.frame * ppf - scrollX, ['--c' as string]: m.color }}
+          {...tip(m.note ? `${m.name} — ${m.note}` : m.name, undefined, 'top')}
+        >
           <svg viewBox="0 0 10 12" width="10" height="12">
             <path d="M1 1h8v7L5 11 1 8z" fill="var(--c)" stroke="rgba(0,0,0,0.5)" strokeWidth="1" />
           </svg>
@@ -397,7 +500,9 @@ function Ruler({ width, project }: { width: number; project: Project }) {
             }}
           />
         ))}
-      {editing && <MarkerEditor marker={editing.marker} rect={editing.rect} onClose={() => setEditing(null)} />}
+      {editing && (
+        <MarkerEditor marker={editing.marker} rect={editing.rect} onClose={() => setEditing(null)} />
+      )}
     </div>
   );
 }
@@ -405,15 +510,40 @@ function Ruler({ width, project }: { width: number; project: Project }) {
 function MarkerEditor({ marker, rect, onClose }: { marker: Marker; rect: DOMRect; onClose: () => void }) {
   const session = useSession();
   const m = useProject((p) => p.markers[marker.id]) ?? marker;
-  const update = (patch: Partial<Marker>) => commit([{ op: 'setMarker', marker: { ...session.store.get().markers[marker.id], ...patch } }]);
+  const update = (patch: Partial<Marker>) =>
+    commit([{ op: 'setMarker', marker: { ...session.store.get().markers[marker.id], ...patch } }]);
   return (
     <Popover anchor={rect} onClose={onClose} style={{ width: 240, padding: 10 }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <TextField value={m.name} onChange={(name) => update({ name })} autoFocus ariaLabel="Marker name" onEnter={onClose} />
-        <TextField value={m.note} onChange={(note) => update({ note })} multiline rows={2} placeholder="Note" ariaLabel="Marker note" />
+        <TextField
+          value={m.name}
+          onChange={(name) => update({ name })}
+          autoFocus
+          ariaLabel="Marker name"
+          onEnter={onClose}
+        />
+        <TextField
+          value={m.note}
+          onChange={(note) => update({ note })}
+          multiline
+          rows={2}
+          placeholder="Note"
+          ariaLabel="Marker note"
+        />
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {MARKER_COLORS.map((c) => (
-            <button key={c} aria-label={`Colour ${c}`} onClick={() => update({ color: c })} style={{ width: 18, height: 18, borderRadius: '50%', background: c, boxShadow: m.color === c ? '0 0 0 2px var(--bg-4), 0 0 0 3.5px #fff' : 'none' }} />
+            <button
+              key={c}
+              aria-label={`Colour ${c}`}
+              onClick={() => update({ color: c })}
+              style={{
+                width: 18,
+                height: 18,
+                borderRadius: '50%',
+                background: c,
+                boxShadow: m.color === c ? '0 0 0 2px var(--bg-4), 0 0 0 3.5px #fff' : 'none',
+              }}
+            />
           ))}
           <span style={{ flex: 1 }} />
           <Button
@@ -477,7 +607,12 @@ function RemotePlayheads({ left, width }: { left: number; width: number }) {
         const x = p.playhead * ppf - scrollX;
         if (x < 0 || x > width) return null;
         return (
-          <div key={p.clientId} className="playhead playhead--peer" data-following={following === p.clientId} style={{ transform: `translate3d(${left + x}px, 0, 0)`, ['--c' as string]: p.user.color }}>
+          <div
+            key={p.clientId}
+            className="playhead playhead--peer"
+            data-following={following === p.clientId}
+            style={{ transform: `translate3d(${left + x}px, 0, 0)`, ['--c' as string]: p.user.color }}
+          >
             <span>{p.user.name}</span>
           </div>
         );
@@ -528,13 +663,26 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
       onContextMenu={(e) =>
         openContextMenu(e, [
           { label: 'Rename', onSelect: () => setRenaming(t.name || label) },
-          { label: t.kind === 'video' ? 'Move up' : 'Move up', disabled: t.kind === 'video' ? idx >= list.length - 1 : idx <= 0, onSelect: () => commit(moveTrack(project, t.id, t.kind === 'video' ? 1 : -1)) },
-          { label: 'Move down', disabled: t.kind === 'video' ? idx <= 0 : idx >= list.length - 1, onSelect: () => commit(moveTrack(project, t.id, t.kind === 'video' ? -1 : 1)) },
+          {
+            label: t.kind === 'video' ? 'Move up' : 'Move up',
+            disabled: t.kind === 'video' ? idx >= list.length - 1 : idx <= 0,
+            onSelect: () => commit(moveTrack(project, t.id, t.kind === 'video' ? 1 : -1)),
+          },
+          {
+            label: 'Move down',
+            disabled: t.kind === 'video' ? idx <= 0 : idx >= list.length - 1,
+            onSelect: () => commit(moveTrack(project, t.id, t.kind === 'video' ? -1 : 1)),
+          },
           'separator',
           { label: 'Add video track', onSelect: () => cmd.addTrack('video') },
           { label: 'Add audio track', onSelect: () => cmd.addTrack('audio') },
           'separator',
-          { label: 'Delete track', danger: true, disabled: list.length <= 1, onSelect: () => cmd.removeTrack(t.id) },
+          {
+            label: 'Delete track',
+            danger: true,
+            disabled: list.length <= 1,
+            onSelect: () => cmd.removeTrack(t.id),
+          },
         ])
       }
     >
@@ -547,7 +695,8 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
             value={renaming}
             onChange={(e) => setRenaming(e.target.value)}
             onBlur={() => {
-              if (renaming !== (t.name || label)) update({ name: renaming.trim() === label ? '' : renaming.trim() });
+              if (renaming !== (t.name || label))
+                update({ name: renaming.trim() === label ? '' : renaming.trim() });
               setRenaming(null);
             }}
             onKeyDown={(e) => {
@@ -562,20 +711,40 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
         )}
         <span style={{ flex: 1 }} />
         {t.kind === 'video' ? (
-          <IconButton small label={t.hidden ? 'Show track' : 'Hide track'} active={t.hidden} onClick={() => update({ hidden: !t.hidden })}>
+          <IconButton
+            small
+            label={t.hidden ? 'Show track' : 'Hide track'}
+            active={t.hidden}
+            onClick={() => update({ hidden: !t.hidden })}
+          >
             {t.hidden ? <EyeOff /> : <Eye />}
           </IconButton>
         ) : (
           <>
-            <IconButton small label={t.muted ? 'Unmute track' : 'Mute track'} active={t.muted} onClick={() => update({ muted: !t.muted })}>
+            <IconButton
+              small
+              label={t.muted ? 'Unmute track' : 'Mute track'}
+              active={t.muted}
+              onClick={() => update({ muted: !t.muted })}
+            >
               {t.muted ? <VolumeX /> : <Volume2 />}
             </IconButton>
-            <button className={cx('th__solo', t.solo && 'th__solo--on')} onClick={() => update({ solo: !t.solo })} aria-pressed={t.solo} {...tip('Solo')}>
+            <button
+              className={cx('th__solo', t.solo && 'th__solo--on')}
+              onClick={() => update({ solo: !t.solo })}
+              aria-pressed={t.solo}
+              {...tip('Solo')}
+            >
               S
             </button>
           </>
         )}
-        <IconButton small label={t.locked ? 'Unlock track' : 'Lock track'} active={t.locked} onClick={() => update({ locked: !t.locked })}>
+        <IconButton
+          small
+          label={t.locked ? 'Unlock track' : 'Lock track'}
+          active={t.locked}
+          onClick={() => update({ locked: !t.locked })}
+        >
           {t.locked ? <Lock /> : <LockOpen />}
         </IconButton>
       </div>
@@ -607,7 +776,17 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
 
 // ──────────────────────────────────────────────────────────── scrollbar ──
 
-function Scrollbar({ width, end, ppf, scrollX }: { width: number; end: number; ppf: number; scrollX: number }) {
+function Scrollbar({
+  width,
+  end,
+  ppf,
+  scrollX,
+}: {
+  width: number;
+  end: number;
+  ppf: number;
+  scrollX: number;
+}) {
   const set = useUI((s) => s.set);
   const drag = useRef<{ x: number; scroll: number } | null>(null);
   // Leave half a screen of empty time past the last clip to drop things into.
@@ -637,7 +816,13 @@ function Scrollbar({ width, end, ppf, scrollX }: { width: number; end: number; p
           onPointerMove={(e) => {
             if (!drag.current) return;
             const dx = e.clientX - drag.current.x;
-            set({ scrollX: clamp(drag.current.scroll + (dx / (width - thumbW)) * (total - width), 0, total - width) });
+            set({
+              scrollX: clamp(
+                drag.current.scroll + (dx / (width - thumbW)) * (total - width),
+                0,
+                total - width,
+              ),
+            });
           }}
           onPointerUp={(e) => {
             e.currentTarget.releasePointerCapture(e.pointerId);
@@ -659,7 +844,8 @@ function VoiceoverButton() {
     const timer = setInterval(() => tick((n) => n + 1), 250);
     let raf = 0;
     const meter = () => {
-      if (level.current) level.current.style.transform = `scaleX(${Math.min(1, cmd.voiceoverLevel() * 1.4).toFixed(3)})`;
+      if (level.current)
+        level.current.style.transform = `scaleX(${Math.min(1, cmd.voiceoverLevel() * 1.4).toFixed(3)})`;
       raf = requestAnimationFrame(meter);
     };
     raf = requestAnimationFrame(meter);
@@ -670,14 +856,24 @@ function VoiceoverButton() {
   }, [recording]);
   if (!recording) {
     return (
-      <IconButton label="Record voiceover" keys="shift+r" tipPlace="top" onClick={() => void cmd.toggleVoiceover()}>
+      <IconButton
+        label="Record voiceover"
+        keys="shift+r"
+        tipPlace="top"
+        onClick={() => void cmd.toggleVoiceover()}
+      >
         <Mic />
       </IconButton>
     );
   }
   const secs = Math.floor((performance.now() - recording.startedAt) / 1000);
   return (
-    <button className="rec" onClick={() => void cmd.toggleVoiceover()} aria-label="Stop recording" {...tip('Stop recording', 'shift+r', 'top')}>
+    <button
+      className="rec"
+      onClick={() => void cmd.toggleVoiceover()}
+      aria-label="Stop recording"
+      {...tip('Stop recording', 'shift+r', 'top')}
+    >
       <span className="rec__dot" />
       <span className="mono">
         {Math.floor(secs / 60)}:{String(secs % 60).padStart(2, '0')}

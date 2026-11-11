@@ -5,7 +5,14 @@
  * that perform the operation. Callers either commit them to the ProjectStore (one undo step, synced to
  * collaborators) or run them through `applyEdits` to render a live preview while dragging.
  */
-import { CLIP_TYPE_COLORS, DEFAULT_SHAPE, DEFAULT_TEXT, hasSourceTime, makeClip, makeTrack } from './defaults';
+import {
+  CLIP_TYPE_COLORS,
+  DEFAULT_SHAPE,
+  DEFAULT_TEXT,
+  hasSourceTime,
+  makeClip,
+  makeTrack,
+} from './defaults';
 import { newId } from './ids';
 import { evalKeyframes, scaleKeyframes, shiftKeyframes, upsertKeyframe } from './keyframes';
 import {
@@ -115,7 +122,12 @@ function carve(p: Project, clip: Clip, regions: Span[]): Edit[] {
 }
 
 /** Make room on a track: everything overlapping `regions` (except `exclude`) is overwritten. */
-export function clearRegions(p: Project, trackId: ID, regions: Span[], exclude: ReadonlySet<ID> = new Set()): Edit[] {
+export function clearRegions(
+  p: Project,
+  trackId: ID,
+  regions: Span[],
+  exclude: ReadonlySet<ID> = new Set(),
+): Edit[] {
   const merged = mergeSpans(regions);
   if (!merged.length) return [];
   const lo = merged[0][0];
@@ -226,7 +238,11 @@ export function openGap(p: Project, trackIds: Iterable<ID>, frame: number, lengt
           fadeIn: 0,
         };
         right.start = frame + length;
-        edits.push({ op: 'updateClip', id: c.id, patch: { ...retime(c, c.start, frame, p), transOut: null, fadeOut: 0 } });
+        edits.push({
+          op: 'updateClip',
+          id: c.id,
+          patch: { ...retime(c, c.start, frame, p), transOut: null, fadeOut: 0 },
+        });
         edits.push({ op: 'addClip', clip: right });
       }
     }
@@ -277,8 +293,10 @@ export function addAssetToTimeline(p: Project, asset: Asset, opts: AddAssetOptio
     : Math.max(1, secondsToFrame(DEFAULT_STILL_SECONDS, s));
   const end = start + duration;
 
-  const wantVideo = (asset.kind === 'video' && asset.hasVideo && opts.only !== 'audio') || asset.kind === 'image';
-  const wantAudio = (asset.kind === 'audio' || (asset.kind === 'video' && asset.hasAudio)) && opts.only !== 'video';
+  const wantVideo =
+    (asset.kind === 'video' && asset.hasVideo && opts.only !== 'audio') || asset.kind === 'image';
+  const wantAudio =
+    (asset.kind === 'audio' || (asset.kind === 'video' && asset.hasAudio)) && opts.only !== 'video';
   const linkId = wantVideo && wantAudio ? newId() : null;
   const clips: Clip[] = [];
   let working = p;
@@ -334,10 +352,17 @@ export interface AddGeneratorOptions {
 }
 
 /** Add a text / shape / solid / adjustment clip. */
-export function addGenerator(p: Project, type: 'text' | 'shape' | 'solid' | 'adjustment', opts: AddGeneratorOptions): OpResult {
+export function addGenerator(
+  p: Project,
+  type: 'text' | 'shape' | 'solid' | 'adjustment',
+  opts: AddGeneratorOptions,
+): OpResult {
   const edits: Edit[] = [];
   const start = Math.max(0, Math.round(opts.frame));
-  const duration = Math.max(1, Math.round(opts.duration ?? secondsToFrame(DEFAULT_STILL_SECONDS, p.settings)));
+  const duration = Math.max(
+    1,
+    Math.round(opts.duration ?? secondsToFrame(DEFAULT_STILL_SECONDS, p.settings)),
+  );
   let working = p;
   let trackId = opts.trackId && p.tracks[opts.trackId]?.kind === 'video' ? opts.trackId : null;
   if (!trackId) {
@@ -354,7 +379,12 @@ export function addGenerator(p: Project, type: 'text' | 'shape' | 'solid' | 'adj
       trackId = track.id;
     }
   }
-  const names: Record<string, string> = { text: 'Text', shape: 'Shape', solid: 'Solid', adjustment: 'Adjustment layer' };
+  const names: Record<string, string> = {
+    text: 'Text',
+    shape: 'Shape',
+    solid: 'Solid',
+    adjustment: 'Adjustment layer',
+  };
   const clip = makeClip(type, trackId, {
     name: names[type],
     start,
@@ -596,7 +626,8 @@ export function setSpeed(p: Project, ids: ID[], speed: number, reverse?: boolean
 export function freezeFrame(p: Project, clipId: ID, frame: number, hold: number): OpResult {
   const c = p.clips[clipId];
   const length = Math.max(1, Math.round(hold));
-  if (!c || c.type !== 'video' || !c.assetId || frame < c.start || frame >= clipEnd(c)) return { edits: [], created: [] };
+  if (!c || c.type !== 'video' || !c.assetId || frame < c.start || frame >= clipEnd(c))
+    return { edits: [], created: [] };
   const sourceIn = sourceTimeAt(c, frame - c.start, p);
   const unlocked = Object.values(p.tracks)
     .filter((t) => !t.locked)
@@ -666,7 +697,13 @@ export function pasteClips(p: Project, items: Clip[], frame: number): OpResult {
       linkId = linkMap.get(src.linkId) ?? newId();
       linkMap.set(src.linkId, linkId);
     }
-    clips.push({ ...src, id: newId(), trackId: track.id, start: Math.max(0, frame + (src.start - minStart)), linkId });
+    clips.push({
+      ...src,
+      id: newId(),
+      trackId: track.id,
+      start: Math.max(0, frame + (src.start - minStart)),
+      linkId,
+    });
   }
   // A link group of one is not a link.
   const counts = new Map<ID, number>();
@@ -717,7 +754,9 @@ export function linkClips(p: Project, ids: ID[]): Edit[] {
 }
 
 export function unlinkClips(p: Project, ids: ID[]): Edit[] {
-  return ids.filter((id) => p.clips[id]?.linkId).map((id) => ({ op: 'updateClip', id, patch: { linkId: null } }) as Edit);
+  return ids
+    .filter((id) => p.clips[id]?.linkId)
+    .map((id) => ({ op: 'updateClip', id, patch: { linkId: null } }) as Edit);
 }
 
 // ─────────────────────────────────────────────────────────── transitions ──
@@ -744,7 +783,9 @@ export function maxTransitionDuration(p: Project, clip: Clip, side: 'in' | 'out'
 export function setTransition(p: Project, clipId: ID, side: 'in' | 'out', t: Transition | null): Edit[] {
   const c = p.clips[clipId];
   if (!c) return [];
-  const value = t ? { ...t, duration: clamp(Math.round(t.duration), 1, maxTransitionDuration(p, c, side)) } : null;
+  const value = t
+    ? { ...t, duration: clamp(Math.round(t.duration), 1, maxTransitionDuration(p, c, side)) }
+    : null;
   return [{ op: 'updateClip', id: clipId, patch: side === 'in' ? { transIn: value } : { transOut: value } }];
 }
 
@@ -781,7 +822,10 @@ export function writeProp(clip: Clip, path: string, value: number, localFrame: n
     const t = clamp(Math.round(localFrame), 0, Math.max(0, clip.duration - 1));
     const existing = kfs.find((k) => k.t === t);
     return {
-      keyframes: { ...clip.keyframes, [path]: upsertKeyframe(kfs, { t, v: value, e: existing?.e ?? 'easeInOut' }) },
+      keyframes: {
+        ...clip.keyframes,
+        [path]: upsertKeyframe(kfs, { t, v: value, e: existing?.e ?? 'easeInOut' }),
+      },
     };
   }
   return writeBase(clip, path, value);
@@ -812,7 +856,9 @@ export function clearKeyframes(clip: Clip, path: string, current: number): Parti
 export function setKeyframeEasing(clip: Clip, path: string, t: number, e: Easing): Partial<Clip> {
   const kfs = clip.keyframes[path];
   if (!kfs) return {};
-  return { keyframes: { ...clip.keyframes, [path]: kfs.map((k): Keyframe => (k.t === t ? { ...k, e } : k)) } };
+  return {
+    keyframes: { ...clip.keyframes, [path]: kfs.map((k): Keyframe => (k.t === t ? { ...k, e } : k)) },
+  };
 }
 
 export function setEffectParam(clip: Clip, effectId: ID, key: string, value: ParamValue): Partial<Clip> {
@@ -864,7 +910,8 @@ export function changeFrameRate(p: Project, fpsNum: number, fpsDen: number): Edi
       },
     });
   }
-  for (const m of Object.values(p.markers)) edits.push({ op: 'setMarker', marker: { ...m, frame: r(m.frame) } });
+  for (const m of Object.values(p.markers))
+    edits.push({ op: 'setMarker', marker: { ...m, frame: r(m.frame) } });
   return edits;
 }
 

@@ -167,7 +167,10 @@ export class SyncProvider {
     this.ws.send(encoding.toUint8Array(enc));
   };
 
-  private onAwarenessUpdate = ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: unknown): void => {
+  private onAwarenessUpdate = (
+    { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
+    origin: unknown,
+  ): void => {
     if (origin === this || !this.ws || this.ws.readyState !== WebSocket.OPEN || !this.opts.awareness) return;
     const changed = added.concat(updated, removed);
     const enc = encoding.createEncoder();

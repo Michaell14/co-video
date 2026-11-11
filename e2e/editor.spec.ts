@@ -2,8 +2,6 @@ import { expect, test } from '@playwright/test';
 import { join } from 'node:path';
 import { clips, FIXTURES, ffprobe, hasFfprobe, importFixtures, newProject, trackErrors } from './helpers';
 
-
-
 async function buildEdit(page: import('@playwright/test').Page) {
   await importFixtures(page, ['testsrc.mp4', 'testsrc.webm', 'tone.ogg', 'warm.cube']);
   await page.evaluate(() => {
@@ -24,7 +22,13 @@ test.describe('editor', () => {
     const errors = trackErrors(page);
     await newProject(page);
     await buildEdit(page);
-    expect(await clips(page)).toEqual(['audio@0+120', 'audio@120+120', 'text@30+150', 'video@0+120', 'video@120+120']);
+    expect(await clips(page)).toEqual([
+      'audio@0+120',
+      'audio@120+120',
+      'text@30+150',
+      'video@0+120',
+      'video@120+120',
+    ]);
     await expect(page.locator('.clip')).toHaveCount(5);
     await expect(page.locator('.asset')).toHaveCount(4);
 
@@ -45,16 +49,30 @@ test.describe('editor', () => {
     await newProject(page);
     await buildEdit(page);
     await page.keyboard.press('Space');
-    await page.waitForTimeout(1500);
-    const mid = await page.evaluate(() => (window as any).tandem.session.player.getFrame());
-    // 1.5 s at 30 fps is 45 frames; allow generous slack for a loaded CI machine.
-    expect(mid).toBeGreaterThan(25);
-    expect(mid).toBeLessThan(70);
+    // Time the run inside the page: the harness can be late to look, the clock must not be wrong.
+    const run = await page.evaluate(async () => {
+      const player = (window as any).tandem.session.player;
+      const t0 = performance.now();
+      const f0 = player.getFrame();
+      await new Promise((r) => setTimeout(r, 1500));
+      return {
+        frames: player.getFrame() - f0,
+        seconds: (performance.now() - t0) / 1000,
+        playing: player.getState().playing,
+      };
+    });
+    expect(run.playing).toBe(true);
+    // A 30 fps timeline advances 30 frames a second: never faster, and only a start-up beat slower.
+    expect(run.frames / run.seconds).toBeGreaterThan(20);
+    expect(run.frames / run.seconds).toBeLessThan(33);
     await page.keyboard.press('Space');
     await page.keyboard.press('End');
     await page.keyboard.press('Space');
     await page.waitForTimeout(400);
-    const state = await page.evaluate(() => ({ playing: (window as any).tandem.session.player.getState().playing, frame: (window as any).tandem.session.player.getFrame() }));
+    const state = await page.evaluate(() => ({
+      playing: (window as any).tandem.session.player.getState().playing,
+      frame: (window as any).tandem.session.player.getFrame(),
+    }));
     // Play from the very end wraps to the start rather than doing nothing.
     expect(state.playing).toBe(true);
     expect(state.frame).toBeLessThan(60);
@@ -82,7 +100,11 @@ test.describe('editor', () => {
       const p = (window as any).tandem.session.store.get();
       const byTrack: Record<string, any[]> = {};
       for (const c of Object.values(p.clips) as any[]) (byTrack[c.trackId] ??= []).push(c);
-      return Object.values(byTrack).some((list) => list.sort((a, b) => a.start - b.start).some((c, i) => i > 0 && c.start < list[i - 1].start + list[i - 1].duration));
+      return Object.values(byTrack).some((list) =>
+        list
+          .sort((a, b) => a.start - b.start)
+          .some((c, i) => i > 0 && c.start < list[i - 1].start + list[i - 1].duration),
+      );
     });
     expect(overlaps).toBe(false);
 
@@ -136,8 +158,19 @@ test.describe('editor', () => {
     // Freeze: two seconds of hold at the playhead, everything after ripples right.
     await page.evaluate(() => (window as any).tandem.cmd.seek(45));
     await page.keyboard.press('Shift+f');
-    expect(await clips(page)).toEqual(['audio@0+45', 'audio@105+75', 'video@0+45', 'video@105+75', 'video@45+60']);
-    const [at, mid, end, after] = [await frameHash(45), await frameHash(70), await frameHash(104), await frameHash(120)];
+    expect(await clips(page)).toEqual([
+      'audio@0+45',
+      'audio@105+75',
+      'video@0+45',
+      'video@105+75',
+      'video@45+60',
+    ]);
+    const [at, mid, end, after] = [
+      await frameHash(45),
+      await frameHash(70),
+      await frameHash(104),
+      await frameHash(120),
+    ];
     expect(mid).toBe(at);
     expect(end).toBe(at);
     expect(after).not.toBe(at);
@@ -146,7 +179,12 @@ test.describe('editor', () => {
 
     // Dragging a clip above the top lane creates a track for it.
     const videoTracks = () =>
-      page.evaluate(() => Object.values((window as any).tandem.session.store.get().tracks).filter((t: any) => t.kind === 'video').length);
+      page.evaluate(
+        () =>
+          Object.values((window as any).tandem.session.store.get().tracks).filter(
+            (t: any) => t.kind === 'video',
+          ).length,
+      );
     const before = await videoTracks();
     const box = (await page.locator('.clip[data-type="video"]').first().boundingBox())!;
     const ruler = (await page.locator('.ruler').first().boundingBox())!;
@@ -158,13 +196,19 @@ test.describe('editor', () => {
     expect(await videoTracks()).toBe(before + 1);
     const onTop = await page.evaluate(() => {
       const p = (window as any).tandem.session.store.get();
-      const top = Object.values(p.tracks).filter((t: any) => t.kind === 'video').sort((a: any, b: any) => b.order - a.order)[0] as any;
-      return Object.values(p.clips).filter((c: any) => c.type === 'video').every((c: any) => c.trackId === top.id);
+      const top = Object.values(p.tracks)
+        .filter((t: any) => t.kind === 'video')
+        .sort((a: any, b: any) => b.order - a.order)[0] as any;
+      return Object.values(p.clips)
+        .filter((c: any) => c.type === 'video')
+        .every((c: any) => c.trackId === top.id);
     });
     expect(onTop).toBe(true);
 
     // Replace media: the clips follow the new file, in one undoable step.
-    const oldId = await page.evaluate(() => Object.keys((window as any).tandem.session.store.get().assets)[0]);
+    const oldId = await page.evaluate(
+      () => Object.keys((window as any).tandem.session.store.get().assets)[0],
+    );
     const [chooser] = await Promise.all([
       page.waitForEvent('filechooser'),
       page.evaluate((id) => void (window as any).tandem.cmd.replaceMedia(id), oldId),
@@ -178,7 +222,9 @@ test.describe('editor', () => {
     });
     expect(repointed).toEqual({ name: 'testsrc.webm', all: true });
     await page.keyboard.press('Control+z');
-    expect(await page.evaluate((id) => !!(window as any).tandem.session.store.get().assets[id], oldId)).toBe(true);
+    expect(await page.evaluate((id) => !!(window as any).tandem.session.store.get().assets[id], oldId)).toBe(
+      true,
+    );
     expect(errors).toEqual([]);
   });
 
@@ -195,7 +241,11 @@ test.describe('editor', () => {
         await new Promise((r) => setTimeout(r, 1200));
         const d: Uint8Array = session.player.compositor.readPixels();
         const cur: any = Array.from(session.player.sources.cursors.values()).pop();
-        return { px: Array.from(d.filter((_, i) => i % 53 === 0)), tex: `${cur.width}x${cur.height}`, scale: cur.scale as number };
+        return {
+          px: Array.from(d.filter((_, i) => i % 53 === 0)),
+          tex: `${cur.width}x${cur.height}`,
+          scale: cur.scale as number,
+        };
       }, frame);
     const diff = (a: number[], b: number[]) => a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length;
 
@@ -207,16 +257,22 @@ test.describe('editor', () => {
       cmd.addAsset(Object.values(session.store.get().assets)[0]);
       // Native-size layout is where a smaller texture would show if it leaked into geometry.
       const clip: any = Object.values(session.store.get().clips).find((c: any) => c.type === 'video');
-      session.store.commit([{ op: 'updateClip', id: clip.id, patch: { fit: 'none', scaleX: 0.6, scaleY: 0.6, x: 0.1 } }]);
+      session.store.commit([
+        { op: 'updateClip', id: clip.id, patch: { fit: 'none', scaleX: 0.6, scaleY: 0.6, x: 0.1 } },
+      ]);
     });
     const original = await sample(12);
     expect(original.tex).toBe('1600x1200');
 
     await page.evaluate(() => (window as any).tandem.cmd.createProxies());
-    await page.waitForFunction(() => {
-      const s = (window as any).tandem.session;
-      return s.media.get(Object.keys(s.store.get().assets)[0]).proxy;
-    }, null, { timeout: 90_000 });
+    await page.waitForFunction(
+      () => {
+        const s = (window as any).tandem.session;
+        return s.media.get(Object.keys(s.store.get().assets)[0]).proxy;
+      },
+      null,
+      { timeout: 90_000 },
+    );
     await expect(page.locator('.asset__proxy')).toBeVisible();
     const proxied = await sample(12);
     expect(proxied.tex).toBe('720x540');
@@ -227,7 +283,10 @@ test.describe('editor', () => {
     const locations = await page.evaluate(async () => {
       const s = (window as any).tandem.session;
       const id = Object.keys(s.store.get().assets)[0];
-      return { preview: !!(await s.previewResolver()(id)).proxy, export: !!(await s.exportResolver()(id)).proxy };
+      return {
+        preview: !!(await s.previewResolver()(id)).proxy,
+        export: !!(await s.exportResolver()(id)).proxy,
+      };
     });
     expect(locations).toEqual({ preview: true, export: false });
 
@@ -254,7 +313,9 @@ test.describe('editor', () => {
     expect(await page.evaluate(() => (window as any).tandem.session.player.getState().playing)).toBe(true);
     await page.waitForTimeout(1500);
     await page.keyboard.press('Shift+r');
-    await page.waitForFunction(() => Object.values((window as any).tandem.session.store.get().clips).length === 3);
+    await page.waitForFunction(
+      () => Object.values((window as any).tandem.session.store.get().clips).length === 3,
+    );
     const take = await page.evaluate(async () => {
       const s = (window as any).tandem.session;
       const p = s.store.get();
@@ -265,7 +326,15 @@ test.describe('editor', () => {
       const audio = await new AudioContext().decodeAudioData(await loc.blob.arrayBuffer());
       let peak = 0;
       for (const v of audio.getChannelData(0)) peak = Math.max(peak, Math.abs(v));
-      return { kind: asset.kind, seconds: audio.duration, start: clip.start, type: clip.type, alone, peak, playing: s.player.getState().playing };
+      return {
+        kind: asset.kind,
+        seconds: audio.duration,
+        start: clip.start,
+        type: clip.type,
+        alone,
+        peak,
+        playing: s.player.getState().playing,
+      };
     });
     expect(take.kind).toBe('audio');
     expect(take.type).toBe('audio');
@@ -289,7 +358,10 @@ test.describe('editor', () => {
       ui.getState().select(Object.keys(session.store.get().clips));
     });
     await page.evaluate(() => (window as any).tandem.cmd.normalizeLoudness(-14));
-    const volume = () => page.evaluate(() => (Object.values((window as any).tandem.session.store.get().clips)[0] as any).volume as number);
+    const volume = () =>
+      page.evaluate(
+        () => (Object.values((window as any).tandem.session.store.get().clips)[0] as any).volume as number,
+      );
     // `ffmpeg -af ebur128` measures this fixture at −21.1 LUFS, so −14 needs +7.1 dB.
     expect(await volume()).toBeCloseTo(7.1, 1);
     await page.keyboard.press('Control+z');
@@ -305,10 +377,15 @@ test.describe('editor', () => {
       const { session, cmd, ui } = (window as any).tandem;
       const store = session.store;
       const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-      const videos = () => (Object.values(store.get().clips) as any[]).filter((c) => c.type === 'video').sort((a, b) => a.start - b.start);
+      const videos = () =>
+        (Object.values(store.get().clips) as any[])
+          .filter((c) => c.type === 'video')
+          .sort((a, b) => a.start - b.start);
       const out: Record<string, unknown> = {};
 
-      cmd.importSubtitles('1\n00:00:00,500 --> 00:00:02,000\nHello\n\n2\n00:00:02,200 --> 00:00:03,800\nWorld\n');
+      cmd.importSubtitles(
+        '1\n00:00:00,500 --> 00:00:02,000\nHello\n\n2\n00:00:02,200 --> 00:00:03,800\nWorld\n',
+      );
       out.captions = (Object.values(store.get().clips) as any[]).filter((c) => c.type === 'text').length;
 
       const v = videos()[0];
@@ -322,12 +399,27 @@ test.describe('editor', () => {
           op: 'updateClip',
           id: v.id,
           patch: {
-            mask: { type: 'ellipse', x: 0.5, y: 0.5, w: 0.7, h: 0.7, rotation: 10, feather: 0.1, radius: 0, invert: false },
+            mask: {
+              type: 'ellipse',
+              x: 0.5,
+              y: 0.5,
+              w: 0.7,
+              h: 0.7,
+              rotation: 10,
+              feather: 0.1,
+              radius: 0,
+              invert: false,
+            },
             blend: 'screen',
             cropL: 0.1,
             flipH: true,
             rotation: 12,
-            keyframes: { opacity: [{ t: 0, v: 0, e: 'easeInOut' }, { t: 30, v: 1, e: 'linear' }] },
+            keyframes: {
+              opacity: [
+                { t: 0, v: 0, e: 'easeInOut' },
+                { t: 30, v: 1, e: 'linear' },
+              ],
+            },
           },
         },
       ]);
@@ -373,7 +465,9 @@ test.describe('editor', () => {
       await wait(500);
       const scope = await session.player.readScope(128);
       out.hdrScope = scope ? scope.pq : null;
-      store.commit([{ op: 'settings', patch: { colorMode: 'sdr', toneMap: 'none', width: 1080, height: 1920 } }]);
+      store.commit([
+        { op: 'settings', patch: { colorMode: 'sdr', toneMap: 'none', width: 1080, height: 1920 } },
+      ]);
       await wait(400);
 
       const before = Object.keys(store.get().clips).length;
@@ -397,7 +491,9 @@ test.describe('editor', () => {
     await buildEdit(page);
     await page.evaluate(() => {
       const { session, cmd } = (window as any).tandem;
-      const vids = (Object.values(session.store.get().clips) as any[]).filter((c) => c.type === 'video').sort((a, b) => a.start - b.start);
+      const vids = (Object.values(session.store.get().clips) as any[])
+        .filter((c) => c.type === 'video')
+        .sort((a, b) => a.start - b.start);
       cmd.applyTransition('crossZoom', vids[1].id, 'in');
       // Small frame so software encoding on CI stays quick.
       session.store.commit([{ op: 'settings', patch: { width: 320, height: 180 } }]);
@@ -420,5 +516,3 @@ test.describe('editor', () => {
     expect(probe.streams.some((s) => s.codec_type === 'audio')).toBe(true);
   });
 });
-
-

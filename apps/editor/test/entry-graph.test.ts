@@ -31,7 +31,12 @@ function staticImports(source: string): string[] {
     const clause = m[1] ?? '';
     const named = /\{([^}]*)\}/.exec(clause);
     const hasDefault = /^\s*[\w$]+\s*(,|from)/.test(clause) || /\*\s+as\s+/.test(clause);
-    const names = named ? named[1].split(',').map((n) => n.trim()).filter(Boolean) : [];
+    const names = named
+      ? named[1]
+          .split(',')
+          .map((n) => n.trim())
+          .filter(Boolean)
+      : [];
     if (named && !hasDefault && names.length > 0 && names.every((n) => n.startsWith('type '))) continue;
     out.push(m[2]);
   }
@@ -45,7 +50,8 @@ function heavyChains(entry: string): string[] {
     if (seen.has(file)) return;
     seen.add(file);
     for (const spec of staticImports(readFileSync(file, 'utf8'))) {
-      if (HEAVY.includes(spec)) found.push([...chain, file, spec].map((f) => f.replace(root + '/', '')).join(' → '));
+      if (HEAVY.includes(spec))
+        found.push([...chain, file, spec].map((f) => f.replace(root + '/', '')).join(' → '));
       else if (spec.startsWith('.')) {
         const next = resolveLocal(file, spec);
         if (next) walk(next, [...chain, file]);

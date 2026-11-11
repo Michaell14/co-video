@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { ProjectStore, makeClip, makeEffect, parseProjectFile, serializeProject, tracksOf, ReviewStore } from '../src';
+import {
+  ProjectStore,
+  makeClip,
+  makeEffect,
+  parseProjectFile,
+  serializeProject,
+  tracksOf,
+  ReviewStore,
+} from '../src';
 
 /** Wire two docs together like a (perfect) network would. */
 function connect(a: Y.Doc, b: Y.Doc) {
@@ -82,7 +90,8 @@ describe('ProjectStore', () => {
     const clip = makeClip('video', track.id, { duration: 10 });
     s.commit([{ op: 'addClip', clip }]);
     s.commit([{ op: 'updateClip', id: clip.id, patch: { x: 0.1 } }]);
-    for (const x of [0.2, 0.3, 0.4]) s.commit([{ op: 'updateClip', id: clip.id, patch: { x } }], { merge: true });
+    for (const x of [0.2, 0.3, 0.4])
+      s.commit([{ op: 'updateClip', id: clip.id, patch: { x } }], { merge: true });
     expect(s.get().clips[clip.id].x).toBe(0.4);
     s.undo();
     expect(s.get().clips[clip.id].x).toBe(0);
@@ -107,7 +116,9 @@ describe('ProjectStore', () => {
 
     // Concurrent edits to different fields of the same clip both survive.
     a.commit([{ op: 'updateClip', id: clip.id, patch: { start: 40 } }]);
-    b.commit([{ op: 'updateClip', id: clip.id, patch: { opacity: 0.3, effects: [makeEffect('gaussianBlur')] } }]);
+    b.commit([
+      { op: 'updateClip', id: clip.id, patch: { opacity: 0.3, effects: [makeEffect('gaussianBlur')] } },
+    ]);
     for (const s of [a, b]) {
       const c = s.get().clips[clip.id];
       expect(c.start).toBe(40);
@@ -206,8 +217,24 @@ describe('ReviewStore', () => {
     const a = new ReviewStore();
     const b = new ReviewStore();
     connect(a.doc, b.doc);
-    const id = a.add({ frame: 120, text: 'Tighten this cut', authorId: 'u1', authorName: 'Ana', authorColor: '#f00', x: null, y: null });
-    a.add({ frame: 10, text: 'Love the open', authorId: 'u1', authorName: 'Ana', authorColor: '#f00', x: 0.5, y: 0.5 });
+    const id = a.add({
+      frame: 120,
+      text: 'Tighten this cut',
+      authorId: 'u1',
+      authorName: 'Ana',
+      authorColor: '#f00',
+      x: null,
+      y: null,
+    });
+    a.add({
+      frame: 10,
+      text: 'Love the open',
+      authorId: 'u1',
+      authorName: 'Ana',
+      authorColor: '#f00',
+      x: 0.5,
+      y: 0.5,
+    });
     expect(b.get().map((c) => c.frame)).toEqual([10, 120]);
     b.reply(id, { text: 'Done', authorId: 'u2', authorName: 'Ben', authorColor: '#0f0' });
     b.update(id, { resolved: true });

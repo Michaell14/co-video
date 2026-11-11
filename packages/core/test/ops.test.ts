@@ -355,7 +355,12 @@ describe('freeze frame', () => {
   it('bakes animated values into the hold and ignores speed changes', () => {
     const f = fixture();
     const { p, clip } = addClip(f.p, f.v1.id, 0, 100, {
-      keyframes: { opacity: [{ t: 0, v: 0, e: 'linear' }, { t: 100, v: 1, e: 'linear' }] },
+      keyframes: {
+        opacity: [
+          { t: 0, v: 0, e: 'linear' },
+          { t: 100, v: 1, e: 'linear' },
+        ],
+      },
     });
     const r = freezeFrame(p, clip.id, 50, 30);
     const out = applyEdits(p, r.edits);

@@ -42,12 +42,33 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   const settings = useProject((p) => p.settings);
 
   const items = useMemo<Item[]>(() => {
-    const base: Item[] = COMMANDS.filter((c) => c.id !== 'palette').map((c: Command) => ({ id: c.id, title: c.title, group: c.group, keys: c.keys?.[0], run: c.run }));
-    const fx: Item[] = EFFECTS.map((e) => ({ id: `fx:${e.id}`, title: `Add effect: ${e.name}`, group: 'Effects', run: () => cmd.applyEffect(e.id) }));
-    const tr: Item[] = TRANSITIONS.map((t) => ({ id: `tr:${t.id}`, title: `Add transition: ${t.name}`, group: 'Transitions', run: () => cmd.applyTransition(t.id) }));
+    const base: Item[] = COMMANDS.filter((c) => c.id !== 'palette').map((c: Command) => ({
+      id: c.id,
+      title: c.title,
+      group: c.group,
+      keys: c.keys?.[0],
+      run: c.run,
+    }));
+    const fx: Item[] = EFFECTS.map((e) => ({
+      id: `fx:${e.id}`,
+      title: `Add effect: ${e.name}`,
+      group: 'Effects',
+      run: () => cmd.applyEffect(e.id),
+    }));
+    const tr: Item[] = TRANSITIONS.map((t) => ({
+      id: `tr:${t.id}`,
+      title: `Add transition: ${t.name}`,
+      group: 'Transitions',
+      run: () => cmd.applyTransition(t.id),
+    }));
     const mk: Item[] = Object.values(markers)
       .sort((a, b) => a.frame - b.frame)
-      .map((m) => ({ id: `mk:${m.id}`, title: `Go to marker: ${m.name}`, group: formatTimecode(m.frame, settings), run: () => cmd.seek(m.frame) }));
+      .map((m) => ({
+        id: `mk:${m.id}`,
+        title: `Go to marker: ${m.name}`,
+        group: formatTimecode(m.frame, settings),
+        run: () => cmd.seek(m.frame),
+      }));
     return [...base, ...mk, ...fx, ...tr];
   }, [markers, settings]);
 
@@ -101,7 +122,13 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         <div className="palette__list" ref={listRef}>
           {results.length === 0 && <div className="palette__none">No commands match “{query}”.</div>}
           {results.map((item, i) => (
-            <button key={item.id} className="palette__item" data-active={i === active} onPointerMove={() => setActive(i)} onClick={() => run(item)}>
+            <button
+              key={item.id}
+              className="palette__item"
+              data-active={i === active}
+              onPointerMove={() => setActive(i)}
+              onClick={() => run(item)}
+            >
               <span className="palette__title">{item.title}</span>
               <span className="palette__group">{item.group}</span>
               {item.keys && <Kbd keys={item.keys} />}

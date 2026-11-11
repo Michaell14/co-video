@@ -178,7 +178,11 @@ export class MediaStore {
     }
     const partial = await fileSize(paths.part);
     if (partial === null && !probe) throw new HttpError(404, 'asset not found');
-    sendEmpty(res, 200, { 'Upload-Offset': partial ?? 0, 'Upload-Complete': '0', 'Cache-Control': 'no-store' });
+    sendEmpty(res, 200, {
+      'Upload-Offset': partial ?? 0,
+      'Upload-Complete': '0',
+      'Cache-Control': 'no-store',
+    });
   }
 
   private async get(req: IncomingMessage, res: ServerResponse, paths: AssetPaths): Promise<void> {

@@ -12,10 +12,12 @@ export const framesToSeconds = (frames: number, s: Fps): number => (frames * s.f
 export const secondsToFrames = (seconds: number, s: Fps): number => (seconds * s.fpsNum) / s.fpsDen;
 
 /** Nearest whole frame for a time in seconds. */
-export const secondsToFrame = (seconds: number, s: Fps): number => Math.round(secondsToFrames(seconds, s) + 1e-9);
+export const secondsToFrame = (seconds: number, s: Fps): number =>
+  Math.round(secondsToFrames(seconds, s) + 1e-9);
 
 /** The frame that is on screen at `seconds`. */
-export const frameAtSeconds = (seconds: number, s: Fps): number => Math.floor(secondsToFrames(seconds, s) + 1e-6);
+export const frameAtSeconds = (seconds: number, s: Fps): number =>
+  Math.floor(secondsToFrames(seconds, s) + 1e-6);
 
 export const isDropFrame = (s: Fps): boolean => {
   const fps = fpsOf(s);

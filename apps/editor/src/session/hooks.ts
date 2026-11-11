@@ -1,4 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import type { Comment, PresenceState, Project } from '@tandem/core';
 import type { Player, PlayerState } from '@tandem/engine';
 import { useUI } from '../state/ui';
@@ -49,7 +57,16 @@ export function usePlayer(): Player | null {
   return useSessionMeta().player;
 }
 
-const IDLE_STATE: PlayerState = { playing: false, rate: 1, loop: false, range: null, quality: 'auto', muted: false, volume: 1, falseColor: false };
+const IDLE_STATE: PlayerState = {
+  playing: false,
+  rate: 1,
+  loop: false,
+  range: null,
+  quality: 'auto',
+  muted: false,
+  volume: 1,
+  falseColor: false,
+};
 
 export function usePlayerState(): PlayerState {
   const player = usePlayer();

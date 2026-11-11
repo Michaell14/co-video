@@ -8,7 +8,8 @@
  * Only the final blit to the canvas flips.
  */
 
-export type UniformValue = number | boolean | readonly number[] | Float32Array | WebGLTexture | null | undefined;
+export type UniformValue =
+  number | boolean | readonly number[] | Float32Array | WebGLTexture | null | undefined;
 
 interface UniformInfo {
   loc: WebGLUniformLocation;
@@ -50,7 +51,10 @@ export class Program {
       const name = info.name.replace(/\[0\]$/, '');
       const loc = gl.getUniformLocation(program, name);
       if (!loc) continue;
-      const isSampler = info.type === gl.SAMPLER_2D || info.type === gl.SAMPLER_3D || info.type === gl.UNSIGNED_INT_SAMPLER_2D;
+      const isSampler =
+        info.type === gl.SAMPLER_2D ||
+        info.type === gl.SAMPLER_3D ||
+        info.type === gl.UNSIGNED_INT_SAMPLER_2D;
       this.uniforms.set(name, { loc, type: info.type, size: info.size, unit: isSampler ? unit++ : -1 });
     }
   }
@@ -127,7 +131,9 @@ function compile(gl: WebGL2RenderingContext, type: number, source: string, label
       .split('\n')
       .map((l, i) => `${String(i + 1).padStart(4)}: ${l}`)
       .join('\n');
-    throw new Error(`[${label}] ${type === gl.VERTEX_SHADER ? 'vertex' : 'fragment'} shader failed to compile:\n${log}\n${numbered}`);
+    throw new Error(
+      `[${label}] ${type === gl.VERTEX_SHADER ? 'vertex' : 'fragment'} shader failed to compile:\n${log}\n${numbered}`,
+    );
   }
   return shader;
 }
@@ -299,7 +305,12 @@ export class Glx {
   }
 
   /** Run a full-screen pass into `target`. */
-  pass(program: Program, target: RenderTarget | null, uniforms: Record<string, UniformValue>, blend = false): void {
+  pass(
+    program: Program,
+    target: RenderTarget | null,
+    uniforms: Record<string, UniformValue>,
+    blend = false,
+  ): void {
     const gl = this.gl;
     if (target) this.bind(target);
     program.use();
