@@ -84,6 +84,8 @@ with projects stored in your browser.
 ### Audio
 - Per-clip gain, pan and equal-power fades (all keyframeable); per-track fader, pan, mute, solo,
   three-band EQ and compressor; live peak meters; waveforms on the timeline
+- **Loudness normalisation** to −14, −16 or −23 LUFS, measured to ITU-R BS.1770 with a peak
+  ceiling (the meter agrees with `ffmpeg -af ebur128` to the tenth of a LU)
 - **Voiceover recording** straight onto the timeline: the take lands on a free track where the
   playhead was, as an uncompressed, sample-accurate WAV
 - The same mixer graph renders the preview and the export, so what you hear is what you deliver

@@ -48,7 +48,7 @@ import { currentSession, useLiveProject, useSession, useThrottledFrame } from '.
 import { cmd } from '../../state/commands';
 import { beginGesture, localFrameOf, patchClips, setClipValues } from '../../state/props';
 import { useUI } from '../../state/ui';
-import { Button, ColorField, IconButton, NumberField, Segmented, Select, Slider, Switch, TextField, tip } from '../../ui/core';
+import { Button, ColorField, IconButton, MenuButton, NumberField, Segmented, Select, Slider, Switch, TextField, tip } from '../../ui/core';
 import { NumericRow, ParamControl, Row, Section, valueOf } from './controls';
 import { ProjectSettingsForm } from './ProjectSettings';
 import './inspector.css';
@@ -370,6 +370,20 @@ function AudioSection({ clips, project }: { clips: Clip[]; project: Project }) {
       {fade('fadeOut', 'Fade out')}
       <Row label="Mute">
         <Switch checked={first.audioMuted} onChange={(audioMuted) => patchClips(ids, { audioMuted })} label="Mute clip" />
+      </Row>
+      <Row label="Loudness">
+        <MenuButton
+          className="btn btn--sm"
+          label="Normalize loudness"
+          items={[
+            { heading: 'Set the gain so the clip plays at' },
+            { label: '−14 LUFS · streaming, social', onSelect: () => void cmd.normalizeLoudness(-14) },
+            { label: '−16 LUFS · podcast, mobile', onSelect: () => void cmd.normalizeLoudness(-16) },
+            { label: '−23 LUFS · broadcast (EBU R 128)', onSelect: () => void cmd.normalizeLoudness(-23) },
+          ]}
+        >
+          Normalize…
+        </MenuButton>
       </Row>
     </Section>
   );

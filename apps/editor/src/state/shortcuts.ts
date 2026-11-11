@@ -53,6 +53,9 @@ export const COMMANDS: Command[] = [
 
   // Timeline
   { id: 'split', title: 'Split at playhead', group: 'Timeline', keys: ['mod+b', 's'], run: () => cmd.split() },
+  { id: 'normalize-14', title: 'Normalize loudness to −14 LUFS (streaming)', group: 'Timeline', keys: [], run: () => void cmd.normalizeLoudness(-14) },
+  { id: 'normalize-16', title: 'Normalize loudness to −16 LUFS (podcast)', group: 'Timeline', keys: [], run: () => void cmd.normalizeLoudness(-16) },
+  { id: 'normalize-23', title: 'Normalize loudness to −23 LUFS (broadcast)', group: 'Timeline', keys: [], run: () => void cmd.normalizeLoudness(-23) },
   { id: 'voiceover', title: 'Record voiceover (start / stop)', group: 'Timeline', keys: ['shift+r'], run: () => void cmd.toggleVoiceover() },
   { id: 'freeze-frame', title: 'Freeze frame at playhead', group: 'Timeline', keys: ['shift+f'], run: () => cmd.freezeFrame() },
   { id: 'trim-start', title: 'Ripple trim start to playhead', group: 'Timeline', keys: ['q'], run: () => cmd.trimToPlayhead('start') },

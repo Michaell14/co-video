@@ -278,6 +278,25 @@ test.describe('editor', () => {
     expect(errors).toEqual([]);
   });
 
+  test('normalises clip loudness to a LUFS target', async ({ page }) => {
+    const errors = trackErrors(page);
+    await newProject(page);
+    await importFixtures(page, ['tone.ogg']);
+    await page.evaluate(() => {
+      const { session, cmd, ui } = (window as any).tandem;
+      cmd.seek(0);
+      cmd.addAsset(Object.values(session.store.get().assets)[0]);
+      ui.getState().select(Object.keys(session.store.get().clips));
+    });
+    await page.evaluate(() => (window as any).tandem.cmd.normalizeLoudness(-14));
+    const volume = () => page.evaluate(() => (Object.values((window as any).tandem.session.store.get().clips)[0] as any).volume as number);
+    // `ffmpeg -af ebur128` measures this fixture at −21.1 LUFS, so −14 needs +7.1 dB.
+    expect(await volume()).toBeCloseTo(7.1, 1);
+    await page.keyboard.press('Control+z');
+    expect(await volume()).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
   test('feature sweep produces no runtime or GL errors', async ({ page }) => {
     const errors = trackErrors(page);
     await newProject(page);

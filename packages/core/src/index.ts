@@ -17,3 +17,4 @@ export * from './presence';
 export * from './review';
 export * from './srt';
 export * from './protocol';
+export * from './loudness';

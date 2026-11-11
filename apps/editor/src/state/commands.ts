@@ -51,8 +51,13 @@ import {
   type Project,
   type ShapeProps,
   type TextProps,
+  LoudnessMeter,
+  normalizationGain,
+  type LoudnessResult,
+  sourcePerFrame,
+  clamp,
 } from '@tandem/core';
-import { renderStill, VoiceRecorder } from '@tandem/engine';
+import { AudioBufferSink, renderStill, VoiceRecorder } from '@tandem/engine';
 import { currentSession } from '../session/hooks';
 import type { Session } from '../session/session';
 import { toast } from '../ui/core';
@@ -139,6 +144,32 @@ export function downloadBlob(blob: Blob, name: string): void {
 }
 
 const safeName = (s: string): string => s.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Untitled';
+
+/** Integrated loudness of the stretch of source audio a clip plays. */
+async function measureClip(s: Session, clip: Clip, p: Project): Promise<LoudnessResult | null> {
+  if (!clip.assetId) return null;
+  const media = await s.thumbs.library.get(clip.assetId);
+  if (!media?.audio || !media.audioDecodable) return null;
+  const start = media.audioStart + clip.sourceIn;
+  const end = start + Math.max(clip.duration * sourcePerFrame(clip, p), 0.05);
+  const sink = new AudioBufferSink(media.audio);
+  let meter: LoudnessMeter | null = null;
+  let lastYield = performance.now();
+  for await (const { buffer, timestamp } of sink.buffers(start, end)) {
+    meter ??= new LoudnessMeter(buffer.sampleRate, buffer.numberOfChannels);
+    const from = Math.max(0, Math.round((start - timestamp) * buffer.sampleRate));
+    const to = Math.min(buffer.length, Math.round((end - timestamp) * buffer.sampleRate));
+    if (to <= from) continue;
+    const planes: Float32Array[] = [];
+    for (let c = 0; c < Math.min(meter.channels, buffer.numberOfChannels); c++) planes.push(buffer.getChannelData(c).subarray(from, to));
+    meter.push(planes);
+    if (performance.now() - lastYield > 12) {
+      await new Promise((r) => setTimeout(r, 0));
+      lastYield = performance.now();
+    }
+  }
+  return meter ? meter.result() : null;
+}
 
 let recorder: VoiceRecorder | null = null;
 let recorderBusy = false;
@@ -659,6 +690,52 @@ export const cmd = {
   /** Microphone peak, 0…1, while recording. */
   voiceoverLevel(): number {
     return recorder?.level() ?? 0;
+  },
+
+  /**
+   * Loudness normalisation: measure each selected audio clip (ITU-R BS.1770 integrated loudness of
+   * the part of the source it uses) and set its gain so it plays at `target` LUFS, never letting
+   * the peak past −1 dBFS.
+   */
+  async normalizeLoudness(target = -14): Promise<void> {
+    const s = session();
+    if (!s) return;
+    if (!s.canEdit) {
+      toast('You have view-only access to this project.', 'error');
+      return;
+    }
+    const p = s.store.get();
+    const clips = effectiveSelection(p)
+      .map((id) => p.clips[id])
+      .filter((c) => c && c.type === 'audio' && c.assetId);
+    if (!clips.length) {
+      toast('Select one or more audio clips to normalise.');
+      return;
+    }
+    toast(`Measuring ${clips.length === 1 ? 'the clip' : `${clips.length} clips`}…`);
+    const edits: Edit[] = [];
+    let skipped = 0;
+    for (const clip of clips) {
+      const measured = await measureClip(s, clip, p).catch(() => null);
+      const gain = measured ? normalizationGain(measured, target) : null;
+      // A clip with a volume envelope already has a deliberate shape; leave it alone.
+      if (gain === null || clip.keyframes.volume?.length) {
+        skipped++;
+        continue;
+      }
+      edits.push({ op: 'updateClip', id: clip.id, patch: { volume: clamp(Math.round(gain * 10) / 10, -48, 24) } });
+    }
+    // The measurement was asynchronous: only touch clips that still exist.
+    const now = s.store.get();
+    const live = edits.filter((e) => e.op === 'updateClip' && now.clips[e.id]);
+    if (live.length) s.store.commit(live);
+    const done = live.length;
+    toast(
+      done
+        ? `Normalised ${done === 1 ? 'the clip' : `${done} clips`} to ${target} LUFS${skipped ? ` (${skipped} skipped)` : ''}.`
+        : 'Nothing to normalise: the selection is silent, offline, or has a volume envelope.',
+      done ? 'success' : 'info',
+    );
   },
 
   /** Make preview proxies for every large video that has none. */

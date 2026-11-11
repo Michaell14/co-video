@@ -660,6 +660,7 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
     timed ? { label: 'Speed: 50%', onSelect: () => cmd.setSpeed(0.5) } : null,
     timed ? { label: 'Speed: 100%', onSelect: () => cmd.setSpeed(1) } : null,
     timed ? { label: 'Speed: 200%', onSelect: () => cmd.setSpeed(2) } : null,
+    c.type === 'audio' ? { label: 'Normalize loudness (−14 LUFS)', onSelect: () => void cmd.normalizeLoudness(-14) } : null,
     'separator',
     { label: 'Copy attributes', keys: 'mod+alt+c', onSelect: cmd.copyAttributes },
     { label: 'Paste attributes', keys: 'mod+alt+v', onSelect: () => cmd.pasteAttributes('all'), disabled: !ui.attributes },
