@@ -37,6 +37,7 @@ import {
   splitClips,
   freezeFrame,
   toSrt,
+  toEdl,
   tracksOf,
   trimClips,
   unlinkClips,
@@ -884,6 +885,20 @@ export const cmd = {
       toast(`Added ${cues.length} captions`, 'success');
     });
   },
+  /** A CMX 3600 edit decision list of the cut, for conforming in another editor. */
+  exportEdl(): void {
+    const s = session();
+    if (!s) return;
+    const p = s.store.get();
+    const edl = toEdl(p);
+    if (!/^\d{3} /m.test(edl)) {
+      toast('There are no media clips to list.', 'info');
+      return;
+    }
+    downloadBlob(new Blob([edl], { type: 'text/plain' }), `${safeName(p.settings.name)}.edl`);
+    toast('EDL exported: cuts, source ranges and speed changes. Effects and titles are not part of an EDL.');
+  },
+
   exportSubtitles(): void {
     const s = session();
     if (!s) return;

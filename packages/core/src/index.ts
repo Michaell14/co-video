@@ -18,3 +18,4 @@ export * from './review';
 export * from './srt';
 export * from './protocol';
 export * from './loudness';
+export * from './edl';

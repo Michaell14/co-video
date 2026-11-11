@@ -1,24 +1,4 @@
-import {
-  Download,
-  FileDown,
-  FileUp,
-  FolderInput,
-  History,
-  Keyboard,
-  Menu,
-  MessageSquare,
-  Redo2,
-  Search,
-  Settings2,
-  Share2,
-  SlidersHorizontal,
-  Subtitles,
-  Undo2,
-  Palette,
-  Scissors,
-  Camera,
-  LogOut,
-} from 'lucide-react';
+import { Camera, Download, FileDown, FileUp, FolderInput, History, Keyboard, ListOrdered, LogOut, Menu, MessageSquare, Palette, Redo2, Scissors, Search, Settings2, Share2, SlidersHorizontal, Subtitles, Undo2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { describeSettings, initials } from '@tandem/core';
 import { Logo, navigate } from '../../App';
@@ -72,6 +52,7 @@ export function TopBar() {
           { label: 'Export…', icon: <Download />, keys: 'mod+e', onSelect: () => set({ dialog: 'export' }) },
           { label: 'Export frame as PNG', icon: <Camera />, keys: 'mod+shift+e', onSelect: () => void cmd.captureStill() },
           { label: 'Export captions (.srt)', icon: <Subtitles />, onSelect: () => cmd.exportSubtitles() },
+          { label: 'Export edit list (.edl)', icon: <ListOrdered />, onSelect: () => cmd.exportEdl() },
           'separator',
           { label: 'Save project file', icon: <FileDown />, keys: 'mod+s', onSelect: () => cmd.saveProjectFile() },
           { label: 'Open project file…', icon: <FileUp />, keys: 'mod+o', onSelect: () => void cmd.openProjectFile() },

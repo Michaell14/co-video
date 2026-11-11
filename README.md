@@ -113,6 +113,8 @@ with projects stored in your browser.
 
 ### Export
 - H.264, HEVC, VP9 and AV1 into MP4, MOV, WebM or MKV; WAV for audio; PNG stills
+- Captions as `.srt`, and the cut itself as a CMX 3600 **EDL** for conforming in Resolve, Premiere
+  or Avid
 - Any resolution up to the encoder's limit (8K where the hardware allows) and any frame rate up to
   240 fps
 - Deterministic, frame-by-frame rendering — a slow machine takes longer but produces the same file

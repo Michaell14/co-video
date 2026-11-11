@@ -118,6 +118,7 @@ export const COMMANDS: Command[] = [
   { id: 'open-file', title: 'Open project file…', group: 'File', keys: ['mod+o'], run: () => void cmd.openProjectFile() },
   { id: 'still', title: 'Export current frame as PNG', group: 'File', keys: ['mod+shift+e'], run: () => void cmd.captureStill() },
   { id: 'export-srt', title: 'Export captions (.srt)', group: 'File', run: () => cmd.exportSubtitles() },
+  { id: 'export-edl', title: 'Export edit decision list (.edl)', group: 'File', run: () => cmd.exportEdl() },
   { id: 'versions', title: 'Version history…', group: 'File', run: () => ui().set({ dialog: 'versions' }) },
   { id: 'project-settings', title: 'Project settings…', group: 'File', run: () => ui().set({ dialog: 'project' }) },
 ];
