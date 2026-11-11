@@ -182,6 +182,62 @@ test.describe('editor', () => {
     expect(errors).toEqual([]);
   });
 
+  test('proxy media stands in for the preview and never for the export', async ({ page }) => {
+    const errors = trackErrors(page);
+    await newProject(page);
+    await importFixtures(page, ['large.mp4']);
+    // Footage beyond 1080p prompts the offer.
+    await expect(page.locator('.toast', { hasText: 'Proxies make it lighter to edit' })).toBeVisible();
+    const sample = (frame: number) =>
+      page.evaluate(async (f) => {
+        const { cmd, session } = (window as any).tandem;
+        cmd.seek(f);
+        await new Promise((r) => setTimeout(r, 1200));
+        const d: Uint8Array = session.player.compositor.readPixels();
+        const cur: any = Array.from(session.player.sources.cursors.values()).pop();
+        return { px: Array.from(d.filter((_, i) => i % 53 === 0)), tex: `${cur.width}x${cur.height}`, scale: cur.scale as number };
+      }, frame);
+    const diff = (a: number[], b: number[]) => a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length;
+
+    await page.evaluate(() => {
+      const { session, cmd } = (window as any).tandem;
+      session.setProxies(false);
+      session.player.setQuality(0.5);
+      cmd.seek(0);
+      cmd.addAsset(Object.values(session.store.get().assets)[0]);
+      // Native-size layout is where a smaller texture would show if it leaked into geometry.
+      const clip: any = Object.values(session.store.get().clips).find((c: any) => c.type === 'video');
+      session.store.commit([{ op: 'updateClip', id: clip.id, patch: { fit: 'none', scaleX: 0.6, scaleY: 0.6, x: 0.1 } }]);
+    });
+    const original = await sample(12);
+    expect(original.tex).toBe('1600x1200');
+
+    await page.evaluate(() => (window as any).tandem.cmd.createProxies());
+    await page.waitForFunction(() => {
+      const s = (window as any).tandem.session;
+      return s.media.get(Object.keys(s.store.get().assets)[0]).proxy;
+    }, null, { timeout: 90_000 });
+    await expect(page.locator('.asset__proxy')).toBeVisible();
+    const proxied = await sample(12);
+    expect(proxied.tex).toBe('720x540');
+    expect(proxied.scale).toBeCloseTo(1600 / 720, 3);
+    // Same picture, same place (only encoding loss between them).
+    expect(diff(original.px, proxied.px)).toBeLessThan(4);
+
+    const locations = await page.evaluate(async () => {
+      const s = (window as any).tandem.session;
+      const id = Object.keys(s.store.get().assets)[0];
+      return { preview: !!(await s.previewResolver()(id)).proxy, export: !!(await s.exportResolver()(id)).proxy };
+    });
+    expect(locations).toEqual({ preview: true, export: false });
+
+    // Switching proxies off goes straight back to the original.
+    await page.evaluate(() => (window as any).tandem.session.setProxies(false));
+    expect((await sample(12)).tex).toBe('1600x1200');
+    await page.evaluate(() => (window as any).tandem.session.setProxies(true));
+    expect(errors).toEqual([]);
+  });
+
   test('feature sweep produces no runtime or GL errors', async ({ page }) => {
     const errors = trackErrors(page);
     await newProject(page);

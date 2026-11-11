@@ -407,3 +407,11 @@
   height: 13px !important;
   color: currentColor !important;
 }
+.asset__proxy {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+}
+.asset__proxy[data-off='true'] {
+  opacity: 0.5;
+}

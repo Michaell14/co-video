@@ -182,6 +182,13 @@ step really helped, and returns to full preview size the moment playback stops. 
 effects and transitions a project uses are compiled during idle time, so the first frame that needs
 one does not stall.
 
+**Proxies.** A resolver may hand the media library a second, smaller file for an asset's picture
+(`media/proxy.ts` makes one: preview-sized, half-second GOPs, original timestamps). The library then
+decodes video from the proxy and audio from the original, and reports the proxy's frames at the
+original's dimensions, so layout, crops and effects cannot tell the difference. Only the preview
+resolver ever offers a proxy; the export resolver does not know they exist. HDR sources are never
+proxied, because their whole point is the bit depth an 8-bit proxy would discard.
+
 The compositor is synchronous and draws whatever is ready. The exporter calls `prepare(exact)`
 first, which resolves only when every layer has precisely the right frame — so the export is
 identical on a fast and a slow machine.

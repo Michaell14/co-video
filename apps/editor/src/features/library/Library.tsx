@@ -7,6 +7,7 @@ import {
   CloudUpload,
   Film,
   FolderInput,
+  Gauge,
   Image as ImageIcon,
   Layers,
   MonitorPlay,
@@ -184,6 +185,13 @@ function AssetCard({ asset }: { asset: Asset }) {
           asset.kind !== 'lut' ? { label: 'Open in source monitor', icon: <MonitorPlay />, onSelect: () => useUI.getState().set({ sourceAsset: asset.id }) } : null,
           asset.kind === 'video' && asset.hasAudio ? { label: 'Add video only', onSelect: () => cmd.addAsset(asset) } : null,
           { label: available ? 'Replace media…' : 'Relink media…', icon: <RefreshCw />, onSelect: () => void cmd.replaceMedia(asset.id) },
+          status.proxying !== null
+            ? { label: 'Cancel proxy', icon: <Gauge />, onSelect: () => session.media.cancelProxy(asset.id) }
+            : status.proxy
+              ? { label: 'Delete proxy', icon: <Gauge />, onSelect: () => void session.media.removeProxy(asset.id) }
+              : session.canProxy(asset)
+                ? { label: 'Create proxy', icon: <Gauge />, onSelect: () => void session.createProxy(asset.id) }
+                : null,
           'separator',
           { label: used ? 'Remove (and its clips)' : 'Remove from project', icon: <Trash2 />, danger: true, onSelect: remove },
         ])
@@ -206,15 +214,24 @@ function AssetCard({ asset }: { asset: Asset }) {
             <span {...tip(`Downloading ${Math.round(status.downloading * 100)}%`)}>
               <CloudDownload />
             </span>
+          ) : status.proxying !== null ? (
+            <span {...tip(`Making proxy ${Math.round(status.proxying * 100)}%`)}>
+              <Gauge />
+            </span>
           ) : !available ? (
             <span {...tip('Media offline: not on this device or the server')}>
               <CloudOff style={{ color: 'var(--amber)' }} />
             </span>
           ) : null}
         </span>
-        {(status.uploading !== null || status.downloading !== null) && (
+        {status.proxy && (
+          <span className="asset__proxy badge" {...tip(meta.proxies ? 'Previewing from a proxy. Exports use the original.' : 'A proxy exists but proxies are switched off.')} data-off={!meta.proxies}>
+            Proxy
+          </span>
+        )}
+        {(status.uploading !== null || status.downloading !== null || status.proxying !== null) && (
           <div className="asset__progress">
-            <i style={{ width: `${Math.round((status.uploading ?? status.downloading ?? 0) * 100)}%` }} />
+            <i style={{ width: `${Math.round((status.uploading ?? status.downloading ?? status.proxying ?? 0) * 100)}%` }} />
           </div>
         )}
         {asset.kind !== 'lut' && (

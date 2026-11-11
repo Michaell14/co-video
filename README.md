@@ -99,6 +99,13 @@ with projects stored in your browser.
 
 ![Three people editing one project](docs/images/multiplayer.webp)
 
+### Heavy footage
+- The viewer renders only as many pixels as it shows, and steps its resolution down while playing
+  if the machine cannot keep up
+- **Proxy media**: one click makes a small, quick-to-seek stand-in for 4K / 8K / high-frame-rate
+  clips. The preview and the timeline thumbnails read the proxy; exports always read the original
+- Sources that are drawn small are mipmapped, so downscaled 4K stays clean
+
 ### Export
 - H.264, HEVC, VP9 and AV1 into MP4, MOV, WebM or MKV; WAV for audio; PNG stills
 - Any resolution up to the encoder's limit (8K where the hardware allows) and any frame rate up to

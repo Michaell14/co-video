@@ -22,6 +22,8 @@ export interface MediaLocation {
   blob?: Blob;
   url?: string;
   headers?: Record<string, string>;
+  /** A lower-resolution stand-in for the video track (see `media/proxy.ts`). Preview only. */
+  proxy?: Blob;
 }
 
 export type MediaResolver = (assetId: string) => Promise<MediaLocation | null>;
@@ -39,6 +41,14 @@ export interface OpenMedia {
   videoStart: number;
   audioStart: number;
   local: boolean;
+  /** Original pixels per decoded pixel: 1, or more when `video` is a proxy of the real track. */
+  videoScale: number;
+  proxyInput: Input | null;
+}
+
+function disposeMedia(m: OpenMedia | null): void {
+  m?.input.dispose();
+  m?.proxyInput?.dispose();
 }
 
 export function inputFor(loc: MediaLocation): Input {
@@ -74,16 +84,34 @@ export class MediaLibrary {
     const loc = await this.resolver(assetId);
     if (!loc || this.disposed) return null;
     const input = inputFor(loc);
-    const video = await input.getPrimaryVideoTrack();
+    let video = await input.getPrimaryVideoTrack();
     const audio = await input.getPrimaryAudioTrack();
-    const [videoDecodable, audioDecodable] = await Promise.all([
+    let [videoDecodable, audioDecodable] = await Promise.all([
       video ? video.canDecode().catch(() => false) : false,
       audio ? audio.canDecode().catch(() => false) : false,
     ]);
+    // Picture from the proxy when there is one; sound (and everything else) from the original.
+    let proxyInput: Input | null = null;
+    let videoScale = 1;
+    if (loc.proxy && video) {
+      const candidate = new Input({ source: new BlobSource(loc.proxy), formats: ALL_FORMATS });
+      try {
+        const pv = await candidate.getPrimaryVideoTrack();
+        if (pv && (await pv.canDecode()) && pv.displayWidth > 0) {
+          videoScale = video.displayWidth / pv.displayWidth;
+          video = pv;
+          videoDecodable = true;
+          proxyInput = candidate;
+        }
+      } catch {
+        // A damaged proxy is simply not used.
+      }
+      if (!proxyInput) candidate.dispose();
+    }
     const rotation = video ? await video.getRotation().catch(() => 0 as const) : 0;
     const videoStart = video ? await video.getFirstTimestamp().catch(() => 0) : 0;
     const audioStart = audio ? await audio.getFirstTimestamp().catch(() => 0) : 0;
-    return { assetId, input, video, audio, videoDecodable, audioDecodable, rotation, videoStart, audioStart, local: !!loc.blob };
+    return { assetId, input, video, audio, videoDecodable, audioDecodable, rotation, videoStart, audioStart, local: !!loc.blob, videoScale, proxyInput };
   }
 
   /** Whole-file bytes for small assets (images, LUTs). */
@@ -112,12 +140,12 @@ export class MediaLibrary {
     const p = this.open.get(assetId);
     this.open.delete(assetId);
     this.blobs.delete(assetId);
-    p?.then((m) => m?.input.dispose()).catch(() => {});
+    p?.then(disposeMedia).catch(() => {});
   }
 
   dispose(): void {
     this.disposed = true;
-    for (const p of this.open.values()) p.then((m) => m?.input.dispose()).catch(() => {});
+    for (const p of this.open.values()) p.then(disposeMedia).catch(() => {});
     this.open.clear();
     this.blobs.clear();
   }

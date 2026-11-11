@@ -116,6 +116,10 @@ class VideoCursor {
     this.reverse = reverse;
   }
 
+  get scale(): number {
+    return this.media?.videoScale ?? 1;
+  }
+
   get rotation(): 0 | 90 | 180 | 270 {
     return this.media?.rotation ?? 0;
   }
@@ -494,7 +498,8 @@ export class SourceManager implements SourceProvider {
         const cur = this.cursor(clip.id, clip.assetId, clip.reverse);
         cur.setRaw(wantsRaw(project, clip.assetId));
         if (!cur.upload(layer.sourceTime)) return null;
-        return { tex: cur.tex, width: cur.width, height: cur.height, rotation: cur.rotation, yuv: cur.yuv };
+        // Layout is in the original's pixels even when the texture is a smaller proxy.
+        return { tex: cur.tex, width: cur.width * cur.scale, height: cur.height * cur.scale, rotation: cur.rotation, yuv: cur.yuv };
       }
       case 'image': {
         if (!clip.assetId) return null;

@@ -32,7 +32,7 @@ import {
   type Project,
 } from '@tandem/core';
 import { layerCorners, layoutLayer, measureClip, type LayerBox } from '@tandem/engine';
-import { useFrame, useLiveProject, usePeers, usePlayer, usePlayerState, useProject, useSession, useThrottledFrame } from '../../session/hooks';
+import { useFrame, useLiveProject, usePeers, usePlayer, usePlayerState, useProject, useSession, useSessionMeta, useThrottledFrame } from '../../session/hooks';
 import { cmd } from '../../state/commands';
 import { beginGesture, setClipValues } from '../../state/props';
 import { useUI } from '../../state/ui';
@@ -474,6 +474,8 @@ function Timecode() {
 }
 
 function Transport() {
+  const session = useSession();
+  const meta = useSessionMeta();
   const player = usePlayer();
   const state = usePlayerState();
   const settings = useProject((p) => p.settings);
@@ -537,6 +539,10 @@ function Transport() {
             { label: 'Full', checked: state.quality === 1, onSelect: () => player?.setQuality(1) },
             { label: 'Half', checked: state.quality === 0.5, onSelect: () => player?.setQuality(0.5) },
             { label: 'Quarter', checked: state.quality === 0.25, onSelect: () => player?.setQuality(0.25) },
+            'separator',
+            { heading: 'Proxy media' },
+            { label: 'Preview from proxies', checked: meta.proxies, onSelect: () => session.setProxies(!meta.proxies) },
+            { label: 'Create proxies for large media', onSelect: () => cmd.createProxies() },
           ]}
         >
           <Gauge />

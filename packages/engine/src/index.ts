@@ -5,6 +5,7 @@ export * from './gl/effectRunner';
 export * from './gl/grade';
 export * from './generators';
 export * from './media/library';
+export * from './media/proxy';
 export * from './media/sources';
 export * from './audio/graph';
 export * from './player';

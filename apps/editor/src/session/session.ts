@@ -20,7 +20,7 @@ import {
   type Project,
   type Role,
 } from '@tandem/core';
-import { Player, probeFile } from '@tandem/engine';
+import { Player, probeFile, proxySize, type MediaResolver } from '@tandem/engine';
 import { useUI } from '../state/ui';
 import { toast } from '../ui/core';
 import { api, serverAvailable, wsBase } from './api';
@@ -44,6 +44,18 @@ export interface SessionMeta {
   player: Player | null;
   user: PresenceUser;
   denied: boolean;
+  /** Preview from proxy media where it exists (a per-device preference). */
+  proxies: boolean;
+}
+
+const PROXY_PREF = 'tandem.proxies';
+
+function readProxyPref(): boolean {
+  try {
+    return localStorage.getItem(PROXY_PREF) !== '0';
+  } catch {
+    return true;
+  }
 }
 
 export class Session {
@@ -73,8 +85,63 @@ export class Session {
     this.review = new ReviewStore(this.reviewDoc);
     this.awareness = new Awareness(this.doc);
     this.media = new MediaStore(id);
-    this.thumbs = new TimelineMedia(this.media.resolver((assetId) => !!this.store.get().assets[assetId]?.uploaded));
-    this.meta = { role: 'owner', status: 'offline', online: false, shared: false, synced: false, player: null, user: getUser(), denied: false };
+    this.thumbs = new TimelineMedia(this.previewResolver());
+    this.meta = { role: 'owner', status: 'offline', online: false, shared: false, synced: false, player: null, user: getUser(), denied: false, proxies: readProxyPref() };
+  }
+
+  /** Where the player and the timeline thumbnails read media: proxies allowed. */
+  private previewResolver(): MediaResolver {
+    return this.media.resolver(
+      (assetId) => !!this.store.get().assets[assetId]?.uploaded,
+      // HDR sources are decoded at full bit depth; an 8-bit proxy would throw that away.
+      (assetId) => this.meta.proxies && !this.store.get().assets[assetId]?.hdr,
+    );
+  }
+
+  /** Where exports and stills read media: always the originals. */
+  exportResolver(): MediaResolver {
+    return this.media.resolver((assetId) => !!this.store.get().assets[assetId]?.uploaded);
+  }
+
+  // ─────────────────────────────────────────────────────────────── proxies ──
+
+  /** Whether a proxy would help: a local SDR video noticeably larger than a preview. */
+  canProxy(asset: Asset): boolean {
+    return asset.kind === 'video' && !asset.hdr && this.media.get(asset.id).local && proxySize(asset.width, asset.height) !== null;
+  }
+
+  async createProxy(assetId: string): Promise<boolean> {
+    const asset = this.store.get().assets[assetId];
+    if (!asset || !this.canProxy(asset)) return false;
+    return this.media.buildProxy(assetId);
+  }
+
+  /** Queue proxies for every asset that would benefit and has none. Returns how many were queued. */
+  createProxies(): number {
+    let n = 0;
+    for (const asset of Object.values(this.store.get().assets)) {
+      const st = this.media.get(asset.id);
+      if (!this.canProxy(asset) || st.proxy || st.proxying !== null) continue;
+      void this.media.buildProxy(asset.id);
+      n++;
+    }
+    return n;
+  }
+
+  setProxies(on: boolean): void {
+    if (on === this.meta.proxies) return;
+    try {
+      localStorage.setItem(PROXY_PREF, on ? '1' : '0');
+    } catch {
+      // Private mode: the choice lasts for this session only.
+    }
+    this.setMeta({ proxies: on });
+    for (const id of Object.keys(this.store.get().assets)) if (this.media.get(id).proxy) this.refreshMedia(id);
+  }
+
+  private refreshMedia(assetId: string): void {
+    this.meta.player?.refreshAsset(assetId);
+    this.thumbs.refresh(assetId);
   }
 
   // ───────────────────────────────────────────────────────────── lifecycle ──
@@ -102,9 +169,9 @@ export class Session {
         this.store.commit([{ op: 'updateAsset', id: assetId, patch: { uploaded: true } }], { undoable: false });
       }
     };
-    this.media.onLocal = (assetId) => {
-      this.meta.player?.refreshAsset(assetId);
-      this.thumbs.refresh(assetId);
+    this.media.onLocal = (assetId) => this.refreshMedia(assetId);
+    this.media.onProxy = (assetId) => {
+      if (this.meta.proxies) this.refreshMedia(assetId);
     };
 
     this.awareness.setLocalState({
@@ -274,8 +341,7 @@ export class Session {
 
   attachCanvas(canvas: HTMLCanvasElement): Player {
     this.meta.player?.dispose();
-    const resolver = this.media.resolver((assetId) => !!this.store.get().assets[assetId]?.uploaded);
-    const player = new Player(canvas, this.effectiveProject(), resolver);
+    const player = new Player(canvas, this.effectiveProject(), this.previewResolver());
     let last = -1;
     player.onFrame((frame) => {
       // Presence updates are throttled; a frame-accurate playhead is not needed by peers.

@@ -156,7 +156,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     abort.current = ctrl;
     setPhase({ kind: 'running', progress: { phase: 'preparing', frame: 0, totalFrames: 1, speed: 0, etaSeconds: 0, elapsedSeconds: 0 } });
     try {
-      const resolver = session.media.resolver((id) => !!session.store.get().assets[id]?.uploaded);
+      const resolver = session.exportResolver();
       const result = await exportProject(session.store.get(), resolver, settings, {
         writable,
         signal: ctrl.signal,

@@ -585,6 +585,24 @@ export const cmd = {
   },
 
   // ───────────────────────────────────────────────────────────────── files ──
+  /** Make preview proxies for every large video that has none. */
+  createProxies(): void {
+    const s = session();
+    if (!s) return;
+    const n = s.createProxies();
+    if (n) {
+      toast(`Making ${n === 1 ? 'a proxy' : `${n} proxies`} in the background. Exports always use the originals.`);
+      if (!s.getMeta().proxies) s.setProxies(true);
+    } else toast('Nothing to do: no large videos without a proxy.');
+  },
+
+  toggleProxies(): void {
+    const s = session();
+    if (!s) return;
+    s.setProxies(!s.getMeta().proxies);
+    toast(s.getMeta().proxies ? 'Previewing from proxies where they exist.' : 'Previewing from original media.');
+  },
+
   /** Pick a file to stand in for an asset: relink offline media or drop in a new version. */
   async replaceMedia(assetId: string): Promise<void> {
     const s = session();
@@ -612,6 +630,10 @@ export const cmd = {
     if (!media.length) return [];
     const assets = await s.importFiles(media);
     if (assets.length) toast(`Imported ${assets.length} file${assets.length > 1 ? 's' : ''}`, 'success');
+    // Footage beyond 1080p is where proxies start to pay off: offer, never impose.
+    if (assets.some((a) => s.canProxy(a) && Math.min(a.width, a.height) > 1100)) {
+      toast('Large footage imported. Proxies make it lighter to edit.', 'info', { label: 'Create proxies', run: () => cmd.createProxies() });
+    }
     return assets;
   },
   /** Fetch the bundled sample media and assemble a short demo edit from it. */
@@ -748,7 +770,7 @@ export const cmd = {
     if (!s) return;
     try {
       const p = s.store.get();
-      const resolver = s.media.resolver((id) => !!s.store.get().assets[id]?.uploaded);
+      const resolver = s.exportResolver();
       const blob = await renderStill(p, resolver, frame());
       downloadBlob(blob, `${safeName(p.settings.name)}-frame-${frame()}.png`);
     } catch (err) {

@@ -7,7 +7,7 @@
  *  - Collaborators stream media straight from the server (HTTP range requests) and cache it into
  *    their own OPFS in the background, so the first frame shows in a moment and scrubbing gets fast.
  */
-import type { MediaLocation, MediaResolver } from '@tandem/engine';
+import { createProxy, ProxyCancelled, type MediaLocation, type MediaResolver } from '@tandem/engine';
 import { api, serverBase } from './api';
 
 export interface MediaStatus {
@@ -17,10 +17,15 @@ export interface MediaStatus {
   uploading: number | null;
   /** 0…1 while downloading, otherwise null. */
   downloading: number | null;
+  /** A preview proxy exists on this device. */
+  proxy: boolean;
+  /** 0…1 while a proxy is being made, otherwise null. */
+  proxying: number | null;
   error: string | null;
 }
 
-const EMPTY: MediaStatus = { local: false, uploading: null, downloading: null, error: null };
+const EMPTY: MediaStatus = { local: false, uploading: null, downloading: null, proxy: false, proxying: null, error: null };
+const PROXY_SUFFIX = '.proxy';
 const CHUNK = 8 * 1024 * 1024;
 
 type Listener = () => void;
@@ -39,6 +44,10 @@ export class MediaStore {
   private remote: RemoteAccess | null = null;
   private readonly uploads = new Map<string, AbortController>();
   private readonly downloads = new Map<string, AbortController>();
+  private readonly proxies = new Map<string, File>();
+  private readonly proxyJobs = new Map<string, AbortController>();
+  /** Proxy jobs run one at a time: each one already uses every core the encoder can get. */
+  private proxyQueue: Promise<unknown> = Promise.resolve();
   private destroyed = false;
   private version = 0;
 
@@ -46,6 +55,8 @@ export class MediaStore {
   onLocal: (assetId: string) => void = () => {};
   /** Called when an upload completes. */
   onUploaded: (assetId: string) => void = () => {};
+  /** Called when an asset's proxy appears or goes away. */
+  onProxy: (assetId: string) => void = () => {};
 
   constructor(private readonly projectId: string) {}
 
@@ -112,7 +123,7 @@ export class MediaStore {
    * footage does not keep occupying the disk.
    */
   async init(assetIds: string[], prune = false): Promise<void> {
-    await Promise.all(assetIds.map((id) => this.readLocal(id)));
+    await Promise.all(assetIds.flatMap((id) => [this.readLocal(id), this.readProxy(id)]));
     void navigator.storage?.persist?.().catch(() => false);
     if (prune) void this.prune(new Set(assetIds));
   }
@@ -124,8 +135,14 @@ export class MediaStore {
       const stale: string[] = [];
       const entries = (dir as unknown as { keys(): AsyncIterable<string> }).keys();
       for await (const name of entries) {
-        const assetId = name.endsWith('.part') ? name.slice(0, -5) : name;
-        if (!keep.has(assetId) || (name.endsWith('.part') && !this.downloads.has(assetId))) stale.push(name);
+        // `<id>`, `<id>.part` (download), `<id>.proxy`, `<id>.proxy.part` (proxy being written).
+        let id = name;
+        const part = id.endsWith('.part');
+        if (part) id = id.slice(0, -5);
+        const proxy = id.endsWith(PROXY_SUFFIX);
+        if (proxy) id = id.slice(0, -PROXY_SUFFIX.length);
+        const busy = proxy ? this.proxyJobs.has(id) : this.downloads.has(id);
+        if (!keep.has(id) || (part && !busy)) stale.push(name);
       }
       for (const name of stale) await dir.removeEntry(name).catch(() => {});
     } catch {
@@ -153,10 +170,103 @@ export class MediaStore {
   async remove(assetId: string): Promise<void> {
     this.uploads.get(assetId)?.abort();
     this.downloads.get(assetId)?.abort();
+    this.proxyJobs.get(assetId)?.abort();
     this.files.delete(assetId);
+    this.proxies.delete(assetId);
     this.status.delete(assetId);
     const dir = await this.directory();
     await dir?.removeEntry(assetId).catch(() => {});
+    await dir?.removeEntry(assetId + PROXY_SUFFIX).catch(() => {});
+  }
+
+  // ───────────────────────────────────────────────────────────── proxies ──
+
+  private async readProxy(assetId: string): Promise<File | null> {
+    const mem = this.proxies.get(assetId);
+    if (mem) return mem;
+    const dir = await this.directory();
+    if (!dir) return null;
+    try {
+      const file = await (await dir.getFileHandle(assetId + PROXY_SUFFIX)).getFile();
+      if (file.size === 0) return null;
+      this.proxies.set(assetId, file);
+      if (!this.get(assetId).proxy) this.patch(assetId, { proxy: true });
+      return file;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Make a preview proxy for a video asset from its local original. Jobs are queued; the returned
+   * promise resolves true once this one's proxy exists.
+   */
+  buildProxy(assetId: string): Promise<boolean> {
+    if (this.proxyJobs.has(assetId) || this.destroyed) return Promise.resolve(false);
+    const ctrl = new AbortController();
+    this.proxyJobs.set(assetId, ctrl);
+    this.patch(assetId, { proxying: 0, error: null });
+    const job = this.proxyQueue.then(() => this.runProxy(assetId, ctrl));
+    this.proxyQueue = job.catch(() => false);
+    return job;
+  }
+
+  private async runProxy(assetId: string, ctrl: AbortController): Promise<boolean> {
+    const partName = `${assetId}${PROXY_SUFFIX}.part`;
+    const dir = await this.directory();
+    try {
+      if (ctrl.signal.aborted) throw new ProxyCancelled();
+      const source = await this.readLocal(assetId);
+      if (!dir || !source) throw new Error('The original file has to be on this device to make a proxy.');
+      const part = await dir.getFileHandle(partName, { create: true });
+      const writable = await part.createWritable();
+      let last = 0;
+      try {
+        await createProxy(source, writable, {
+          signal: ctrl.signal,
+          onProgress: (f) => {
+            const now = performance.now();
+            if (now - last < 200) return;
+            last = now;
+            this.patch(assetId, { proxying: f });
+          },
+        });
+        await writable.close();
+      } catch (err) {
+        await writable.abort().catch(() => {});
+        throw err;
+      }
+      // OPFS has no atomic rename everywhere; copy the finished part into place.
+      const final = await dir.getFileHandle(assetId + PROXY_SUFFIX, { create: true });
+      const out = await final.createWritable();
+      await (await part.getFile()).stream().pipeTo(out);
+      await dir.removeEntry(partName).catch(() => {});
+      this.proxies.set(assetId, await final.getFile());
+      this.patch(assetId, { proxying: null, proxy: true });
+      this.onProxy(assetId);
+      return true;
+    } catch (err) {
+      await dir?.removeEntry(partName).catch(() => {});
+      if (err instanceof ProxyCancelled || ctrl.signal.aborted) this.patch(assetId, { proxying: null });
+      else this.patch(assetId, { proxying: null, error: err instanceof Error ? err.message : 'Could not make a proxy' });
+      return false;
+    } finally {
+      this.proxyJobs.delete(assetId);
+    }
+  }
+
+  cancelProxy(assetId: string): void {
+    this.proxyJobs.get(assetId)?.abort();
+  }
+
+  async removeProxy(assetId: string): Promise<void> {
+    this.proxyJobs.get(assetId)?.abort();
+    if (!this.proxies.delete(assetId) && !this.get(assetId).proxy) return;
+    this.patch(assetId, { proxy: false });
+    // Decoders must let go of the file before it disappears.
+    this.onProxy(assetId);
+    const dir = await this.directory();
+    await dir?.removeEntry(assetId + PROXY_SUFFIX).catch(() => {});
   }
 
   /** Bytes used by this project's local media. */
@@ -168,11 +278,17 @@ export class MediaStore {
 
   // ─────────────────────────────────────────────────────────── resolver ──
 
-  /** `uploaded(assetId)` tells whether the server has the complete file. */
-  resolver(uploaded: (assetId: string) => boolean): MediaResolver {
+  /**
+   * `uploaded(assetId)` tells whether the server has the complete file. `useProxy` (preview only;
+   * never pass it for an export) says whether a proxy may stand in for the picture.
+   */
+  resolver(uploaded: (assetId: string) => boolean, useProxy?: (assetId: string) => boolean): MediaResolver {
     return async (assetId): Promise<MediaLocation | null> => {
       const local = await this.readLocal(assetId);
-      if (local) return { blob: local };
+      if (local) {
+        const proxy = useProxy?.(assetId) ? await this.readProxy(assetId) : null;
+        return proxy ? { blob: local, proxy } : { blob: local };
+      }
       if (this.remote && uploaded(assetId)) {
         return { url: api.mediaUrl(this.remote.projectId, assetId, this.remote.token) };
       }
@@ -295,6 +411,7 @@ export class MediaStore {
     this.destroyed = true;
     for (const c of this.uploads.values()) c.abort();
     for (const c of this.downloads.values()) c.abort();
+    for (const c of this.proxyJobs.values()) c.abort();
     this.listeners.clear();
   }
 }

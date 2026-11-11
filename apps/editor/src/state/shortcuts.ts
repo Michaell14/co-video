@@ -105,6 +105,8 @@ export const COMMANDS: Command[] = [
 
   // File
   { id: 'import', title: 'Import media…', group: 'File', keys: ['mod+i'], run: () => void cmd.importMedia() },
+  { id: 'create-proxies', title: 'Create proxies for large media', group: 'File', keys: [], run: () => cmd.createProxies() },
+  { id: 'toggle-proxies', title: 'Toggle preview from proxies', group: 'File', keys: [], run: () => cmd.toggleProxies() },
   { id: 'sample', title: 'Load sample project', group: 'File', run: () => void cmd.loadSample() },
   { id: 'export', title: 'Export…', group: 'File', keys: ['mod+e'], run: () => ui().set({ dialog: 'export' }) },
   { id: 'share', title: 'Share…', group: 'File', run: () => ui().set({ dialog: 'share' }) },
