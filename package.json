@@ -1,0 +1,30 @@
+{
+  "name": "tandem",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Tandem — the open-source multiplayer video editor.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @tandem/server --filter @tandem/editor --filter @tandem/site dev",
+    "dev:editor": "pnpm --filter @tandem/editor dev",
+    "dev:server": "pnpm --filter @tandem/server dev",
+    "dev:site": "pnpm --filter @tandem/site dev",
+    "build": "pnpm --filter @tandem/editor build && pnpm --filter @tandem/site build && pnpm --filter @tandem/server build",
+    "start": "pnpm --filter @tandem/server start",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test --trace off",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "^22.10.0",
+    "prettier": "^3.4.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

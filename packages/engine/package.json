@@ -1,0 +1,14 @@
+{
+  "name": "@tandem/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": { ".": "./src/index.ts" },
+  "types": "./src/index.ts",
+  "scripts": { "typecheck": "tsc --noEmit -p ." },
+  "dependencies": {
+    "@tandem/core": "workspace:*",
+    "mediabunny": "^1.65.2"
+  }
+}
