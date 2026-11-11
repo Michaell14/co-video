@@ -17,7 +17,7 @@ export type ID = string;
 // ───────────────────────────────────────────────────────────────── settings ──
 
 export type ColorMode = 'sdr' | 'hdr-pq' | 'hdr-hlg';
-export type ToneMapOp = 'none' | 'reinhard' | 'hable' | 'aces' | 'agx' | 'bt2390';
+export type ToneMapOp = 'none' | 'reinhard' | 'hable' | 'aces' | 'bt2390';
 
 export interface ProjectSettings {
   name: string;

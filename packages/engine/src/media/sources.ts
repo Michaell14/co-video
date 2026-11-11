@@ -1,0 +1,604 @@
+/**
+ * SourceManager: turns clips into GPU textures.
+ *
+ *  - Video: one decode cursor per clip. A cursor owns a forward-running WebCodecs decode pipeline
+ *    (via Mediabunny) with a small look-ahead buffer. Sequential playback therefore never seeks;
+ *    scrubbing restarts the pipeline at the nearest keyframe.
+ *  - Images: decoded once into an ImageBitmap and uploaded.
+ *  - Generators: rasterised with Canvas 2D at render resolution, cached by content.
+ *  - LUTs: parsed into 3D float textures.
+ *
+ * `getTexture` is synchronous and returns whatever is ready. `prepare` kicks off the work for a frame
+ * and — in exact mode — resolves only once every layer has precisely the right picture.
+ */
+import { VideoSampleSink, type VideoSample } from 'mediabunny';
+import type { ClipLayer, FrameDesc, Project } from '@tandem/core';
+import type { Glx } from '../gl/glx';
+import type { SourceProvider, TextureSource } from '../gl/compositor';
+import { parseCubeLut } from '../gl/grade';
+import { fontSpec, generatorKey, rasterizeGenerator } from '../generators';
+import type { MediaLibrary, OpenMedia } from './library';
+
+const EPS = 1e-4;
+
+/**
+ * Containers round timestamps (WebM to whole milliseconds), so a frame that should start exactly at
+ * the requested time can claim to start a fraction later. Accept a start up to 2 ms — but never
+ * more than a third of a frame — in the future.
+ */
+const tolerance = (s: VideoSample): number => Math.min(0.002, Math.max(s.duration, 0.004) * 0.33);
+
+// ───────────────────────────────────────────────────────── video cursor ──
+
+class VideoCursor {
+  readonly tex: WebGLTexture;
+  width = 0;
+  height = 0;
+  lastUsed = 0;
+  /** Set when the media cannot be decoded at all. */
+  failed = false;
+
+  private media: OpenMedia | null = null;
+  private sink: VideoSampleSink | null = null;
+  private buffer: VideoSample[] = [];
+  private pumpId = 0;
+  private pumping = false;
+  private pumpEnded = false;
+  private want = 0;
+  private pumpTarget = 0;
+  private pumpStartedAt = 0;
+  private uploadedTs = NaN;
+  private waiters: (() => void)[] = [];
+  private resume: (() => void) | null = null;
+  private opening: Promise<void> | null = null;
+  private disposed = false;
+
+  constructor(
+    private readonly glx: Glx,
+    private readonly library: MediaLibrary,
+    readonly assetId: string,
+    private reverse: boolean,
+    private readonly onFrame: () => void,
+  ) {
+    this.tex = glx.createTexture();
+  }
+
+  /** Switch between forward and backward stepping (reverse clips, or J-shuttle). */
+  setReverse(reverse: boolean): void {
+    this.reverse = reverse;
+  }
+
+  get rotation(): 0 | 90 | 180 | 270 {
+    return this.media?.rotation ?? 0;
+  }
+
+  get hasPicture(): boolean {
+    return this.width > 0;
+  }
+
+  private maxBuffered(): number {
+    if (!this.reverse) return 4;
+    // Reverse playback keeps a whole run of frames; budget ~256 MB of decoded pictures.
+    const px = Math.max(1, this.width * this.height);
+    return Math.max(8, Math.min(48, Math.floor((256 * 1024 * 1024) / (px * 1.5))));
+  }
+
+  private ensureOpen(): Promise<void> {
+    if (!this.opening) {
+      this.opening = this.library.get(this.assetId).then((m) => {
+        if (this.disposed) return;
+        if (!m || !m.video || !m.videoDecodable) {
+          this.failed = true;
+          this.notify();
+          return;
+        }
+        this.media = m;
+        this.sink = new VideoSampleSink(m.video);
+      });
+    }
+    return this.opening;
+  }
+
+  /** The buffered frame that should be on screen at `t`, if we have it. */
+  private pick(t: number): VideoSample | null {
+    let best: VideoSample | null = null;
+    for (const s of this.buffer) {
+      if (s.timestamp <= t + tolerance(s)) best = s;
+      else break;
+    }
+    return best;
+  }
+
+  private covers(t: number): boolean {
+    const s = this.pick(t);
+    if (!s) return false;
+    // The last frame of a file has no successor, so accept it for any later time.
+    return t < s.timestamp + Math.max(s.duration, 1e-3) + EPS || (this.pumpEnded && s === this.buffer[this.buffer.length - 1]);
+  }
+
+  /** Whether the running decode pipeline will produce (or already holds) the frame for `t`. */
+  private inRange(t: number): boolean {
+    const lookahead = this.reverse ? 0.05 : 1.5;
+    if (!this.buffer.length) {
+      const span = this.reverse ? 0.8 : lookahead;
+      return this.pumping && t >= this.pumpTarget - EPS && t <= this.pumpTarget + span;
+    }
+    const first = this.buffer[0];
+    const last = this.buffer[this.buffer.length - 1];
+    if (t < first.timestamp - EPS) return false;
+    const end = last.timestamp + Math.max(last.duration, 1e-3);
+    if (t <= end + EPS) return true;
+    // Past the buffered frames: fine if decoding is still heading there, or the file simply ended.
+    return this.pumpEnded || (this.pumping && t <= end + lookahead);
+  }
+
+  /** Ask for the frame at media time `t` (seconds, relative to the first video sample). */
+  request(t: number): void {
+    this.want = t;
+    this.lastUsed = performance.now();
+    if (this.failed || this.disposed) return;
+    if (!this.sink) {
+      void this.ensureOpen().then(() => {
+        if (this.sink && !this.disposed) this.request(this.want);
+      });
+      return;
+    }
+    if (this.inRange(t)) {
+      if (!this.reverse) this.trim(t);
+      this.resume?.();
+      return;
+    }
+    // A seek is already in flight and has not produced anything yet: let it land first so fast
+    // scrubbing always shows *something*. The pump re-checks `want` when its first frame arrives.
+    if (this.pumping && this.buffer.length === 0 && performance.now() - this.pumpStartedAt < 300) return;
+    this.startPump(t);
+  }
+
+  /** Drop frames that are entirely in the past. */
+  private trim(t: number): void {
+    while (this.buffer.length > 1 && this.buffer[1].timestamp <= t + tolerance(this.buffer[1])) {
+      this.buffer.shift()!.close();
+    }
+  }
+
+  private startPump(t: number): void {
+    const id = ++this.pumpId;
+    for (const s of this.buffer) s.close();
+    this.buffer = [];
+    this.pumping = true;
+    this.pumpEnded = false;
+    this.pumpStartedAt = performance.now();
+    this.resume?.();
+    const sink = this.sink!;
+    const offset = this.media!.videoStart;
+    this.pumpTarget = Math.max(0, this.reverse ? t - 0.75 : t);
+    const start = this.pumpTarget + offset;
+    void (async () => {
+      try {
+        for await (const sample of sink.samples(start)) {
+          if (id !== this.pumpId || this.disposed) {
+            sample.close();
+            return;
+          }
+          sample.setTimestamp(sample.timestamp - offset);
+          this.buffer.push(sample);
+          this.notify();
+          if (id !== this.pumpId || this.disposed) return;
+          if (!this.inRange(this.want)) {
+            // The playhead moved on while we were seeking.
+            this.startPump(this.want);
+            return;
+          }
+          // Back-pressure: wait while we are far enough ahead of what is being asked for.
+          while (id === this.pumpId && !this.disposed && this.full()) {
+            await new Promise<void>((r) => (this.resume = r));
+            this.resume = null;
+          }
+          if (id !== this.pumpId || this.disposed) return;
+        }
+        if (id === this.pumpId) {
+          this.pumpEnded = true;
+          this.pumping = false;
+          this.notify();
+        }
+      } catch (err) {
+        if (id === this.pumpId && !this.disposed) {
+          console.warn('[video] decode error', err);
+          this.pumping = false;
+          this.pumpEnded = true;
+          this.notify();
+        }
+      }
+    })();
+  }
+
+  /** Should the decode pipeline pause? */
+  private full(): boolean {
+    const max = this.maxBuffered();
+    if (this.reverse) {
+      // Decode up to just past the wanted frame, then hold the whole run for backwards stepping.
+      const last = this.buffer[this.buffer.length - 1];
+      if (this.buffer.length > max) this.buffer.shift()!.close();
+      return !!last && last.timestamp > this.want + 0.1;
+    }
+    let n = 0;
+    for (const s of this.buffer) if (s.timestamp > this.want + EPS) n++;
+    return n >= max;
+  }
+
+  private notify(): void {
+    const w = this.waiters;
+    this.waiters = [];
+    for (const fn of w) fn();
+    this.onFrame();
+  }
+
+  /** Resolve once the exact frame for `t` is buffered (or decoding is impossible). */
+  async ready(t: number, timeoutMs = 8000): Promise<void> {
+    this.request(t);
+    const deadline = performance.now() + timeoutMs;
+    while (!this.failed && !this.disposed && !this.covers(t)) {
+      if (performance.now() > deadline) return;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 250);
+        this.waiters.push(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      // Reverse cursors and end-of-stream may need a restart to reach `t`.
+      if (!this.pumping && !this.covers(t) && !this.failed) this.request(t);
+    }
+  }
+
+  /** Upload the best available frame for `t` and return whether there is any picture at all. */
+  upload(t: number): boolean {
+    this.lastUsed = performance.now();
+    const s = this.pick(t) ?? (this.buffer.length && !this.hasPicture ? this.buffer[0] : null);
+    if (!s) return this.hasPicture;
+    if (s.timestamp === this.uploadedTs) return true;
+    const gl = this.glx.gl;
+    try {
+      const src = s.toCanvasImageSource();
+      gl.bindTexture(gl.TEXTURE_2D, this.tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, src as TexImageSource);
+      this.width = s.codedWidth;
+      this.height = s.codedHeight;
+      this.uploadedTs = s.timestamp;
+      return true;
+    } catch (err) {
+      console.warn('[video] upload failed', err);
+      return this.hasPicture;
+    }
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.pumpId++;
+    for (const s of this.buffer) s.close();
+    this.buffer = [];
+    this.resume?.();
+    this.notify();
+    this.glx.gl.deleteTexture(this.tex);
+  }
+}
+
+// ────────────────────────────────────────────────────────────── manager ──
+
+interface ImageEntry {
+  tex: WebGLTexture | null;
+  width: number;
+  height: number;
+  state: 'loading' | 'ready' | 'failed';
+  promise: Promise<void>;
+}
+
+interface GenEntry {
+  tex: WebGLTexture;
+  width: number;
+  height: number;
+  used: number;
+}
+
+interface LutEntry {
+  tex: WebGLTexture | null;
+  size: number;
+  state: 'loading' | 'ready' | 'failed';
+  promise: Promise<void>;
+}
+
+export class SourceManager implements SourceProvider {
+  /** Called whenever new pixels become available, so a paused viewer can redraw. */
+  onInvalidate: () => void = () => {};
+
+  private readonly cursors = new Map<string, VideoCursor>();
+  private readonly images = new Map<string, ImageEntry>();
+  private readonly gens = new Map<string, GenEntry>();
+  private readonly luts = new Map<string, LutEntry>();
+  private fontEpoch = 0;
+  /** +1 when the timeline plays forward, -1 when shuttling backwards. */
+  direction: 1 | -1 = 1;
+  private readonly fontsLoading = new Set<string>();
+  private tick = 0;
+  private disposed = false;
+  private readonly onFontsDone = () => {
+    this.fontEpoch++;
+    this.invalidate();
+  };
+
+  constructor(
+    private readonly glx: Glx,
+    readonly library: MediaLibrary,
+  ) {
+    if (typeof document !== 'undefined' && document.fonts) {
+      document.fonts.addEventListener('loadingdone', this.onFontsDone);
+    }
+  }
+
+  private invalidate = (): void => {
+    if (!this.disposed) this.onInvalidate();
+  };
+
+  // ── SourceProvider ────────────────────────────────────────────────────
+
+  getTexture(layer: ClipLayer, _project: Project, frameW: number, frameH: number): TextureSource | null {
+    const clip = layer.clip;
+    switch (clip.type) {
+      case 'video': {
+        if (!clip.assetId) return null;
+        const cur = this.cursor(clip.id, clip.assetId, clip.reverse);
+        if (!cur.upload(layer.sourceTime)) return null;
+        return { tex: cur.tex, width: cur.width, height: cur.height, rotation: cur.rotation };
+      }
+      case 'image': {
+        if (!clip.assetId) return null;
+        const img = this.image(clip.assetId);
+        return img.state === 'ready' && img.tex ? { tex: img.tex, width: img.width, height: img.height } : null;
+      }
+      case 'text':
+      case 'shape':
+      case 'solid':
+        return this.generator(layer, frameW, frameH);
+      default:
+        return null;
+    }
+  }
+
+  getLut(assetId: string): { tex: WebGLTexture; size: number } | null {
+    const e = this.lut(assetId);
+    return e.state === 'ready' && e.tex ? { tex: e.tex, size: e.size } : null;
+  }
+
+  // ── preparation ───────────────────────────────────────────────────────
+
+  /**
+   * Start loading everything `desc` needs. With `exact` the promise resolves only when each video
+   * layer has the precise frame buffered and all stills, fonts and LUTs are loaded.
+   */
+  async prepare(project: Project, desc: FrameDesc, exact: boolean): Promise<void> {
+    const waits: Promise<unknown>[] = [];
+    const visit = (l: ClipLayer | null) => {
+      if (!l) return;
+      const clip = l.clip;
+      if (clip.type === 'video' && clip.assetId) {
+        const cur = this.cursor(clip.id, clip.assetId, clip.reverse);
+        if (exact) waits.push(cur.ready(l.sourceTime));
+        else cur.request(l.sourceTime);
+      } else if (clip.type === 'image' && clip.assetId) {
+        const img = this.image(clip.assetId);
+        if (exact) waits.push(img.promise);
+      } else if (clip.type === 'text' && clip.text) {
+        const p = this.ensureFont(fontSpec(clip.text, 32), clip.text.content);
+        if (exact && p) waits.push(p);
+      }
+      if (clip.grade?.lutId) {
+        const lut = this.lut(clip.grade.lutId);
+        if (exact) waits.push(lut.promise);
+      }
+    };
+    for (const layer of desc.layers) {
+      if (layer.kind === 'clip') visit(layer.layer);
+      else {
+        visit(layer.a);
+        visit(layer.b);
+      }
+    }
+    void project;
+    if (waits.length) await Promise.all(waits);
+  }
+
+  /** Warm up a cursor ahead of time (clips that are about to start during playback). */
+  prewarm(clipId: string, assetId: string, reverse: boolean, sourceTime: number): void {
+    const existing = this.cursors.get(clipId);
+    if (existing && existing.hasPicture) return;
+    this.cursor(clipId, assetId, reverse).request(sourceTime);
+  }
+
+  /** Free decoders that have not been drawn recently. Call once per rendered frame. */
+  collect(maxIdleMs = 4000): void {
+    if (++this.tick % 30 !== 0) return;
+    const now = performance.now();
+    for (const [id, cur] of this.cursors) {
+      if (now - cur.lastUsed > maxIdleMs) {
+        cur.dispose();
+        this.cursors.delete(id);
+      }
+    }
+    if (this.gens.size > 96) {
+      const entries = Array.from(this.gens.entries()).sort((a, b) => a[1].used - b[1].used);
+      for (const [key, e] of entries.slice(0, this.gens.size - 64)) {
+        this.glx.gl.deleteTexture(e.tex);
+        this.gens.delete(key);
+      }
+    }
+  }
+
+  /** Drop every decoder (e.g. when an asset's backing file changes). */
+  resetAsset(assetId: string): void {
+    for (const [id, cur] of this.cursors) {
+      if (cur.assetId === assetId) {
+        cur.dispose();
+        this.cursors.delete(id);
+      }
+    }
+    const img = this.images.get(assetId);
+    if (img?.state === 'failed') this.images.delete(assetId);
+    const lut = this.luts.get(assetId);
+    if (lut?.state === 'failed') this.luts.delete(assetId);
+    this.library.invalidate(assetId);
+    this.invalidate();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    if (typeof document !== 'undefined' && document.fonts) {
+      document.fonts.removeEventListener('loadingdone', this.onFontsDone);
+    }
+    const gl = this.glx.gl;
+    for (const c of this.cursors.values()) c.dispose();
+    for (const i of this.images.values()) if (i.tex) gl.deleteTexture(i.tex);
+    for (const g of this.gens.values()) gl.deleteTexture(g.tex);
+    for (const l of this.luts.values()) if (l.tex) gl.deleteTexture(l.tex);
+    this.cursors.clear();
+    this.images.clear();
+    this.gens.clear();
+    this.luts.clear();
+  }
+
+  // ── internals ─────────────────────────────────────────────────────────
+
+  private cursor(clipId: string, assetId: string, reverse: boolean): VideoCursor {
+    let cur = this.cursors.get(clipId);
+    if (cur && cur.assetId !== assetId) {
+      cur.dispose();
+      cur = undefined;
+    }
+    const backwards = reverse !== this.direction < 0;
+    if (!cur) {
+      cur = new VideoCursor(this.glx, this.library, assetId, backwards, this.invalidate);
+      this.cursors.set(clipId, cur);
+    } else cur.setReverse(backwards);
+    return cur;
+  }
+
+  private image(assetId: string): ImageEntry {
+    let e = this.images.get(assetId);
+    if (e) return e;
+    const entry: ImageEntry = { tex: null, width: 0, height: 0, state: 'loading', promise: Promise.resolve() };
+    entry.promise = (async () => {
+      try {
+        const blob = await this.library.blob(assetId);
+        if (!blob) throw new Error('unavailable');
+        const max = this.glx.caps.maxTextureSize;
+        let bmp = await createImageBitmap(blob, { premultiplyAlpha: 'premultiply' });
+        if (bmp.width > max || bmp.height > max) {
+          const k = Math.min(max / bmp.width, max / bmp.height);
+          const scaled = await createImageBitmap(bmp, {
+            resizeWidth: Math.floor(bmp.width * k),
+            resizeHeight: Math.floor(bmp.height * k),
+            resizeQuality: 'high',
+            premultiplyAlpha: 'premultiply',
+          });
+          bmp.close();
+          bmp = scaled;
+        }
+        if (this.disposed) return;
+        const gl = this.glx.gl;
+        const tex = this.glx.createTexture();
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        entry.tex = tex;
+        entry.width = bmp.width;
+        entry.height = bmp.height;
+        entry.state = 'ready';
+        bmp.close();
+      } catch (err) {
+        entry.state = 'failed';
+        console.warn(`[image] ${assetId}`, err);
+        // Retry later: the file may still be syncing from a collaborator.
+        setTimeout(() => {
+          if (this.images.get(assetId) === entry) this.images.delete(assetId);
+          this.invalidate();
+        }, 3000);
+      }
+      this.invalidate();
+    })();
+    this.images.set(assetId, entry);
+    e = entry;
+    return e;
+  }
+
+  private lut(assetId: string): LutEntry {
+    let e = this.luts.get(assetId);
+    if (e) return e;
+    const entry: LutEntry = { tex: null, size: 0, state: 'loading', promise: Promise.resolve() };
+    entry.promise = (async () => {
+      try {
+        const blob = await this.library.blob(assetId);
+        if (!blob) throw new Error('unavailable');
+        const parsed = parseCubeLut(await blob.text());
+        if (this.disposed) return;
+        const gl = this.glx.gl;
+        const tex = gl.createTexture()!;
+        gl.bindTexture(gl.TEXTURE_3D, tex);
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, parsed.size, parsed.size, parsed.size, 0, gl.RGB, gl.FLOAT, parsed.data);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+        entry.tex = tex;
+        entry.size = parsed.size;
+        entry.state = 'ready';
+      } catch (err) {
+        entry.state = 'failed';
+        console.warn(`[lut] ${assetId}`, err);
+      }
+      this.invalidate();
+    })();
+    this.luts.set(assetId, entry);
+    e = entry;
+    return e;
+  }
+
+  private ensureFont(spec: string, sample: string): Promise<unknown> | null {
+    if (typeof document === 'undefined' || !document.fonts) return null;
+    if (document.fonts.check(spec, sample)) return null;
+    if (this.fontsLoading.has(spec)) return document.fonts.ready;
+    this.fontsLoading.add(spec);
+    return document.fonts
+      .load(spec, sample)
+      .catch(() => {})
+      .finally(() => {
+        this.fontsLoading.delete(spec);
+        this.fontEpoch++;
+        this.invalidate();
+      });
+  }
+
+  private generator(layer: ClipLayer, frameW: number, frameH: number): TextureSource | null {
+    const clip = layer.clip;
+    if (clip.type === 'text' && clip.text) this.ensureFont(fontSpec(clip.text, 32), clip.text.content);
+    const key = generatorKey(clip, frameW, frameH, layer.anim.chars, this.fontEpoch);
+    if (!key) return null;
+    let e = this.gens.get(key);
+    if (!e) {
+      const raster = rasterizeGenerator(clip, frameW, frameH, layer.anim.chars);
+      if (!raster) return null;
+      const gl = this.glx.gl;
+      const tex = this.glx.createTexture();
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, raster.canvas as TexImageSource);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      e = { tex, width: raster.width, height: raster.height, used: 0 };
+      this.gens.set(key, e);
+    }
+    e.used = performance.now();
+    return { tex: e.tex, width: e.width, height: e.height };
+  }
+}

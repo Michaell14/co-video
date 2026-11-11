@@ -13,6 +13,7 @@
     "@fontsource-variable/inter": "^5.1.0",
     "@fontsource-variable/jetbrains-mono": "^5.1.0",
     "@tandem/core": "workspace:*",
+    "@tandem/design": "workspace:*",
     "@tandem/engine": "workspace:*",
     "lib0": "^0.2.120",
     "lucide-react": "^1.72.0",
