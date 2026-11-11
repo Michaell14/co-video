@@ -695,3 +695,31 @@
   background: rgba(255, 181, 71, 0.16);
   color: var(--amber);
 }
+
+/* A palette row inside a menu. */
+.menu-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 10px 8px;
+}
+.menu-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.menu-swatch:hover,
+.menu-swatch:focus-visible {
+  transform: scale(1.18);
+  outline: none;
+}
+.menu-swatch[aria-checked='true'] {
+  box-shadow:
+    0 0 0 2px var(--bg-2, #151517),
+    0 0 0 4px #fff;
+}

@@ -1,16 +1,4 @@
-import {
-  ChevronsLeftRight,
-  Flag,
-  Gauge,
-  Keyboard,
-  Layers,
-  Link2,
-  Magnet,
-  Play,
-  Scissors,
-  Search,
-  Spline,
-} from 'lucide-react';
+import { AudioLines, ChevronsLeftRight, Flag, Gauge, Keyboard, Layers, Link2, Magnet, Mic, Play, Scissors, Search, Spline, WifiOff, Zap } from 'lucide-react';
 import { useReducedMotion } from 'motion/react';
 import { useRef } from 'react';
 import type { ReactNode } from 'react';
@@ -154,8 +142,12 @@ const DETAILS = [
   { icon: Layers, text: 'Unlimited video and audio tracks' },
   { icon: Link2, text: 'Linked audio and video' },
   { icon: Flag, text: 'Markers' },
-  { icon: Gauge, text: 'Speed changes and reverse' },
+  { icon: Gauge, text: 'Speed changes, reverse and freeze frames' },
   { icon: Play, text: 'J / K / L transport' },
+  { icon: Zap, text: 'Proxy media for 4K and up' },
+  { icon: Mic, text: 'Voiceover recording' },
+  { icon: AudioLines, text: 'Loudness normalisation to LUFS' },
+  { icon: WifiOff, text: 'Opens and edits offline' },
   { icon: Keyboard, text: 'A full keyboard workflow' },
   { icon: Search, text: 'Command palette' },
 ];

@@ -534,6 +534,8 @@ export type MenuEntry =
     }
   | 'separator'
   | { heading: string }
+  /** A row of colour chips, for choosing one of a small palette without a line per colour. */
+  | { swatches: { color: string; label: string; checked?: boolean; onSelect: () => void }[] }
   | false
   | null
   | undefined;
@@ -549,6 +551,28 @@ export function MenuList({ items, onClose }: { items: MenuEntry[]; onClose: () =
           return (
             <div key={i} className="menu-label">
               {item.heading}
+            </div>
+          );
+        }
+        if ('swatches' in item) {
+          return (
+            <div key={i} className="menu-swatches" role="group">
+              {item.swatches.map((sw) => (
+                <button
+                  key={sw.color}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={!!sw.checked}
+                  aria-label={sw.label}
+                  title={sw.label}
+                  className="menu-swatch"
+                  style={{ background: sw.color }}
+                  onClick={() => {
+                    onClose();
+                    sw.onSelect();
+                  }}
+                />
+              ))}
             </div>
           );
         }

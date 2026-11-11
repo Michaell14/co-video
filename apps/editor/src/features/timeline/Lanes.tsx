@@ -638,6 +638,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
 
 // ───────────────────────────────────────────────────────────────── menus ──
 
+const LABEL_NAMES = ['Blue', 'Violet', 'Pink', 'Red', 'Orange', 'Amber', 'Lime', 'Emerald', 'Teal', 'Cyan', 'Slate'];
+
 function clipMenu(p: Project, id: ID): MenuEntry[] {
   const c = p.clips[id];
   if (!c) return [];
@@ -666,14 +668,14 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
     { label: 'Paste attributes', keys: 'mod+alt+v', onSelect: () => cmd.pasteAttributes('all'), disabled: !ui.attributes },
     'separator',
     { heading: 'Label' },
-    ...LABEL_COLORS.slice(0, 6).map(
-      (color): MenuEntry => ({
-        label: color === CLIP_TYPE_COLORS[c.type] ? 'Default' : color,
-        icon: <span style={{ width: 12, height: 12, borderRadius: 3, background: color, display: 'inline-block' }} />,
+    {
+      swatches: LABEL_COLORS.map((color, i) => ({
+        color,
+        label: color === CLIP_TYPE_COLORS[c.type] ? `${LABEL_NAMES[i]} (default)` : LABEL_NAMES[i],
         checked: (c.label ?? CLIP_TYPE_COLORS[c.type]) === color,
         onSelect: () => cmd.updateSelected({ label: color === CLIP_TYPE_COLORS[c.type] ? null : color }),
-      }),
-    ),
+      })),
+    },
   ];
 }
 
