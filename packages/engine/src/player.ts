@@ -146,6 +146,7 @@ export class Player {
   /** The media behind an asset changed location (e.g. finished downloading). */
   refreshAsset(assetId: string): void {
     this.sources.resetAsset(assetId);
+    this.graph?.forget(assetId);
     if (this.state.playing) this.restartAudio();
   }
 

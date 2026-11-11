@@ -106,7 +106,8 @@ function drawWaveform(
     let p = 0;
     for (let i = a; i <= b; i++) if (peaks[i] > p) p = peaks[i];
     xs.push(x);
-    ys.push(Math.max(0.5, Math.min(1, p) * amp));
+    // Perceptual scaling: quiet material stays visible instead of collapsing into a flat line.
+    ys.push(Math.max(0.5, Math.pow(Math.min(1, p), 0.6) * amp));
   }
   ctx.beginPath();
   ctx.moveTo(xs[0], mid - ys[0]);

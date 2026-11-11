@@ -526,6 +526,12 @@
   backdrop-filter: blur(6px);
   animation: fade-in var(--dur-2) ease;
 }
+/* A live backdrop blur re-composites the whole page on every repaint. While an export is rendering
+   that work competes with the encoder for the GPU, so long-running dialogs use a flat scrim. */
+.dialog-backdrop--solid {
+  background: rgba(4, 4, 6, 0.88);
+  backdrop-filter: none;
+}
 .dialog {
   width: min(520px, 100%);
   max-height: calc(100vh - 48px);

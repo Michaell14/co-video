@@ -832,6 +832,7 @@ export function Dialog({
   footer,
   wide,
   icon,
+  solid,
 }: {
   title: ReactNode;
   onClose: () => void;
@@ -839,6 +840,8 @@ export function Dialog({
   footer?: ReactNode;
   wide?: boolean;
   icon?: ReactNode;
+  /** Dim the page with a flat colour instead of a live blur (for long-running, GPU-heavy work). */
+  solid?: boolean;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -852,7 +855,7 @@ export function Dialog({
   }, [onClose]);
   return createPortal(
     <div
-      className="dialog-backdrop"
+      className={cx('dialog-backdrop', solid && 'dialog-backdrop--solid')}
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

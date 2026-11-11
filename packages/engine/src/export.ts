@@ -69,6 +69,8 @@ export interface ExportResult {
   extension: string;
   frames: number;
   seconds: number;
+  /** Where the time went, in seconds: waiting for decoded frames, compositing, encoding, audio. */
+  timings: { decode: number; render: number; encode: number; audio: number };
 }
 
 export class ExportCancelled extends Error {
@@ -283,8 +285,18 @@ export async function exportProject(
     });
   };
 
+  const timings = { decode: 0, render: 0, encode: 0, audio: 0 };
   let audioRenderedTo = 0;
   const pumpAudio = async (upToSec: number, flush: boolean) => {
+    if (!audioSource) return;
+    const a0 = performance.now();
+    try {
+      await pumpAudioInner(upToSec, flush);
+    } finally {
+      timings.audio += (performance.now() - a0) / 1000;
+    }
+  };
+  const pumpAudioInner = async (upToSec: number, flush: boolean) => {
     if (!audioSource) return;
     while (audioRenderedTo < durationSec && (flush || audioRenderedTo + AUDIO_CHUNK_SECONDS <= upToSec)) {
       check();
@@ -308,11 +320,16 @@ export async function exportProject(
         // The project frame on screen at this output time.
         const frame = startFrame + Math.min(endFrame - startFrame - 1, Math.floor(t * projFps + 1e-6));
         const desc = resolveFrame(project, frame);
+        const p0 = performance.now();
         await sources.prepare(project, desc, true);
+        const p1 = performance.now();
         compositor.render(project, desc, sources, {
           output: hdr ? (settings.dynamicRange as 'pq' | 'hlg') : 'display',
           skipPresent: hdr,
         });
+        const p2 = performance.now();
+        timings.decode += (p1 - p0) / 1000;
+        timings.render += (p2 - p1) / 1000;
         if (canvasSource) await canvasSource.add(t, frameDur);
         else if (sampleSource) {
           const data = compositor.readYuv10(settings.dynamicRange as 'pq' | 'hlg');
@@ -333,6 +350,7 @@ export async function exportProject(
           await sampleSource.add(sample);
           sample.close();
         }
+        timings.encode += (performance.now() - p2) / 1000;
         sources.collect(60_000);
         await pumpAudio(t, false);
         if (i % 4 === 0) report('rendering', i + 1);
@@ -355,6 +373,7 @@ export async function exportProject(
       extension: format.fileExtension,
       frames: audioOnly ? 0 : totalFrames,
       seconds: (performance.now() - t0) / 1000,
+      timings,
     };
   } catch (err) {
     await output.cancel().catch(() => {});

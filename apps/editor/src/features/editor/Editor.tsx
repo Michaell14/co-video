@@ -38,6 +38,8 @@ export function Editor({ projectId, token }: { projectId: string; token: string 
         opened = s;
         setCurrentSession(s);
         setSession(s);
+        // A small console / automation hook: `tandem.session.store.get()`, `tandem.cmd.split()`, …
+        (window as unknown as { tandem?: unknown }).tandem = { session: s, ui: useUI, cmd };
         // Keep capability tokens out of the address bar (and so out of screenshots and history).
         if (token) history.replaceState(null, '', `#/p/${projectId}`);
       })

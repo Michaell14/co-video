@@ -135,7 +135,10 @@ export class FilmstripCache extends Emitter {
             this.emit();
           }
         } catch (err) {
-          console.warn('[filmstrip]', err);
+          // The media handle is replaced when a download finishes mid-batch; the tiles simply get
+          // requested again on the next paint.
+          if ((err as Error)?.name !== 'InputDisposedError') console.warn('[filmstrip]', err);
+          this.sinks.delete(assetId);
         }
         this.evict();
         // Stay polite to the main thread between batches.
@@ -244,6 +247,13 @@ export class WaveformCache extends Emitter {
             }
           }
         } catch (err) {
+          if ((err as Error)?.name === 'InputDisposedError' && !this.disposed) {
+            // The file moved underneath us (finished downloading): start this one over.
+            w.peaks.fill(0);
+            w.loaded = 0;
+            this.queue.push(assetId);
+            continue;
+          }
           console.warn('[waveform]', err);
         }
         w.done = true;

@@ -163,6 +163,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         onProgress: (progress) => setPhase({ kind: 'running', progress }),
       });
       if (result.blob) downloadBlob(result.blob, name);
+      console.info('[export] finished', { frames: result.frames, seconds: result.seconds, ...result.timings });
       setPhase({ kind: 'done', blob: result.blob, name, seconds: result.seconds, bytes: result.blob?.size ?? null });
     } catch (err) {
       if (err instanceof ExportCancelled) setPhase({ kind: 'idle' });
@@ -190,7 +191,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     const p = phase.progress;
     const pct = p.totalFrames ? Math.min(100, (p.frame / p.totalFrames) * 100) : 0;
     return (
-      <Dialog title="Exporting…" onClose={() => {}} icon={<span className="spinner" />} footer={<Button onClick={() => abort.current?.abort()}>Cancel export</Button>}>
+      <Dialog solid title="Exporting…" onClose={() => {}} icon={<span className="spinner" />} footer={<Button onClick={() => abort.current?.abort()}>Cancel export</Button>}>
         <div className="exp__run">
           <div className="exp__pct mono">{pct.toFixed(0)}%</div>
           <div className="progress exp__bar">

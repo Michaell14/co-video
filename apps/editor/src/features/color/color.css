@@ -185,7 +185,7 @@
 }
 .gslider {
   display: grid;
-  grid-template-columns: 70px minmax(0, 1fr) auto;
+  grid-template-columns: 70px minmax(0, 1fr) 66px;
   align-items: center;
   gap: 8px;
 }

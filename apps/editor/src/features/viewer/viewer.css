@@ -151,11 +151,13 @@
 }
 
 /* Transport */
+.viewer {
+  container-type: inline-size;
+}
 .transport {
-  position: relative;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   height: 44px;
   padding: 0 8px;
@@ -173,14 +175,24 @@
 }
 .transport__left {
   gap: 8px;
+  overflow: hidden;
 }
-.transport__center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+.transport__right {
+  justify-content: flex-end;
+}
+@container (max-width: 640px) {
+  .transport__dur,
+  .transport .vol {
+    display: none;
+  }
+}
+@container (max-width: 500px) {
+  .transport__right > :not(:last-child) {
+    display: none;
+  }
 }
 .tc {
-  width: 104px;
+  width: 118px;
   height: 26px;
   padding: 0 6px;
   border: none;

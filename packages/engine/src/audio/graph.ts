@@ -466,6 +466,11 @@ export class AudioGraph {
     return restart;
   }
 
+  /** Drop the cached decoder for an asset whose backing file changed. */
+  forget(assetId: string): void {
+    this.sinks.delete(assetId);
+  }
+
   stop(): void {
     for (const v of this.voices.values()) this.killVoice(v);
     this.voices.clear();

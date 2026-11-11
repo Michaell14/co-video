@@ -418,7 +418,10 @@
   flex: 1;
 }
 .row__ctrl > .num {
-  flex: 0 0 64px;
+  flex: 0 0 74px;
+}
+.row__ctrl > .num:only-child {
+  flex: 1;
 }
 .row--stack {
   grid-template-columns: 1fr;
