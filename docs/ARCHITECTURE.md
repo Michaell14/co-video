@@ -220,6 +220,13 @@ when it starts.
   generated lazily by priority — what is on screen now is always computed before what you have
   scrolled past.
 
+**Offline.** The production build ships a small generated service worker (see
+`apps/editor/vite.config.ts`): the page is network-first with a cached fallback, hashed code and
+fonts are cache-first, and API calls, sockets and media range requests are never intercepted.
+Together with IndexedDB (documents) and OPFS (media) that makes a cold start with no network
+complete. A session that opens offline keeps retrying the server with a growing delay and syncs
+when it answers; only an explicit refusal (bad link, deleted project) stops it.
+
 The home screen deliberately does not import the engine, so it loads in a fraction of the editor's
 bundle; the editor chunk is warmed in the background while you choose a project.
 

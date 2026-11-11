@@ -36,6 +36,17 @@ export function serverAvailable(force = false): Promise<boolean> {
   return health;
 }
 
+/** The server answered, and the answer was no. (A network failure is a plain `TypeError`.) */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function call<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${serverBase()}${path}`, {
     ...init,
@@ -47,7 +58,7 @@ async function call<T>(path: string, token: string | null, init: RequestInit = {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.error ?? `Request failed (${res.status})`);
+    throw new ApiError(body?.error ?? `Request failed (${res.status})`, res.status);
   }
   return (await res.json()) as T;
 }

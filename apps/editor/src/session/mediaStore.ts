@@ -7,7 +7,7 @@
  *  - Collaborators stream media straight from the server (HTTP range requests) and cache it into
  *    their own OPFS in the background, so the first frame shows in a moment and scrubbing gets fast.
  */
-import { createProxy, ProxyCancelled, type MediaLocation, type MediaResolver } from '@tandem/engine';
+import type { MediaLocation, MediaResolver } from '@tandem/engine';
 import { api, serverBase } from './api';
 
 export interface MediaStatus {
@@ -215,6 +215,8 @@ export class MediaStore {
     const partName = `${assetId}${PROXY_SUFFIX}.part`;
     const dir = await this.directory();
     try {
+      // Loaded on demand: this module is also used by the home screen, which must stay light.
+      const { createProxy, ProxyCancelled } = await import('@tandem/engine');
       if (ctrl.signal.aborted) throw new ProxyCancelled();
       const source = await this.readLocal(assetId);
       if (!dir || !source) throw new Error('The original file has to be on this device to make a proxy.');
@@ -247,7 +249,7 @@ export class MediaStore {
       return true;
     } catch (err) {
       await dir?.removeEntry(partName).catch(() => {});
-      if (err instanceof ProxyCancelled || ctrl.signal.aborted) this.patch(assetId, { proxying: null });
+      if ((err as Error)?.name === 'ProxyCancelled' || ctrl.signal.aborted) this.patch(assetId, { proxying: null });
       else this.patch(assetId, { proxying: null, error: err instanceof Error ? err.message : 'Could not make a proxy' });
       return false;
     } finally {

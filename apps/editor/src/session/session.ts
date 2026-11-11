@@ -23,7 +23,7 @@ import {
 import { Player, probeFile, proxySize, type MediaResolver } from '@tandem/engine';
 import { useUI } from '../state/ui';
 import { toast } from '../ui/core';
-import { api, serverAvailable, wsBase } from './api';
+import { api, ApiError, serverAvailable, wsBase } from './api';
 import { TimelineMedia } from '../features/timeline/mediaCache';
 import { MediaStore, moveProjectMedia } from './mediaStore';
 import { idbName, whenSynced } from './projects';
@@ -79,6 +79,10 @@ export class Session {
   private pendingPresence: Partial<PresenceState> = {};
   private mediaTimer: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectDelay = 2000;
+  /** The server rejected this link (bad token, deleted project): retrying will not help. */
+  private refused = false;
 
   private constructor(readonly id: string) {
     this.store = new ProjectStore(this.doc);
@@ -205,8 +209,39 @@ export class Session {
       // Unknown project, no way to fetch it.
       if (this.store.isEmpty()) this.setMeta({ denied: true });
     }
+    // Opened with no network (or a server that was down): keep knocking.
+    if (this.token && !online && this.store.isEmpty()) this.setMeta({ denied: true });
+    this.scheduleReconnect();
+    const onNetwork = (): void => {
+      this.reconnectDelay = 0;
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+      if (this.token) this.scheduleReconnect();
+      else void serverAvailable(true).then((up) => !this.destroyed && up !== this.meta.online && this.setMeta({ online: up }));
+    };
+    window.addEventListener('online', onNetwork);
+    this.unsubs.push(() => window.removeEventListener('online', onNetwork));
     this.scheduleRegistry();
     this.scheduleMediaSync();
+  }
+
+  /**
+   * A shared project that is not connected yet (opened offline, or the server was unreachable)
+   * retries with a growing delay until it is, or until the server refuses the link outright.
+   */
+  private scheduleReconnect(): void {
+    if (this.destroyed || this.reconnectTimer || !this.token || this.providers.length || this.refused) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void (async () => {
+        const online = await serverAvailable(true);
+        if (this.destroyed) return;
+        if (online !== this.meta.online) this.setMeta({ online });
+        if (online) await this.connect();
+        this.reconnectDelay = Math.min(30_000, Math.max(2000, this.reconnectDelay * 1.6));
+        this.scheduleReconnect();
+      })();
+    }, this.reconnectDelay);
   }
 
   private async connect(): Promise<void> {
@@ -217,9 +252,13 @@ export class Session {
       this.setMeta({ role: info.role, shared: true });
     } catch (err) {
       console.warn('[session] project not reachable on server', err);
+      // Only a real refusal is final; a network failure is retried by scheduleReconnect.
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429) this.refused = true;
+      // Nothing local to show either way; if this was only the network, a later attempt clears it.
       if (this.store.isEmpty()) this.setMeta({ denied: true });
       return;
     }
+    if (this.meta.denied) this.setMeta({ denied: false });
     this.awareness.setLocalStateField('role', this.meta.role);
     this.media.setRemote({ projectId: this.id, token, canWrite: canEdit(this.meta.role) });
     const q = `?t=${encodeURIComponent(token)}`;
@@ -285,6 +324,7 @@ export class Session {
     if (this.registryTimer) clearTimeout(this.registryTimer);
     if (this.presenceTimer) clearTimeout(this.presenceTimer);
     if (this.mediaTimer) clearTimeout(this.mediaTimer);
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.flushRegistry();
     this.meta.player?.dispose();
     for (const p of this.providers) p.destroy();

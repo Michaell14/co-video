@@ -58,6 +58,8 @@ function isDirectory(path: string): boolean {
 function cacheControl(relativePath: string, extension: string): string {
   // The entry documents must be revalidated, or a deploy would not reach returning visitors.
   if (extension === '.html') return 'no-cache';
+  // Same for the service worker and the web-app manifest: both describe "the current build".
+  if (relativePath.endsWith('/sw.js') || extension === '.webmanifest') return 'no-cache';
   // Vite puts content-hashed files into assets/: a new build means new names, so cache for good.
   if (relativePath.startsWith('/assets/')) return 'public, max-age=31536000, immutable';
   return 'public, max-age=3600';

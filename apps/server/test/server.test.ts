@@ -1174,6 +1174,8 @@ describe('static hosting', () => {
     await writeFile(join(siteDist, 'robots.txt'), 'User-agent: *');
     await writeFile(join(editorDist, 'index.html'), '<div id="app">editor</div>');
     await writeFile(join(editorDist, 'assets', 'index-abc123.js'), 'console.log(1)');
+    await writeFile(join(editorDist, 'sw.js'), '// service worker');
+    await writeFile(join(editorDist, 'manifest.webmanifest'), '{}');
     await writeFile(join(editorDist, '.env'), 'SECRET=1');
     await writeFile(join(root, 'secret.txt'), 'top secret');
 
@@ -1208,6 +1210,14 @@ describe('static hosting', () => {
     expect(res.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
     expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
     expect(await res.text()).toBe('console.log(1)');
+
+    // The service worker and manifest describe the current build, so they are always revalidated.
+    res = await api.fetch('/app/sw.js');
+    expect(res.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+    expect(res.headers.get('cache-control')).toBe('no-cache');
+    res = await api.fetch('/app/manifest.webmanifest');
+    expect(res.headers.get('content-type')).toBe('application/manifest+json; charset=utf-8');
+    expect(res.headers.get('cache-control')).toBe('no-cache');
 
     // Client-side routes get the app shell; missing files do not.
     res = await api.fetch('/app/p/someProjectId123?t=token');

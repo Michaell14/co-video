@@ -95,7 +95,8 @@ with projects stored in your browser.
 - Time-coded comments with replies and resolve
 - Share links with **editor**, **commenter** and **viewer** roles, enforced by the server
 - Named versions plus automatic snapshots, with one-click (undoable) restore
-- Offline-first: keep editing on a plane; changes merge when you reconnect
+- Offline-first: the editor is an installable web app that opens with no network, projects and
+  media live on your device, and changes merge when you reconnect
 - Media syncs itself — originals upload in resumable chunks and collaborators stream them
   immediately while a local copy downloads in the background
 

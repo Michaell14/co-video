@@ -99,6 +99,7 @@ function Workspace() {
         <div style={{ color: 'var(--fg-3)', maxWidth: 380, textAlign: 'center', lineHeight: 1.5 }}>
           It is not stored on this device, and the link either expired or the collaboration server cannot be reached.
         </div>
+        {!meta.online && <div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Still trying to reach the server…</div>}
         <Button onClick={() => navigate(null)}>Back to projects</Button>
       </div>
     );
