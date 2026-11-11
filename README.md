@@ -167,8 +167,10 @@ pnpm test:e2e     # Playwright: editor + server + render engine in Chromium
 ```
 
 The end-to-end suite drives the real application: it edits with the mouse, exports through the
-export dialog and inspects the files with `ffprobe`, connects several browsers to one project, and
-checks that a 10-bit PQ source reaches a 10-bit PQ export bit-exactly.
+export dialog and inspects the files with `ffprobe`, connects several browsers to one project,
+records a voiceover from a fake microphone, builds a proxy, and checks that a 10-bit PQ source
+reaches a 10-bit PQ export bit-exactly. CI runs all of it on every pull request, and also builds
+the Docker image and checks what the container serves.
 
 ## How it is built
 
@@ -201,8 +203,13 @@ Three ideas carry most of the weight:
   permission model.
 - HDR *display* preview is tone-mapped to SDR in the viewer; scopes read true PQ nits and exports
   are true HDR. Wide-gamut canvas output is not wired up yet.
-- Speed changes resample audio (pitch follows speed); there is no pitch-preserving time stretch.
+- Speed changes resample audio (pitch follows speed); there is no pitch-preserving time stretch,
+  and no keyframed speed ramps.
 - No multicam, no nested sequences, no motion tracking, no AI features. Not yet.
+- Proxies are made and kept per device; collaborators each create their own. HDR sources are not
+  proxied.
+- EDL export is cuts-only (transitions are listed as comments) and assumes source timecode starts
+  at zero.
 - Performance on very long 4K+ timelines has been engineered for (virtualised timeline,
   look-ahead decode, preview-resolution scaling) but has only been measured on modest hardware.
 
