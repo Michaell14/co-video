@@ -93,11 +93,15 @@ function readTrack(id: ID, json: Record<string, unknown>): Track | null {
 
 function readAsset(id: ID, json: Record<string, unknown>): Asset | null {
   if (typeof json.kind !== 'string') return null;
+  const asset = conform(ASSET_DEFAULTS, json);
   return {
-    ...conform(ASSET_DEFAULTS, json),
+    ...asset,
     id,
     kind: json.kind as Asset['kind'],
     name: typeof json.name === 'string' ? json.name : 'Untitled',
+    // A poster is an inline image. Anything else (a remote URL a peer slipped in) would make every
+    // collaborator's browser call out to it.
+    thumb: typeof asset.thumb === 'string' && /^data:image\/(png|jpeg|webp|avif);/.test(asset.thumb) ? asset.thumb : null,
   };
 }
 

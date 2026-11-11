@@ -156,6 +156,29 @@ describe('ProjectStore', () => {
     expect(s.get().clips.junk).toBeUndefined();
   });
 
+  it('only accepts inline images as asset posters', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    const put = (id: string, thumb: unknown) => {
+      const m = new Y.Map<unknown>();
+      m.set('kind', 'video');
+      m.set('name', id);
+      m.set('thumb', thumb);
+      s.doc.getMap('assets').set(id, m);
+    };
+    s.doc.transact(() => {
+      put('ok', 'data:image/jpeg;base64,AAAA');
+      put('remote', 'https://tracker.example/pixel.png');
+      put('script', 'javascript:alert(1)');
+      put('svg', 'data:image/svg+xml;base64,AAAA');
+    });
+    const a = s.get().assets;
+    expect(a.ok.thumb).toBe('data:image/jpeg;base64,AAAA');
+    expect(a.remote.thumb).toBeNull();
+    expect(a.script.thumb).toBeNull();
+    expect(a.svg.thumb).toBeNull();
+  });
+
   it('saves and loads project files', () => {
     const s = new ProjectStore();
     s.initIfEmpty({ name: 'File test' });

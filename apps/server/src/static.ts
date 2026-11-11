@@ -92,6 +92,36 @@ async function openFile(path: string): Promise<OpenFile | null> {
   return null;
 }
 
+/**
+ * Headers for the HTML documents we serve. The pages load nothing from other origins, so the policy
+ * can say so: even if markup were ever injected, it could not pull in a script, post a form
+ * elsewhere, or be framed by another site.
+ */
+export function documentSecurityHeaders(req: IncomingMessage): Record<string, string> {
+  // Older engines do not let 'self' cover WebSockets, so name our own host explicitly.
+  const host = typeof req.headers.host === 'string' && /^[A-Za-z0-9.-]+(:\d{1,5})?$/.test(req.headers.host) ? req.headers.host : null;
+  const sockets = host ? ` ws://${host} wss://${host}` : '';
+  return {
+    'Content-Security-Policy': [
+      "default-src 'self'",
+      // WebAssembly is allowed for codec fallbacks; inline and remote scripts are not.
+      "script-src 'self' 'wasm-unsafe-eval'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "media-src 'self' data: blob:",
+      "font-src 'self' data:",
+      `connect-src 'self' data: blob:${sockets}`,
+      "worker-src 'self' blob:",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+    ].join('; '),
+    'X-Frame-Options': 'DENY',
+    'Permissions-Policy': 'camera=(), geolocation=(), payment=(), usb=(), microphone=(self)',
+  };
+}
+
 async function sendFile(
   req: IncomingMessage,
   res: ServerResponse,
@@ -101,11 +131,12 @@ async function sendFile(
   cache: string,
 ): Promise<void> {
   const etag = `W/"${file.size.toString(16)}-${Math.floor(file.mtimeMs).toString(16)}"`;
-  const headers = {
+  const headers: Record<string, string> = {
     'Content-Type': contentType,
     'Cache-Control': cache,
     ETag: etag,
     'Last-Modified': new Date(file.mtimeMs).toUTCString(),
+    ...(contentType.startsWith('text/html') ? documentSecurityHeaders(req) : null),
   };
   if (status === 200 && req.headers['if-none-match'] === etag) {
     await file.handle.close();

@@ -125,6 +125,9 @@ What the server enforces:
   creation 30/hour and invites 120/hour per client address (in memory, best effort).
 - Uploaded files are served with their stored content type, `X-Content-Type-Options: nosniff` and
   `Content-Security-Policy: sandbox`, so an uploaded HTML or SVG file cannot run script in the app's origin.
+- The pages themselves (site and editor) are served with a Content-Security-Policy that allows scripts,
+  styles, media and connections from their own origin only, `frame-ancestors 'none'` / `X-Frame-Options:
+  DENY`, and a Permissions-Policy that grants the microphone (voiceover) and nothing else.
 
 What it does **not** do — know this before exposing a server:
 

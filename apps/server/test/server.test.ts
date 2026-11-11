@@ -1186,11 +1186,19 @@ describe('static hosting', () => {
     expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
     expect(res.headers.get('cache-control')).toBe('no-cache');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    // Documents are locked to their own origin and may not be framed.
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("script-src 'self' 'wasm-unsafe-eval'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toMatch(/connect-src 'self' data: blob: ws:\/\/[\w.:-]+ wss:\/\/[\w.:-]+/);
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
     expect(await res.text()).toBe('<h1>site</h1>');
 
     res = await api.fetch('/assets/site-abc123.css');
     expect(res.headers.get('content-type')).toBe('text/css; charset=utf-8');
     expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    expect(res.headers.get('content-security-policy')).toBeNull(); // documents only
 
     res = await api.fetch('/robots.txt');
     expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
