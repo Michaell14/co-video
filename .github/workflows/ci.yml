@@ -48,3 +48,25 @@ jobs:
           name: playwright-results
           path: test-results
           retention-days: 7
+
+  docker:
+    name: Docker image builds and serves
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t tandem .
+      - name: Start the container and check what it serves
+        run: |
+          docker run -d --name tandem -p 8787:8787 tandem
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8787/api/health && break
+            sleep 1
+          done
+          curl -fsS http://localhost:8787/api/health | grep -q '"ok":true'
+          curl -fsS http://localhost:8787/ | grep -qi '<title>Tandem'
+          curl -fsS http://localhost:8787/app/ | grep -q '<div id="root">'
+          curl -fsS http://localhost:8787/app/sw.js | grep -q 'tandem-'
+          curl -fsSI http://localhost:8787/app/ | grep -qi '^content-security-policy:'
+      - if: always()
+        run: docker logs tandem || true
