@@ -238,6 +238,46 @@ test.describe('editor', () => {
     expect(errors).toEqual([]);
   });
 
+  test('records a voiceover onto a free audio track', async ({ page }) => {
+    const errors = trackErrors(page);
+    await newProject(page);
+    await importFixtures(page, ['testsrc.mp4']);
+    await page.evaluate(() => {
+      const { session, cmd } = (window as any).tandem;
+      cmd.seek(0);
+      cmd.addAsset(Object.values(session.store.get().assets)[0]);
+      cmd.seek(15);
+    });
+    // Chromium's fake capture device stands in for the microphone (see playwright.config.ts).
+    await page.getByRole('button', { name: 'Record voiceover' }).click();
+    await expect(page.locator('.rec')).toBeVisible();
+    expect(await page.evaluate(() => (window as any).tandem.session.player.getState().playing)).toBe(true);
+    await page.waitForTimeout(1500);
+    await page.keyboard.press('Shift+r');
+    await page.waitForFunction(() => Object.values((window as any).tandem.session.store.get().clips).length === 3);
+    const take = await page.evaluate(async () => {
+      const s = (window as any).tandem.session;
+      const p = s.store.get();
+      const asset: any = Object.values(p.assets).find((a: any) => a.name === 'Voiceover 1.wav');
+      const clip: any = Object.values(p.clips).find((c: any) => c.assetId === asset.id);
+      const alone = Object.values(p.clips).filter((c: any) => c.trackId === clip.trackId).length === 1;
+      const loc = await s.exportResolver()(asset.id);
+      const audio = await new AudioContext().decodeAudioData(await loc.blob.arrayBuffer());
+      let peak = 0;
+      for (const v of audio.getChannelData(0)) peak = Math.max(peak, Math.abs(v));
+      return { kind: asset.kind, seconds: audio.duration, start: clip.start, type: clip.type, alone, peak, playing: s.player.getState().playing };
+    });
+    expect(take.kind).toBe('audio');
+    expect(take.type).toBe('audio');
+    expect(take.start).toBe(15); // where the playhead was when recording began
+    expect(take.alone).toBe(true); // never recorded over existing sound
+    expect(take.seconds).toBeGreaterThan(1);
+    expect(take.peak).toBeGreaterThan(0.05); // the fake device beeps: this is not silence
+    expect(take.playing).toBe(false);
+    await expect(page.locator('.rec')).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
   test('feature sweep produces no runtime or GL errors', async ({ page }) => {
     const errors = trackErrors(page);
     await newProject(page);

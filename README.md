@@ -84,6 +84,8 @@ with projects stored in your browser.
 ### Audio
 - Per-clip gain, pan and equal-power fades (all keyframeable); per-track fader, pan, mute, solo,
   three-band EQ and compressor; live peak meters; waveforms on the timeline
+- **Voiceover recording** straight onto the timeline: the take lands on a free track where the
+  playhead was, as an uncompressed, sample-accurate WAV
 - The same mixer graph renders the preview and the export, so what you hear is what you deliver
 
 ### Multiplayer

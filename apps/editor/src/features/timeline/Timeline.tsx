@@ -12,6 +12,7 @@ import {
   LockOpen,
   Magnet,
   Maximize2,
+  Mic,
   MousePointer2,
   MoveHorizontal,
   Plus,
@@ -210,6 +211,7 @@ function Toolbar() {
       <IconButton label="Add text" keys="t" tipPlace="top" onClick={() => cmd.addText()}>
         <Type />
       </IconButton>
+      <VoiceoverButton />
       <div style={{ flex: 1 }} />
       <IconButton label="Zoom out" keys="minus" tipPlace="top" onClick={() => cmd.zoom(1 / 1.4)}>
         <ZoomOut />
@@ -644,5 +646,45 @@ function Scrollbar({ width, end, ppf, scrollX }: { width: number; end: number; p
         />
       </div>
     </div>
+  );
+}
+
+/** Starts and stops a voiceover take; while recording it shows the running time and input level. */
+function VoiceoverButton() {
+  const recording = useUI((s) => s.recording);
+  const [, tick] = useState(0);
+  const level = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!recording) return;
+    const timer = setInterval(() => tick((n) => n + 1), 250);
+    let raf = 0;
+    const meter = () => {
+      if (level.current) level.current.style.transform = `scaleX(${Math.min(1, cmd.voiceoverLevel() * 1.4).toFixed(3)})`;
+      raf = requestAnimationFrame(meter);
+    };
+    raf = requestAnimationFrame(meter);
+    return () => {
+      clearInterval(timer);
+      cancelAnimationFrame(raf);
+    };
+  }, [recording]);
+  if (!recording) {
+    return (
+      <IconButton label="Record voiceover" keys="shift+r" tipPlace="top" onClick={() => void cmd.toggleVoiceover()}>
+        <Mic />
+      </IconButton>
+    );
+  }
+  const secs = Math.floor((performance.now() - recording.startedAt) / 1000);
+  return (
+    <button className="rec" onClick={() => void cmd.toggleVoiceover()} aria-label="Stop recording" {...tip('Stop recording', 'shift+r', 'top')}>
+      <span className="rec__dot" />
+      <span className="mono">
+        {Math.floor(secs / 60)}:{String(secs % 60).padStart(2, '0')}
+      </span>
+      <span className="rec__meter">
+        <i ref={level} />
+      </span>
+    </button>
   );
 }

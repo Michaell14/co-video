@@ -52,7 +52,7 @@ import {
   type ShapeProps,
   type TextProps,
 } from '@tandem/core';
-import { renderStill } from '@tandem/engine';
+import { renderStill, VoiceRecorder } from '@tandem/engine';
 import { currentSession } from '../session/hooks';
 import type { Session } from '../session/session';
 import { toast } from '../ui/core';
@@ -139,6 +139,9 @@ export function downloadBlob(blob: Blob, name: string): void {
 }
 
 const safeName = (s: string): string => s.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Untitled';
+
+let recorder: VoiceRecorder | null = null;
+let recorderBusy = false;
 
 export const MEDIA_ACCEPT = 'video/*,audio/*,image/*,.mkv,.mov,.ts,.cube,.srt,.vtt';
 
@@ -585,6 +588,79 @@ export const cmd = {
   },
 
   // ───────────────────────────────────────────────────────────────── files ──
+  /**
+   * Voiceover: the first call starts recording the microphone and plays the timeline from the
+   * playhead; the second stops, and the take lands on a free audio track where it began.
+   */
+  async toggleVoiceover(): Promise<void> {
+    const s = session();
+    if (!s || recorderBusy) return;
+    if (!recorder) {
+      if (!s.canEdit) {
+        toast('You have view-only access to this project.', 'error');
+        return;
+      }
+      recorderBusy = true;
+      try {
+        recorder = await VoiceRecorder.start();
+      } catch (err) {
+        const name = (err as Error)?.name;
+        toast(
+          name === 'NotAllowedError'
+            ? 'Microphone access was blocked. Allow it for this site to record a voiceover.'
+            : name === 'NotFoundError'
+              ? 'No microphone was found.'
+              : err instanceof Error
+                ? err.message
+                : 'Could not start recording.',
+          'error',
+        );
+        return;
+      } finally {
+        recorderBusy = false;
+      }
+      ui().set({ recording: { startFrame: frame(), startedAt: performance.now() } });
+      s.getMeta().player?.play();
+      return;
+    }
+    const rec = recorder;
+    const info = ui().recording;
+    recorder = null;
+    recorderBusy = true;
+    ui().set({ recording: null });
+    s.getMeta().player?.pause();
+    try {
+      const blob = await rec.stop();
+      const taken = new Set(Object.values(s.store.get().assets).map((a) => a.name));
+      let n = 1;
+      while (taken.has(`Voiceover ${n}.wav`)) n++;
+      const [asset] = await s.importFiles([new File([blob], `Voiceover ${n}.wav`, { type: 'audio/wav' })]);
+      if (!asset) return;
+      // Start the clip where recording began; skip the input latency so speech lines up with picture.
+      const r = addAssetToTimeline(s.store.get(), asset, { frame: info?.startFrame ?? 0, sourceIn: rec.latency });
+      s.store.commit(r.edits);
+      ui().select(r.created);
+      toast('Voiceover added to the timeline.', 'success');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'The recording could not be saved.', 'error');
+    } finally {
+      recorderBusy = false;
+    }
+  },
+
+  /** Throw away a recording in progress (the project is closing). */
+  cancelVoiceover(): void {
+    const rec = recorder;
+    recorder = null;
+    if (ui().recording) ui().set({ recording: null });
+    void rec?.cancel();
+  },
+
+  /** Microphone peak, 0…1, while recording. */
+  voiceoverLevel(): number {
+    return recorder?.level() ?? 0;
+  },
+
   /** Make preview proxies for every large video that has none. */
   createProxies(): void {
     const s = session();

@@ -681,3 +681,53 @@
 .peer-cursor--tl {
   z-index: 5;
 }
+
+/* ── voiceover recording ─────────────────────────────────────────────── */
+.rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: var(--r-sm, 6px);
+  border: 1px solid color-mix(in srgb, var(--red) 55%, transparent);
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+  color: var(--text, #fff);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.rec:hover {
+  background: color-mix(in srgb, var(--red) 26%, transparent);
+}
+.rec__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  animation: rec-pulse 1.1s ease-in-out infinite;
+}
+.rec__meter {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.rec__meter i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+}
+@keyframes rec-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rec__dot {
+    animation: none;
+  }
+}

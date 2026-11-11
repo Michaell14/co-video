@@ -8,6 +8,7 @@ export * from './media/library';
 export * from './media/proxy';
 export * from './media/sources';
 export * from './audio/graph';
+export * from './audio/recorder';
 export * from './player';
 export * from './export';
 export * from './gl/shaders';

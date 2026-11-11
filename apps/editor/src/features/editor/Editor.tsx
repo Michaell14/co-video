@@ -49,6 +49,7 @@ export function Editor({ projectId, token }: { projectId: string; token: string 
       });
     return () => {
       cancelled = true;
+      cmd.cancelVoiceover();
       useUI.getState().set({ selection: [], selectedTransition: null, preview: null, dialog: null, following: null, sourceAsset: null });
       if (opened) {
         setCurrentSession(null);

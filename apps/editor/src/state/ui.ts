@@ -45,6 +45,8 @@ export interface UIState {
   /** Asset shown in the source monitor, or null for the programme. */
   sourceAsset: ID | null;
   scopes: { waveform: boolean; parade: boolean; vectorscope: boolean; histogram: boolean };
+  /** A voiceover is being recorded: where on the timeline it began, and when. */
+  recording: { startFrame: number; startedAt: number } | null;
 
   select: (ids: ID[], additive?: boolean) => void;
   toggleSelect: (id: ID) => void;
@@ -86,6 +88,7 @@ export const useUI = create<UIState>((set, get) => ({
   clipboard: [],
   attributes: null,
   sourceAsset: null,
+  recording: null,
   scopes: persisted.scopes ?? { waveform: true, parade: true, vectorscope: true, histogram: false },
 
   select: (ids, additive) =>

@@ -24,7 +24,13 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
     acceptDownloads: true,
     launchOptions: {
-      args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--autoplay-policy=no-user-gesture-required'],
+      args: [
+        '--enable-unsafe-swiftshader',
+        '--use-angle=swiftshader',
+        '--autoplay-policy=no-user-gesture-required',
+        '--use-fake-device-for-media-stream',
+        '--use-fake-ui-for-media-stream',
+      ],
     },
   },
   webServer: [
