@@ -1,0 +1,57 @@
+/* Small shared pieces used by several features. */
+.muted {
+  color: var(--fg-3);
+}
+.hstack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vstack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 14px;
+  font-size: var(--text-sm);
+}
+.kv dt {
+  color: var(--fg-3);
+}
+.kv dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.callout {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  box-shadow: inset 0 0 0 1px var(--line-1);
+  color: var(--fg-2);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.callout svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--fg-3);
+}
+.callout--warn {
+  background: rgba(255, 181, 71, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 181, 71, 0.25);
+}
+.callout--warn svg {
+  color: var(--amber);
+}

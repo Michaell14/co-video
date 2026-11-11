@@ -37,6 +37,7 @@ import {
 } from '@tandem/core';
 import { runEffect, transitionProgram, type FxContext } from './effectRunner';
 import { Glx, PRESENT_VS, type Program, type RenderTarget } from './glx';
+import { layerMatrix, layoutLayer } from './layout';
 import { bakeCurves, gradeUniforms, hasHueCurves, hasRgbCurves, isNeutralGrade } from './grade';
 import {
   BLEND_FS,
@@ -150,6 +151,7 @@ export class Compositor {
       desynchronized: true,
     }) as WebGL2RenderingContext | null;
     if (!gl) throw new Error('WebGL2 is not available in this browser.');
+    if (gl.isContextLost()) throw new Error('The graphics context was lost. Reload the page to continue.');
     this.gl = gl;
     this.glx = new Glx(gl, opts.float !== false);
 
@@ -464,33 +466,8 @@ export class Compositor {
     // Layout box in device pixels.
     const W = this.width;
     const H = this.height;
-    let boxW: number;
-    let boxH: number;
-    const renderScale = H / project.settings.height;
-    switch (media ? clip.fit : clip.type === 'solid' ? 'stretch' : 'none') {
-      case 'cover': {
-        const k = Math.max(W / srcW, H / srcH);
-        boxW = srcW * k;
-        boxH = srcH * k;
-        break;
-      }
-      case 'stretch':
-        boxW = W;
-        boxH = H;
-        break;
-      case 'none':
-        // Generators are rasterised at render resolution already; media maps 1:1 to sequence pixels.
-        boxW = media ? srcW * renderScale : srcW;
-        boxH = media ? srcH * renderScale : srcH;
-        break;
-      default: {
-        const k = Math.min(W / srcW, H / srcH);
-        boxW = srcW * k;
-        boxH = srcH * k;
-      }
-    }
-    const sx = L.v.scaleX * L.anim.scale;
-    const sy = L.v.scaleY * L.anim.scale;
+    const box = layoutLayer(L, srcW, srcH, W, H, H / project.settings.height);
+    const { boxW, boxH, sx, sy } = box;
 
     // Layer-space processing (media only).
     let img: Img = src;
@@ -518,7 +495,7 @@ export class Compositor {
     return {
       img,
       owned,
-      matrix: this.layerMatrix(L, boxW, boxH, sx, sy),
+      matrix: layerMatrix(box, W, H),
       boxPx: [Math.max(1, boxW * Math.abs(sx)), Math.max(1, boxH * Math.abs(sy))],
       frameSteps: this.stepsFor(L, true),
       L,
@@ -532,28 +509,6 @@ export class Compositor {
     const hdrProject = isHdrMode(project.settings.colorMode);
     if (hdrProject) return true; // gamut conversion into Rec.2020 working space
     return space !== 'rec709' && space !== 'srgb';
-  }
-
-  private layerMatrix(L: ClipLayer, boxW: number, boxH: number, sx: number, sy: number): Float32Array {
-    const W = this.width;
-    const H = this.height;
-    const clip = L.clip;
-    const a = boxW * sx;
-    const b = boxH * sy;
-    const r = (L.v.rotation + L.anim.rotation) * DEG;
-    const c = Math.cos(r);
-    const s = Math.sin(r);
-    const ax = clip.anchorX;
-    const ay = clip.anchorY;
-    const px = W / 2 + (L.v.x + L.anim.dx) * W + (ax - 0.5) * boxW;
-    const py = H / 2 + (L.v.y + L.anim.dy) * H + (ay - 0.5) * boxH;
-    const m00 = (2 / W) * c * a;
-    const m01 = (2 / W) * -s * b;
-    const m02 = (2 / W) * (px - c * a * ax + s * b * ay) - 1;
-    const m10 = (2 / H) * s * a;
-    const m11 = (2 / H) * c * b;
-    const m12 = (2 / H) * (py - s * a * ax - c * b * ay) - 1;
-    return new Float32Array([m00, m10, 0, m01, m11, 0, m02, m12, 1]);
   }
 
   private identityMatrix(): Float32Array {
@@ -851,8 +806,12 @@ export class Compositor {
     this.glx.release(this.last);
     this.last = null;
     this.glx.dispose();
-    const ext = this.gl.getExtension('WEBGL_lose_context');
-    ext?.loseContext();
+    // Off-screen contexts are ours alone, so drop them now to return GPU memory promptly. An
+    // on-screen canvas may be handed to a new Compositor (it would get this same context back),
+    // so that one is left alive.
+    if (typeof OffscreenCanvas !== 'undefined' && this.canvas instanceof OffscreenCanvas) {
+      this.gl.getExtension('WEBGL_lose_context')?.loseContext();
+    }
   }
 }
 

@@ -1,0 +1,227 @@
+.mixer {
+  display: flex;
+}
+.mixer[data-readonly='true'] {
+  pointer-events: none;
+  opacity: 0.75;
+}
+.mixer__strips {
+  display: flex;
+  gap: 6px;
+  padding: 10px;
+  min-height: 100%;
+  overflow-x: auto;
+  flex: 1;
+}
+.strip {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  flex: 0 0 92px;
+  padding: 8px 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px var(--line-1);
+  transition: opacity var(--dur-2) ease;
+}
+.strip[data-muted='true'] .strip__main {
+  opacity: 0.4;
+}
+.strip--master {
+  background: var(--bg-1);
+  margin-left: auto;
+}
+.strip__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--fg-2);
+  min-height: 18px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.strip__pan {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  font-size: 9.5px;
+  color: var(--fg-3);
+}
+.strip__pan .slider {
+  height: 20px;
+}
+.strip__pan .mono {
+  flex: 0 0 22px;
+  text-align: right;
+}
+.strip__main {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex: 1;
+  min-height: 150px;
+  transition: opacity var(--dur-2) ease;
+}
+.strip__hint {
+  color: var(--fg-4);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.meter {
+  display: flex;
+  gap: 2px;
+}
+.meter__ch {
+  position: relative;
+  width: 6px;
+  border-radius: 2px;
+  background: var(--bg-0);
+  overflow: hidden;
+}
+.strip--master .meter__ch {
+  width: 12px;
+}
+.meter__bar {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 100%;
+  transform: scaleY(0);
+  background: linear-gradient(0deg, #3ddc84 0%, #3ddc84 62%, #ffd43b 80%, #ff5d5d 96%);
+}
+.meter__bar[data-clip='true'] {
+  background: var(--red);
+}
+.meter__peak {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1.5px;
+  background: #fff;
+  opacity: 0.8;
+}
+.fader {
+  position: relative;
+  width: 44px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.fader__track {
+  position: absolute;
+  left: 9px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--bg-0);
+}
+.fader__cap {
+  position: absolute;
+  left: 0;
+  width: 21px;
+  height: 16px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #e9e9ee, #a9a9b6);
+  box-shadow:
+    0 2px 5px rgba(0, 0, 0, 0.6),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+  transition: filter var(--dur-1) ease;
+}
+.fader__cap::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 7px;
+  height: 2px;
+  background: #33333c;
+}
+.fader:hover .fader__cap,
+.fader[data-active='true'] .fader__cap {
+  filter: brightness(1.15);
+}
+.fader[data-active='true'] .fader__cap::after {
+  background: var(--accent-press);
+}
+.fader__scale span {
+  position: absolute;
+  left: 24px;
+  transform: translateY(50%);
+  color: var(--fg-4);
+  font-size: 8.5px;
+  font-family: var(--font-mono);
+}
+.fader__scale span[data-zero='true'] {
+  color: var(--fg-2);
+}
+.strip__btns {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+}
+.strip__btn {
+  height: 22px;
+  border-radius: var(--r-sm);
+  background: var(--bg-5);
+  color: var(--fg-2);
+  font-size: 10px;
+  font-weight: 800;
+  transition:
+    background var(--dur-1) ease,
+    color var(--dur-1) ease,
+    transform var(--dur-1) ease;
+}
+.strip__btn:hover {
+  background: var(--bg-6);
+  color: var(--fg-1);
+}
+.strip__btn:active {
+  transform: scale(0.94);
+}
+.strip__btn--mute {
+  background: var(--red);
+  color: #fff;
+}
+.strip__btn--solo {
+  background: var(--amber);
+  color: #1a1203;
+}
+.strip__btn--fx {
+  color: var(--accent);
+}
+.strip__fx {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: slide-up var(--dur-3) var(--ease-out);
+}
+.strip__fxhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+  color: var(--fg-2);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.strip__knob {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: 4px;
+  font-size: 9.5px;
+  color: var(--fg-3);
+}
+.strip__knob .slider {
+  grid-column: 1 / -1;
+  height: 16px;
+}
+.strip__knob em {
+  font-style: normal;
+  color: var(--fg-2);
+}

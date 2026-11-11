@@ -1,5 +1,6 @@
 export * from './gl/glx';
 export * from './gl/compositor';
+export * from './gl/layout';
 export * from './gl/effectRunner';
 export * from './gl/grade';
 export * from './generators';
@@ -8,3 +9,4 @@ export * from './media/sources';
 export * from './audio/graph';
 export * from './player';
 export * from './export';
+export * from './gl/shaders';

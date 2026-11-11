@@ -26,11 +26,44 @@ importers:
 
   apps/editor:
     dependencies:
+      '@fontsource-variable/caveat':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@fontsource-variable/inter':
         specifier: ^5.1.0
         version: 5.3.0
       '@fontsource-variable/jetbrains-mono':
         specifier: ^5.1.0
+        version: 5.3.0
+      '@fontsource-variable/montserrat':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource-variable/oswald':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource-variable/playfair-display':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource-variable/space-grotesk':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/anton':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/archivo-black':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/bebas-neue':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/dm-serif-display':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/pacifico':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/permanent-marker':
+        specifier: ^5.3.0
         version: 5.3.0
       '@tandem/core':
         specifier: workspace:*
@@ -484,11 +517,44 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@fontsource-variable/caveat@5.3.0':
+    resolution: {integrity: sha512-Q3mjghoYIlXgwqBPJKZ4q6f3zu921Gq7UU76r9Z+NAmhapHfX130GIFpOCYf8vt2SIcgCi9RHDT7anfJKg/kiA==}
+
   '@fontsource-variable/inter@5.3.0':
     resolution: {integrity: sha512-OupL48va4JNofb97w6NYeF9S7W/kHNKM0Er8Dem5nqi4jeOLrVJDoE8tZEpnMJmtkvNbB1EIPPwHcdkF6b1oUA==}
 
   '@fontsource-variable/jetbrains-mono@5.3.0':
     resolution: {integrity: sha512-F32xpS2NsGYoQi2ADSkKTgpJj7ozajsGgDJ8woTnqjmIB+dxDIqImjl4pXZVEExu8UFZ2ndhmX18EBS/hdz3Lw==}
+
+  '@fontsource-variable/montserrat@5.3.0':
+    resolution: {integrity: sha512-7PaZoxaxrWLAyrhO46v65An9LhUhfkTExWLhfbywYZCnZEgg/W1rEHnlNmZKjNZ3nJTVYyicqxlJt10z/26yTA==}
+
+  '@fontsource-variable/oswald@5.3.0':
+    resolution: {integrity: sha512-sSZzcTeaQGNyZbTVlS4tNNHElK38UktFLqKd6NQDLFCBV27320rQC3kXSZVytYm1PPjKmPxqVaGwqj7LEKUWQw==}
+
+  '@fontsource-variable/playfair-display@5.3.0':
+    resolution: {integrity: sha512-IHdzTvE8eGIXHteZql7KXoqdc3Gfm+Zs1u4XlSC3MeplkwviT3sx/P6gI0tLwg/xIYLF4ZJYveZ5V+bl9cnDwA==}
+
+  '@fontsource-variable/space-grotesk@5.3.0':
+    resolution: {integrity: sha512-2IxmvfB08i9vnGB3Ym/AXvhRE+8XOjWMXIyDum03c+tPwH0FUoMNQfGpU8NXPxjbws0Vvss3AH0Zqt4oJBBAdw==}
+
+  '@fontsource/anton@5.3.0':
+    resolution: {integrity: sha512-OR1D5n124n2XRs66SbX7IjcOSptljEJE8FcDNnlni2y1/M6KpTx7cU2PIWzTSsBj4WFkHPw24On8qw3qkQZuTw==}
+
+  '@fontsource/archivo-black@5.3.0':
+    resolution: {integrity: sha512-7EsTIQ+Blf96ktpzTUpI7msi+u9/AJxM/GZxOSkEubVd1jSTrFSTNxMgfpX/8rQsjZ+19a+qvRbtcTEp5J/72g==}
+
+  '@fontsource/bebas-neue@5.3.0':
+    resolution: {integrity: sha512-nCxMEb9Bg9sjNWm9TIOsvHKDMLRUfEZPWpLgYu6m9KavZZVSA/WoHzI5wROwqA+eNwEi/PNBAcB5Co7HA3S0Cw==}
+
+  '@fontsource/dm-serif-display@5.3.0':
+    resolution: {integrity: sha512-ecRclUcYeto9fB7ghkB36H4MtUoaUYFjjornWYYeLCMHzaWEDPk2kIWgZOq0mKBNRxclRSieKcFeLonlMYDTKg==}
+
+  '@fontsource/pacifico@5.3.0':
+    resolution: {integrity: sha512-bWv0fHR1n36p7scRn+maaEaVeQCOq9yvfVfjyAeUzKrK4Y/3qiRAEj4hJgfxj/sjgZZGkeHyKPrbWdDaZtpCVw==}
+
+  '@fontsource/permanent-marker@5.3.0':
+    resolution: {integrity: sha512-ZO/NtYW4SCc/iY8N3dmjWyDITcXJ/vhWZFgnwRcvzwCKKnScMrM/a2/6VHlsjCVuIgmPzNrCFbedEYhv+/jJBg==}
 
   '@jridgewell/resolve-uri@3.1.2':
     resolution: {integrity: sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw==}
@@ -1336,9 +1402,31 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
+  '@fontsource-variable/caveat@5.3.0': {}
+
   '@fontsource-variable/inter@5.3.0': {}
 
   '@fontsource-variable/jetbrains-mono@5.3.0': {}
+
+  '@fontsource-variable/montserrat@5.3.0': {}
+
+  '@fontsource-variable/oswald@5.3.0': {}
+
+  '@fontsource-variable/playfair-display@5.3.0': {}
+
+  '@fontsource-variable/space-grotesk@5.3.0': {}
+
+  '@fontsource/anton@5.3.0': {}
+
+  '@fontsource/archivo-black@5.3.0': {}
+
+  '@fontsource/bebas-neue@5.3.0': {}
+
+  '@fontsource/dm-serif-display@5.3.0': {}
+
+  '@fontsource/pacifico@5.3.0': {}
+
+  '@fontsource/permanent-marker@5.3.0': {}
 
   '@jridgewell/resolve-uri@3.1.2': {}
 
