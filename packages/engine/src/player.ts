@@ -53,9 +53,7 @@ export interface PlayerStats {
 type Listener = () => void;
 
 export class Player {
-  readonly compositor: Compositor;
   readonly library: MediaLibrary;
-  readonly sources: SourceManager;
   stats: PlayerStats = { fps: 0, renderMs: 0, dropped: 0, renderWidth: 0, renderHeight: 0, passes: 0 };
 
   private project: Project;
@@ -70,6 +68,9 @@ export class Player {
     falseColor: false,
   };
   private frame = 0;
+  /** Everything that lives on the graphics context; rebuilt when the context comes back after a loss. */
+  private stage: { compositor: Compositor; sources: SourceManager };
+  private lost = false;
   private stateListeners = new Set<Listener>();
   private frameListeners = new Set<(frame: number) => void>();
   private raf = 0;
@@ -101,25 +102,83 @@ export class Player {
   /** After a step that did not help, do not probe again until this time. */
   private adaptBlockedUntil = 0;
 
-  constructor(canvas: HTMLCanvasElement | OffscreenCanvas, project: Project, resolver: MediaResolver) {
+  constructor(
+    private readonly canvas: HTMLCanvasElement | OffscreenCanvas,
+    project: Project,
+    resolver: MediaResolver,
+  ) {
     this.project = project;
-    this.compositor = new Compositor(canvas);
     this.library = new MediaLibrary(resolver);
-    this.sources = new SourceManager(this.compositor.glx, this.library);
-    this.sources.onInvalidate = () => {
-      this.dirty = true;
-    };
-    if ('addEventListener' in canvas) {
-      canvas.addEventListener('webglcontextlost', (e) => {
-        e.preventDefault();
-        this.compositor.glx.markLost();
-      });
-    }
+    this.stage = this.buildStage();
+    canvas.addEventListener('webglcontextlost', this.onContextLost);
+    canvas.addEventListener('webglcontextrestored', this.onContextRestored);
     this.applySize();
     this.raf = requestAnimationFrame(this.tick);
     this.scheduleWarm();
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisibility);
   }
+
+  // ────────────────────────────────────────────────────── graphics context ──
+
+  /** Replaced when the graphics context is restored after a loss: do not hold on to it. */
+  get compositor(): Compositor {
+    return this.stage.compositor;
+  }
+
+  /** Replaced together with `compositor`. */
+  get sources(): SourceManager {
+    return this.stage.sources;
+  }
+
+  /**
+   * True from the moment the browser takes the graphics context away (GPU reset, too many contexts,
+   * memory pressure) until it has been restored and rebuilt. Nothing is drawn meanwhile; `subscribe`
+   * listeners are told when it changes.
+   */
+  get contextLost(): boolean {
+    return this.lost;
+  }
+
+  private buildStage(): { compositor: Compositor; sources: SourceManager } {
+    const compositor = new Compositor(this.canvas);
+    const sources = new SourceManager(compositor.glx, this.library);
+    sources.onInvalidate = () => {
+      this.dirty = true;
+    };
+    return { compositor, sources };
+  }
+
+  private readonly onContextLost = (e: Event): void => {
+    // Without this the browser never offers the context back.
+    e.preventDefault();
+    if (this.lost) return;
+    this.lost = true;
+    // Programs, render targets and source textures went with the context. Stop the decoders that
+    // feed those textures now; they start again on the context that replaces this one.
+    this.stage.compositor.glx.markLost();
+    this.stage.sources.dispose();
+    this.notify();
+  };
+
+  private readonly onContextRestored = (): void => {
+    if (!this.lost || this.disposed) return;
+    let stage: { compositor: Compositor; sources: SourceManager };
+    try {
+      stage = this.buildStage();
+    } catch (err) {
+      // Lost again before it could be rebuilt; the next restore gets another go.
+      console.warn('[player] could not rebuild the graphics context', err);
+      return;
+    }
+    stage.sources.direction = this.stage.sources.direction;
+    this.stage = stage;
+    this.lost = false;
+    this.applySize();
+    this.dirty = true;
+    this.warmedFor = null;
+    this.scheduleWarm();
+    this.notify();
+  };
 
   // ─────────────────────────────────────────────────────────────── state ──
 
@@ -140,6 +199,10 @@ export class Player {
 
   private setState(patch: Partial<PlayerState>): void {
     this.state = { ...this.state, ...patch };
+    this.notify();
+  }
+
+  private notify(): void {
     for (const fn of Array.from(this.stateListeners)) fn();
   }
 
@@ -488,8 +551,14 @@ export class Player {
       const skipped = Math.abs(display - this.lastDrawn) - 1;
       if (skipped > 0 && Math.abs(this.state.rate) <= 1) this.stats.dropped += skipped;
     }
-    this.dirty = false;
     this.lastDrawn = display;
+    if (this.compositor.glx.contextLost) {
+      // Nothing to draw on. The playhead and the sound carry on, and the picture catches up when
+      // the context is back.
+      if (advanced) this.emitFrame();
+      return;
+    }
+    this.dirty = false;
 
     const t0 = performance.now();
     const desc = resolveFrame(this.project, display);
@@ -606,6 +675,8 @@ export class Player {
   dispose(): void {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
+    this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     if (this.pumpTimer) clearInterval(this.pumpTimer);
     if (this.warmTimer) clearTimeout(this.warmTimer);
     if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisibility);

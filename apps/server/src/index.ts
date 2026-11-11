@@ -1,7 +1,12 @@
 /** Process entry point: configuration from the environment, startup line, graceful shutdown. */
 import { resolve } from 'node:path';
 import { DEFAULT_MAX_CONNECTIONS_PER_ROOM } from './rooms';
-import { DEFAULT_MAX_CONNECTIONS_PER_IP, SERVER_VERSION, createTandemServer } from './server';
+import {
+  DEFAULT_CREATES_PER_HOUR,
+  DEFAULT_MAX_CONNECTIONS_PER_IP,
+  SERVER_VERSION,
+  createTandemServer,
+} from './server';
 
 function fail(message: string): never {
   console.error(`[tandem] ${message}`);
@@ -40,6 +45,7 @@ const server = await createTandemServer({
   siteDist: text('SITE_DIST'),
   maxUploadBytes: integer('MAX_UPLOAD_BYTES', 20 * 1024 ** 3, 1),
   openCreate: flag('TANDEM_OPEN_CREATE', true),
+  createsPerHour: integer('MAX_CREATES_PER_HOUR', DEFAULT_CREATES_PER_HOUR, 1),
   autoSnapshotMs: integer('AUTO_SNAPSHOT_MS', 10 * 60 * 1000),
   trustProxy: flag('TRUST_PROXY', false),
   maxConnectionsPerIp: integer('MAX_CONNECTIONS_PER_IP', DEFAULT_MAX_CONNECTIONS_PER_IP, 1),

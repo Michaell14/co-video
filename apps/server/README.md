@@ -44,6 +44,7 @@ await server.close();
 | `SITE_DIST`                | `../site/dist`         | Built site, served at `/`.                                                                                   |
 | `MAX_UPLOAD_BYTES`         | `21474836480` (20 GiB) | Largest single asset.                                                                                        |
 | `TANDEM_OPEN_CREATE`       | `true`                 | Whether anyone may `POST /api/projects`. With `false` the endpoint answers 403.                              |
+| `MAX_CREATES_PER_HOUR`     | `30`                   | Projects one client address may create per hour. More are refused with `429`.                                |
 | `AUTO_SNAPSHOT_MS`         | `600000` (10 min)      | Interval of automatic versions while a project changes; `0` turns them off.                                  |
 | `TRUST_PROXY`              | `false`                | Tell clients apart by the last `X-Forwarded-For` entry. Enable only behind a reverse proxy that sets it.     |
 | `MAX_CONNECTIONS_PER_IP`   | `200`                  | WebSockets one client address may hold open at a time (an editor tab uses two). More are refused with `429`. |

@@ -30,7 +30,8 @@ export const SERVER_VERSION: string = packageJson.version;
 const HOUR_MS = 60 * 60 * 1000;
 const DEFAULT_MAX_UPLOAD_BYTES = 20 * 1024 ** 3;
 const DEFAULT_AUTO_SNAPSHOT_MS = 10 * 60 * 1000;
-const CREATES_PER_HOUR = 30;
+/** Projects one client address may create per hour. */
+export const DEFAULT_CREATES_PER_HOUR = 30;
 const INVITES_PER_HOUR = 120;
 /**
  * Open WebSockets per client address. A backstop against one client exhausting memory, not a
@@ -64,6 +65,8 @@ export interface TandemServerOptions {
   autoSnapshotMs?: number;
   /** Whether `POST /api/projects` is open to anyone. Default true. */
   openCreate?: boolean;
+  /** Projects one client address may create per hour. Default 30. */
+  createsPerHour?: number;
   /** Tell clients apart by the address a reverse proxy reports in `X-Forwarded-For`. Default false. */
   trustProxy?: boolean;
   /** WebSockets one client address may hold open at a time. Default 200. */
@@ -135,7 +138,7 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
     corsOrigin: options.corsOrigin ?? '*',
     openCreate: options.openCreate ?? true,
     trustProxy,
-    createLimiter: new RateLimiter(CREATES_PER_HOUR, HOUR_MS),
+    createLimiter: new RateLimiter(options.createsPerHour ?? DEFAULT_CREATES_PER_HOUR, HOUR_MS),
     inviteLimiter: new RateLimiter(INVITES_PER_HOUR, HOUR_MS),
   });
   const handleStatic = createStaticHandler({

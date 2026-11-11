@@ -26,28 +26,28 @@ export interface FxContext {
   lumaW: readonly [number, number, number];
 }
 
-const failed = new Set<string>();
+/**
+ * Passes of one effect that share their GLSL (the steps of a blur's down-sampling chain, its
+ * horizontal and vertical halves) share one program too: the key names the first such pass.
+ */
+function passKey(def: EffectDef, index: number): string {
+  const glsl = def.passes[index].glsl;
+  return `fx:${def.id}:${def.passes.findIndex((p) => p.glsl === glsl)}`;
+}
 
 function effectProgram(glx: Glx, def: EffectDef, index: number): Program | null {
-  const key = `fx:${def.id}:${index}`;
-  if (failed.has(key)) return null;
-  try {
-    return glx.program(
-      key,
+  // A broken shader must never take the whole render down: the effect is skipped instead.
+  return glx.tryProgram(
+    passKey(def, index),
+    () =>
       GLSL_EFFECT_HEADER +
-        GLSL_COMMON +
-        GLSL_EFFECT_SAMPLERS +
-        paramUniformDecls(def.params) +
-        '\n' +
-        def.passes[index].glsl +
-        GLSL_EFFECT_FOOTER,
-    );
-  } catch (err) {
-    // A broken shader must never take the whole render down; skip the effect and say so once.
-    failed.add(key);
-    console.error(err);
-    return null;
-  }
+      GLSL_COMMON +
+      GLSL_EFFECT_SAMPLERS +
+      paramUniformDecls(def.params) +
+      '\n' +
+      def.passes[index].glsl +
+      GLSL_EFFECT_FOOTER,
+  );
 }
 
 function paramUniforms(params: ResolvedParams): Record<string, UniformValue> {
@@ -58,7 +58,8 @@ function paramUniforms(params: ResolvedParams): Record<string, UniformValue> {
 
 /**
  * Run an effect on `input`, returning a NEW render target the same size as the input.
- * The input target is left untouched; the caller owns (and releases) both.
+ * The input target is left untouched; the caller owns (and releases) both. The passes actually
+ * drawn (an effect skips those its parameters do not need) are added to `stats`.
  */
 export function runEffect(
   glx: Glx,
@@ -66,6 +67,7 @@ export function runEffect(
   params: ResolvedParams,
   input: { tex: WebGLTexture; width: number; height: number },
   fx: FxContext,
+  stats?: { passes: number },
 ): RenderTarget | null {
   const pc: PassContext = { px: fx.px, width: input.width, height: input.height };
   const base = paramUniforms(params);
@@ -98,6 +100,7 @@ export function runEffect(
       u_aspect: input.width / input.height,
       u_lumaW: fx.lumaW,
     });
+    if (stats) stats.passes++;
     glx.release(owned);
     owned = target;
     src = target;
@@ -108,6 +111,7 @@ export function runEffect(
     // The chain ended at reduced resolution (e.g. a wide blur): bring it back up.
     const full = glx.acquire(input.width, input.height);
     glx.pass(glx.program('copy', COPY_FS), full, { u_tex: owned.tex, u_opacity: 1 });
+    if (stats) stats.passes++;
     glx.release(owned);
     owned = full;
   }
@@ -115,24 +119,17 @@ export function runEffect(
 }
 
 export function transitionProgram(glx: Glx, def: TransitionDef): Program | null {
-  const key = `tr:${def.id}`;
-  if (failed.has(key)) return null;
-  try {
-    return glx.program(
-      key,
+  return glx.tryProgram(
+    `tr:${def.id}`,
+    () =>
       GLSL_TRANSITION_HEADER +
-        GLSL_COMMON +
-        GLSL_TRANSITION_SAMPLERS +
-        paramUniformDecls(def.params) +
-        '\n' +
-        def.glsl +
-        GLSL_TRANSITION_FOOTER,
-    );
-  } catch (err) {
-    failed.add(key);
-    console.error(err);
-    return null;
-  }
+      GLSL_COMMON +
+      GLSL_TRANSITION_SAMPLERS +
+      paramUniformDecls(def.params) +
+      '\n' +
+      def.glsl +
+      GLSL_TRANSITION_FOOTER,
+  );
 }
 
 /**
@@ -145,17 +142,17 @@ export function warmNext(
   effects: Iterable<EffectDef>,
   transitions: Iterable<TransitionDef>,
 ): boolean {
+  // Nothing can be compiled until the context is back; whoever restores it starts over.
+  if (glx.contextLost) return false;
   for (const e of effects) {
     for (let i = 0; i < e.passes.length; i++) {
-      const key = `fx:${e.id}:${i}`;
-      if (failed.has(key) || glx.hasProgram(key)) continue;
+      if (glx.settled(passKey(e, i))) continue;
       effectProgram(glx, e, i);
       return true;
     }
   }
   for (const t of transitions) {
-    const key = `tr:${t.id}`;
-    if (failed.has(key) || glx.hasProgram(key)) continue;
+    if (glx.settled(`tr:${t.id}`)) continue;
     transitionProgram(glx, t);
     return true;
   }

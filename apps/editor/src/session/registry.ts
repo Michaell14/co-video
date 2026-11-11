@@ -1,5 +1,5 @@
 /** The list of projects this browser knows about, plus the local user's identity. */
-import { colorForId, newId, randomUserName, type PresenceUser } from '@tandem/core';
+import { colorForId, newId, randomUserName, type PresenceUser, type Role } from '@tandem/core';
 
 export interface ProjectEntry {
   id: string;
@@ -8,6 +8,8 @@ export interface ProjectEntry {
   updatedAt: number;
   /** Capability token for the collaboration server, if the project is shared. */
   token: string | null;
+  /** What `token` allows, as the server last confirmed it. Absent in entries from before it was kept. */
+  role?: Role;
   /** Poster frame, small data URL. */
   thumb: string | null;
   width: number;

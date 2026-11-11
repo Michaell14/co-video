@@ -36,7 +36,13 @@ export default defineConfig({
   webServer: [
     {
       command: 'pnpm --filter @tandem/server exec tsx src/index.ts',
-      env: { PORT: String(SERVER_PORT), DATA_DIR: dataDir, HOST: '127.0.0.1' },
+      // The suite creates far more projects from one address than a person would in an hour.
+      env: {
+        PORT: String(SERVER_PORT),
+        DATA_DIR: dataDir,
+        HOST: '127.0.0.1',
+        MAX_CREATES_PER_HOUR: '100000',
+      },
       url: `http://localhost:${SERVER_PORT}/api/health`,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,

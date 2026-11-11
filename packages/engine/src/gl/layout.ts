@@ -3,7 +3,7 @@
  * by the editor's on-canvas transform handles (to hit-test and drag), so the two can never disagree.
  */
 import type { Clip, ClipLayer, Project } from '@tandem/core';
-import { generatorKey, rasterizeGenerator } from '../generators';
+import { fontEpoch, generatorKey, rasterizeGenerator } from '../generators';
 
 export interface LayerBox {
   /** Un-scaled layout box in frame pixels. */
@@ -115,7 +115,8 @@ export function measureClip(clip: Clip, project: Project): { w: number; h: numbe
   }
   if (clip.type === 'solid' || clip.type === 'adjustment') return { w: width, h: height };
   if (clip.type === 'audio') return null;
-  const key = generatorKey(clip, width, height, 1, 0);
+  // Keyed by font epoch too: a title measured before its font arrived used a fallback face.
+  const key = generatorKey(clip, width, height, 1, fontEpoch());
   let m = measureCache.get(key);
   if (!m) {
     const r = rasterizeGenerator(clip, width, height, 1);

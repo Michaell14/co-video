@@ -4,7 +4,7 @@
  */
 import { IndexeddbPersistence } from 'y-indexeddb';
 import * as Y from 'yjs';
-import { newProjectId, ProjectStore, type ProjectSettings } from '@tandem/core';
+import { newProjectId, ProjectStore, type Project, type ProjectSettings } from '@tandem/core';
 import { api, serverAvailable } from './api';
 import { deleteProjectMedia } from './mediaStore';
 import { registry } from './registry';
@@ -21,8 +21,11 @@ export function whenSynced(p: IndexeddbPersistence, timeoutMs = 4000): Promise<v
   });
 }
 
-/** Create a brand-new project and return its id. Registers on the server when one is reachable. */
-export async function createProject(settings: Partial<ProjectSettings>): Promise<string> {
+/**
+ * Create a brand-new project and return its id. Registers on the server when one is reachable.
+ * With `content` (a project file being opened) the new project starts as a copy of it.
+ */
+export async function createProject(settings: Partial<ProjectSettings>, content?: Project): Promise<string> {
   let id = newProjectId();
   let token: string | null = null;
   if (await serverAvailable()) {
@@ -37,13 +40,23 @@ export async function createProject(settings: Partial<ProjectSettings>): Promise
   const doc = new Y.Doc();
   const store = new ProjectStore(doc);
   store.initIfEmpty(settings);
+  if (content) store.replaceAll(content);
   const idb = new IndexeddbPersistence(idbName(id, 'project'), doc);
   await whenSynced(idb);
   // y-indexeddb writes asynchronously; give the initial state a beat to land before navigating.
   await new Promise((r) => setTimeout(r, 60));
   await idb.destroy();
   const s = store.get().settings;
-  registry.upsert({ id, name: s.name, token, width: s.width, height: s.height, fps: s.fpsNum / s.fpsDen });
+  registry.upsert({
+    id,
+    name: s.name,
+    token,
+    // The server hands the creator an owner token.
+    role: token ? 'owner' : undefined,
+    width: s.width,
+    height: s.height,
+    fps: s.fpsNum / s.fpsDen,
+  });
   store.destroy();
   doc.destroy();
   return id;

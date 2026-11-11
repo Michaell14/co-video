@@ -248,21 +248,22 @@ export function Lanes({ lanes, height, width, live }: Props) {
     e.currentTarget.setPointerCapture(e.pointerId);
 
     if (clip && !locked) {
+      // What a gesture on this clip acts on: the clip and, with linked selection on, its partners.
+      // A partner on a locked track is left out, whatever the tool.
+      const group = effectiveSelection(p, [clip.id]);
       if (tool === 'blade') {
         if (!editable) return;
         let at = Math.round(f);
         const ph = playhead();
         if (ui().snapping && Math.abs(at - ph) * ui().ppf < 8) at = ph;
-        const ids = ui().linkedSelection ? withLinked(p, [clip.id]) : [clip.id];
-        commit(splitClips(p, ids, at).edits);
+        commit(splitClips(p, group, at).edits);
         return;
       }
       if (tool === 'slip') {
         if (!editable) return;
-        const ids = ui().linkedSelection ? withLinked(p, [clip.id]) : [clip.id];
-        ui().select(ids);
+        ui().select(group);
         session.store.beginGesture();
-        drag.current = { kind: 'slip', ids, x0: e.clientX, restore: playhead() };
+        drag.current = { kind: 'slip', ids: group, x0: e.clientX, restore: playhead() };
         return;
       }
       const handle = target.closest<HTMLElement>('[data-handle]')?.dataset.handle;
@@ -288,8 +289,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
         return;
       }
       if ((handle === 'start' || handle === 'end') && editable) {
-        const ids = ui().linkedSelection ? withLinked(p, [clip.id]) : [clip.id];
-        if (!selectedSet.has(clip.id)) ui().select(ids);
+        if (!selectedSet.has(clip.id)) ui().select(group);
         // Ctrl/⌘ on a cut between two touching clips rolls the edit instead of trimming one side.
         let roll: [ID, ID] | null = null;
         if (e.metaKey || e.ctrlKey) {
@@ -302,7 +302,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
         }
         drag.current = {
           kind: 'trim',
-          ids,
+          ids: group,
           edge: handle,
           f0: f,
           restore: playhead(),
@@ -313,7 +313,6 @@ export function Lanes({ lanes, height, width, live }: Props) {
       }
       // Body: select and maybe move.
       let reselect = false;
-      const group = ui().linkedSelection ? withLinked(p, [clip.id]) : [clip.id];
       if (e.shiftKey || e.metaKey || e.ctrlKey) {
         if (selectedSet.has(clip.id)) ui().select(ui().selection.filter((id) => !group.includes(id)));
         else ui().select(group, true);

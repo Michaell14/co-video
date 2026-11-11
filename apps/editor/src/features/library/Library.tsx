@@ -8,11 +8,13 @@ import {
   Film,
   FolderInput,
   Gauge,
+  HardDriveDownload,
   Image as ImageIcon,
   Layers,
   MonitorPlay,
   Plus,
   RefreshCw,
+  RotateCw,
   Search,
   Sparkles,
   Square,
@@ -182,6 +184,8 @@ function AssetCard({ asset }: { asset: Asset }) {
     [usage, asset.id],
   );
   const available = status.local || (asset.uploaded && meta.shared);
+  // A file this device could not keep goes with the page, unless the server has it by then.
+  const unkept = status.unsaved === 'failed' && !(asset.uploaded && meta.shared);
   const Icon =
     asset.kind === 'audio'
       ? AudioLines
@@ -235,6 +239,13 @@ function AssetCard({ asset }: { asset: Asset }) {
             icon: <RefreshCw />,
             onSelect: () => void cmd.replaceMedia(asset.id),
           },
+          status.transferError
+            ? {
+                label: asset.uploaded ? 'Retry download' : 'Retry upload',
+                icon: <RotateCw />,
+                onSelect: () => session.retryTransfer(asset.id),
+              }
+            : null,
           status.proxying !== null
             ? { label: 'Cancel proxy', icon: <Gauge />, onSelect: () => session.media.cancelProxy(asset.id) }
             : status.proxy
@@ -265,8 +276,8 @@ function AssetCard({ asset }: { asset: Asset }) {
         {asset.duration > 0 && <span className="asset__dur mono">{formatClock(asset.duration)}</span>}
         {asset.hdr && <span className="asset__hdr badge badge--amber">HDR</span>}
         <span className="asset__status">
-          {status.error ? (
-            <span {...tip(status.error)}>
+          {status.transferError ? (
+            <span {...tip(`${status.transferError}. Right-click to retry now.`)}>
               <CircleAlert style={{ color: 'var(--red)' }} />
             </span>
           ) : status.uploading !== null ? (
@@ -280,6 +291,18 @@ function AssetCard({ asset }: { asset: Asset }) {
           ) : status.proxying !== null ? (
             <span {...tip(`Making proxy ${Math.round(status.proxying * 100)}%`)}>
               <Gauge />
+            </span>
+          ) : status.proxyError ? (
+            <span {...tip(status.proxyError)}>
+              <CircleAlert style={{ color: 'var(--red)' }} />
+            </span>
+          ) : unkept ? (
+            <span {...tip('Not saved on this device: it is gone after a reload')}>
+              <CircleAlert style={{ color: 'var(--amber)' }} />
+            </span>
+          ) : status.unsaved === 'saving' ? (
+            <span {...tip('Saving to this device…')}>
+              <HardDriveDownload />
             </span>
           ) : !available ? (
             <span {...tip('Media offline: not on this device or the server')}>

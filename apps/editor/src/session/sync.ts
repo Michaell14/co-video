@@ -16,9 +16,18 @@ interface Options {
   onStatus?: (status: SyncStatus) => void;
   onControl?: (msg: ControlMessage) => void;
   onSynced?: () => void;
-  /** Called when the server rejects the connection outright (bad token, unknown project). */
-  onDenied?: () => void;
+  /**
+   * Called each time the socket fails to open once it has failed a few times in a row. The server
+   * is turning the connection away, and a browser is not told why: the token may be bad or the
+   * project gone (401 / 404), or the server may be at capacity (429 / 503).
+   */
+  onRefused?: () => void;
+  /** Called when the server ends an open connection to make room in a full project (close code 1013). */
+  onDisplaced?: () => void;
 }
+
+/** "Try again later": sent to a read-only connection whose place a full room gives to an editor. */
+const CLOSE_TRY_AGAIN_LATER = 1013;
 
 export class SyncProvider {
   status: SyncStatus = 'offline';
@@ -92,7 +101,7 @@ export class SyncProvider {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (this.ws !== ws) return;
       this.ws = null;
       this.synced = false;
@@ -102,8 +111,9 @@ export class SyncProvider {
         awarenessProtocol.removeAwarenessStates(aw, others, this);
       }
       this.setStatus('offline');
-      // A socket that never opened usually means the server refused the upgrade (401 / 404).
-      if (!this.opened && this.retry >= 2) this.opts.onDenied?.();
+      if (this.opened && ev.code === CLOSE_TRY_AGAIN_LATER) this.opts.onDisplaced?.();
+      // A socket that never opens means the server refuses the upgrade.
+      if (!this.opened && this.retry >= 2) this.opts.onRefused?.();
       this.schedule();
     };
     ws.onerror = () => {

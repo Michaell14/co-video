@@ -162,6 +162,26 @@ uniform sampler2D u_tex;
 uniform float u_opacity;
 void main() { outColor = texture(u_tex, v_uv) * u_opacity; }`;
 
+/**
+ * Shrinks a picture by up to 2× per axis, averaging what lies under each output pixel. A bilinear
+ * tap is the mean of a one-texel square of the source; four of them are pushed apart by `u_spread`
+ * until together they span the pixel. At 2× they sit on the four texels of a block, which is a box
+ * filter, and at 1× they coincide, which is a copy. A single tap would skip texels as the reduction
+ * nears 2× and turn fine detail into moiré.
+ */
+export const REDUCE_FS = /* glsl */ `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 outColor;
+uniform sampler2D u_tex;
+uniform vec2 u_spread;
+void main() {
+  vec2 d = vec2(u_spread.x, -u_spread.y);
+  outColor = 0.25 * (
+    texture(u_tex, v_uv - u_spread) + texture(u_tex, v_uv + d) +
+    texture(u_tex, v_uv - d) + texture(u_tex, v_uv + u_spread));
+}`;
+
 export const BLEND_MODE_IDS: Record<string, number> = {
   normal: 0,
   multiply: 1,
@@ -398,8 +418,11 @@ vec3 grade(vec3 c) {
   }
 
   if (u_lutEnabled == 1) {
-    vec3 p = clamp(c, 0.0, 1.0);
-    vec3 graded = texture(u_lut, p * ((u_lutSize - 1.0) / u_lutSize) + 0.5 / u_lutSize).rgb;
+    // A LUT only covers 0…1. Brighter colours (HDR highlights) are looked up at the same hue and
+    // saturation on the LUT's edge and keep their own level, instead of all landing on its top entry.
+    float over = max(1.0, max(c.r, max(c.g, c.b)));
+    vec3 p = clamp(c / over, 0.0, 1.0);
+    vec3 graded = texture(u_lut, p * ((u_lutSize - 1.0) / u_lutSize) + 0.5 / u_lutSize).rgb * over;
     c = mix(c, graded, u_lutIntensity);
   }
   return c;
@@ -446,10 +469,8 @@ uniform mat3 u_outMat;
 uniform float u_dither;
 uniform int u_falseColor;
 vec3 displayTransform(vec3 c) {
-  if (u_outMode == 0) {
-    if (u_toneMap != 0) c = fromLinear(toneMap(toLinear(c), u_toneMap, 4.0));
-    return c;
-  }
+  // An SDR timeline is already display-referred: wide sources were rolled off on the way in.
+  if (u_outMode == 0) return c;
   vec3 lin = max(toLinear(c), 0.0);
   if (u_outMode == 1) {
     lin = toneMap(lin, u_toneMap == 0 ? 4 : u_toneMap, u_peak);

@@ -80,6 +80,18 @@ export class ExportCancelled extends Error {
   }
 }
 
+/**
+ * A lost context draws nothing and reads back blank frames without raising an error anywhere, so
+ * every frame taken from the compositor is followed by this check.
+ */
+function assertContext(compositor: Compositor): void {
+  if (compositor.glx.contextLost) {
+    throw new Error(
+      'The graphics context was lost while rendering. Close other GPU-heavy tabs or lower the resolution, then try again.',
+    );
+  }
+}
+
 export function outputFormatFor(container: ExportContainer): OutputFormat {
   switch (container) {
     case 'mov':
@@ -428,6 +440,7 @@ export async function exportProject(
           await sampleSource.add(sample);
           sample.close();
         }
+        assertContext(compositor);
         timings.encode += (performance.now() - p2) / 1000;
         sources.collect(60_000);
         await pumpAudio(t, false);
@@ -477,6 +490,7 @@ export async function renderStill(project: Project, resolver: MediaResolver, fra
     await sources.prepare(project, desc, true);
     compositor.render(project, desc, sources, { skipPresent: true });
     const pixels = compositor.readPixels();
+    assertContext(compositor);
     const out = new OffscreenCanvas(width, height);
     const ctx = out.getContext('2d')!;
     ctx.putImageData(new ImageData(new Uint8ClampedArray(pixels.buffer as ArrayBuffer), width, height), 0, 0);

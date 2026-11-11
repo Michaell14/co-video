@@ -2,6 +2,7 @@
 import { secondsToFrame } from '@tandem/core';
 import { currentSession } from '../session/hooks';
 import { cmd } from './commands';
+import { eventKeys } from './keys';
 import { useUI } from './ui';
 
 export interface Command {
@@ -120,6 +121,20 @@ export const COMMANDS: Command[] = [
     run: () => cmd.pasteAttributes('all'),
   },
   { id: 'select-all', title: 'Select all', group: 'Edit', keys: ['mod+a'], run: () => cmd.selectAll() },
+  {
+    id: 'select-right',
+    title: 'Select all clips to the right of the playhead',
+    group: 'Edit',
+    keys: ['shift+end'],
+    run: () => cmd.selectBeside('right'),
+  },
+  {
+    id: 'select-left',
+    title: 'Select all clips to the left of the playhead',
+    group: 'Edit',
+    keys: ['shift+home'],
+    run: () => cmd.selectBeside('left'),
+  },
   { id: 'deselect', title: 'Deselect all', group: 'Edit', keys: ['escape'], run: () => cmd.deselect() },
   {
     id: 'delete',
@@ -281,6 +296,22 @@ export const COMMANDS: Command[] = [
 
   // Markers & range
   { id: 'marker', title: 'Add / remove marker', group: 'Markers', keys: ['m'], run: () => cmd.addMarker() },
+  {
+    id: 'next-marker',
+    title: 'Go to next marker',
+    group: 'Markers',
+    keys: ['shift+m'],
+    run: () => cmd.goToMarker(1),
+    repeat: true,
+  },
+  {
+    id: 'prev-marker',
+    title: 'Go to previous marker',
+    group: 'Markers',
+    keys: ['mod+shift+m', 'alt+m'],
+    run: () => cmd.goToMarker(-1),
+    repeat: true,
+  },
   { id: 'mark-in', title: 'Mark in', group: 'Markers', keys: ['i'], run: () => cmd.markIn() },
   { id: 'mark-out', title: 'Mark out', group: 'Markers', keys: ['o'], run: () => cmd.markOut() },
   {
@@ -314,7 +345,7 @@ export const COMMANDS: Command[] = [
     id: 'zoom-in',
     title: 'Zoom in timeline',
     group: 'View',
-    keys: ['equal', 'mod+equal'],
+    keys: ['equal', 'mod+equal', 'shift+equal', 'mod+shift+equal'],
     run: () => cmd.zoom(1.4),
     repeat: true,
   },
@@ -332,6 +363,13 @@ export const COMMANDS: Command[] = [
     group: 'View',
     keys: ['shift+z'],
     run: () => cmd.zoomFit(),
+  },
+  {
+    id: 'zoom-selection',
+    title: 'Zoom timeline to selection',
+    group: 'View',
+    keys: ['z'],
+    run: () => cmd.zoomToSelection(),
   },
   {
     id: 'ws-edit',
@@ -435,6 +473,12 @@ export const COMMANDS: Command[] = [
     run: () => void cmd.openProjectFile(),
   },
   {
+    id: 'replace-file',
+    title: 'Replace this project with a project file…',
+    group: 'File',
+    run: () => void cmd.replaceWithProjectFile(),
+  },
+  {
     id: 'still',
     title: 'Export current frame as PNG',
     group: 'File',
@@ -451,39 +495,6 @@ export const COMMANDS: Command[] = [
     run: () => ui().set({ dialog: 'project' }),
   },
 ];
-
-const KEY_NAMES: Record<string, string> = {
-  ' ': 'space',
-  '=': 'equal',
-  '+': 'equal',
-  '-': 'minus',
-  _: 'minus',
-  ',': 'comma',
-  '<': 'comma',
-  '.': 'period',
-  '>': 'period',
-  '/': 'slash',
-  '?': 'slash',
-  '\\': 'backslash',
-  "'": 'quote',
-  '"': 'quote',
-  '!': '1',
-  '@': '2',
-  '#': '3',
-};
-
-/** Canonical string for a keyboard event, e.g. `mod+shift+z`. */
-export function eventKeys(e: KeyboardEvent): string {
-  let key = KEY_NAMES[e.key] ?? e.key.toLowerCase();
-  // Shifted digits arrive as symbols on most layouts; fall back to the physical key.
-  if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
-  const parts: string[] = [];
-  if (e.metaKey || e.ctrlKey) parts.push('mod');
-  if (e.altKey) parts.push('alt');
-  if (e.shiftKey) parts.push('shift');
-  parts.push(key);
-  return parts.join('+');
-}
 
 const index = new Map<string, Command>();
 for (const c of COMMANDS) for (const k of c.keys ?? []) index.set(k, c);

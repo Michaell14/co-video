@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Splash, navigate } from '../../App';
-import { SessionContext, setCurrentSession, useSessionMeta } from '../../session/hooks';
+import { SessionContext, setCurrentSession, useSession, useSessionMeta } from '../../session/hooks';
 import { Session } from '../../session/session';
 import { cmd } from '../../state/commands';
 import { handleKey } from '../../state/shortcuts';
@@ -25,23 +25,29 @@ import './editor.css';
 export function Editor({ projectId, token }: { projectId: string; token: string | null }) {
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped when the session asks to be opened afresh (it had to throw its local copy away).
+  const [reloads, setReloads] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     let opened: Session | null = null;
-    Session.open(projectId, token)
+    // Aborting closes the session, whether it is open by then or still opening.
+    const closing = new AbortController();
+    Session.open(projectId, token, closing.signal)
       .then((s) => {
-        if (cancelled) {
-          s.destroy();
-          return;
-        }
+        if (cancelled) return;
         opened = s;
+        s.onReload = () => setReloads((n) => n + 1);
         setCurrentSession(s);
         setSession(s);
         // A small console / automation hook: `tandem.session.store.get()`, `tandem.cmd.split()`, …
         (window as unknown as { tandem?: unknown }).tandem = { session: s, ui: useUI, cmd };
-        // Keep capability tokens out of the address bar (and so out of screenshots and history).
-        if (token) history.replaceState(null, '', `#/p/${projectId}`);
+        // Keep capability tokens out of the address bar (and so out of screenshots and history),
+        // but not before the server has judged this one: until then the address is the only place
+        // it is kept, and a reload or a restored tab has to find it there.
+        const hideToken = (): void => history.replaceState(null, '', `#/p/${projectId}`);
+        if (s.linkPending) s.onLinkJudged = hideToken;
+        else if (token) hideToken();
       })
       .catch((err) => {
         console.error(err);
@@ -60,10 +66,11 @@ export function Editor({ projectId, token }: { projectId: string; token: string 
       });
       if (opened) {
         setCurrentSession(null);
-        opened.destroy();
+        setSession(null);
       }
+      closing.abort();
     };
-  }, [projectId, token]);
+  }, [projectId, token, reloads]);
 
   if (error) {
     return (
@@ -82,6 +89,7 @@ export function Editor({ projectId, token }: { projectId: string; token: string 
 }
 
 function Workspace() {
+  const session = useSession();
   const meta = useSessionMeta();
   const workspace = useUI((s) => s.workspace);
   const left = useUI((s) => s.leftWidth);
@@ -110,6 +118,23 @@ function Workspace() {
         {!meta.online && (
           <div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Still trying to reach the server…</div>
         )}
+        <Button onClick={() => navigate(null)}>Back to projects</Button>
+      </div>
+    );
+  }
+
+  if (meta.busy && !meta.synced && session.store.isEmpty()) {
+    return (
+      <div className="splash">
+        <div style={{ fontWeight: 600, fontSize: 15 }}>Waiting for a place in this project</div>
+        <div style={{ color: 'var(--fg-3)', maxWidth: 380, textAlign: 'center', lineHeight: 1.5 }}>
+          Your link is fine, but the collaboration server is at capacity right now. This page joins by itself
+          as soon as there is room.
+        </div>
+        <div className="splash__label">
+          <span className="spinner" />
+          Still trying
+        </div>
         <Button onClick={() => navigate(null)}>Back to projects</Button>
       </div>
     );

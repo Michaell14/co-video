@@ -67,6 +67,12 @@ export interface EffectDef {
    * outlines). Generators (text, shapes) always run every effect in frame space.
    */
   space?: 'layer' | 'frame';
+  /**
+   * Parameter values for the effect's library thumbnail, laid over the defaults (see
+   * `previewParams`). For effects whose defaults leave the picture as it is, because they are meant
+   * to be dialled in: the thumbnail should still show what the effect does.
+   */
+  preview?: Record<string, ParamValue>;
 }
 
 export const EFFECT_CATEGORIES: { id: EffectCategory; label: string }[] = [
@@ -136,21 +142,39 @@ vec4 effect(vec2 uv) {
   return (src(uv + vec2(-o.x, -o.y)) + src(uv + vec2(o.x, -o.y)) + src(uv + vec2(-o.x, o.y)) + src(uv + vec2(o.x, o.y))) * 0.25;
 }`;
 
-/** Chooses how far to shrink the image before blurring so wide blurs stay cheap. */
+/** Smallest scale a blur is computed at: enough for the widest blur on the largest frame. */
+const MIN_BLUR_SCALE = 1 / 256;
+
+/**
+ * Chooses how far to shrink the image before blurring, which keeps wide blurs cheap and, just as
+ * important, correct: the blur has a fixed number of taps, so sigma has to stay small enough (about
+ * six texels) for neighbouring taps to overlap. Spread further apart they step over fine detail and
+ * the blur comes out as stripes.
+ */
 export function blurScaleFor(sigmaPx: number): number {
   if (sigmaPx <= 4) return 1;
   if (sigmaPx <= 10) return 0.5;
-  if (sigmaPx <= 24) return 0.25;
-  return 0.125;
+  let scale = 0.25;
+  while (sigmaPx * scale > 6 && scale > MIN_BLUR_SCALE) scale /= 2;
+  return scale;
+}
+
+type ScaleOf = (p: ResolvedParams, c: PassContext) => number;
+
+/** Halve the image step by step until it is at `scaleOf`, which must be 1 or a power of two below it. */
+function downsamplePasses(scaleOf: ScaleOf, smallest: number): EffectPass[] {
+  const passes: EffectPass[] = [];
+  for (let scale = 0.5; scale >= smallest; scale /= 2) {
+    passes.push({ glsl: DOWNSAMPLE_GLSL, scale, skip: (p, c) => scaleOf(p, c) > scale });
+  }
+  return passes;
 }
 
 /** A separable gaussian blur with automatic down-sampling. `sigmaOf` returns sigma in device pixels. */
 function blurPasses(sigmaOf: (p: ResolvedParams, c: PassContext) => number): EffectPass[] {
-  const sc = (p: ResolvedParams, c: PassContext) => blurScaleFor(sigmaOf(p, c));
+  const sc: ScaleOf = (p, c) => blurScaleFor(sigmaOf(p, c));
   return [
-    { glsl: DOWNSAMPLE_GLSL, scale: 0.5, skip: (p, c) => sc(p, c) > 0.5 },
-    { glsl: DOWNSAMPLE_GLSL, scale: 0.25, skip: (p, c) => sc(p, c) > 0.25 },
-    { glsl: DOWNSAMPLE_GLSL, scale: 0.125, skip: (p, c) => sc(p, c) > 0.125 },
+    ...downsamplePasses(sc, MIN_BLUR_SCALE),
     {
       glsl: BLUR_GLSL,
       scale: sc,
@@ -164,6 +188,61 @@ function blurPasses(sigmaOf: (p: ResolvedParams, c: PassContext) => number): Eff
   ];
 }
 
+// Tilt-shift blurs by a different amount on every row, so it cannot use the fixed-tap blur above.
+// It weighs every texel within three sigma, fetching them two at a time, which at 24 fetches a side
+// covers a sigma of 16 texels; wider blurs are computed on a reduced copy.
+const TILT_MAX_SIGMA = 16;
+const MIN_TILT_SCALE = 1 / 32;
+
+const tiltScale: ScaleOf = (p, c) => {
+  const sigma = (p.blur as number) * 0.5 * c.px;
+  let scale = 1;
+  while (sigma * scale > TILT_MAX_SIGMA && scale > MIN_TILT_SCALE) scale /= 2;
+  return scale;
+};
+
+const TILT_SIGMA_GLSL = /* glsl */ `
+float tiltSigma(vec2 uv) {
+  float d = abs(uv.y - u_position);
+  float amt = smoothstep(u_range * 0.5, u_range * 0.5 + u_falloff, d);
+  return u_blur * 0.5 * u_px * amt;
+}`;
+
+const TILT_BLUR_GLSL = /* glsl */ `
+uniform vec2 u_dir;
+${TILT_SIGMA_GLSL}
+vec4 effect(vec2 uv) {
+  float sigma = tiltSigma(uv);
+  if (sigma < 0.3) return src(uv);
+  float inv = 0.5 / (sigma * sigma);
+  int pairs = int(ceil(min(sigma * 1.5, 24.0)));
+  vec4 acc = src(uv);
+  float wsum = 1.0;
+  for (int i = 0; i < 24; i++) {
+    if (i >= pairs) break;
+    // One bilinear fetch between two neighbouring texels, placed so that the filter gives each
+    // of them its own gaussian weight.
+    float a = float(2 * i + 1);
+    float wa = exp(-a * a * inv);
+    float wb = exp(-(a + 1.0) * (a + 1.0) * inv);
+    float w = wa + wb;
+    vec2 o = u_dir * u_texel * (a + wb / w);
+    acc += (src(uv + o) + src(uv - o)) * w;
+    wsum += 2.0 * w;
+  }
+  return acc / wsum;
+}`;
+
+// A reduced copy is soft everywhere, the band in focus included. Back at full size the original
+// takes over wherever less blur was asked for than the reduction itself gives (about one of its
+// texels).
+const TILT_MERGE_GLSL = /* glsl */ `
+uniform float u_blurScale;
+${TILT_SIGMA_GLSL}
+vec4 effect(vec2 uv) {
+  return mix(orig(uv), src(uv), smoothstep(0.0, 1.0, tiltSigma(uv) * u_blurScale));
+}`;
+
 // ───────────────────────────────────────────────────────────────── library ──
 
 export const EFFECTS: EffectDef[] = [
@@ -174,6 +253,7 @@ export const EFFECTS: EffectDef[] = [
     category: 'color',
     description: 'Lift or lower overall brightness and stretch contrast around mid-grey.',
     params: [f('brightness', 'Brightness', -1, 1, 0), f('contrast', 'Contrast', -1, 1, 0)],
+    preview: { brightness: 0.1, contrast: 0.45 },
     passes: colorFx(`c.rgb += u_brightness;
   float k = u_contrast >= 0.0 ? 1.0 + u_contrast * 2.0 : 1.0 + u_contrast;
   c.rgb = (c.rgb - 0.5) * k + 0.5;`),
@@ -184,6 +264,7 @@ export const EFFECTS: EffectDef[] = [
     category: 'color',
     description: 'Photographic exposure in stops, computed in linear light.',
     params: [f('exposure', 'Exposure', -5, 5, 0, 0.01, 'EV'), f('gamma', 'Gamma', 0.2, 3, 1)],
+    preview: { exposure: 1 },
     passes: colorFx(`vec3 l = toLinear(c.rgb) * exp2(u_exposure);
   c.rgb = fromLinear(l);
   c.rgb = sign(c.rgb) * pow(abs(c.rgb), vec3(1.0 / u_gamma));`),
@@ -198,6 +279,7 @@ export const EFFECTS: EffectDef[] = [
       f('saturation', 'Saturation', -1, 1, 0),
       f('lightness', 'Lightness', -1, 1, 0),
     ],
+    preview: { hue: 120, saturation: 0.25 },
     passes: colorFx(`vec3 h = rgb2hsv(max(c.rgb, 0.0));
   h.x = fract(h.x + u_hue / 6.28318530718);
   h.y = clamp(h.y * (1.0 + u_saturation), 0.0, 1.0);
@@ -221,6 +303,7 @@ export const EFFECTS: EffectDef[] = [
     category: 'color',
     description: 'Warm or cool the image and correct green / magenta casts.',
     params: [f('temperature', 'Temperature', -1, 1, 0), f('tint', 'Tint', -1, 1, 0)],
+    preview: { temperature: -0.8 },
     passes:
       colorFx(`vec3 gain = vec3(1.0 + 0.35 * u_temperature, 1.0 - 0.3 * u_tint, 1.0 - 0.35 * u_temperature);
   gain /= dot(gain, u_lumaW);
@@ -238,6 +321,7 @@ export const EFFECTS: EffectDef[] = [
       f('outBlack', 'Output black', 0, 1, 0),
       f('outWhite', 'Output white', 0, 1, 1),
     ],
+    preview: { inBlack: 0.25, inWhite: 0.7 },
     passes: colorFx(`vec3 v = (c.rgb - u_inBlack) / max(u_inWhite - u_inBlack, 1e-4);
   v = sign(v) * pow(abs(v), vec3(1.0 / u_gamma));
   c.rgb = mix(vec3(u_outBlack), vec3(u_outWhite), v);`),
@@ -332,6 +416,7 @@ export const EFFECTS: EffectDef[] = [
       { key: 'color', label: 'Color', type: 'color', default: '#ffffff' },
       f('amount', 'Amount', 0, 1, 1),
     ],
+    preview: { color: '#2f7bff', amount: 0.5 },
     passes: colorFx(`c.rgb = mix(c.rgb, u_color, u_amount);`),
   },
 
@@ -394,6 +479,7 @@ export const EFFECTS: EffectDef[] = [
     category: 'blur',
     description: 'Unsharp mask for crisper detail.',
     params: [f('amount', 'Amount', 0, 3, 0.6), f('radius', 'Radius', 0.5, 5, 1, 0.1, 'px')],
+    preview: { amount: 2, radius: 4 },
     passes: [
       {
         glsl: `vec4 effect(vec2 uv) {
@@ -434,27 +520,16 @@ export const EFFECTS: EffectDef[] = [
       f('falloff', 'Falloff', 0.01, 1, 0.3),
       f('blur', 'Blur', 0, 60, 16, 0.1, 'px'),
     ],
-    passes: [0, 1].map((axis) => ({
-      glsl: `uniform vec2 u_dir;
-vec4 effect(vec2 uv) {
-  float d = abs(uv.y - u_position);
-  float amt = smoothstep(u_range * 0.5, u_range * 0.5 + u_falloff, d);
-  float sigma = u_blur * 0.5 * u_px * amt;
-  if (sigma < 0.3) return src(uv);
-  vec4 acc = src(uv);
-  float wsum = 1.0;
-  float stepSize = max(1.0, sigma * 3.0 / 12.0);
-  for (int i = 1; i <= 12; i++) {
-    float x = float(i) * stepSize;
-    float w = exp(-0.5 * x * x / (sigma * sigma));
-    vec2 o = u_dir * u_texel * x;
-    acc += (src(uv + o) + src(uv - o)) * w;
-    wsum += 2.0 * w;
-  }
-  return acc / wsum;
-}`,
-      uniforms: () => ({ u_dir: axis === 0 ? [1, 0] : [0, 1] }),
-    })),
+    passes: [
+      ...downsamplePasses(tiltScale, MIN_TILT_SCALE),
+      { glsl: TILT_BLUR_GLSL, scale: tiltScale, uniforms: () => ({ u_dir: [1, 0] }) },
+      { glsl: TILT_BLUR_GLSL, scale: tiltScale, uniforms: () => ({ u_dir: [0, 1] }) },
+      {
+        glsl: TILT_MERGE_GLSL,
+        uniforms: (p, c) => ({ u_blurScale: tiltScale(p, c) }),
+        skip: (p, c) => tiltScale(p, c) === 1,
+      },
+    ],
   },
 
   // ── Light ───────────────────────────────────────────────────────────────
@@ -1148,6 +1223,7 @@ vec4 effect(vec2 uv) {
       f('smoothness', 'Smoothness', 0, 1, 0.1),
       f('spill', 'Spill suppression', 0, 1, 0.5),
     ],
+    preview: { color: '#e0568a', similarity: 0.35 },
     passes: [
       {
         glsl: `vec3 ycc(vec3 c) {
@@ -1245,6 +1321,11 @@ export function defaultParams(defs: ParamDef[]): Record<string, ParamValue> {
   const out: Record<string, ParamValue> = {};
   for (const d of defs) out[d.key] = Array.isArray(d.default) ? [...d.default] : d.default;
   return out;
+}
+
+/** The parameters an effect's library thumbnail is rendered with. */
+export function previewParams(def: EffectDef): Record<string, ParamValue> {
+  return { ...defaultParams(def.params), ...def.preview };
 }
 
 export function makeEffect(type: string): EffectInstance {

@@ -15,6 +15,7 @@ import {
   gamutMatrix,
   getEffectDef,
   getTransitionDef,
+  hasKeyframes,
   INPUT_COLOR_SPACES,
   isHdrMode,
   isHdrSpace,
@@ -47,6 +48,7 @@ import {
   LAYER_FS,
   LAYER_VS,
   OUTPUT_FS,
+  REDUCE_FS,
   TONEMAP_IDS,
   TRANSFER_IDS,
   YUV_PACK_FS,
@@ -58,6 +60,12 @@ export interface TextureSource {
   height: number;
   /** Quarter-turns clockwise needed to display the texture upright (container rotation metadata). */
   rotation?: 0 | 90 | 180 | 270;
+  /**
+   * Changes whenever new pixels are uploaded into `tex`, so that work derived from them (mipmaps)
+   * is redone only then. Without it a video clip's texture is taken to change on every draw; any
+   * other clip's texture is taken to be written once and replaced by a new one when its pixels change.
+   */
+  version?: number;
   /** Planar Y'CbCr textures for the high bit-depth decode path. */
   yuv?: {
     y: WebGLTexture;
@@ -117,6 +125,14 @@ type Img = { tex: WebGLTexture; width: number; height: number };
 
 const DEG = Math.PI / 180;
 
+/**
+ * A source that shrinks by more than this factor is filtered on the way down (mipmaps, or stepwise
+ * reduction for packed planes); up to it, sampling the source once is sharp and aliases little.
+ */
+const MIP_SHRINK = 1.5;
+/** Layer buffers of a clip whose scale is animated come in at least this many sizes per doubling. */
+const LAYER_SIZE_STEPS = 8;
+
 export class Compositor {
   readonly glx: Glx;
   readonly gl: WebGL2RenderingContext;
@@ -128,6 +144,7 @@ export class Compositor {
   private readonly layerProgram: Program;
   private readonly blendProgram: Program;
   private readonly copyProgram: Program;
+  private readonly reduceProgram: Program;
   private readonly gradeProgram: Program;
   private readonly outputProgram: Program;
   private readonly presentProgram: Program;
@@ -144,9 +161,11 @@ export class Compositor {
   private project: Project | null = null;
   private provider: SourceProvider | null = null;
   private fast = false;
-  private readonly mipmapped = new WeakMap<WebGLTexture, boolean>();
+  /** Per source texture: whether it samples through mipmaps, and the pixels they were built from. */
+  private readonly mips = new WeakMap<WebGLTexture, { on: boolean; version: number | undefined }>();
   private fps = 30;
-  private packTargets: { y: RenderTarget; c: RenderTarget } | null = null;
+  /** Targets and read-back buffers for `readYuv10`, kept from frame to frame of an export. */
+  private pack: { y: RenderTarget; c: RenderTarget; yBytes: Uint8Array; cBytes: Uint8Array } | null = null;
   private scopeTarget: RenderTarget | null = null;
   private scopePbo: WebGLBuffer | null = null;
   private scopeBusy = false;
@@ -183,6 +202,7 @@ export class Compositor {
     this.layerProgram = this.glx.program('layer', LAYER_FS, LAYER_VS);
     this.blendProgram = this.glx.program('blend', BLEND_FS);
     this.copyProgram = this.glx.program('copy', COPY_FS);
+    this.reduceProgram = this.glx.program('reduce', REDUCE_FS);
     this.gradeProgram = this.glx.program('grade', GRADE_FS);
     this.outputProgram = this.glx.program('output', OUTPUT_FS);
     this.presentProgram = this.glx.program('present', OUTPUT_FS, PRESENT_VS);
@@ -235,8 +255,15 @@ export class Compositor {
     this.height = h;
     this.glx.release(this.last);
     this.last = null;
+    this.releasePack();
     this.glx.trimPool();
-    this.packTargets = null;
+  }
+
+  private releasePack(): void {
+    if (!this.pack) return;
+    this.glx.release(this.pack.y);
+    this.glx.release(this.pack.c);
+    this.pack = null;
   }
 
   // ─────────────────────────────────────────────────────────────── render ──
@@ -265,6 +292,7 @@ export class Compositor {
     this.last = acc;
     this.lastOutput = opts.output ?? 'display';
     if (!opts.skipPresent) this.present(acc, opts);
+    glx.endFrame();
     return this.stats;
   }
 
@@ -334,14 +362,25 @@ export class Compositor {
     return out;
   }
 
-  /** Render a layer into its own full-frame target with opacity baked in (for transitions). */
-  private renderIsolated(L: ClipLayer | null): RenderTarget {
+  /**
+   * Render a layer into its own full-frame target with opacity baked in (for transitions). An
+   * adjustment layer has no picture of its own; here it stands for what it makes of `below`, so a
+   * transition brings its look in or out the way it would any other clip.
+   */
+  private renderIsolated(L: ClipLayer | null, below: RenderTarget): RenderTarget {
     const { glx } = this;
     let rt = glx.acquire(this.width, this.height);
     glx.clear(rt);
     if (!L) return rt;
     const opacity = L.v.opacity * L.anim.opacity;
-    if (L.clip.type === 'adjustment' || opacity <= 0) return rt;
+    if (opacity <= 0) return rt;
+    if (L.clip.type === 'adjustment') {
+      const adjusted = this.adjust(L, below);
+      if (!adjusted) return rt;
+      this.drawQuad(rt, adjusted, this.identityMatrix(), [this.width, this.height], L, opacity, false);
+      glx.release(adjusted);
+      return rt;
+    }
     const prepared = this.prepare(L);
     if (!prepared) {
       this.stats.missing++;
@@ -360,8 +399,8 @@ export class Compositor {
     const { glx } = this;
     const def = getTransitionDef(layer.transition.type);
     const program = def ? transitionProgram(glx, def) : null;
-    const a = this.renderIsolated(layer.a);
-    const b = this.renderIsolated(layer.b);
+    const a = this.renderIsolated(layer.a, acc);
+    const b = this.renderIsolated(layer.b, acc);
     let out: RenderTarget;
     if (!def || !program) {
       // Unknown transition (newer peer?) — fall back to a plain dissolve.
@@ -389,9 +428,11 @@ export class Compositor {
         u_lumaW: this.lumaW,
       });
       this.stats.passes++;
-      // A transition between clips with blend modes uses the incoming clip's mode.
+      // A transition between clips with blend modes uses the incoming clip's mode. Adjustment
+      // layers have none: they always replace what is below them.
       const blendClip = layer.b?.clip ?? layer.a?.clip;
-      out = this.blend(acc, t, BLEND_MODE_IDS[blendClip?.blend ?? 'normal'] ?? 0, 1);
+      const mode = blendClip && blendClip.type !== 'adjustment' ? blendClip.blend : 'normal';
+      out = this.blend(acc, t, BLEND_MODE_IDS[mode] ?? 0, 1);
       glx.release(t);
     }
     glx.release(a);
@@ -399,15 +440,22 @@ export class Compositor {
     return out;
   }
 
+  /** A processed copy of everything below an adjustment layer, or null when it changes nothing. */
+  private adjust(L: ClipLayer, below: RenderTarget): RenderTarget | null {
+    const steps = this.stepsFor(L, true);
+    if (steps.length === 0) return null;
+    const work = this.glx.acquire(this.width, this.height);
+    this.glx.pass(this.copyProgram, work, { u_tex: below.tex, u_opacity: 1 });
+    this.stats.passes++;
+    return this.runSteps(work, steps, L, this.framePx());
+  }
+
   private compositeAdjustment(L: ClipLayer, acc: RenderTarget): RenderTarget {
     const { glx } = this;
     const opacity = L.v.opacity * L.anim.opacity;
-    const steps = this.stepsFor(L, true);
-    if (opacity <= 0 || steps.length === 0) return acc;
-    // Process a copy of everything below.
-    let work = glx.acquire(this.width, this.height);
-    glx.pass(this.copyProgram, work, { u_tex: acc.tex, u_opacity: 1 });
-    work = this.runSteps(work, steps, L, this.framePx());
+    if (opacity <= 0) return acc;
+    const work = this.adjust(L, acc);
+    if (!work) return acc;
     if (!L.clip.mask && opacity >= 1) {
       glx.release(acc);
       return work;
@@ -485,8 +533,7 @@ export class Compositor {
         next = glx.acquire(cur.width, cur.height);
         this.gradePass(cur, next, L, false);
       } else if (step.def && step.params) {
-        next = runEffect(glx, step.def, step.params, cur, this.fxContext(L, px, step.seed ?? 0));
-        this.stats.passes += step.def.passes.length;
+        next = runEffect(glx, step.def, step.params, cur, this.fxContext(L, px, step.seed ?? 0), this.stats);
       }
       if (next) {
         glx.release(cur);
@@ -518,13 +565,15 @@ export class Compositor {
     const H = this.height;
     const box = layoutLayer(L, srcW, srcH, W, H, H / project.settings.height);
     const { boxW, boxH, sx, sy } = box;
+    const drawnW = Math.max(1, boxW * Math.abs(sx));
+    const drawnH = Math.max(1, boxH * Math.abs(sy));
 
     // A source drawn at less than about two thirds of its size needs mipmaps, or fine detail
     // aliases (a 4K clip in a small picture-in-picture, or any large still in a 1080p frame).
-    const shrink = Math.min(srcW / Math.max(1, boxW * Math.abs(sx)), srcH / Math.max(1, boxH * Math.abs(sy)));
-    const mip = !this.fast && shrink > 1.5;
-    if (src.yuv) for (const t of [src.yuv.y, src.yuv.u, src.yuv.v]) this.setMipmapped(t, mip);
-    else this.setMipmapped(src.tex, mip);
+    const mip = !this.fast && Math.min(srcW / drawnW, srcH / drawnH) > MIP_SHRINK;
+    // Packed planes cannot be mipmapped (see `unpackReduced`). Of the rest, only a video decoder
+    // uploads into a texture it has already handed out, so only video is assumed to have changed.
+    if (!src.yuv) this.setMipmapped(src.tex, mip, src.version ?? (clip.type === 'video' ? undefined : 0));
 
     // Layer-space processing (media only).
     let img: Img = src;
@@ -534,14 +583,17 @@ export class Compositor {
     const needsInput = media ? this.needsInputTransform(clip.assetId) || rot !== 0 || !!src.yuv : hdrProject;
     const layerSteps = media ? this.stepsFor(L, false) : [];
     if (needsInput || layerSteps.length) {
-      // Work at on-screen size when the source is larger than it will ever appear.
-      const k = Math.min(1, Math.max((boxW * Math.abs(sx)) / srcW, (boxH * Math.abs(sy)) / srcH, 0.02) * 1.0);
-      const pw = Math.max(2, Math.round(srcW * k));
-      const ph = Math.max(2, Math.round(srcH * k));
-      const hasGrade = layerSteps[0]?.kind === 'grade';
-      let cur = this.glx.acquire(pw, ph);
-      this.gradePass(src, cur, L, true, hasGrade, rot);
-      const rest = hasGrade ? layerSteps.slice(1) : layerSteps;
+      const [pw, ph] = this.layerBufferSize(L, srcW, srcH, drawnW, drawnH);
+      let cur: RenderTarget;
+      let rest = layerSteps;
+      if (src.yuv && mip) cur = this.unpackReduced(src, L, rot, srcW, srcH, pw, ph);
+      else {
+        // The input transform and the grade share a shader, so here they share a pass as well.
+        const hasGrade = layerSteps[0]?.kind === 'grade';
+        cur = this.glx.acquire(pw, ph);
+        this.gradePass(src, cur, L, true, hasGrade, rot);
+        if (hasGrade) rest = layerSteps.slice(1);
+      }
       // Reference pixels are defined on the frame; convert to this buffer's pixel density.
       const px = this.framePx() * (ph / Math.max(1, boxH));
       cur = this.runSteps(cur, rest, L, px);
@@ -553,26 +605,91 @@ export class Compositor {
       img,
       owned,
       matrix: layerMatrix(box, W, H),
-      boxPx: [Math.max(1, boxW * Math.abs(sx)), Math.max(1, boxH * Math.abs(sy))],
+      boxPx: [drawnW, drawnH],
       frameSteps: this.stepsFor(L, true),
       L,
     };
   }
 
-  /** Switch a source texture between plain bilinear and trilinear-mipmapped minification. */
-  private setMipmapped(tex: WebGLTexture, on: boolean): void {
-    const was = this.mipmapped.get(tex) ?? false;
-    if (!on && !was) return;
+  /**
+   * Size of the buffer a layer is processed in: the source's own size, or its size on screen when
+   * that is smaller.
+   */
+  private layerBufferSize(
+    L: ClipLayer,
+    srcW: number,
+    srcH: number,
+    drawnW: number,
+    drawnH: number,
+  ): [number, number] {
+    let k = Math.min(1, Math.max(drawnW / srcW, drawnH / srcH, 0.02));
+    // A size that is being animated would otherwise ask for a different buffer on every frame.
+    // Rounding it up to a coarse grid (at most an eighth too large, so still drawn close to 1:1)
+    // lets a whole zoom run on a handful of pooled targets.
+    const zooming = L.anim.scale !== 1 || hasKeyframes(L.clip, 'scaleX') || hasKeyframes(L.clip, 'scaleY');
+    if (zooming) {
+      const long = Math.max(srcW, srcH) * k;
+      const step = 2 ** Math.max(1, Math.floor(Math.log2(long / LAYER_SIZE_STEPS)));
+      k = Math.min(1, (k * Math.ceil(long / step) * step) / long);
+    }
+    const max = this.glx.caps.maxTextureSize;
+    k = Math.min(k, max / srcW, max / srcH);
+    return [Math.max(2, Math.round(srcW * k)), Math.max(2, Math.round(srcH * k))];
+  }
+
+  /**
+   * High bit-depth planes store each sample as two bytes, and a mip level would average and
+   * re-quantise the bytes separately: a high byte of 1.5 becomes 1 or 2, an error of ±128 codes. So
+   * a planar source that has to shrink is first unpacked at its own size, into the working encoding,
+   * and that picture is taken down to the `width` × `height` it is wanted at in steps of at most 2×.
+   * No step goes below the wanted size: a copy that has to be enlarged again has lost detail the
+   * layer has room for.
+   */
+  private unpackReduced(
+    src: TextureSource,
+    L: ClipLayer,
+    rot: number,
+    srcW: number,
+    srcH: number,
+    width: number,
+    height: number,
+  ): RenderTarget {
+    const { glx } = this;
+    let cur = glx.acquire(srcW, srcH);
+    this.gradePass(src, cur, L, true, false, rot);
+    while (cur.width > width || cur.height > height) {
+      const next = glx.acquire(Math.max(width, cur.width >> 1), Math.max(height, cur.height >> 1));
+      // Half of what an output pixel is larger than a source texel by, in texture coordinates.
+      const spread = [(1 / next.width - 1 / cur.width) / 2, (1 / next.height - 1 / cur.height) / 2];
+      glx.pass(this.reduceProgram, next, { u_tex: cur.tex, u_spread: spread });
+      this.stats.passes++;
+      glx.release(cur);
+      cur = next;
+    }
+    return cur;
+  }
+
+  /**
+   * Switch a source texture between plain bilinear and trilinear-mipmapped minification. `version`
+   * identifies the pixels in level 0 (undefined: assume they changed), so the chain is rebuilt only
+   * for new pixels.
+   */
+  private setMipmapped(tex: WebGLTexture, on: boolean, version: number | undefined): void {
+    let state = this.mips.get(tex);
+    if (!on && !state?.on) return;
+    if (!state) this.mips.set(tex, (state = { on: false, version: NaN }));
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    if (on) {
-      // Level 0 may have been replaced since the last draw (a new video frame), so rebuild.
+    if (on && (version === undefined || version !== state.version)) {
       gl.generateMipmap(gl.TEXTURE_2D);
-      if (!was) gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    } else gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      state.version = version;
+    }
+    if (on !== state.on) {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, on ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+      state.on = on;
+    }
     gl.bindTexture(gl.TEXTURE_2D, null);
-    this.mipmapped.set(tex, on);
   }
 
   private needsInputTransform(assetId: string | null): boolean {
@@ -820,18 +937,19 @@ export class Compositor {
 
     // 2. Pack to 8-bit pairs.
     glx.useFloat = false;
-    if (!this.packTargets || this.packTargets.y.width !== W || this.packTargets.y.height !== H) {
-      this.packTargets = { y: glx.acquire(W, H), c: glx.acquire(cw, chH) };
-    }
+    this.pack ??= {
+      y: glx.acquire(W, H),
+      c: glx.acquire(cw, chH),
+      yBytes: new Uint8Array(W * H * 4),
+      cBytes: new Uint8Array(cw * chH * 4),
+    };
     const kr = 0.2627;
     const kb = 0.0593;
     const k = [kr, 1 - kr - kb, kb];
-    const { y, c } = this.packTargets;
+    const { y, c, yBytes, cBytes } = this.pack;
     glx.pass(this.yuvProgram, y, { u_tex: rgb.tex, u_plane: 0, u_kr_kg_kb: k, u_texel: [1 / W, 1 / H] });
-    const yBytes = new Uint8Array(W * H * 4);
     gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, yBytes);
     glx.pass(this.yuvProgram, c, { u_tex: rgb.tex, u_plane: 1, u_kr_kg_kb: k, u_texel: [1 / W, 1 / H] });
-    const cBytes = new Uint8Array(cw * chH * 4);
     gl.readPixels(0, 0, cw, chH, gl.RGBA, gl.UNSIGNED_BYTE, cBytes);
     glx.useFloat = wasFloat;
     glx.release(rgb);
@@ -864,6 +982,7 @@ export class Compositor {
     const wasFloat = glx.useFloat;
     glx.useFloat = false;
     if (!this.scopeTarget || this.scopeTarget.width !== w || this.scopeTarget.height !== h) {
+      glx.release(this.scopeTarget);
       this.scopeTarget = glx.acquire(w, h);
     }
     glx.useFloat = wasFloat;
@@ -909,6 +1028,9 @@ export class Compositor {
   dispose(): void {
     this.glx.release(this.last);
     this.last = null;
+    this.releasePack();
+    this.glx.release(this.scopeTarget);
+    this.scopeTarget = null;
     this.glx.dispose();
     // Off-screen contexts are ours alone, so drop them now to return GPU memory promptly. An
     // on-screen canvas may be handed to a new Compositor (it would get this same context back),

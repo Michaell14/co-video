@@ -143,7 +143,19 @@ export interface RenderTarget {
   tex: WebGLTexture;
   width: number;
   height: number;
+  /** RGBA16F rather than RGBA8. */
+  float: boolean;
+  /** Frame (as counted by `Glx.endFrame`) in which the target last went back to the pool. */
+  idleSince: number;
 }
+
+/** Pooled targets nobody has asked for in this many frames are freed. */
+const POOL_IDLE_FRAMES = 4;
+/** Above this much idle memory the pool keeps only what the frame just rendered used. */
+const POOL_IDLE_BYTES = 256 * 1024 * 1024;
+
+const poolKey = (width: number, height: number, float: boolean): string =>
+  `${width}x${height}:${float ? 'f' : 'b'}`;
 
 export const FULLSCREEN_VS = /* glsl */ `#version 300 es
 in vec2 a_pos;
@@ -175,8 +187,11 @@ export class Glx {
   useFloat: boolean;
   private readonly vao: WebGLVertexArrayObject;
   private readonly programs = new Map<string, Program>();
+  /** Shaders that did not compile on this context. */
+  private readonly broken = new Set<string>();
   private readonly pool = new Map<string, RenderTarget[]>();
   private live = 0;
+  private frame = 0;
   private lost = false;
 
   constructor(gl: WebGL2RenderingContext, preferFloat = true) {
@@ -210,10 +225,12 @@ export class Glx {
     return this.lost || this.gl.isContextLost();
   }
 
+  /** The context is gone and everything created on it with it; nothing here can be used again. */
   markLost(): void {
     this.lost = true;
     this.programs.clear();
     this.pool.clear();
+    this.live = 0;
   }
 
   /** Compile (or fetch a cached) program. `key` must uniquely identify the fragment source. */
@@ -226,22 +243,41 @@ export class Glx {
     return p;
   }
 
-  hasProgram(key: string): boolean {
-    return this.programs.has(key);
+  /**
+   * As `program`, for shaders that come from data (effects, transitions): one that does not compile
+   * yields null, is reported once and is not tried again on this context.
+   */
+  tryProgram(key: string, fs: () => string): Program | null {
+    const ready = this.programs.get(key);
+    if (ready) return ready;
+    if (this.broken.has(key)) return null;
+    try {
+      return this.program(key, fs());
+    } catch (err) {
+      // Nothing compiles on a lost context, and that says nothing about the shader.
+      if (this.contextLost) return null;
+      this.broken.add(key);
+      console.error(err);
+      return null;
+    }
+  }
+
+  /** Whether `key` has been compiled, or found not to compile, on this context. */
+  settled(key: string): boolean {
+    return this.programs.has(key) || this.broken.has(key);
   }
 
   /** Take a render target from the pool. Contents are undefined until drawn or cleared. */
   acquire(width: number, height: number): RenderTarget {
     const w = Math.max(1, Math.round(width));
     const h = Math.max(1, Math.round(height));
-    const key = `${w}x${h}:${this.useFloat ? 'f' : 'b'}`;
-    const list = this.pool.get(key);
+    const float = this.useFloat;
+    const list = this.pool.get(poolKey(w, h, float));
     if (list && list.length) return list.pop()!;
     const gl = this.gl;
     const tex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    if (this.useFloat) gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, w, h);
-    else gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, w, h);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, float ? gl.RGBA16F : gl.RGBA8, w, h);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -250,32 +286,48 @@ export class Glx {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
     this.live++;
-    return { fbo, tex, width: w, height: h };
+    return { fbo, tex, width: w, height: h, float, idleSince: this.frame };
   }
 
   release(rt: RenderTarget | null | undefined): void {
     if (!rt) return;
-    const key = `${rt.width}x${rt.height}:${this.useFloat ? 'f' : 'b'}`;
+    rt.idleSince = this.frame;
+    const key = poolKey(rt.width, rt.height, rt.float);
     let list = this.pool.get(key);
     if (!list) this.pool.set(key, (list = []));
     list.push(rt);
   }
 
-  /** Free pooled targets that do not match the current working size (call after a resize). */
+  /**
+   * Mark the end of a rendered frame. Sizes come and go (a zoom moves on, a transition ends, the
+   * next clip is a different shape), so pooled targets that went unused for a few frames are freed,
+   * and when the idle pool is over its memory budget so is everything the frame did not use.
+   */
+  endFrame(): void {
+    const frame = this.frame++;
+    let idle = 0;
+    for (const list of this.pool.values()) {
+      for (const rt of list) idle += rt.width * rt.height * (rt.float ? 8 : 4);
+    }
+    const maxAge = idle > POOL_IDLE_BYTES ? 1 : POOL_IDLE_FRAMES;
+    this.trimPool((rt) => frame - rt.idleSince < maxAge);
+  }
+
+  /** Free pooled targets, all of them or those `keep` turns down. */
   trimPool(keep?: (rt: RenderTarget) => boolean): void {
     const gl = this.gl;
     for (const [key, list] of this.pool) {
-      const kept: RenderTarget[] = [];
+      let kept = 0;
       for (const rt of list) {
-        if (keep && keep(rt)) kept.push(rt);
+        if (keep && keep(rt)) list[kept++] = rt;
         else {
           gl.deleteFramebuffer(rt.fbo);
           gl.deleteTexture(rt.tex);
           this.live--;
         }
       }
-      if (kept.length) this.pool.set(key, kept);
-      else this.pool.delete(key);
+      list.length = kept;
+      if (!kept) this.pool.delete(key);
     }
   }
 

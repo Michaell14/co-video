@@ -9,16 +9,45 @@ import type { Clip, ShapeProps, TextProps } from '@tandem/core';
 type AnyCanvas = OffscreenCanvas | HTMLCanvasElement;
 type Ctx2D = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
 
+/** Longest canvas side that is safe to upload as a texture everywhere. */
 const MAX_DIM = 8192;
+const SHADOW_TILE = MAX_DIM / 2;
 
 function makeCanvas(w: number, h: number): AnyCanvas {
-  const cw = Math.max(2, Math.min(MAX_DIM, Math.ceil(w)));
-  const ch = Math.max(2, Math.min(MAX_DIM, Math.ceil(h)));
+  const cw = Math.max(2, Math.ceil(w));
+  const ch = Math.max(2, Math.ceil(h));
   if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(cw, ch);
   const c = document.createElement('canvas');
   c.width = cw;
   c.height = ch;
   return c;
+}
+
+/**
+ * Scale at which a `w` × `h` drawing is rasterised: 1, or less when it would not fit a texture.
+ * Both axes shrink together, so an oversized block only loses sharpness, never its proportions.
+ */
+const fitScale = (w: number, h: number): number => Math.min(1, MAX_DIM / w, MAX_DIM / h);
+
+let fontLoads = 0;
+const fontListeners = new Set<() => void>();
+if (typeof document !== 'undefined' && document.fonts) {
+  document.fonts.addEventListener('loadingdone', () => {
+    fontLoads++;
+    for (const fn of Array.from(fontListeners)) fn();
+  });
+}
+
+/**
+ * Goes up each time fonts finish loading. Text measured or drawn under an earlier value may have
+ * used a fallback face (title fonts load on first use), so anything cached from it is stale.
+ */
+export const fontEpoch = (): number => fontLoads;
+
+/** Call `fn` whenever `fontEpoch` changes. Returns the function that unsubscribes it. */
+export function onFontsLoaded(fn: () => void): () => void {
+  fontListeners.add(fn);
+  return () => fontListeners.delete(fn);
 }
 
 export function fontSpec(t: TextProps, px: number): string {
@@ -99,6 +128,7 @@ function wrapLines(ctx: Ctx2D, text: string, maxWidth: number | null): string[] 
 
 export interface Raster {
   canvas: AnyCanvas;
+  /** Size of the drawing in frame pixels. The canvas is smaller when that would not fit a texture. */
   width: number;
   height: number;
 }
@@ -133,14 +163,13 @@ export function rasterizeText(t: TextProps, frameW: number, frameH: number, char
   const padX = Math.ceil(Math.max(strokePad + overhang, bgPadX) + shadowPad);
   const padY = Math.ceil(Math.max(strokePad + overhang, bgPadY) + shadowPad);
 
-  const w = textW + padX * 2;
-  const h = textH + padY * 2;
+  const w = Math.ceil(textW + padX * 2);
+  const h = Math.ceil(textH + padY * 2);
+  const k = fitScale(w, h);
   // Text layer without shadow; composited once so stroke + fill cast a single shadow.
-  const layer = makeCanvas(w, h);
+  const layer = makeCanvas(w * k, h * k);
   const ctx = layer.getContext('2d') as Ctx2D;
-  const sx = layer.width / Math.ceil(w);
-  const sy = layer.height / Math.ceil(h);
-  ctx.scale(sx, sy);
+  ctx.scale(layer.width / w, layer.height / h);
 
   if (t.bg.enabled) {
     ctx.fillStyle = hexA(t.bg.color, t.bg.opacity);
@@ -185,16 +214,28 @@ export function rasterizeText(t: TextProps, frameW: number, frameH: number, char
     ctx.fillText(visible, x, y);
   });
 
-  if (!t.shadow.enabled) return { canvas: layer, width: layer.width, height: layer.height };
+  if (!t.shadow.enabled) return { canvas: layer, width: w, height: h };
 
-  const out = makeCanvas(w, h);
+  const out = makeCanvas(layer.width, layer.height);
   const octx = out.getContext('2d') as Ctx2D;
   octx.shadowColor = hexA(t.shadow.color, t.shadow.opacity);
-  octx.shadowBlur = t.shadow.blur * px * sx;
-  octx.shadowOffsetX = t.shadow.x * px * sx;
-  octx.shadowOffsetY = t.shadow.y * px * sy;
-  octx.drawImage(layer, 0, 0);
-  return { canvas: out, width: out.width, height: out.height };
+  octx.shadowBlur = t.shadow.blur * px * k;
+  octx.shadowOffsetX = t.shadow.x * px * k;
+  octx.shadowOffsetY = t.shadow.y * px * k;
+  // A shadow is rendered through an off-screen layer the size of the area being painted. For a
+  // canvas near the size limit that layer does not fit a texture and nothing is drawn at all, so
+  // the copy is made a tile at a time.
+  for (let y = 0; y < out.height; y += SHADOW_TILE) {
+    for (let x = 0; x < out.width; x += SHADOW_TILE) {
+      octx.save();
+      octx.beginPath();
+      octx.rect(x, y, SHADOW_TILE, SHADOW_TILE);
+      octx.clip();
+      octx.drawImage(layer, 0, 0);
+      octx.restore();
+    }
+  }
+  return { canvas: out, width: w, height: h };
 }
 
 function shapePath(ctx: Ctx2D, s: ShapeProps, x: number, y: number, w: number, h: number): void {
@@ -252,9 +293,12 @@ export function rasterizeShape(s: ShapeProps, frameW: number, frameH: number): R
   const open = s.kind === 'line' || s.kind === 'arrow';
   const sw = (open ? Math.max(s.strokeWidth, 0.004) : s.strokeWidth) * frameH;
   const pad = Math.ceil(sw / 2 + 2);
-  const canvas = makeCanvas(w + pad * 2, h + pad * 2);
+  const fullW = Math.ceil(w + pad * 2);
+  const fullH = Math.ceil(h + pad * 2);
+  const k = fitScale(fullW, fullH);
+  const canvas = makeCanvas(fullW * k, fullH * k);
   const ctx = canvas.getContext('2d') as Ctx2D;
-  ctx.scale(canvas.width / Math.ceil(w + pad * 2), canvas.height / Math.ceil(h + pad * 2));
+  ctx.scale(canvas.width / fullW, canvas.height / fullH);
   shapePath(ctx, s, pad, pad, w, h);
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -267,7 +311,7 @@ export function rasterizeShape(s: ShapeProps, frameW: number, frameH: number): R
     ctx.lineWidth = sw;
     ctx.stroke();
   }
-  return { canvas, width: canvas.width, height: canvas.height };
+  return { canvas, width: fullW, height: fullH };
 }
 
 export function rasterizeSolid(s: ShapeProps | null): Raster {

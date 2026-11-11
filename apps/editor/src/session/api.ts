@@ -47,6 +47,13 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A response that will be the same however often the request is repeated: the server understood
+ * and said no. Timeouts and rate limits are not that, and neither is anything it failed at itself.
+ */
+export const isRefusal = (status: number): boolean =>
+  status >= 400 && status < 500 && status !== 408 && status !== 429;
+
 async function call<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${serverBase()}${path}`, {
     ...init,
@@ -69,7 +76,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
-  projectInfo: (id: string, token: string) => call<ProjectInfo>(`/api/projects/${id}`, token),
+  projectInfo: (id: string, token: string, signal?: AbortSignal) =>
+    call<ProjectInfo>(`/api/projects/${id}`, token, { signal }),
   invite: (id: string, token: string, role: Role) =>
     call<{ token: string }>(`/api/projects/${id}/invites`, token, {
       method: 'POST',

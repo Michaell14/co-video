@@ -160,7 +160,8 @@ docker run -p 8787:8787 -v tandem-data:/data tandem
 ```
 
 Configuration is by environment variable (`PORT`, `HOST`, `DATA_DIR`, `CORS_ORIGIN`,
-`MAX_UPLOAD_BYTES`, `TANDEM_OPEN_CREATE`, `TRUST_PROXY`); see
+`MAX_UPLOAD_BYTES`, `TANDEM_OPEN_CREATE`, `MAX_CREATES_PER_HOUR`, `TRUST_PROXY`,
+`MAX_CONNECTIONS_PER_IP`, `MAX_CONNECTIONS_PER_ROOM`); see
 [`apps/server/README.md`](apps/server/README.md) for the full table, the on-disk layout and the
 security model. In short: projects are protected by unguessable capability links, there are no user
 accounts, and you should put the server behind HTTPS.

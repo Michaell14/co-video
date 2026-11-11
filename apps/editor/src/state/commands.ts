@@ -11,7 +11,6 @@ import {
   canEdit,
   clipEnd,
   clipsUnderFrame,
-  closeGap,
   deleteClips,
   deleteRange,
   displayTracks,
@@ -29,6 +28,8 @@ import {
   pasteClips,
   placeClips,
   removeTrack,
+  rippleDelete,
+  rippleTrimTo,
   secondsToFrame,
   sequenceEnd,
   serializeProject,
@@ -39,7 +40,6 @@ import {
   toSrt,
   toEdl,
   tracksOf,
-  trimClips,
   unlinkClips,
   withLinked,
   framesToSeconds,
@@ -59,10 +59,15 @@ import {
   clamp,
 } from '@tandem/core';
 import { AudioBufferSink, renderStill, VoiceRecorder } from '@tandem/engine';
+import { navigate } from '../App';
 import { currentSession } from '../session/hooks';
+import { copyProjectMedia } from '../session/mediaStore';
+import { createProject } from '../session/projects';
 import type { Session } from '../session/session';
 import { toast } from '../ui/core';
-import { clampPpf, useUI, type Tool } from './ui';
+import { clipsBeside, closeGapsAt, duplicateClips, markerBeside, pasteable, unlocked } from './edits';
+import { useUI, type Tool } from './ui';
+import { fitView, zoomView } from './view';
 
 const ui = () => useUI.getState();
 
@@ -86,15 +91,16 @@ function frame(): number {
 }
 
 function selectedClips(p: Project): Clip[] {
-  return ui()
-    .selection.map((id) => p.clips[id])
-    .filter(Boolean);
+  return unlocked(p, ui().selection).map((id) => p.clips[id]);
 }
 
-/** Selection, widened to linked partners when linked selection is on. */
+/**
+ * Selection, widened to linked partners when linked selection is on. Clips on locked tracks are
+ * never part of it, whichever way they came to be selected or linked.
+ */
 export function effectiveSelection(p: Project, ids: ID[] = ui().selection): ID[] {
   const valid = ids.filter((id) => p.clips[id]);
-  return ui().linkedSelection ? withLinked(p, valid) : valid;
+  return unlocked(p, ui().linkedSelection ? withLinked(p, valid) : valid);
 }
 
 /** Timeline viewport width in CSS pixels; set by the Timeline component. */
@@ -146,6 +152,25 @@ export function downloadBlob(blob: Blob, name: string): void {
 }
 
 const safeName = (s: string): string => s.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Untitled';
+
+const LOCKED_TRACK = 'That track is locked. Unlock it to change its clips.';
+
+const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
+/** Let the user pick a `.tandem` file and read it. Says so when it is not a project file. */
+async function pickProjectFile(): Promise<Project | null> {
+  const [file] = await pickFiles('.tandem,application/json', false);
+  if (!file) return null;
+  const parsed = parseProjectFile(await file.text());
+  if (!parsed) toast('That is not a Tandem project file.', 'error');
+  return parsed;
+}
+
+/** `project` with every asset's `uploaded` flag decided by `onServer`. */
+function withUploads(project: Project, onServer: (asset: Asset) => boolean): Project {
+  const assets = Object.values(project.assets).map((a) => [a.id, { ...a, uploaded: onServer(a) }]);
+  return { ...project, assets: Object.fromEntries(assets) };
+}
 
 /** Integrated loudness of the stretch of source audio a clip plays. */
 async function measureClip(s: Session, clip: Clip, p: Project): Promise<LoudnessResult | null> {
@@ -255,7 +280,12 @@ export const cmd = {
   // ─────────────────────────────────────────────────────────── selection ──
   selectAll(): void {
     const s = session();
-    if (s) ui().select(Object.keys(s.store.get().clips));
+    if (s) ui().select(unlocked(s.store.get(), Object.keys(s.store.get().clips)));
+  },
+  /** Select everything still to play from the playhead (`right`) or everything begun before it. */
+  selectBeside(side: 'left' | 'right'): void {
+    const s = session();
+    if (s) ui().select(clipsBeside(s.store.get(), frame(), side));
   },
   deselect(): void {
     ui().clearSelection();
@@ -275,7 +305,7 @@ export const cmd = {
       };
       const order = new Map(tracksOf(p).video.map((t, i) => [t.id, i]));
       const pick =
-        ui().selection.find(under) ??
+        unlocked(p, ui().selection).find(under) ??
         clipsUnderFrame(p, f)
           .filter(under)
           .sort((a, b) => (order.get(p.clips[b].trackId) ?? 0) - (order.get(p.clips[a].trackId) ?? 0))[0];
@@ -299,11 +329,7 @@ export const cmd = {
         return c && c.start < f && f < clipEnd(c);
       });
       // With nothing selected under the playhead, cut straight through every unlocked track.
-      const ids = sel.length
-        ? sel
-        : ui().linkedSelection
-          ? withLinked(p, clipsUnderFrame(p, f))
-          : clipsUnderFrame(p, f);
+      const ids = sel.length ? sel : effectiveSelection(p, clipsUnderFrame(p, f));
       const r = splitClips(p, ids, f);
       if (!r.edits.length) return;
       s.store.commit(r.edits);
@@ -330,7 +356,14 @@ export const cmd = {
         }
         return;
       }
-      s.store.commit(deleteClips(p, ids, ripple || ui().rippleMode));
+      if (ripple || ui().rippleMode) {
+        const r = rippleDelete(p, ids);
+        if (r.refused) {
+          toast(r.refused);
+          return;
+        }
+        s.store.commit(r.edits);
+      } else s.store.commit(deleteClips(p, ids));
       ui().clearSelection();
     });
   },
@@ -350,19 +383,24 @@ export const cmd = {
   },
   paste(): void {
     editing((s, p) => {
-      const items = ui().clipboard;
-      if (!items.length) return;
-      const r = pasteClips(p, items, frame());
+      if (!ui().clipboard.length) return;
+      const { clips, missing } = pasteable(p, ui().clipboard);
+      if (missing) {
+        const what = missing === 1 ? 'One clip was' : `${missing} clips were`;
+        toast(
+          `${clips.length ? `${what} left out` : 'Nothing was pasted'}: the media is not in this project.`,
+        );
+      }
+      if (!clips.length) return;
+      const r = pasteClips(p, clips, frame());
       s.store.commit(r.edits);
       ui().select(r.created);
     });
   },
   duplicate(): void {
     editing((s, p) => {
-      const clips = effectiveSelection(p).map((id) => p.clips[id]);
-      if (!clips.length) return;
-      const end = Math.max(...clips.map(clipEnd));
-      const r = pasteClips(p, clips, end);
+      const r = duplicateClips(p, effectiveSelection(p));
+      if (!r.edits.length) return;
       s.store.commit(r.edits);
       ui().select(r.created);
     });
@@ -385,7 +423,7 @@ export const cmd = {
   /** Move the selection one track up (+1) or down (-1) in stacking order. */
   nudgeTrack(dir: 1 | -1): void {
     editing((s, p) => {
-      const ids = ui().selection.filter((id) => p.clips[id]);
+      const ids = unlocked(p, ui().selection);
       if (!ids.length) return;
       const { video, audio } = tracksOf(p);
       const placements = [];
@@ -410,7 +448,7 @@ export const cmd = {
     });
   },
   link(): void {
-    editing((s, p) => s.store.commit(linkClips(p, ui().selection)));
+    editing((s, p) => s.store.commit(linkClips(p, unlocked(p, ui().selection))));
   },
   unlink(): void {
     editing((s, p) => s.store.commit(unlinkClips(p, effectiveSelection(p))));
@@ -420,35 +458,24 @@ export const cmd = {
     editing((s, p) => {
       const f = frame();
       let ids = effectiveSelection(p).filter((id) => p.clips[id].start < f && f < clipEnd(p.clips[id]));
-      if (!ids.length) ids = withLinked(p, clipsUnderFrame(p, f));
+      if (!ids.length) ids = unlocked(p, withLinked(p, clipsUnderFrame(p, f)));
       if (!ids.length) return;
-      const edits: Edit[] = [];
-      let working = p;
-      // Clips can have different lengths either side of the playhead, so trim one link group at a time.
-      const seen = new Set<ID>();
-      for (const id of ids) {
-        if (seen.has(id)) continue;
-        const group = withLinked(working, [id]).filter((x) => ids.includes(x));
-        group.forEach((x) => seen.add(x));
-        const c = working.clips[id];
-        const delta = edge === 'start' ? f - c.start : f - clipEnd(c);
-        const e = trimClips(working, group, edge, delta, true);
-        edits.push(...e);
+      // One plan for all of them: the time they give up in common closes once, on every track.
+      const r = rippleTrimTo(p, ids, edge, f);
+      if (r.refused) {
+        toast(r.refused);
+        return;
       }
-      void working;
-      s.store.commit(edits);
-      if (edge === 'start') {
-        const first = Math.min(...ids.map((id) => p.clips[id].start));
-        cmd.seek(first);
-      }
+      if (!r.edits.length) return;
+      s.store.commit(r.edits);
+      if (edge === 'start') cmd.seek(Math.min(...ids.map((id) => p.clips[id].start)));
     });
   },
   closeGapAtPlayhead(): void {
     editing((s, p) => {
-      const f = frame();
-      const edits: Edit[] = [];
-      for (const t of Object.values(p.tracks)) if (!t.locked) edits.push(...closeGap(p, t.id, f));
-      if (edits.length) s.store.commit(edits);
+      const r = closeGapsAt(p, frame());
+      if (r.refused) toast(r.refused);
+      else if (r.edits.length) s.store.commit(r.edits);
     });
   },
   setSpeed(speed: number, reverse?: boolean): void {
@@ -562,14 +589,25 @@ export const cmd = {
     });
   },
 
+  /** Move the playhead to the nearest marker after (`1`) or before (`-1`) it. */
+  goToMarker(dir: 1 | -1): void {
+    const s = session();
+    if (!s) return;
+    const p = s.store.get();
+    const to = markerBeside(p, frame(), dir);
+    if (to !== null) cmd.seek(to);
+    else if (!Object.keys(p.markers).length) toast('There are no markers yet. Press M to add one.', 'info');
+  },
+
   // ─────────────────────────────────────────────── effects & transitions ──
   applyEffect(type: string, clipIds?: ID[]): void {
     editing((s, p) => {
       const def = getEffectDef(type);
       if (!def) return;
-      const ids = (clipIds ?? ui().selection).filter((id) => p.clips[id] && p.clips[id].type !== 'audio');
+      const wanted = (clipIds ?? ui().selection).filter((id) => p.clips[id] && p.clips[id].type !== 'audio');
+      const ids = unlocked(p, wanted);
       if (!ids.length) {
-        toast('Select a clip to apply the effect to.', 'info');
+        toast(wanted.length ? LOCKED_TRACK : 'Select a clip to apply the effect to.', 'info');
         return;
       }
       s.store.commit(
@@ -591,8 +629,12 @@ export const cmd = {
       if (!def) return;
       const dur = secondsToFrame(0.6, p.settings);
       let target = clipId;
+      if (target && !unlocked(p, [target]).length) {
+        toast(LOCKED_TRACK, 'info');
+        return;
+      }
       if (!target) {
-        const sel = ui().selection.filter((id) => p.clips[id] && p.clips[id].type !== 'audio');
+        const sel = unlocked(p, ui().selection).filter((id) => p.clips[id].type !== 'audio');
         if (sel.length) target = sel[0];
         else {
           // Nearest cut to the playhead on a video track.
@@ -663,10 +705,12 @@ export const cmd = {
       const a = ui().attributes;
       const clips = selectedClips(p).filter((c) => c.type !== 'audio');
       if (!a || !clips.length) return;
+      // Attributes can be carried between projects; a LUT that is not in this one stays behind.
+      const grade = a.grade?.lutId && !p.assets[a.grade.lutId] ? { ...a.grade, lutId: null } : a.grade;
       s.store.commit(
         clips.map((c) => {
           const patch: Partial<Clip> = {};
-          if (what !== 'effects') patch.grade = a.grade;
+          if (what !== 'effects') patch.grade = grade;
           if (what !== 'grade') patch.effects = a.effects.map((e) => ({ ...e, id: newId(8) }));
           if (what === 'all') Object.assign(patch, a.transform);
           return { op: 'updateClip', id: c.id, patch } as Edit;
@@ -677,17 +721,29 @@ export const cmd = {
 
   // ───────────────────────────────────────────────────────────────── view ──
   zoom(factor: number, anchorX?: number): void {
-    const { ppf, scrollX } = ui();
-    const next = clampPpf(ppf * factor);
-    const ax = anchorX ?? frame() * ppf - scrollX;
-    const f = (scrollX + ax) / ppf;
-    ui().set({ ppf: next, scrollX: Math.max(0, f * next - ax) });
+    ui().set(zoomView(ui(), factor, timelineWidth, frame(), anchorX));
   },
   zoomFit(): void {
     const s = session();
     if (!s) return;
     const end = Math.max(sequenceEnd(s.store.get()), secondsToFrame(10, s.store.get().settings));
-    ui().set({ ppf: clampPpf((timelineWidth - 80) / end), scrollX: 0 });
+    ui().set(fitView(0, end, timelineWidth));
+  },
+  /** Fill the timeline with the selected clips, or with the marked range when nothing is selected. */
+  zoomToSelection(): void {
+    const s = session();
+    if (!s) return;
+    const p = s.store.get();
+    const clips = ui()
+      .selection.map((id) => p.clips[id])
+      .filter(Boolean);
+    const range = s.player?.getState().range;
+    if (clips.length) {
+      ui().set(
+        fitView(Math.min(...clips.map((c) => c.start)), Math.max(...clips.map(clipEnd)), timelineWidth),
+      );
+    } else if (range) ui().set(fitView(range.in, range.out, timelineWidth));
+    else toast('Select clips or mark a range to zoom to.', 'info');
   },
 
   // ───────────────────────────────────────────────────────────────── files ──
@@ -1066,19 +1122,72 @@ export const cmd = {
       `${safeName(p.settings.name)}.tandem`,
     );
   },
+  /**
+   * Open a project file as a project of its own. The open project is left alone: a file can come
+   * from anywhere, and loading it over a shared timeline would replace that for everyone in it.
+   */
   async openProjectFile(): Promise<void> {
-    const [file] = await pickFiles('.tandem,application/json', false);
-    if (!file) return;
-    const parsed = parseProjectFile(await file.text());
-    if (!parsed) {
-      toast('That is not a Tandem project file.', 'error');
+    const parsed = await pickProjectFile();
+    if (!parsed) return;
+    const from = session();
+    try {
+      // What the file says about uploads was true of the project it was saved from, not of this one.
+      const id = await createProject(
+        parsed.settings,
+        withUploads(parsed, () => false),
+      );
+      const ids = Object.keys(parsed.assets);
+      // Media of the open project that the file also uses comes along, so a file saved from this
+      // project opens with its footage instead of everything offline.
+      const local = from
+        ? ids.filter((a) => from.media.get(a).local && from.media.get(a).unsaved === null)
+        : [];
+      if (from && local.length) {
+        toast(`Copying ${count(local.length, 'media file')} into the new project…`);
+        await copyProjectMedia(from.id, id, local);
+      }
+      navigate(id);
+      toast(
+        local.length === ids.length
+          ? `Opened “${parsed.settings.name}” as a new project.`
+          : `Opened “${parsed.settings.name}” as a new project. Media that is not on this device shows as offline until it is relinked.`,
+        'success',
+      );
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not open the project file', 'error');
+    }
+  },
+  /** Load a project file over the open project, after spelling out what that removes. */
+  async replaceWithProjectFile(): Promise<void> {
+    const s = session();
+    if (!s) return;
+    if (!s.canEdit) {
+      toast('You have view-only access to this project.', 'info');
       return;
     }
-    editing((s) => {
-      s.store.replaceAll(parsed);
+    const parsed = await pickProjectFile();
+    if (!parsed) return;
+    editing((s, p) => {
+      const contents = [
+        count(Object.keys(p.clips).length, 'clip'),
+        count(Object.keys(p.tracks).length, 'track'),
+        count(Object.keys(p.assets).length, 'media file'),
+      ];
+      const everyone = s.getMeta().shared ? ' for everyone working on it' : '';
+      if (
+        !confirm(
+          `Replace “${p.settings.name}” with “${parsed.settings.name}”?\n\n` +
+            `Everything in the open project is removed${everyone}: ${contents[0]}, ${contents[1]} and ${contents[2]}. ` +
+            'Undo brings it back only until the project is closed or reloaded. After that, media that is ' +
+            'not part of the new project is deleted from this device as well.',
+        )
+      )
+        return;
+      // The server holds what was uploaded to this project, whatever the file remembers.
+      s.store.replaceAll(withUploads(parsed, (a) => !!p.assets[a.id]?.uploaded));
       ui().clearSelection();
       toast(
-        'Project loaded. Media that is not on this device or the server will show as offline.',
+        `Replaced with “${parsed.settings.name}”. Media that is not on this device or the server shows as offline.`,
         'success',
       );
     });

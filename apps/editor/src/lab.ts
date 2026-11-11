@@ -57,6 +57,11 @@ const lab = {
     return { stats, pixels: c.readPixels(), width: c.width, height: c.height };
   },
 
+  /** Register the editor's title typefaces. As in the editor, each is fetched on first use. */
+  async registerTitleFonts(): Promise<void> {
+    await import('./fonts');
+  },
+
   /** Average colour of a rectangle of the last render, 0…255. */
   sample(pixels: Uint8Array, width: number, x: number, y: number, w = 4, h = 4): number[] {
     const acc = [0, 0, 0, 0];
