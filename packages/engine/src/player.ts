@@ -439,7 +439,7 @@ export class Player {
   }
 
   private renderOptions(): RenderOptions {
-    return { falseColor: this.state.falseColor };
+    return { falseColor: this.state.falseColor, fast: this.state.playing };
   }
 
   private tick = (): void => {

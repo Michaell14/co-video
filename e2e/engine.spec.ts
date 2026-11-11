@@ -79,6 +79,50 @@ test.describe('render engine', () => {
     expect(r.white).toBeGreaterThan(3000); // the title rasterised
   });
 
+  test('large sources drawn small are mipmapped, not aliased', async ({ page }) => {
+    await openLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab } = window as any;
+      const { core } = lab;
+      lab.init(640, 360);
+      // 1024 px of stripes with a 3 px period: point-sampling this at 1/8 size beats wildly.
+      const c = document.createElement('canvas');
+      c.width = 1024;
+      c.height = 1024;
+      const g = c.getContext('2d')!;
+      g.fillStyle = '#000';
+      g.fillRect(0, 0, 1024, 1024);
+      g.fillStyle = '#fff';
+      for (let x = 0; x < 1024; x += 3) g.fillRect(x, 0, 1, 1024);
+      const blob: Blob = await new Promise((res) => c.toBlob((b) => res(b!), 'image/png'));
+      const asset = await lab.addFile('stripes', URL.createObjectURL(blob), 'stripes.png');
+      const v1 = core.makeTrack('video', 0);
+      const p = core.applyEdits(core.emptyProject({ width: 640, height: 360 }), [
+        { op: 'addTrack', track: v1 },
+        { op: 'addAsset', asset },
+        { op: 'addClip', clip: core.makeClip('image', v1.id, { assetId: 'stripes', start: 0, duration: 30, fit: 'none', scaleX: 0.125, scaleY: 0.125 }) },
+      ]);
+      const spread = (pixels: Uint8Array) => {
+        let min = 255;
+        let max = 0;
+        for (let x = 262; x < 378; x++) {
+          const v = pixels[(180 * 640 + x) * 4];
+          min = Math.min(min, v);
+          max = Math.max(max, v);
+        }
+        return max - min;
+      };
+      const best = await lab.renderFrame(p, 0);
+      const fast = await lab.renderFrame(p, 0, { fast: true });
+      const again = await lab.renderFrame(p, 0);
+      return { best: spread(best.pixels), fast: spread(fast.pixels), again: spread(again.pixels), glError: lab.compositor.gl.getError() };
+    });
+    expect(r.glError).toBe(0);
+    expect(r.fast).toBeGreaterThan(100); // plain bilinear: strong beating
+    expect(r.best).toBeLessThan(r.fast / 3); // mipmapped: close to an even grey
+    expect(r.again).toBe(r.best); // switching back and forth leaves no stale state
+  });
+
   test('shows the frame that belongs to the requested time', async ({ page }) => {
     await openLab(page);
     // testsrc2 burns a moving marker into the picture; frames differ, so identical requests must

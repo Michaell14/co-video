@@ -87,6 +87,11 @@ export interface RenderOptions {
   falseColor?: boolean;
   /** Skip presenting to the canvas (used when only read-back is wanted). */
   skipPresent?: boolean;
+  /**
+   * Skip mipmapping of sources that are drawn much smaller than they are. Saves a little GPU time
+   * per frame at the price of some shimmer in fine detail; the player uses it while playing.
+   */
+  fast?: boolean;
 }
 
 export interface RenderStats {
@@ -130,6 +135,8 @@ export class Compositor {
   private lumaW: [number, number, number] = [0.2126, 0.7152, 0.0722];
   private project: Project | null = null;
   private provider: SourceProvider | null = null;
+  private fast = false;
+  private readonly mipmapped = new WeakMap<WebGLTexture, boolean>();
   private fps = 30;
   private packTargets: { y: RenderTarget; c: RenderTarget } | null = null;
   private scopeTarget: RenderTarget | null = null;
@@ -211,6 +218,7 @@ export class Compositor {
     if (glx.contextLost) return this.stats;
     this.project = project;
     this.provider = provider;
+    this.fast = !!opts.fast;
     this.fps = project.settings.fpsNum / project.settings.fpsDen;
     this.lumaW = lumaWeights(workingPrimaries(project.settings.colorMode));
 
@@ -476,6 +484,13 @@ export class Compositor {
     const box = layoutLayer(L, srcW, srcH, W, H, H / project.settings.height);
     const { boxW, boxH, sx, sy } = box;
 
+    // A source drawn at less than about two thirds of its size needs mipmaps, or fine detail
+    // aliases (a 4K clip in a small picture-in-picture, or any large still in a 1080p frame).
+    const shrink = Math.min(srcW / Math.max(1, boxW * Math.abs(sx)), srcH / Math.max(1, boxH * Math.abs(sy)));
+    const mip = !this.fast && shrink > 1.5;
+    if (src.yuv) for (const t of [src.yuv.y, src.yuv.u, src.yuv.v]) this.setMipmapped(t, mip);
+    else this.setMipmapped(src.tex, mip);
+
     // Layer-space processing (media only).
     let img: Img = src;
     let owned: RenderTarget | null = null;
@@ -507,6 +522,22 @@ export class Compositor {
       frameSteps: this.stepsFor(L, true),
       L,
     };
+  }
+
+  /** Switch a source texture between plain bilinear and trilinear-mipmapped minification. */
+  private setMipmapped(tex: WebGLTexture, on: boolean): void {
+    const was = this.mipmapped.get(tex) ?? false;
+    if (!on && !was) return;
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (on) {
+      // Level 0 may have been replaced since the last draw (a new video frame), so rebuild.
+      gl.generateMipmap(gl.TEXTURE_2D);
+      if (!was) gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    } else gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    this.mipmapped.set(tex, on);
   }
 
   private needsInputTransform(assetId: string | null): boolean {
