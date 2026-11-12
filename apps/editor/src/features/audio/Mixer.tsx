@@ -1,4 +1,4 @@
-import { SlidersHorizontal } from 'lucide-react';
+import { SlidersHorizontal, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import {
   clamp,
@@ -6,13 +6,15 @@ import {
   DEFAULT_EQ,
   trackLabel,
   tracksOf,
+  type ID,
   type Track,
   type TrackCompressor,
   type TrackEQ,
 } from '@tandem/core';
 import { usePlayer, useProject, useSession } from '../../session/hooks';
 import { beginGesture, commit } from '../../state/props';
-import { cx, NumberField, Slider, Switch, tip } from '../../ui/core';
+import { cx, IconButton, NumberField, Slider, Switch, tip } from '../../ui/core';
+import { isDoublePress, type Press } from '../../ui/press';
 import './mixer.css';
 
 const DB_MIN = -60;
@@ -26,6 +28,8 @@ export function Mixer() {
   const session = useSession();
   const project = useProject((p) => p);
   const { audio } = tracksOf(project);
+  const [fx, setFx] = useState<ID | null>(null);
+  const fxTrack = audio.find((t) => t.id === fx);
   return (
     <>
       <div className="panel__head">
@@ -35,10 +39,24 @@ export function Mixer() {
       <div className="panel__body mixer" data-readonly={!session.canEdit}>
         <div className="mixer__strips">
           {audio.map((t) => (
-            <Strip key={t.id} track={t} label={trackLabel(project, t)} />
+            <Strip
+              key={t.id}
+              track={t}
+              label={trackLabel(project, t)}
+              fxOpen={t.id === fx}
+              onFx={() => setFx(t.id === fx ? null : t.id)}
+            />
           ))}
           <MasterStrip />
         </div>
+        {fxTrack && (
+          <TrackFx
+            key={fxTrack.id}
+            track={fxTrack}
+            label={trackLabel(project, fxTrack)}
+            onClose={() => setFx(null)}
+          />
+        )}
       </div>
     </>
   );
@@ -90,6 +108,7 @@ function Meter({ channels, read }: { channels: number; read: () => number[] }) {
 
 function Fader({ value, onChange }: { value: number; onChange: (db: number) => void }) {
   const ref = useRef<HTMLDivElement>(null);
+  const lastPress = useRef<Press | null>(null);
   const [active, setActive] = useState(false);
   const from = (y: number) => {
     const r = ref.current!.getBoundingClientRect();
@@ -101,6 +120,13 @@ function Fader({ value, onChange }: { value: number; onChange: (db: number) => v
       className="fader"
       data-active={active}
       onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        const press = { time: e.timeStamp, x: e.clientX, y: e.clientY };
+        const second = isDoublePress(lastPress.current, press);
+        lastPress.current = second ? null : press;
+        // The second press of a double-click only asks for the reset to 0 dB that follows: it
+        // neither jumps the fader again nor opens another undo step.
+        if (second) return;
         e.currentTarget.setPointerCapture(e.pointerId);
         setActive(true);
         beginGesture();
@@ -108,6 +134,7 @@ function Fader({ value, onChange }: { value: number; onChange: (db: number) => v
       }}
       onPointerMove={(e) => active && onChange(from(e.clientY))}
       onPointerUp={(e) => {
+        if (!active) return;
         e.currentTarget.releasePointerCapture(e.pointerId);
         setActive(false);
       }}
@@ -130,19 +157,23 @@ function Fader({ value, onChange }: { value: number; onChange: (db: number) => v
   );
 }
 
-function Strip({ track: t, label }: { track: Track; label: string }) {
+function Strip({
+  track: t,
+  label,
+  fxOpen,
+  onFx,
+}: {
+  track: Track;
+  label: string;
+  fxOpen: boolean;
+  onFx: () => void;
+}) {
   const player = usePlayer();
-  const [open, setOpen] = useState(false);
   const update = (patch: Partial<Track>, merge = false) =>
     commit([{ op: 'updateTrack', id: t.id, patch }], merge);
   const read = useRef(() => [player?.levels().tracks[t.id] ?? 0]);
   read.current = () => [player?.levels().tracks[t.id] ?? 0];
   const reader = useRef(() => read.current()).current;
-  const eq = t.eq ?? DEFAULT_EQ;
-  const comp = t.compressor ?? DEFAULT_COMPRESSOR;
-  const setEq = (patch: Partial<TrackEQ>, merge = true) => update({ eq: { ...eq, ...patch } }, merge);
-  const setComp = (patch: Partial<TrackCompressor>, merge = true) =>
-    update({ compressor: { ...comp, ...patch } }, merge);
   return (
     <div className="strip" data-muted={t.muted}>
       <div className="strip__name">
@@ -197,16 +228,51 @@ function Strip({ track: t, label }: { track: Track; label: string }) {
           S
         </button>
         <button
-          className={cx('strip__btn', (eq.enabled || comp.enabled) && 'strip__btn--fx')}
-          aria-pressed={open}
-          onClick={() => setOpen(!open)}
+          className={cx(
+            'strip__btn',
+            (t.eq?.enabled || t.compressor?.enabled) && 'strip__btn--fx',
+            fxOpen && 'strip__btn--open',
+          )}
+          aria-pressed={fxOpen}
+          onClick={onFx}
           {...tip('EQ & compressor')}
         >
           FX
         </button>
       </div>
-      {open && (
-        <div className="strip__fx">
+    </div>
+  );
+}
+
+/**
+ * EQ and compressor of one track, in a drawer under the strips. They are kept out of the strip so
+ * that every fader has the same travel and the scales line up, whichever track is being worked on.
+ */
+function TrackFx({ track: t, label, onClose }: { track: Track; label: string; onClose: () => void }) {
+  const update = (patch: Partial<Track>, merge: boolean) =>
+    commit([{ op: 'updateTrack', id: t.id, patch }], merge);
+  const eq = t.eq ?? DEFAULT_EQ;
+  const comp = t.compressor ?? DEFAULT_COMPRESSOR;
+  const setEq = (patch: Partial<TrackEQ>, merge = true) => update({ eq: { ...eq, ...patch } }, merge);
+  const setComp = (patch: Partial<TrackCompressor>, merge = true) =>
+    update({ compressor: { ...comp, ...patch } }, merge);
+  const ref = useRef<HTMLDivElement>(null);
+  // In a short panel the drawer opens below the fold: bring it into view, so that pressing FX
+  // visibly does something.
+  useEffect(() => {
+    ref.current?.scrollIntoView({ block: 'nearest' });
+  }, []);
+  return (
+    <div ref={ref} className="mixer__fx" role="group" aria-label={`EQ and compressor for ${label}`}>
+      <div className="mixer__fxhead">
+        <span className="th__tag mono">{label}</span>
+        <span>{t.name ? `${t.name} · EQ & compressor` : 'EQ & compressor'}</span>
+        <IconButton small label="Close" onClick={onClose}>
+          <X />
+        </IconButton>
+      </div>
+      <div className="mixer__fxcols">
+        <div className="mixer__fxcol">
           <div className="strip__fxhead">
             EQ{' '}
             <Switch
@@ -218,6 +284,10 @@ function Strip({ track: t, label }: { track: Track; label: string }) {
           {(['high', 'mid', 'low'] as const).map((band) => (
             <label key={band} className="strip__knob">
               <span>{band[0].toUpperCase() + band.slice(1)}</span>
+              <em className="mono">
+                {eq[band] > 0 ? '+' : ''}
+                {eq[band].toFixed(1)}
+              </em>
               <Slider
                 value={eq[band]}
                 min={-18}
@@ -227,12 +297,10 @@ function Strip({ track: t, label }: { track: Track; label: string }) {
                 onStart={beginGesture}
                 onChange={(v) => setEq({ [band]: Math.round(v * 10) / 10, enabled: true })}
               />
-              <em className="mono">
-                {eq[band] > 0 ? '+' : ''}
-                {eq[band].toFixed(1)}
-              </em>
             </label>
           ))}
+        </div>
+        <div className="mixer__fxcol">
           <div className="strip__fxhead">
             Comp{' '}
             <Switch
@@ -243,6 +311,7 @@ function Strip({ track: t, label }: { track: Track; label: string }) {
           </div>
           <label className="strip__knob">
             <span>Thresh</span>
+            <em className="mono">{comp.threshold}</em>
             <Slider
               value={comp.threshold}
               min={-60}
@@ -251,10 +320,10 @@ function Strip({ track: t, label }: { track: Track; label: string }) {
               onStart={beginGesture}
               onChange={(v) => setComp({ threshold: Math.round(v), enabled: true })}
             />
-            <em className="mono">{comp.threshold}</em>
           </label>
           <label className="strip__knob">
             <span>Ratio</span>
+            <em className="mono">{comp.ratio.toFixed(1)}:1</em>
             <Slider
               value={comp.ratio}
               min={1}
@@ -263,10 +332,10 @@ function Strip({ track: t, label }: { track: Track; label: string }) {
               onStart={beginGesture}
               onChange={(v) => setComp({ ratio: Math.round(v * 10) / 10, enabled: true })}
             />
-            <em className="mono">{comp.ratio.toFixed(1)}:1</em>
           </label>
           <label className="strip__knob">
             <span>Makeup</span>
+            <em className="mono">+{comp.makeup.toFixed(1)}</em>
             <Slider
               value={comp.makeup}
               min={0}
@@ -275,10 +344,9 @@ function Strip({ track: t, label }: { track: Track; label: string }) {
               onStart={beginGesture}
               onChange={(v) => setComp({ makeup: Math.round(v * 10) / 10, enabled: true })}
             />
-            <em className="mono">+{comp.makeup.toFixed(1)}</em>
           </label>
         </div>
-      )}
+      </div>
     </div>
   );
 }

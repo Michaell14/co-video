@@ -1120,26 +1120,21 @@ test.describe('projects, links and media', () => {
     expect(await layout(page)).toEqual(current);
 
     // Replacing the open project is a separate command that spells out what goes.
-    const asked: string[] = [];
-    let answer: 'accept' | 'dismiss' = 'dismiss';
-    page.on('dialog', (d) => {
-      asked.push(d.message());
-      void d[answer]();
-    });
+    const question = page.getByRole('dialog', { name: 'Replace “Source cut” with “Source cut”?' });
     const replace = async () => {
       await searchPalette(page, 'replace this project');
       const [c] = await Promise.all([page.waitForEvent('filechooser'), page.keyboard.press('Enter')]);
       await c.setFiles(file);
     };
     await replace();
-    await expect.poll(() => asked.length).toBe(1);
-    expect(asked[0]).toContain('Replace “Source cut” with “Source cut”?');
-    expect(asked[0]).toContain('5 clips, 4 tracks and 1 media file');
-    expect(asked[0]).toContain('Undo brings it back only until the project is closed or reloaded');
+    await expect(question).toContainText('5 clips, 4 tracks and 1 media file');
+    await expect(question).toContainText('Undo brings it back only until the project is closed or reloaded');
+    await question.getByRole('button', { name: 'Cancel' }).click();
+    await expect(question).toHaveCount(0);
     expect(await layout(page)).toEqual(current);
 
-    answer = 'accept';
     await replace();
+    await question.getByRole('button', { name: 'Replace project' }).click();
     await expect.poll(() => layout(page)).toEqual(saved);
     await expect.poll(() => toastCount(page, 'Replaced with “Source cut”')).toBe(1);
     await page.keyboard.press('Control+z');

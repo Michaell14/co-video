@@ -1,4 +1,14 @@
-import { ClipboardCopy, ClipboardPaste, Eye, EyeOff, Plus, RotateCcw, Trash2, Palette } from 'lucide-react';
+import {
+  ClipboardCopy,
+  ClipboardPaste,
+  Eye,
+  EyeOff,
+  Lock,
+  Plus,
+  RotateCcw,
+  Trash2,
+  Palette,
+} from 'lucide-react';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   clipEnd,
@@ -7,6 +17,7 @@ import {
   IDENTITY_CURVE,
   INPUT_COLOR_SPACES,
   resolveInputSpace,
+  trackLabel,
   tracksOf,
   clipsOnTrack,
   type Clip,
@@ -22,13 +33,14 @@ import { cmd } from '../../state/commands';
 import { beginGesture, commit, patchClips } from '../../state/props';
 import { useUI } from '../../state/ui';
 import { Button, IconButton, NumberField, Select, Slider, tip, toast } from '../../ui/core';
+import { isDoublePress, type Press } from '../../ui/press';
 import { Row } from '../inspector/controls';
 import { ProjectSettingsForm } from '../inspector/ProjectSettings';
 import './color.css';
 
 type Tab = 'wheels' | 'curves' | 'hdr' | 'lut';
 
-/** The clip the Color workspace is working on: the selection, or else whatever is under the playhead. */
+/** The clip the Colour workspace is working on: the selection, or else whatever is under the playhead. */
 function useActiveClip(project: Project): Clip | null {
   const selection = useUI((s) => s.selection);
   const frame = useThrottledFrame(6);
@@ -53,6 +65,11 @@ export function ColorPanel() {
   const session = useSession();
   const project = useLiveProject((p) => p);
   const clip = useActiveClip(project);
+  const attributes = useUI((s) => s.attributes);
+  // The clip under the playhead is shown whether or not its track is locked; a lock keeps every
+  // control off it all the same.
+  const track = clip ? project.tracks[clip.trackId] : undefined;
+  const locked = !!track?.locked;
   const [tab, setTab] = useState<Tab>('wheels');
   const tabsRef = useRef<HTMLDivElement>(null);
   const [ink, setInk] = useState({ x: 0, w: 0 });
@@ -89,33 +106,38 @@ export function ColorPanel() {
         <IconButton
           small
           label={grade.enabled ? 'Bypass grade' : 'Enable grade'}
-          disabled={!clip?.grade}
+          disabled={!clip?.grade || locked}
           active={!!clip?.grade && !grade.enabled}
           onClick={() => set({ enabled: !grade.enabled }, false)}
         >
           {grade.enabled ? <Eye /> : <EyeOff />}
         </IconButton>
-        <IconButton small label="Copy grade" disabled={!clip} onClick={() => cmd.copyAttributes()}>
+        <IconButton
+          small
+          label="Copy grade"
+          disabled={!clip}
+          onClick={() => clip && cmd.copyAttributes(clip.id)}
+        >
           <ClipboardCopy />
         </IconButton>
         <IconButton
           small
           label="Paste grade"
-          disabled={!clip || !useUI.getState().attributes}
-          onClick={() => cmd.pasteAttributes('grade')}
+          disabled={!clip || !attributes || locked}
+          onClick={() => clip && cmd.pasteAttributes('grade', [clip.id])}
         >
           <ClipboardPaste />
         </IconButton>
         <IconButton
           small
           label="Reset grade"
-          disabled={!clip?.grade}
+          disabled={!clip?.grade || locked}
           onClick={() => clip && patchClips([clip.id], { grade: null })}
         >
           <RotateCcw />
         </IconButton>
       </div>
-      <div className="panel__body color" data-readonly={!session.canEdit}>
+      <div className="panel__body color" data-readonly={!session.canEdit || locked}>
         {!clip ? (
           <div className="empty">
             <Palette />
@@ -133,6 +155,14 @@ export function ColorPanel() {
               <span>{clip.name || clip.type}</span>
               {!grade.enabled && <span className="badge badge--amber">Bypassed</span>}
             </button>
+            {locked && track && (
+              <div className="color__locked">
+                <Lock />
+                <span>
+                  {track.name || trackLabel(project, track)} is locked. Unlock the track to grade this clip.
+                </span>
+              </div>
+            )}
             {tab === 'wheels' && <WheelsTab grade={grade} set={set} />}
             {tab === 'curves' && <CurvesTab grade={grade} set={set} />}
             {tab === 'hdr' && <HdrTab grade={grade} set={set} hdr={project.settings.colorMode !== 'sdr'} />}
@@ -174,6 +204,17 @@ function puckToWheel(x: number, y: number, master: number): Wheel {
     round(r * WHEEL_RANGE * Math.cos(a - PHI[2])),
     master,
   ];
+}
+
+/**
+ * A channel value in at most four characters (`0`, `.25`, `-.25`, `1.5`): three of them have to
+ * fit side by side under one wheel, also when all three are negative.
+ */
+function readout(v: number): string {
+  const r = Math.round(v * 100) / 100;
+  if (r === 0) return '0';
+  const a = Math.abs(r);
+  return (r < 0 ? '-' : '') + (a < 1 ? a.toFixed(2).slice(1) : a.toFixed(1));
 }
 
 function ColorWheel({
@@ -252,9 +293,9 @@ function ColorWheel({
         />
       </div>
       <div className="wheel__read mono">
-        <span style={{ color: '#ff7a7a' }}>{(value[0] + value[3]).toFixed(2)}</span>
-        <span style={{ color: '#6ee787' }}>{(value[1] + value[3]).toFixed(2)}</span>
-        <span style={{ color: '#7fb0ff' }}>{(value[2] + value[3]).toFixed(2)}</span>
+        <span style={{ color: '#ff7a7a' }}>{readout(value[0] + value[3])}</span>
+        <span style={{ color: '#6ee787' }}>{readout(value[1] + value[3])}</span>
+        <span style={{ color: '#7fb0ff' }}>{readout(value[2] + value[3])}</span>
       </div>
     </div>
   );
@@ -486,7 +527,7 @@ function CurvesTab({ grade, set }: { grade: Grade; set: SetGrade }) {
     else set({ curves: { ...grade.curves, [id]: pts } }, merge);
   };
   return (
-    <div className="color__scroll">
+    <div className="color__scroll color__scroll--fill">
       <div className="curve__tabs">
         {CURVES.map((c) => {
           const edited =
@@ -500,7 +541,7 @@ function CurvesTab({ grade, set }: { grade: Grade; set: SetGrade }) {
               onClick={() => setId(c.id)}
               {...tip(c.hint)}
             >
-              {c.group === 'tone' && (
+              {c.group === 'tone' && c.id !== 'm' && (
                 <i
                   style={{
                     width: 7,
@@ -664,17 +705,17 @@ function CurveEditor({
         vectorEffect="non-scaling-stroke"
         strokeLinejoin="round"
       />
-      {sorted.map((p, i) => (
-        <circle
-          key={i}
-          className="curve__pt"
-          cx={p[0] * S}
-          cy={(1 - p[1]) * S}
-          r={4.5}
-          stroke={color}
-          vectorEffect="non-scaling-stroke"
-        />
-      ))}
+      {sorted.map((p, i) => {
+        // The graph is stretched to its box, which would turn a circle into an oval. A line of no
+        // length with round ends and a stroke that does not scale is a round dot at any shape.
+        const at = { x1: p[0] * S, y1: (1 - p[1]) * S, x2: p[0] * S, y2: (1 - p[1]) * S };
+        return (
+          <g key={i} className="curve__pt">
+            <line {...at} stroke={color} vectorEffect="non-scaling-stroke" />
+            <line {...at} className="curve__pt-fill" vectorEffect="non-scaling-stroke" />
+          </g>
+        );
+      })}
     </svg>
   );
 }
@@ -740,6 +781,7 @@ function VFader({
   onChange: (v: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const lastPress = useRef<Press | null>(null);
   const [active, setActive] = useState(false);
   const pct = ((value - min) / (max - min)) * 100;
   const from = (clientY: number) => {
@@ -752,6 +794,13 @@ function VFader({
       className="vfader"
       data-active={active}
       onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        const press = { time: e.timeStamp, x: e.clientX, y: e.clientY };
+        const second = isDoublePress(lastPress.current, press);
+        lastPress.current = second ? null : press;
+        // The second press of a double-click only asks for the reset that follows: it neither
+        // jumps the fader again nor opens another undo step.
+        if (second) return;
         e.currentTarget.setPointerCapture(e.pointerId);
         setActive(true);
         beginGesture();
@@ -759,6 +808,7 @@ function VFader({
       }}
       onPointerMove={(e) => active && onChange(from(e.clientY))}
       onPointerUp={(e) => {
+        if (!active) return;
         e.currentTarget.releasePointerCapture(e.pointerId);
         setActive(false);
       }}

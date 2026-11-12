@@ -11,28 +11,6 @@
 .insp__project {
   padding: 12px;
 }
-.insp__timing {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--line-1);
-  color: var(--fg-2);
-  font-size: var(--text-xs);
-}
-.insp__timing i {
-  flex: 0 0 14px;
-  height: 1px;
-  background: var(--line-3);
-}
-.insp__timing b {
-  margin-left: auto;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--bg-4);
-  color: var(--fg-1);
-  font-weight: 500;
-}
 .insp__read {
   color: var(--fg-2);
   font-size: var(--text-sm);
@@ -54,6 +32,8 @@
   width: 20px;
   height: 20px;
   flex: none;
+  /* Sits at the end of the label, so the row's controls keep the columns of the rows around it. */
+  margin-left: auto;
   border-radius: 4px;
   color: var(--fg-3);
 }
@@ -116,4 +96,16 @@
   flex-direction: column;
   gap: 6px;
   padding: 2px 8px 10px;
+}
+/* The parameters a switch turns on, set off as a group under it. */
+.subrows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 9px;
+  border-left: 1px solid var(--line-2);
+}
+.subrows .row {
+  /* The label gives up what the indent and its rule take, so the controls stay in the section's column. */
+  grid-template-columns: 74px minmax(0, 1fr);
 }

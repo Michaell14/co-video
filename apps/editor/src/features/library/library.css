@@ -3,6 +3,17 @@
   flex-direction: column;
   animation: fade-in var(--dur-2) ease;
 }
+/* Four tabs share the panel's width: a little tighter than the tabs of a wider panel. */
+.lib__tabs .tab {
+  padding: 0 7px;
+  gap: 5px;
+}
+.lib__tabs.tabs--compact .tab:not([aria-selected='true']) {
+  padding: 0 9px;
+}
+.lib__tabs.tabs--compact .tab:not([aria-selected='true']) .tab__label {
+  display: none;
+}
 .pool {
   display: flex;
   flex-direction: column;
@@ -41,14 +52,10 @@
 }
 .chips {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 0 8px 8px;
-  overflow-x: auto;
   flex: none;
-  scrollbar-width: none;
-}
-.chips::-webkit-scrollbar {
-  display: none;
 }
 .chip {
   display: inline-flex;
@@ -71,8 +78,9 @@
   color: var(--fg-1);
 }
 .chip[aria-pressed='true'] {
-  background: var(--fg-1);
-  color: var(--bg-0);
+  background: var(--bg-6);
+  color: var(--fg-1);
+  box-shadow: inset 0 0 0 1px var(--line-3);
 }
 .chip span {
   opacity: 0.6;
@@ -120,6 +128,18 @@
   background: conic-gradient(from 210deg, #ff5d5d, #ffd43b, #51cf66, #22d3ee, #9775fa, #ff5d5d);
   color: #fff;
 }
+/* Asked for from the timeline: the card is held up for a moment, then settles back. */
+.asset[data-revealed] .asset__thumb {
+  animation: asset-reveal 1600ms ease-out;
+}
+@keyframes asset-reveal {
+  0%,
+  55% {
+    box-shadow:
+      inset 0 0 0 2px var(--accent),
+      0 0 0 3px var(--accent-soft);
+  }
+}
 .asset[data-offline='true'] .asset__thumb img {
   filter: grayscale(1) brightness(0.5);
 }
@@ -155,7 +175,8 @@
   top: 4px;
   display: flex;
 }
-.asset__status span {
+.asset__status span,
+.asset__retry {
   display: grid;
   place-items: center;
   width: 20px;
@@ -167,6 +188,12 @@
 .asset__status svg {
   width: 12px;
   height: 12px;
+}
+.asset__retry {
+  transition: background var(--dur-1) ease;
+}
+.asset__retry:hover {
+  background: var(--bg-6);
 }
 .asset__progress {
   position: absolute;

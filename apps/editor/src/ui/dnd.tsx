@@ -7,6 +7,7 @@ import { GripVertical } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { create } from 'zustand';
 import type { ShapeProps, TextProps } from '@tandem/core';
+import { isDoublePress, type Press } from './press';
 
 export type DragPayload =
   | { kind: 'asset'; assetId: string }
@@ -34,7 +35,13 @@ export function onDrop(handler: DropHandler): () => void {
   return () => handlers.delete(handler);
 }
 
-/** Begin a drag from a pointerdown. A plain click (no movement) calls `onClick` instead. */
+/** The last press that began on a drag source, to recognise the second press of a double-click. */
+let lastPress: (Press & { source: EventTarget }) | null = null;
+
+/**
+ * Begin a drag from a pointerdown. A plain click (no movement) calls `onClick` instead, once per
+ * double-click: people double-click a library tile to apply it and mean one, not two.
+ */
 export function beginDrag(
   e: React.PointerEvent,
   payload: DragPayload,
@@ -44,6 +51,9 @@ export function beginDrag(
   if (e.button !== 0) return;
   const startX = e.clientX;
   const startY = e.clientY;
+  const press = { time: e.timeStamp, x: startX, y: startY, source: e.currentTarget };
+  const repeated = lastPress?.source === press.source && isDoublePress(lastPress, press);
+  lastPress = press;
   let dragging = false;
   const move = (ev: PointerEvent) => {
     if (!dragging) {
@@ -63,7 +73,7 @@ export function beginDrag(
         for (const h of Array.from(handlers)) if (h(payload, ev.clientX, ev.clientY)) break;
       }
       useDrag.setState({ payload: null });
-    } else if (!cancelled) onClick?.();
+    } else if (!cancelled && !repeated) onClick?.();
   };
   const up = (ev: PointerEvent) => finish(ev, false);
   const key = (ev: KeyboardEvent) => {

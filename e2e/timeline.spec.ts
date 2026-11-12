@@ -127,9 +127,10 @@ test.describe('timeline', () => {
     await page.keyboard.press('Enter');
     await expect.poll(names).toEqual(['Titles']);
 
-    // With Comments open the viewer is about 210px wide: only the transport buttons remain, and
-    // none of them overlaps another or leaves the bar.
-    await page.evaluate(() => (window as any).tandem.ui.getState().set({ commentsOpen: true }));
+    // In a window this narrow the viewer is about 250px wide: only the transport buttons remain,
+    // and none of them overlaps another or leaves the bar.
+    await page.setViewportSize({ width: 760, height: 720 });
+    await expect.poll(async () => (await page.locator('.panel--viewer').boundingBox())?.width).toBe(256);
     await expect(page.locator('.transport__left')).toBeHidden();
     const bar = await page.evaluate(() => {
       const t = document.querySelector('.transport')!;

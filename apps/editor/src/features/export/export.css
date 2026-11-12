@@ -89,3 +89,38 @@
   color: var(--fg-3);
   font-size: var(--text-sm);
 }
+.exp__problems {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 190px;
+  margin: 4px 0 6px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  color: var(--fg-1);
+}
+.exp__problems li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.exp__places {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-3);
+  font-size: var(--text-xs);
+}
+.exp__place {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-4);
+  color: var(--fg-2);
+  font: inherit;
+}
+button.exp__place:hover {
+  background: var(--bg-5);
+  color: var(--fg-1);
+}

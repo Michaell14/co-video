@@ -60,7 +60,7 @@
   white-space: nowrap;
 }
 .comment__ago {
-  color: var(--fg-4);
+  color: var(--fg-3);
   font-size: var(--text-2xs);
 }
 .comment__tc {

@@ -52,7 +52,10 @@ with projects stored in your browser.
 - Unlimited video and audio tracks; clips are **resolution independent**, so a project can switch
   between 1080p, 4K, 8K or vertical without redoing anything
 - Overwrite, insert, **ripple**, **roll**, **slip** and blade edits; magnetic snapping; linked
-  audio / video; markers; in / out ranges; J-K-L shuttle; frame-accurate stepping
+  audio / video; in / out ranges; J-K-L shuttle; frame-accurate stepping
+- Markers with a note and a colour, and keys to step from one to the next
+- A drag that reaches the edge of the timeline scrolls it, and the timeline's menus act where you
+  click: “Add marker here”, “Close gap here”
 - **Keyframes on every numeric property** — transform, opacity, crop, volume, pan and every effect
   parameter — with hold, linear, ease and custom bezier interpolation
 - Speed changes from 5 % to 10 000 %, reverse playback and freeze frames
@@ -60,8 +63,13 @@ with projects stored in your browser.
   animated in / out presets; shapes, solids and **adjustment layers**
 - Subtitles: import `.srt` / `.vtt` as editable captions, export `.srt`
 - 18 blend modes, rectangular and elliptical masks with feathering, on-canvas transform handles
-- A source monitor with in / out marking, insert and overwrite
-- Replace or relink the file behind any asset; every clip follows, in one undo step
+- A source monitor with in / out marking, insert and overwrite, driven by the same transport keys
+  as the timeline; **match frame** opens it on the very frame under the playhead
+- Replace or relink the file behind any asset; every clip follows, in one undo step. “Reveal in
+  media pool” finds the file behind a clip, and a video can be added as picture only or sound only
+- Projects save to a portable `.tandem` file. Opening one makes a new project, from the home screen
+  or the editor; replacing the open project with one is a separate command that asks first
+- The home screen renames, duplicates and deletes the projects on your device
 - Per-user undo and redo, a command palette, and a complete keyboard workflow
 
 ### Effects
@@ -105,7 +113,8 @@ with projects stored in your browser.
 - Offline-first: the editor is an installable web app that opens with no network, projects and
   media live on your device, and changes merge when you reconnect
 - Media syncs itself — originals upload in resumable chunks and collaborators stream them
-  immediately while a local copy downloads in the background
+  immediately while a local copy downloads in the background. A transfer the network interrupted
+  is tried again by itself, or at once from the media pool
 
 ![Three people editing one project](docs/images/multiplayer.webp)
 
@@ -126,6 +135,36 @@ with projects stored in your browser.
   240 fps
 - Deterministic, frame-by-frame rendering — a slow machine takes longer but produces the same file
 - Streams straight to disk, so file size is not limited by memory
+
+## Keyboard
+
+Press `?` in the editor for the full list; it is generated from the same table that drives the
+shortcuts and the command palette (`Ctrl+K`). The ones worth learning first:
+
+|                                                 |                                             |
+| ----------------------------------------------- | ------------------------------------------- |
+| Play / pause · shuttle back, stop, forwards     | `Space` · `J` `K` `L`                       |
+| Step a frame · a second                         | `←` `→` · `Shift+←` `Shift+→`               |
+| Previous / next edit · start / end              | `↑` `↓` · `Home` `End`                      |
+| Mark in / out · clear the range                 | `I` `O` · `Alt+X`                           |
+| Match frame                                     | `F`                                         |
+| Split · delete · ripple delete                  | `S` or `Ctrl+B` · `Delete` · `Shift+Delete` |
+| Ripple trim the start / end to the playhead     | `Q` `W`                                     |
+| Close the gap at the playhead                   | `Shift+G`                                   |
+| Select everything right / left of the playhead  | `Shift+End` · `Shift+Home`                  |
+| Nudge the selection by a frame · by ten         | `,` `.` · `Shift+,` `Shift+.`               |
+| Marker: add or remove · next · previous         | `M` · `Shift+M` · `Ctrl+Shift+M` or `Alt+M` |
+| Tools: select · blade · slip · hand             | `V` · `B` · `Y` · `H`                       |
+| Zoom the timeline · fit it · zoom to selection  | `+` `-` · `Shift+Z` · `Z`                   |
+| Add a title                                     | `T`                                         |
+| Edit · Colour · Audio workspace                 | `Shift+1` · `Shift+2` · `Shift+3`           |
+| Comments                                        | `Shift+C`                                   |
+| Import · export · export the frame as a PNG     | `Ctrl+I` · `Ctrl+E` · `Ctrl+Shift+E`        |
+| Save a project file · open one as a new project | `Ctrl+S` · `Ctrl+O`                         |
+
+`Ctrl` is `⌘` on a Mac. While the source monitor is open, `Space`, `J` `K` `L`, the arrow keys
+(with `Shift` for a second), `Home`, `End`, `I` and `O` drive it instead of the timeline, and `Esc`
+closes it.
 
 ## Browser support
 

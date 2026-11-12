@@ -1,19 +1,34 @@
 /** Building blocks for property panels: collapsible sections and keyframe-aware rows. */
 import { ChevronDown, ChevronLeft, ChevronRight, Diamond } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
   animated,
   baseValue,
   clearKeyframes,
+  formatTimecode,
+  fpsOf,
   nearestKeyframe,
+  parseTimecode,
+  setKeyframeEasing,
   toggleKeyframe,
   type Clip,
+  type Easing,
+  type Fps,
   type ParamDef,
   type ParamValue,
 } from '@tandem/core';
 import { cmd } from '../../state/commands';
 import { beginGesture, localFrameOf, patchClips, setClipValues } from '../../state/props';
-import { ColorField, NumberField, Select, Slider, Switch, tip, useCollapsed } from '../../ui/core';
+import {
+  ColorField,
+  NumberField,
+  openContextMenu,
+  Select,
+  Slider,
+  Switch,
+  tip,
+  useCollapsed,
+} from '../../ui/core';
 
 export function Section({
   id,
@@ -60,6 +75,167 @@ export function valueOf(clip: Clip, path: string, fallback = 0): number {
   return animated(clip, path, localFrameOf(clip), base);
 }
 
+const EASINGS: { value: Easing; label: string }[] = [
+  { value: 'linear', label: 'Linear' },
+  { value: 'hold', label: 'Hold' },
+  { value: 'easeIn', label: 'Ease in' },
+  { value: 'easeOut', label: 'Ease out' },
+  { value: 'easeInOut', label: 'Ease in-out' },
+];
+
+/**
+ * The keyframe diamond of a property row. A click adds a keyframe at the playhead or removes the
+ * one there; the context menu chooses how the value travels on from that keyframe, for every
+ * given clip that has one there. `paths` are properties the row drives together.
+ */
+export function KeyframeButton({
+  clips,
+  paths,
+  label,
+  fallback,
+}: {
+  clips: Clip[];
+  paths: string[];
+  label: string;
+  /** Value of the property where a clip stores none. */
+  fallback: number;
+}) {
+  const ids = clips.map((c) => c.id);
+  const keyAt = (c: Clip) => {
+    const t = localFrameOf(c);
+    for (const path of paths) {
+      const key = c.keyframes[path]?.find((k) => k.t === t);
+      if (key) return key;
+    }
+    return undefined;
+  };
+  const isAnimated = !!clips[0].keyframes[paths[0]]?.length;
+  const onKey = !!keyAt(clips[0]);
+  const here = clips.map(keyAt).find(Boolean);
+  /** Apply `step` to every path of every clip, as one undo step. */
+  const each = (step: (c: Clip, path: string) => Partial<Clip>) =>
+    patchClips(ids, (c) => {
+      const patch: Partial<Clip> = {};
+      for (const path of paths) Object.assign(patch, step({ ...c, ...patch }, path));
+      return patch;
+    });
+  return (
+    <button
+      className="kf"
+      data-animated={isAnimated}
+      aria-label={`Toggle keyframe for ${label}`}
+      aria-pressed={onKey}
+      onClick={() => each((c, path) => toggleKeyframe(c, path, localFrameOf(c), valueOf(c, path, fallback)))}
+      onContextMenu={(e) =>
+        openContextMenu(e, [
+          { heading: here ? 'From this keyframe to the next' : 'No keyframe at the playhead' },
+          ...EASINGS.map(({ value, label: name }) => ({
+            label: name,
+            checked: here?.e === value,
+            disabled: !here,
+            onSelect: () => each((c, path) => setKeyframeEasing(c, path, localFrameOf(c), value)),
+          })),
+          'separator',
+          {
+            label: 'Clear all keyframes',
+            danger: true,
+            disabled: !clips.some((c) => paths.some((path) => c.keyframes[path]?.length)),
+            onSelect: () => each((c, path) => clearKeyframes(c, path, valueOf(c, path, fallback))),
+          },
+        ])
+      }
+      {...tip(
+        isAnimated
+          ? onKey
+            ? 'Remove keyframe · right-click for interpolation'
+            : 'Add keyframe here · right-click for more'
+          : 'Animate: add a keyframe',
+      )}
+    >
+      <Diamond fill={onKey ? 'currentColor' : 'none'} strokeWidth={2.5} />
+    </button>
+  );
+}
+
+/** What a timecode field stands for at one moment: the frame it shows and where an entry goes. */
+interface Shown {
+  value: number;
+  mixed?: boolean;
+  onCommit: (frame: number) => void;
+}
+
+/** A timecode to type into: `1:00`, a frame count, `2.5s`, or `+12` / `-12` to move by frames. */
+export function TimecodeField({
+  value,
+  fps,
+  onCommit,
+  ariaLabel,
+  min = 0,
+  mixed,
+}: {
+  value: number;
+  fps: Fps;
+  onCommit: (frame: number) => void;
+  ariaLabel: string;
+  min?: number;
+  /** The selection holds different values: any entry applies to all of it. */
+  mixed?: boolean;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const shown: Shown = { value, mixed, onCommit };
+  // What is being typed, with what the field showed when the typing began. The click that takes
+  // the focus away can select other clips before the field loses it, and the entry is still meant
+  // for the clips it was typed for.
+  const entry = useRef<(Shown & { text: string }) | null>(null);
+  const apply = (to: Shown, frame: number) => {
+    const next = Math.max(min, frame);
+    if (next !== to.value || to.mixed) to.onCommit(next);
+  };
+  const finish = (keep: boolean) => {
+    const typed = entry.current;
+    entry.current = null;
+    setText(null);
+    const parsed = typed && keep ? parseTimecode(typed.text, fps) : null;
+    if (typed && parsed) apply(typed, parsed.relative ? typed.value + parsed.frame : parsed.frame);
+  };
+  const latest = useRef(finish);
+  useLayoutEffect(() => {
+    latest.current = finish;
+  });
+  // That click can also change what the inspector shows, so that the field is gone before it
+  // could lose the focus. The entry counts all the same.
+  useEffect(() => () => latest.current(true), []);
+  return (
+    <div className="field">
+      <input
+        className="mono"
+        aria-label={ariaLabel}
+        value={text ?? (mixed ? '—' : formatTimecode(value, fps))}
+        spellCheck={false}
+        onFocus={(e) => e.currentTarget.select()}
+        onChange={(e) => {
+          entry.current = { ...(entry.current ?? shown), text: e.target.value };
+          setText(e.target.value);
+        }}
+        onBlur={() => finish(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          else if (e.key === 'Escape') {
+            finish(false);
+            e.currentTarget.blur();
+          } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            finish(false);
+            const step = e.shiftKey ? Math.round(fpsOf(fps)) : 1;
+            apply(shown, value + (e.key === 'ArrowUp' ? step : -step));
+          }
+          e.stopPropagation();
+        }}
+      />
+    </div>
+  );
+}
+
 export interface NumericRowProps {
   clips: Clip[];
   path: string;
@@ -77,6 +253,8 @@ export interface NumericRowProps {
   slider?: boolean;
   /** Slider fill origin for bipolar controls. */
   origin?: number;
+  /** Limits of the number where it may go beyond the slider's `min` and `max`. */
+  numberRange?: [number, number];
   animatable?: boolean;
   /** Bumping this forces a re-read while the playhead moves over animated values. */
   frame?: number;
@@ -96,6 +274,7 @@ export function NumericRow({
   defaultValue,
   slider,
   origin,
+  numberRange,
   animatable = true,
 }: NumericRowProps) {
   const first = clips[0];
@@ -106,36 +285,12 @@ export function NumericRow({
   const kfs = first.keyframes[path];
   const isAnimated = !!kfs && kfs.length > 0;
   const lf = localFrameOf(first);
-  const onKey = isAnimated && kfs.some((k) => k.t === lf);
   const set = (val: number) => setClipValues(ids, { [path]: val });
   return (
     <div className="row">
       <div className="row__label">
         {animatable && (
-          <button
-            className="kf"
-            data-animated={isAnimated}
-            aria-label={`Toggle keyframe for ${label}`}
-            aria-pressed={onKey}
-            onClick={() =>
-              patchClips(ids, (c) =>
-                toggleKeyframe(c, path, localFrameOf(c), valueOf(c, path, defaultValue ?? 0)),
-              )
-            }
-            onContextMenu={(e) => {
-              e.preventDefault();
-              patchClips(ids, (c) => clearKeyframes(c, path, valueOf(c, path, defaultValue ?? 0)));
-            }}
-            {...tip(
-              isAnimated
-                ? onKey
-                  ? 'Remove keyframe · right-click clears all'
-                  : 'Add keyframe here · right-click clears all'
-                : 'Animate: add a keyframe',
-            )}
-          >
-            <Diamond fill={onKey ? 'currentColor' : 'none'} strokeWidth={2.5} />
-          </button>
+          <KeyframeButton clips={clips} paths={[path]} label={label} fallback={defaultValue ?? 0} />
         )}
         <span>{label}</span>
       </div>
@@ -155,8 +310,8 @@ export function NumericRow({
           value={v}
           onChange={set}
           onStart={beginGesture}
-          min={min}
-          max={max}
+          min={numberRange?.[0] ?? min}
+          max={numberRange?.[1] ?? max}
           step={step}
           scale={scale}
           precision={precision}

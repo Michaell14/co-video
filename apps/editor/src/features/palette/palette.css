@@ -72,7 +72,7 @@
   white-space: nowrap;
 }
 .palette__group {
-  color: var(--fg-4);
+  color: var(--fg-3);
   font-size: var(--text-xs);
 }
 .palette__none {
@@ -114,4 +114,12 @@
   display: inline-flex;
   gap: 6px;
   font-size: var(--text-xs);
+}
+/* Two groups are two ways of doing the same thing, not one long chord. */
+.shortcut__keys .kbd-group + .kbd-group::before {
+  content: 'or';
+  align-self: center;
+  margin: 0 6px 0 2px;
+  color: var(--fg-3);
+  font-size: 10px;
 }

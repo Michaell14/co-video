@@ -22,7 +22,7 @@ import {
   Type,
   Wand2,
 } from 'lucide-react';
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   EFFECT_CATEGORIES,
   EFFECTS,
@@ -32,6 +32,7 @@ import {
   TRANSITIONS,
   type Asset,
   type Edit,
+  type ID,
   type ShapeKind,
   type TextProps,
 } from '@tandem/core';
@@ -39,7 +40,7 @@ import { useMediaStatus, useProject, useSession, useSessionMeta } from '../../se
 import { cmd } from '../../state/commands';
 import { commit } from '../../state/props';
 import { useUI, type LibraryTab } from '../../state/ui';
-import { Button, hideTip, IconButton, openContextMenu, tip } from '../../ui/core';
+import { Button, cx, hideTip, IconButton, openContextMenu, tip } from '../../ui/core';
 import { beginDrag } from '../../ui/dnd';
 import { FxThumb } from './fxPreview';
 import './library.css';
@@ -54,28 +55,64 @@ const TABS: { id: LibraryTab; label: string; icon: typeof Film }[] = [
 export function Library() {
   const tab = useUI((s) => s.libraryTab);
   const set = useUI((s) => s.set);
+  const headRef = useRef<HTMLDivElement>(null);
   const tabsRef = useRef<HTMLDivElement>(null);
   const [ink, setInk] = useState({ x: 0, w: 0 });
+  // In a panel too narrow for four labels, only the open tab keeps its own.
+  const [compact, setCompact] = useState(false);
   useLayoutEffect(() => {
-    const el = tabsRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
-    if (el) setInk({ x: el.offsetLeft, w: el.offsetWidth });
+    const head = headRef.current;
+    const tabs = tabsRef.current;
+    if (!head || !tabs) return;
+    const fit = () => {
+      // With every label showing, the row is as wide as it needs to be. A folded row is unfolded
+      // for the measurement, within this one layout pass: what it needed when it folded may no
+      // longer hold, since the labels are set in a font that can arrive after them.
+      const folded = tabs.classList.contains('tabs--compact');
+      if (folded) tabs.classList.remove('tabs--compact');
+      const fullWidth = tabs.scrollWidth;
+      if (folded) tabs.classList.add('tabs--compact');
+      const style = getComputedStyle(head);
+      const room = head.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      setCompact(fullWidth > room);
+      const el = tabs.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (el) {
+        const next = { x: el.offsetLeft, w: el.offsetWidth };
+        setInk((prev) => (prev.x === next.x && prev.w === next.w ? prev : next));
+      }
+    };
+    fit();
+    // The panel is resized by its splitter and by the window, and labels change width with the font.
+    const observer = new ResizeObserver(fit);
+    observer.observe(head);
+    observer.observe(tabs);
+    return () => observer.disconnect();
   }, [tab]);
   return (
     <>
-      <div className="panel__head">
-        <div className="tabs" role="tablist" ref={tabsRef}>
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              role="tab"
-              aria-selected={tab === t.id}
-              className="tab"
-              onClick={() => set({ libraryTab: t.id })}
-            >
-              <t.icon />
-              {t.label}
-            </button>
-          ))}
+      <div className="panel__head" ref={headRef}>
+        <div className={cx('tabs lib__tabs', compact && 'tabs--compact')} role="tablist" ref={tabsRef}>
+          {TABS.map((t) => {
+            // A tab folded down to its icon names itself on hover. The handlers that take the
+            // name away stay on, so it cannot outlive the fold.
+            const name = tip(t.label);
+            return (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={tab === t.id}
+                aria-label={t.label}
+                className="tab"
+                onClick={() => set({ libraryTab: t.id })}
+                onPointerEnter={compact && tab !== t.id ? name.onPointerEnter : undefined}
+                onPointerLeave={name.onPointerLeave}
+                onPointerDown={name.onPointerDown}
+              >
+                <t.icon />
+                <span className="tab__label">{t.label}</span>
+              </button>
+            );
+          })}
           <div className="tabs__ink" style={{ width: ink.w, transform: `translateX(${ink.x}px)` }} />
         </div>
       </div>
@@ -96,6 +133,29 @@ function MediaPool() {
   const assets = useProject((p) => p.assets);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | Asset['kind']>('all');
+  const reveal = useUI((s) => s.revealAsset);
+  const [revealed, setRevealed] = useState<{ id: ID } | null>(null);
+  const grid = useRef<HTMLDivElement>(null);
+
+  // Asked to show an asset: drop whatever narrows the list and hides it, then point at its card.
+  useEffect(() => {
+    if (!reveal) return;
+    useUI.getState().set({ revealAsset: null });
+    const asset = assets[reveal];
+    if (!asset) return;
+    if (filter !== 'all' && filter !== asset.kind) setFilter('all');
+    if (!asset.name.toLowerCase().includes(query.trim().toLowerCase())) setQuery('');
+    setRevealed({ id: asset.id });
+  }, [reveal, assets, filter, query]);
+  useEffect(() => {
+    if (!revealed) return;
+    grid.current
+      ?.querySelector(`[data-asset="${CSS.escape(revealed.id)}"]`)
+      ?.scrollIntoView({ block: 'center' });
+    const done = setTimeout(() => setRevealed(null), REVEAL_MS);
+    return () => clearTimeout(done);
+  }, [revealed]);
+
   const list = useMemo(() => {
     const q = query.trim().toLowerCase();
     return Object.values(assets)
@@ -119,7 +179,7 @@ function MediaPool() {
         >
           Import media
         </Button>
-        <span style={{ fontSize: 11, color: 'var(--fg-4)', marginTop: 4 }}>
+        <span style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 4 }}>
           Video · audio · images · .cube LUTs · .srt captions
         </span>
         <button className="lib__sample" onClick={() => void cmd.loadSample()} disabled={!session.canEdit}>
@@ -164,9 +224,9 @@ function MediaPool() {
           );
         })}
       </div>
-      <div className="pool__grid">
+      <div className="pool__grid" ref={grid}>
         {list.map((a) => (
-          <AssetCard key={a.id} asset={a} />
+          <AssetCard key={a.id} asset={a} revealed={revealed?.id === a.id} />
         ))}
         {list.length === 0 && <div className="lib__none">Nothing matches “{query}”.</div>}
       </div>
@@ -174,7 +234,10 @@ function MediaPool() {
   );
 }
 
-function AssetCard({ asset }: { asset: Asset }) {
+/** How long a revealed card stays marked; the same as its animation in library.css. */
+const REVEAL_MS = 1600;
+
+function AssetCard({ asset, revealed }: { asset: Asset; revealed: boolean }) {
   const session = useSession();
   const meta = useSessionMeta();
   const status = useMediaStatus(asset.id);
@@ -210,15 +273,19 @@ function AssetCard({ asset }: { asset: Asset }) {
   return (
     <div
       className="asset"
+      data-asset={asset.id}
       data-kind={asset.kind}
       data-offline={!available}
+      data-revealed={revealed || undefined}
       onPointerDown={(e) => {
         if ((e.target as HTMLElement).closest('button')) return;
         beginDrag(e, { kind: 'asset', assetId: asset.id }, asset.name);
       }}
-      onDoubleClick={() =>
-        asset.kind === 'lut' ? cmd.applyLut(asset.id) : useUI.getState().set({ sourceAsset: asset.id })
-      }
+      onDoubleClick={(e) => {
+        if ((e.target as HTMLElement).closest('button')) return;
+        if (asset.kind === 'lut') cmd.applyLut(asset.id);
+        else useUI.getState().set({ sourceAsset: asset.id });
+      }}
       onContextMenu={(e) =>
         openContextMenu(e, [
           asset.kind === 'lut'
@@ -231,8 +298,19 @@ function AssetCard({ asset }: { asset: Asset }) {
                 onSelect: () => useUI.getState().set({ sourceAsset: asset.id }),
               }
             : null,
-          asset.kind === 'video' && asset.hasAudio
-            ? { label: 'Add video only', onSelect: () => cmd.addAsset(asset) }
+          asset.kind === 'video' && asset.hasVideo && asset.hasAudio
+            ? {
+                label: 'Add video only',
+                icon: <Film />,
+                onSelect: () => cmd.addAsset(asset, { only: 'video' }),
+              }
+            : null,
+          asset.kind === 'video' && asset.hasVideo && asset.hasAudio
+            ? {
+                label: 'Add audio only',
+                icon: <AudioLines />,
+                onSelect: () => cmd.addAsset(asset, { only: 'audio' }),
+              }
             : null,
           {
             label: available ? 'Replace media…' : 'Relink media…',
@@ -277,9 +355,14 @@ function AssetCard({ asset }: { asset: Asset }) {
         {asset.hdr && <span className="asset__hdr badge badge--amber">HDR</span>}
         <span className="asset__status">
           {status.transferError ? (
-            <span {...tip(`${status.transferError}. Right-click to retry now.`)}>
+            <button
+              className="asset__retry"
+              aria-label={`${status.transferError}: ${asset.name}. Retry now`}
+              onClick={() => session.retryTransfer(asset.id)}
+              {...tip(`${status.transferError}. Click to retry now.`)}
+            >
               <CircleAlert style={{ color: 'var(--red)' }} />
-            </span>
+            </button>
           ) : status.uploading !== null ? (
             <span {...tip(`Uploading ${Math.round(status.uploading * 100)}%`)}>
               <CloudUpload />
@@ -531,7 +614,7 @@ function Titles() {
             onPointerDown={(e) => {
               hideTip();
               beginDrag(e, { kind: 'text', text: p.text }, p.name, () =>
-                cmd.addText(p.text, p.y ? { y: p.y } : {}),
+                cmd.addTitle(p.text, p.y ? { y: p.y } : {}),
               );
             }}
           >

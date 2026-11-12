@@ -21,7 +21,7 @@ import {
   Subtitles,
   Undo2,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { describeSettings, initials } from '@tandem/core';
 import { Logo, navigate } from '../../App';
 import {
@@ -47,6 +47,8 @@ export function TopBar() {
   const comments = useComments();
   const open = comments.filter((c) => !c.resolved).length;
   const [name, setName] = useState(settings.name);
+  // Escape leaves the name field by blurring it, and that blur must not store what was typed.
+  const abandonName = useRef(false);
 
   useEffect(() => {
     setName(settings.name);
@@ -54,6 +56,9 @@ export function TopBar() {
   }, [settings.name]);
 
   const status = !meta.shared ? 'local' : !session.canEdit ? 'readonly' : meta.status;
+  // Edits reach the others at once, media only when its upload is through: say which it is.
+  const media = useUploads();
+  const uploads = status === 'connected' ? media : 'done';
   const statusLabel =
     status === 'local'
       ? 'Saved on this device'
@@ -62,10 +67,20 @@ export function TopBar() {
           ? 'Comment-only access'
           : 'View-only access'
         : status === 'connected'
-          ? 'All changes synced'
+          ? uploads === 'stopped'
+            ? 'Media not uploaded'
+            : uploads === 'running'
+              ? 'Uploading media…'
+              : 'All changes synced'
           : status === 'connecting'
             ? 'Reconnecting…'
             : 'Offline — changes will sync';
+  const statusTip =
+    uploads === 'stopped'
+      ? 'Your edits are synced, but some media has not reached the server. The media pool marks the files; click a mark to try again.'
+      : uploads === 'running'
+        ? 'Your edits are synced. Collaborators see the media as soon as its upload is through.'
+        : statusLabel;
 
   return (
     <header className="topbar">
@@ -143,13 +158,24 @@ export function TopBar() {
         aria-label="Project name"
         spellCheck={false}
         readOnly={!session.canEdit}
+        onMouseDown={(e) => {
+          // The press that enters the field selects the whole name, as Tab does; presses after it
+          // place the caret.
+          if (document.activeElement === e.currentTarget) return;
+          e.preventDefault();
+          e.currentTarget.focus();
+          e.currentTarget.select();
+        }}
         onChange={(e) => setName(e.target.value)}
         onBlur={() => {
-          if (name.trim() && name !== settings.name) cmd.renameProject(name);
+          const next = name.trim();
+          if (!abandonName.current && next && next !== settings.name) cmd.renameProject(next);
           else setName(settings.name);
+          abandonName.current = false;
         }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLElement).blur();
+          if (e.key === 'Escape') abandonName.current = true;
+          if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur();
           e.stopPropagation();
         }}
       />
@@ -189,7 +215,7 @@ export function TopBar() {
           onChange={(v) => set({ workspace: v })}
           options={[
             { value: 'edit', label: 'Edit', icon: <Scissors />, tip: 'Edit workspace', keys: 'shift+1' },
-            { value: 'color', label: 'Color', icon: <Palette />, tip: 'Color workspace', keys: 'shift+2' },
+            { value: 'color', label: 'Colour', icon: <Palette />, tip: 'Colour workspace', keys: 'shift+2' },
             {
               value: 'audio',
               label: 'Audio',
@@ -202,7 +228,7 @@ export function TopBar() {
       </div>
 
       <div className="topbar__right">
-        <div className="conn" data-status={status} {...tip(statusLabel)}>
+        <div className="conn" data-status={status} data-uploads={uploads} {...tip(statusTip)}>
           <i />
           <span>{statusLabel}</span>
         </div>
@@ -225,6 +251,25 @@ export function TopBar() {
       </div>
     </header>
   );
+}
+
+/**
+ * Whether media of this project is still on its way to the server: `stopped` when an upload has
+ * failed and is waiting to be tried again.
+ */
+function useUploads(): 'done' | 'running' | 'stopped' {
+  const session = useSession();
+  const assets = useProject((p) => p.assets);
+  return useSyncExternalStore(session.media.subscribe, () => {
+    let state: 'done' | 'running' = 'done';
+    for (const asset of Object.values(assets)) {
+      const held = session.media.get(asset.id);
+      if (asset.uploaded || !held.local) continue;
+      if (held.transferError) return 'stopped';
+      state = 'running';
+    }
+    return state;
+  });
 }
 
 function Presence() {

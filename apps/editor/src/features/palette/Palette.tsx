@@ -1,11 +1,12 @@
 import { Search } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { EFFECTS, formatTimecode, TRANSITIONS } from '@tandem/core';
 import { useProject } from '../../session/hooks';
 import { cmd } from '../../state/commands';
 import { COMMANDS, type Command } from '../../state/shortcuts';
 import { Dialog, Kbd } from '../../ui/core';
+import { useLayer } from '../../ui/layers';
 import './palette.css';
 
 interface Item {
@@ -37,6 +38,8 @@ function score(query: string, text: string): number {
 export function CommandPalette({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const markers = useProject((p) => p.markers);
   const settings = useProject((p) => p.settings);
@@ -95,27 +98,43 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     setTimeout(item.run, 0);
   };
 
+  // The palette owns the keyboard from the moment it opens, wherever focus happens to be: every
+  // key is either one of its own or text for the search field, and none reaches the editor's
+  // shortcuts behind it.
+  useLayer(backdropRef, true, (e) => {
+    e.stopPropagation();
+    // Enter and the arrows belong to the input method while it is composing.
+    if (e.isComposing) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive((a) => Math.min(results.length - 1, a + 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive((a) => Math.max(0, a - 1));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (!e.repeat) run(results[active]);
+    } else if (e.key === 'Escape') onClose();
+    else if (e.key === 'Tab') e.preventDefault();
+    else inputRef.current?.focus();
+  });
+  useLayoutEffect(() => inputRef.current?.focus(), []);
+
   return createPortal(
-    <div className="palette-backdrop" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="palette" role="dialog" aria-label="Command palette">
+    <div
+      ref={backdropRef}
+      className="palette-backdrop"
+      onPointerDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette">
         <div className="palette__input">
           <Search />
           <input
-            autoFocus
+            ref={inputRef}
+            aria-label="Search commands"
             value={query}
             placeholder="Search commands, effects, transitions, markers…"
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                setActive((a) => Math.min(results.length - 1, a + 1));
-              } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setActive((a) => Math.max(0, a - 1));
-              } else if (e.key === 'Enter') run(results[active]);
-              else if (e.key === 'Escape') onClose();
-            }}
           />
           <Kbd keys="escape" />
         </div>

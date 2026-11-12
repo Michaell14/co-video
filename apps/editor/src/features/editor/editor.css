@@ -3,6 +3,8 @@
   height: 100%;
   display: grid;
   grid-template-rows: 46px minmax(0, 1fr);
+  /* The window sets the width: panels fit into it, they never widen it. */
+  grid-template-columns: minmax(0, 1fr);
   padding: 0 6px 6px;
   animation: fade-in var(--dur-3) ease;
 }
@@ -18,6 +20,11 @@
   display: grid;
   gap: 6px;
   transition: grid-template-columns var(--dur-3) var(--ease-out);
+}
+/* The glide is for changes the editor makes; a splitter or the window's edge moves panels directly. */
+.work__top[data-resizing],
+.work__top:has(> .resizer[data-active='true']) {
+  transition: none;
 }
 .panel {
   position: relative;
@@ -43,6 +50,17 @@
   from {
     opacity: 0;
     transform: translateX(12px);
+  }
+}
+/* Drawn in the first column from wherever it stands in the document. */
+.panel--first {
+  order: -1;
+  animation-name: slide-in-left;
+}
+@keyframes slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
   }
 }
 
@@ -239,6 +257,13 @@
   background: var(--amber);
   animation: pulse 1s ease infinite;
 }
+.conn[data-uploads='running'] i {
+  animation: pulse 1s ease infinite;
+}
+.conn[data-uploads='stopped'] i {
+  background: var(--amber);
+  box-shadow: none;
+}
 .conn[data-status='readonly'] {
   color: var(--amber);
 }
@@ -422,6 +447,23 @@
 }
 .row__ctrl > .num:only-child {
   flex: 1;
+}
+/* A pair of numbers (width and height, a point) shares the control column in two halves. */
+.row__ctrl > .num:first-child:nth-last-child(2),
+.row__ctrl > .num:first-child:nth-last-child(2) ~ .num {
+  flex: 1;
+}
+/* The diamond's own box already sets it off from the label text. */
+.row__label:has(> .kf) {
+  gap: 0;
+}
+/*
+ * Where some rows of a section carry a keyframe diamond, the labels of the others start where
+ * theirs do. The space is the first thing a label gives up when it is too long to fit beside it.
+ */
+.section__body:has(.kf) .row__label:not(:has(.kf))::before {
+  content: '';
+  flex: 0 1 12px;
 }
 .row--stack {
   grid-template-columns: 1fr;

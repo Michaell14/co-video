@@ -1,6 +1,7 @@
 /** The command catalogue: one list drives keyboard shortcuts, the palette and the cheat sheet. */
 import { secondsToFrame } from '@tandem/core';
 import { currentSession } from '../session/hooks';
+import { layerOpen } from '../ui/layers';
 import { cmd } from './commands';
 import { eventKeys } from './keys';
 import { useUI } from './ui';
@@ -379,6 +380,12 @@ export const COMMANDS: Command[] = [
     run: () => cmd.zoomToSelection(),
   },
   {
+    id: 'reveal-in-pool',
+    title: 'Reveal in media pool',
+    group: 'View',
+    run: () => cmd.revealInPool(),
+  },
+  {
     id: 'ws-edit',
     title: 'Edit workspace',
     group: 'View',
@@ -387,7 +394,7 @@ export const COMMANDS: Command[] = [
   },
   {
     id: 'ws-color',
-    title: 'Color workspace',
+    title: 'Colour workspace',
     group: 'View',
     keys: ['shift+2'],
     run: () => ui().set({ workspace: 'color' }),
@@ -517,7 +524,9 @@ export function isTyping(target: EventTarget | null): boolean {
 /** Global key handler. Returns true when the event was consumed. */
 export function handleKey(e: KeyboardEvent): boolean {
   if (isTyping(e.target)) return false;
-  if (useUI.getState().dialog && useUI.getState().dialog !== 'palette') return false;
+  // Nothing here acts behind a dialog, the palette or an open menu, whether or not it is one the
+  // UI state knows about (confirmations are not) and wherever focus is at that moment.
+  if (useUI.getState().dialog || layerOpen()) return false;
   const c = index.get(eventKeys(e));
   if (!c) return false;
   if (e.repeat && !c.repeat) {

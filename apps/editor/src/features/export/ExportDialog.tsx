@@ -4,12 +4,16 @@ import {
   describeFps,
   formatBytes,
   formatClock,
+  formatTimecode,
   framesToSeconds,
   FRAME_RATE_PRESETS,
   sequenceEnd,
+  type Fps,
+  type Project,
 } from '@tandem/core';
 import {
   AUDIO_CODEC_LABELS,
+  checkExportMedia,
   CONTAINER_LABELS,
   exportProject,
   ExportCancelled,
@@ -21,11 +25,14 @@ import {
   type ExportDynamicRange,
   type ExportProgress,
   type ExportSettings,
+  type ExportWarning,
 } from '@tandem/engine';
 import { usePlayerState, useProject, useSession } from '../../session/hooks';
-import { downloadBlob } from '../../state/commands';
-import { Button, Dialog, NumberField, Segmented, Select } from '../../ui/core';
+import { cmd, downloadBlob } from '../../state/commands';
+import { useUI } from '../../state/ui';
+import { Button, Dialog, NumberField, Segmented, Select, tip } from '../../ui/core';
 import { Row } from '../inspector/controls';
+import { groupProblems, hasUnseen, usableCodec, type ProblemPlace } from './plan';
 import './export.css';
 
 type Quality = 'low' | 'medium' | 'high' | 'max';
@@ -36,7 +43,11 @@ interface Preset {
   id: string;
   label: string;
   hint: string;
-  apply: (base: Draft, project: { width: number; height: number }) => Partial<Draft>;
+  /**
+   * `native` is the dynamic range of the project itself. Every preset with a picture names its
+   * dynamic range, so that it gives the same export whichever preset was chosen before it.
+   */
+  apply: (project: { width: number; height: number }, native: ExportDynamicRange) => Partial<Draft>;
 }
 
 interface Draft {
@@ -61,55 +72,60 @@ const PRESETS: Preset[] = [
     id: 'match',
     label: 'Match project',
     hint: 'Project size and frame rate',
-    apply: (_d, p) => ({
+    apply: (p, native) => ({
       container: 'mp4',
       videoCodec: 'avc',
       height: p.height,
       fps: 'project',
       quality: 'high',
+      dynamicRange: native,
     }),
   },
   {
     id: 'web',
     label: 'Web 1080p',
     hint: 'H.264 MP4, plays everywhere',
-    apply: (_d, p) => ({
+    // What plays everywhere is 8-bit SDR, so an HDR timeline is tone-mapped for this one.
+    apply: (p) => ({
       container: 'mp4',
       videoCodec: 'avc',
       height: Math.min(p.height, p.width >= p.height ? 1080 : 1920),
       fps: 'project',
       quality: 'high',
+      dynamicRange: 'sdr',
     }),
   },
   {
     id: '4k',
     label: '4K master',
     hint: 'High bitrate for archive / upload',
-    apply: (_d, p) => ({
+    apply: (p, native) => ({
       container: 'mp4',
       videoCodec: 'avc',
       height: p.width >= p.height ? 2160 : 3840,
       fps: 'project',
       quality: 'max',
+      dynamicRange: native,
     }),
   },
   {
     id: 'small',
     label: 'Small file',
     hint: 'AV1 / VP9 for sharing',
-    apply: (_d, p) => ({
+    apply: (p, native) => ({
       container: 'webm',
       videoCodec: 'av1',
       height: Math.min(p.height, 1080),
       fps: 'project',
       quality: 'medium',
+      dynamicRange: native,
     }),
   },
   {
     id: 'hdr',
     label: 'HDR10',
     hint: '10-bit Rec.2100 PQ',
-    apply: (_d, p) => ({
+    apply: (p) => ({
       container: 'mp4',
       videoCodec: 'hevc',
       height: p.height,
@@ -123,9 +139,61 @@ const PRESETS: Preset[] = [
 
 type Phase =
   | { kind: 'idle' }
-  | { kind: 'running'; progress: ExportProgress }
-  | { kind: 'done'; blob: Blob | null; name: string; seconds: number; bytes: number | null }
+  | { kind: 'running'; progress: ExportProgress; warnings: ExportWarning[] }
+  | {
+      kind: 'done';
+      blob: Blob | null;
+      name: string;
+      seconds: number;
+      bytes: number | null;
+      warnings: ExportWarning[];
+    }
   | { kind: 'error'; message: string };
+
+/** How many timecodes one problem lists before the rest are only counted. */
+const MAX_PLACES = 8;
+
+/** Export problems, one sentence per file, each with the places on the timeline it affects. */
+function ProblemList({
+  warnings,
+  fps,
+  onShow,
+}: {
+  warnings: ExportWarning[];
+  fps: Fps;
+  /** Go to a clip. Left out while an export is running, when leaving would throw it away. */
+  onShow?: (place: ProblemPlace) => void;
+}) {
+  return (
+    <ul className="exp__problems">
+      {groupProblems(warnings).map((g) => (
+        <li key={g.key}>
+          <span>{g.message}</span>
+          <span className="exp__places mono">
+            {g.places.slice(0, MAX_PLACES).map((place) =>
+              onShow ? (
+                <button
+                  key={place.clipId}
+                  type="button"
+                  className="exp__place"
+                  onClick={() => onShow(place)}
+                  {...tip('Go to this clip')}
+                >
+                  {formatTimecode(place.frame, fps)}
+                </button>
+              ) : (
+                <span key={place.clipId} className="exp__place">
+                  {formatTimecode(place.frame, fps)}
+                </span>
+              ),
+            )}
+            {g.places.length > MAX_PLACES && <span>and {g.places.length - MAX_PLACES} more</span>}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 export function ExportDialog({ onClose }: { onClose: () => void }) {
   const session = useSession();
@@ -133,6 +201,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const range = usePlayerState().range;
   const s = project.settings;
   const hdrProject = s.colorMode !== 'sdr';
+  const native: ExportDynamicRange = hdrProject ? (s.colorMode === 'hdr-hlg' ? 'hlg' : 'pq') : 'sdr';
   const [preset, setPreset] = useState('match');
   const [draft, setDraft] = useState<Draft>({
     container: 'mp4',
@@ -144,12 +213,16 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     customMbps: null,
     audioKbps: 192,
     range: range ? 'inout' : 'all',
-    dynamicRange: hdrProject ? (s.colorMode === 'hdr-hlg' ? 'hlg' : 'pq') : 'sdr',
+    dynamicRange: native,
     hardware: 'no-preference',
   });
-  const [support, setSupport] = useState<CodecSupport | null>(null);
+  const [probed, setProbed] = useState<{ key: string; support: CodecSupport } | null>(null);
+  /** Media problems found before exporting; null until the first look has finished. */
+  const [problems, setProblems] = useState<ExportWarning[] | null>(null);
+  const [checking, setChecking] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const abort = useRef<AbortController | null>(null);
+  const closed = useRef(false);
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
 
   const audioOnly = draft.container === 'wav';
@@ -162,23 +235,23 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       : (FRAME_RATE_PRESETS.find((f) => f.label === draft.fps) ?? { fpsNum: s.fpsNum, fpsDen: s.fpsDen });
   const fps = rate.fpsNum / rate.fpsDen;
 
-  // Ask the browser which encoders it really has for this size.
+  // Ask the browser which encoders it really has for this format, size and bit depth. The answer
+  // is kept with the question it belongs to, so a stale one is never taken for the current choice.
+  const probeKey = `${draft.container}|${width}x${height}|${hdr}`;
   useEffect(() => {
     let cancelled = false;
-    setSupport(null);
     void probeEncoders(draft.container, width, height, hdr).then((sup) => {
-      if (cancelled) return;
-      setSupport(sup);
-      setDraft((d) => ({
-        ...d,
-        videoCodec: sup.video.includes(d.videoCodec) || !sup.video.length ? d.videoCodec : sup.video[0],
-        audioCodec: sup.audio.includes(d.audioCodec) || !sup.audio.length ? d.audioCodec : sup.audio[0],
-      }));
+      if (!cancelled) setProbed({ key: probeKey, support: sup });
     });
     return () => {
       cancelled = true;
     };
-  }, [draft.container, width, height, hdr]);
+  }, [probeKey, draft.container, width, height, hdr]);
+  const support = probed?.key === probeKey ? probed.support : null;
+  // A preset or an earlier choice can name a codec this browser cannot encode here (H.264 for a
+  // 10-bit HDR export, for one). What is shown, sized and exported is the codec that will be used.
+  const videoCodec = usableCodec(draft.videoCodec, support?.video ?? null);
+  const audioCodec = usableCodec(draft.audioCodec, support?.audio ?? null) ?? draft.audioCodec;
 
   const end = sequenceEnd(project);
   const span =
@@ -186,29 +259,81 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const seconds = framesToSeconds(Math.max(0, span.out - span.in), s);
   const videoBitrate = draft.customMbps
     ? draft.customMbps * 1e6
-    : suggestBitrate(width, height, fps, draft.videoCodec, draft.quality, hdr);
+    : suggestBitrate(width, height, fps, videoCodec ?? draft.videoCodec, draft.quality, hdr);
   const estBytes = audioOnly ? seconds * 48000 * 4 : (seconds * (videoBitrate + draft.audioKbps * 1000)) / 8;
-  const noVideoEncoder = !audioOnly && support !== null && support.video.length === 0;
+  const noVideoEncoder = !audioOnly && support !== null && videoCodec === null;
   const pixels = width * height;
 
-  const start = async () => {
-    const settings: ExportSettings = {
-      container: draft.container,
-      videoCodec: draft.videoCodec,
-      audioCodec: draft.audioCodec,
-      width,
-      height,
-      fpsNum: rate.fpsNum,
-      fpsDen: rate.fpsDen,
-      videoBitrate,
-      audioBitrate: draft.audioKbps * 1000,
-      range: draft.range === 'inout' && range ? range : null,
-      includeVideo: !audioOnly,
-      includeAudio: true,
-      dynamicRange: hdr ? draft.dynamicRange : 'sdr',
-      keyFrameInterval: 2,
-      hardwareAcceleration: draft.hardware,
+  const settings: ExportSettings = {
+    container: draft.container,
+    videoCodec: videoCodec ?? draft.videoCodec,
+    audioCodec,
+    width,
+    height,
+    fpsNum: rate.fpsNum,
+    fpsDen: rate.fpsDen,
+    videoBitrate,
+    audioBitrate: draft.audioKbps * 1000,
+    range: draft.range === 'inout' && range ? range : null,
+    includeVideo: !audioOnly,
+    includeAudio: true,
+    dynamicRange: hdr ? draft.dynamicRange : 'sdr',
+    keyFrameInterval: 2,
+    hardwareAcceleration: draft.hardware,
+  };
+  const latest = useRef(settings);
+  latest.current = settings;
+
+  // Look for media the export cannot get at while the settings are still on screen, so the gaps
+  // are known before a long render and not after it. Only the range and whether there is a
+  // picture decide which clips count.
+  const choosing = phase.kind === 'idle' || phase.kind === 'error';
+  const scope = `${audioOnly}|${span.in}|${span.out}`;
+  /** What the list in `problems` was made for. */
+  const checked = useRef<{ project: Project; scope: string } | null>(null);
+  useEffect(() => {
+    if (!choosing) return;
+    let cancelled = false;
+    // Edits by collaborators arrive in bursts; one look after they settle is enough.
+    const timer = setTimeout(() => {
+      void checkExportMedia(project, session.exportResolver(), latest.current)
+        .catch(() => [])
+        .then((found) => {
+          if (cancelled) return;
+          checked.current = { project, scope };
+          setProblems(found);
+        });
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
     };
+  }, [session, project, choosing, scope]);
+  useEffect(() => {
+    closed.current = false;
+    return () => {
+      closed.current = true;
+    };
+  }, []);
+
+  const start = async () => {
+    const resolver = session.exportResolver();
+    const now = session.store.get();
+    // The list on screen stands for what is being exported unless the project or the range has
+    // changed under it, or it has not arrived yet. Then the look is taken now, and whatever the
+    // person has not been shown is shown first: going ahead takes a second, informed press.
+    // (When the list is current nothing is awaited here, so the browser still counts the save
+    // prompt below as part of the press.)
+    if (checked.current?.project !== now || checked.current.scope !== scope) {
+      setChecking(true);
+      const found = await checkExportMedia(now, resolver, settings).catch(() => []);
+      if (closed.current) return;
+      setChecking(false);
+      checked.current = { project: now, scope };
+      const unseen = hasUnseen(found, problems ?? []);
+      setProblems(found);
+      if (unseen) return;
+    }
     const ext = draft.container;
     const name = `${s.name.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Untitled'}.${ext}`;
 
@@ -244,13 +369,16 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     setPhase({
       kind: 'running',
       progress: { phase: 'preparing', frame: 0, totalFrames: 1, speed: 0, etaSeconds: 0, elapsedSeconds: 0 },
+      warnings: [],
     });
     try {
-      const resolver = session.exportResolver();
       const result = await exportProject(session.store.get(), resolver, settings, {
         writable,
         signal: ctrl.signal,
-        onProgress: (progress) => setPhase({ kind: 'running', progress }),
+        onProgress: (progress) =>
+          setPhase((prev) => (prev.kind === 'running' ? { ...prev, progress } : prev)),
+        onWarning: (w) =>
+          setPhase((prev) => (prev.kind === 'running' ? { ...prev, warnings: [...prev.warnings, w] } : prev)),
       });
       if (result.blob) downloadBlob(result.blob, name);
       console.info('[export] finished', {
@@ -264,6 +392,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         name,
         seconds: result.seconds,
         bytes: result.blob?.size ?? null,
+        warnings: result.warnings,
       });
     } catch (err) {
       if (err instanceof ExportCancelled) setPhase({ kind: 'idle' });
@@ -277,8 +406,14 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   };
 
   const close = () => {
+    closed.current = true;
     abort.current?.abort();
     onClose();
+  };
+  const show = (place: ProblemPlace) => {
+    close();
+    useUI.getState().select([place.clipId]);
+    cmd.seek(place.frame);
   };
 
   const heights = useMemo(() => {
@@ -299,7 +434,14 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         title="Exporting…"
         onClose={() => {}}
         icon={<span className="spinner" />}
-        footer={<Button onClick={() => abort.current?.abort()}>Cancel export</Button>}
+        footer={
+          <Button
+            variant={phase.warnings.length ? 'danger' : 'default'}
+            onClick={() => abort.current?.abort()}
+          >
+            Cancel export
+          </Button>
+        }
       >
         <div className="exp__run">
           <div className="exp__pct mono">{pct.toFixed(0)}%</div>
@@ -335,6 +477,18 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             <dt>Elapsed</dt>
             <dd>{formatClock(p.elapsedSeconds)}</dd>
           </dl>
+          {phase.warnings.length > 0 && (
+            <div className="callout callout--warn" role="status">
+              <TriangleAlert />
+              <div>
+                <b>This export will have gaps.</b>
+                <ProblemList warnings={phase.warnings} fps={s} />
+                {phase.warnings.some((w) => w.reason === 'timeout')
+                  ? 'A file that keeps the export waiting can cost up to eight seconds on every frame of its clip. Cancel to sort the media out first, or let the export run on.'
+                  : 'Cancel to sort the media out first, or let the export run on.'}
+              </div>
+            </div>
+          )}
           <p className="form__hint">
             Rendering happens on this machine, frame by frame, at full quality. Keep this tab visible —
             browsers slow down background tabs.
@@ -347,9 +501,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   if (phase.kind === 'done') {
     return (
       <Dialog
-        title="Export complete"
+        title={phase.warnings.length ? 'Exported with gaps' : 'Export complete'}
         onClose={close}
-        icon={<CircleCheck size={18} style={{ color: 'var(--accent)' }} />}
+        icon={
+          phase.warnings.length ? (
+            <TriangleAlert size={18} style={{ color: 'var(--amber)' }} />
+          ) : (
+            <CircleCheck size={18} style={{ color: 'var(--accent)' }} />
+          )
+        }
         footer={
           <>
             {phase.blob && (
@@ -363,15 +523,29 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           </>
         }
       >
-        <div className="exp__done">
-          <Film />
-          <div>
-            <b>{phase.name}</b>
-            <span>
-              {phase.bytes !== null ? `${formatBytes(phase.bytes)} · ` : 'Saved to the location you chose · '}
-              rendered in {formatClock(phase.seconds, true)}
-            </span>
+        <div className="exp">
+          <div className="exp__done">
+            <Film />
+            <div>
+              <b>{phase.name}</b>
+              <span>
+                {phase.bytes !== null
+                  ? `${formatBytes(phase.bytes)} · `
+                  : 'Saved to the location you chose · '}
+                rendered in {formatClock(phase.seconds, true)}
+              </span>
+            </div>
           </div>
+          {phase.warnings.length > 0 && (
+            <div className="callout callout--warn">
+              <TriangleAlert />
+              <div>
+                <b>The file was written, but not everything is in it.</b>
+                <ProblemList warnings={phase.warnings} fps={s} onShow={show} />
+                Pick a timecode to go to that clip.
+              </div>
+            </div>
+          )}
         </div>
       </Dialog>
     );
@@ -394,10 +568,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <Button
             variant="primary"
             icon={<Download />}
-            disabled={end === 0 || noVideoEncoder || support === null}
+            disabled={end === 0 || noVideoEncoder || support === null || checking}
             onClick={() => void start()}
           >
-            Export
+            {checking ? 'Checking media…' : problems?.length ? 'Export anyway' : 'Export'}
           </Button>
         </>
       }
@@ -414,7 +588,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                 update({
                   customMbps: null,
                   dynamicRange: hdrProject ? draft.dynamicRange : 'sdr',
-                  ...p.apply(draft, s),
+                  ...p.apply(s, native),
                 });
               }}
             >
@@ -436,6 +610,16 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <div className="callout callout--warn">
             <TriangleAlert />
             <div>The timeline is empty — add a clip before exporting.</div>
+          </div>
+        )}
+        {!!problems?.length && (
+          <div className="callout callout--warn" role="alert">
+            <TriangleAlert />
+            <div>
+              <b>Not everything can be exported.</b>
+              <ProblemList warnings={problems} fps={s} onShow={show} />
+              Pick a timecode to go to that clip, or export anyway.
+            </div>
           </div>
         )}
 
@@ -462,9 +646,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                     <span className="hstack muted" style={{ fontSize: 12 }}>
                       <span className="spinner" /> Checking encoders
                     </span>
-                  ) : support.video.length ? (
+                  ) : videoCodec ? (
                     <Select<VideoCodec>
-                      value={draft.videoCodec}
+                      value={videoCodec}
                       options={support.video.map((c) => ({ value: c, label: VIDEO_CODEC_LABELS[c] ?? c }))}
                       onChange={(videoCodec) => {
                         setPreset('');
@@ -538,7 +722,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                         { value: 'hlg', label: 'HLG — Rec.2100, 10-bit' },
                         { value: 'sdr', label: 'SDR — tone-mapped Rec.709' },
                       ]}
-                      onChange={(dynamicRange) => update({ dynamicRange })}
+                      onChange={(dynamicRange) => {
+                        setPreset('');
+                        update({ dynamicRange });
+                      }}
                     />
                   </Row>
                 )}
@@ -555,8 +742,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <>
                 <Row label="Codec">
                   <Select<AudioCodec>
-                    value={draft.audioCodec}
-                    options={(support?.audio ?? [draft.audioCodec]).map((c) => ({
+                    value={audioCodec}
+                    options={(support?.audio.length ? support.audio : [audioCodec]).map((c) => ({
                       value: c,
                       label: AUDIO_CODEC_LABELS[c] ?? c,
                     }))}

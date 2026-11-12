@@ -6,6 +6,7 @@ import { navigate } from '../../App';
 import { api } from '../../session/api';
 import { usePeers, useSession, useSessionMeta } from '../../session/hooks';
 import { deleteLocalProject } from '../../session/projects';
+import { confirm } from '../../ui/confirm';
 import { Button, Dialog, Segmented, TextField, toast } from '../../ui/core';
 import './collab.css';
 
@@ -211,8 +212,12 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
 
   const restore = async (v: VersionInfo) => {
     if (!token) return;
-    if (!confirm(`Restore “${v.name}”? The current state is replaced for everyone — you can undo it.`))
-      return;
+    const go = await confirm({
+      title: `Restore “${v.name}”?`,
+      message: 'The current state of the project is replaced for everyone in it. You can undo it.',
+      confirmLabel: 'Restore version',
+    });
+    if (!go) return;
     setBusy(true);
     try {
       const data = await api.versionData(session.id, token, v.id);

@@ -1004,6 +1004,9 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
     c.assetId && p.assets[c.assetId]
       ? { label: 'Match frame', keys: 'f', onSelect: () => cmd.matchFrame(c.id) }
       : null,
+    c.assetId && p.assets[c.assetId]
+      ? { label: 'Reveal in media pool', onSelect: () => cmd.revealInPool(c.id) }
+      : null,
     { label: c.enabled ? 'Disable' : 'Enable', keys: 'd', onSelect: cmd.toggleEnabled },
     c.linkId
       ? { label: 'Unlink', icon: <Link2 />, keys: 'mod+shift+g', onSelect: cmd.unlink }

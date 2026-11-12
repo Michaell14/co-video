@@ -46,7 +46,7 @@ export const MockBar = memo(function MockBar() {
       </div>
       <nav className="mk-bar__pages">
         <span className="is-active">Edit</span>
-        <span>Color</span>
+        <span>Colour</span>
         <span>Audio</span>
         <span>Export</span>
       </nav>
@@ -251,7 +251,7 @@ export const MockInspector = memo(function MockInspector({ els }: PanelProps) {
   return (
     <aside className="mk-insp">
       <div className="mk-tabs">
-        <span className="is-active">Color</span>
+        <span className="is-active">Colour</span>
         <span>Effects</span>
         <span>Transform</span>
         <span>Audio</span>

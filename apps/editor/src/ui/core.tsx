@@ -5,14 +5,28 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
   type ButtonHTMLAttributes,
   type CSSProperties,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
+import {
+  focusables,
+  isTextEntry,
+  isTopLayer,
+  layerOpen,
+  placeTip,
+  trapTab,
+  typeAhead,
+  useLayer,
+  usingKeyboard,
+} from './layers';
+import { isDoublePress, isDrag, type Press } from './press';
 
 export const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -44,6 +58,7 @@ const KEY_LABELS: Record<string, string> = {
   comma: ',',
   period: '.',
   slash: '/',
+  quote: "'",
 };
 
 /** Render a shortcut such as `mod+shift+z`. */
@@ -65,8 +80,8 @@ export function Kbd({ keys }: { keys: string }) {
 interface TipState {
   text: ReactNode;
   keys?: string;
-  x: number;
-  y: number;
+  /** The element the tip belongs to, in viewport coordinates. */
+  anchor: DOMRect;
   place: 'top' | 'bottom';
 }
 
@@ -76,20 +91,29 @@ let lastTipAt = 0;
 
 export function TooltipLayer() {
   const [tip, setTip] = useState<TipState | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     showTip = setTip;
     return () => {
       showTip = () => {};
     };
   }, []);
+  // Placed once its size is known, so a tip beside a window edge is moved in rather than cut off.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !tip) return;
+    const { left, top } = placeTip(
+      tip.anchor,
+      { width: el.offsetWidth, height: el.offsetHeight },
+      { width: window.innerWidth, height: window.innerHeight },
+      tip.place,
+    );
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  }, [tip]);
   if (!tip) return null;
-  const style: CSSProperties = {
-    left: tip.x,
-    top: tip.y,
-    transform: `translate(-50%, ${tip.place === 'top' ? '-100%' : '0'})`,
-  };
   return createPortal(
-    <div className="tooltip" style={style} role="tooltip">
+    <div ref={ref} className="tooltip" role="tooltip">
       <span>{tip.text}</span>
       {tip.keys && <Kbd keys={tip.keys} />}
     </div>,
@@ -112,11 +136,7 @@ export function tip(text: ReactNode, keys?: string, place: 'top' | 'bottom' = 'b
       clearTimeout(tipTimer);
       // After the first tooltip, neighbours appear instantly — scanning a toolbar should feel fluid.
       const delay = performance.now() - lastTipAt < 400 ? 0 : 450;
-      tipTimer = setTimeout(() => {
-        const x = Math.min(window.innerWidth - 80, Math.max(80, r.left + r.width / 2));
-        const wantTop = place === 'top' || r.bottom + 40 > window.innerHeight;
-        showTip({ text, keys, x, y: wantTop ? r.top - 7 : r.bottom + 7, place: wantTop ? 'top' : 'bottom' });
-      }, delay);
+      tipTimer = setTimeout(() => showTip({ text, keys, anchor: r, place }), delay);
     },
     onPointerLeave: () => {
       clearTimeout(tipTimer);
@@ -227,6 +247,9 @@ interface SliderProps extends GestureProps {
   disabled?: boolean;
 }
 
+/** Half the thumb's width (`.slider__thumb` in ui.css). */
+const SLIDER_INSET = 5.5;
+
 export function Slider({
   value,
   min,
@@ -241,17 +264,22 @@ export function Slider({
 }: SliderProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(false);
+  // The latest press: whether it was the second of a double-click, and whether it became a drag.
+  const press = useRef<(Press & { second: boolean; dragged: boolean }) | null>(null);
   const span = max - min || 1;
-  const pct = (v: number) => Math.min(100, Math.max(0, ((v - min) / span) * 100));
+  const frac = (v: number) => Math.min(1, Math.max(0, (v - min) / span));
+  // The thumb stays inside the slider's own box, so its centre travels between the two insets.
+  const at = (f: number) => `calc(${SLIDER_INSET}px + ${f} * (100% - ${2 * SLIDER_INSET}px))`;
   const fromX = (clientX: number) => {
     const r = ref.current!.getBoundingClientRect();
-    let v = min + ((clientX - r.left) / r.width) * span;
+    const travel = Math.max(1, r.width - 2 * SLIDER_INSET);
+    let v = min + ((clientX - r.left - SLIDER_INSET) / travel) * span;
     if (step) v = Math.round(v / step) * step;
     return Math.min(max, Math.max(min, v));
   };
   const o = origin ?? min;
-  const a = pct(Math.min(o, value));
-  const b = pct(Math.max(o, value));
+  const a = frac(Math.min(o, value));
+  const b = frac(Math.max(o, value));
   return (
     <div
       ref={ref}
@@ -260,13 +288,25 @@ export function Slider({
       style={disabled ? { opacity: 0.4, pointerEvents: 'none' } : undefined}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
+        const prev = press.current;
+        const next = { time: e.timeStamp, x: e.clientX, y: e.clientY };
+        const second = defaultValue !== undefined && !!prev && !prev.second && isDoublePress(prev, next);
+        press.current = { ...next, second, dragged: false };
         e.currentTarget.setPointerCapture(e.pointerId);
         setActive(true);
+        // The second press of a double-click asks for the reset that follows it: jumping to the
+        // pointer again would put a second step between the old value and the default. It changes
+        // nothing unless it turns into a drag, which carries on the step the first press began.
+        if (second) return;
         onStart?.();
         onChange(fromX(e.clientX));
       }}
       onPointerMove={(e) => {
-        if (active) onChange(fromX(e.clientX));
+        const held = press.current;
+        if (!active || !held) return;
+        held.dragged ||= isDrag(held, e.clientX, e.clientY);
+        if (held.second && !held.dragged) return;
+        onChange(fromX(e.clientX));
       }}
       onPointerUp={(e) => {
         if (!active) return;
@@ -275,19 +315,24 @@ export function Slider({
         onEnd?.();
       }}
       onDoubleClick={() => {
-        if (defaultValue === undefined) return;
-        onStart?.();
+        // The browser goes by the timing of the presses alone: one that became a drag has set a
+        // value and is not asking for the default.
+        if (defaultValue === undefined || press.current?.dragged) return;
+        // No onStart: the reset belongs to the undo step the first press of the double-click began.
         onChange(defaultValue);
         onEnd?.();
       }}
     >
       <div className="slider__track">
-        <div className="slider__fill" style={{ left: `${a}%`, width: `${b - a}%` }} />
+        <div
+          className="slider__fill"
+          style={{ left: a === 0 ? 0 : at(a), right: b === 1 ? 0 : `calc(100% - ${at(b)})` }}
+        />
       </div>
       {origin !== undefined && origin > min && origin < max && (
-        <div className="slider__center" style={{ left: `${pct(origin)}%` }} />
+        <div className="slider__center" style={{ left: at(frac(origin)) }} />
       )}
-      <div className="slider__thumb" style={{ left: `${pct(value)}%` }} />
+      <div className="slider__thumb" style={{ left: at(frac(value)) }} />
     </div>
   );
 }
@@ -336,13 +381,21 @@ export function NumberField({
   const [scrubbing, setScrubbing] = useState(false);
   const drag = useRef<{ x: number; v: number; moved: boolean } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // The text being typed, readable in the same tick it changes: Enter and Escape blur the field
+  // from inside their own handler, and that blur must see what they just decided.
+  const typed = useRef<string | null>(null);
+  const edit = (text: string | null) => {
+    typed.current = text;
+    setEditing(text);
+  };
   const clampV = (v: number) => Math.min(max, Math.max(min, v));
   const shown = mixed ? '—' : (value * scale).toFixed(precision);
 
   const commitText = () => {
-    if (editing === null) return;
-    const n = parseFloat(editing.replace(',', '.'));
-    setEditing(null);
+    const text = typed.current;
+    if (text === null) return;
+    edit(null);
+    const n = parseFloat(text.replace(',', '.'));
     if (Number.isFinite(n)) {
       onStart?.();
       onChange(clampV(n / scale));
@@ -361,22 +414,23 @@ export function NumberField({
         ref={inputRef}
         aria-label={ariaLabel}
         value={editing ?? shown}
+        data-dirty={editing !== null ? '' : undefined}
         inputMode="decimal"
         spellCheck={false}
-        onChange={(e) => setEditing(e.target.value)}
+        onChange={(e) => edit(e.target.value)}
         onBlur={commitText}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             commitText();
             inputRef.current?.blur();
           } else if (e.key === 'Escape') {
-            setEditing(null);
+            edit(null);
             inputRef.current?.blur();
           } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             e.preventDefault();
             const mult = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
             const dir = e.key === 'ArrowUp' ? 1 : -1;
-            setEditing(null);
+            edit(null);
             onStart?.();
             onChange(clampV(value + dir * step * mult));
             onEnd?.();
@@ -516,9 +570,23 @@ interface PopoverProps {
   style?: CSSProperties;
   /** Match the anchor's width (dropdown selects). */
   matchWidth?: boolean;
+  /** The control that opened it: pressing it again closes the popover, and focus returns to it. */
+  trigger?: RefObject<HTMLElement | null>;
 }
 
-export function Popover({
+export function Popover(props: PopoverProps) {
+  return props.anchor ? <PopoverPanel {...props} anchor={props.anchor} /> : null;
+}
+
+/** The entries of a menu or listbox that can be chosen. */
+const MENU_ITEM = ':is([role="menuitem"], [role="menuitemradio"], [role="option"]):not(:disabled)';
+const menuItems = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLElement>(MENU_ITEM));
+const itemLabel = (el: HTMLElement) =>
+  el.getAttribute('aria-label') ?? el.querySelector('.menu-item__label')?.textContent ?? el.textContent ?? '';
+/** How long a pause ends a word typed to jump to an entry. */
+const TYPE_AHEAD_MS = 700;
+
+function PopoverPanel({
   anchor,
   onClose,
   children,
@@ -527,13 +595,15 @@ export function Popover({
   className,
   style,
   matchWidth,
-}: PopoverProps) {
+  trigger,
+}: PopoverProps & { anchor: DOMRect | { x: number; y: number } }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number; origin: string } | null>(null);
+  const typed = useRef({ text: '', at: 0 });
 
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el || !anchor) return;
+    if (!el) return;
     const w = el.offsetWidth;
     const h = el.offsetHeight;
     const vw = window.innerWidth;
@@ -564,32 +634,98 @@ export function Popover({
     setPos({ left, top, origin: `${originY} ${align === 'end' ? 'right' : 'left'}` });
   }, [anchor, align, side]);
 
-  useEffect(() => {
-    const onDown = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
+  // While it is open a popover owns the keyboard: nothing reaches the page's shortcuts behind it.
+  useLayer(
+    ref,
+    false,
+    (e) => {
+      const el = ref.current;
+      if (!el) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
         onClose();
+        return;
       }
+      const items = menuItems(el);
+      if (e.key === 'Tab') {
+        e.stopPropagation();
+        // A menu is left with Tab, which lands on the control that opened it; a panel of fields
+        // keeps Tab to itself.
+        if (items.length) {
+          e.preventDefault();
+          onClose();
+        } else trapTab(el, e);
+        return;
+      }
+      // Text typed into one of the popover's own fields is that field's business.
+      if (el.contains(e.target as Node) && isTextEntry(e.target)) return;
+      e.stopPropagation();
+      if (!items.length) return;
+      const current = items.indexOf(document.activeElement as HTMLElement);
+      const focus = (i: number) => {
+        e.preventDefault();
+        items[(i + items.length) % items.length].focus();
+      };
+      const inRow = current >= 0 && !!items[current].closest('.menu-swatches');
+      if (e.key === 'ArrowDown') focus(current + 1);
+      else if (e.key === 'ArrowUp') focus(current < 0 ? -1 : current - 1);
+      else if (e.key === 'ArrowRight' && inRow) focus(current + 1);
+      else if (e.key === 'ArrowLeft' && inRow) focus(current - 1);
+      else if (e.key === 'Home' || e.key === 'PageUp') focus(0);
+      else if (e.key === 'End' || e.key === 'PageDown') focus(-1);
+      else if (e.key === 'Enter' || e.key === ' ') {
+        // Pressing the highlighted entry is the browser's doing.
+        if (current < 0) e.preventDefault();
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const text = e.timeStamp - typed.current.at < TYPE_AHEAD_MS ? typed.current.text + e.key : e.key;
+        typed.current = { text, at: e.timeStamp };
+        const match = typeAhead(items.map(itemLabel), text, current);
+        if (match >= 0) focus(match);
+      }
+    },
+    trigger,
+  );
+
+  const live = useRef(onClose);
+  useLayoutEffect(() => {
+    live.current = onClose;
+  });
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      const el = ref.current;
+      const target = e.target as Node;
+      // The trigger closes its own popover, and a layer opened on top is not "outside".
+      if (!el || el.contains(target) || trigger?.current?.contains(target) || !isTopLayer(el)) return;
+      live.current();
     };
+    const onBlur = () => live.current();
     // Capture phase so the click that closes a menu does not also trigger what is underneath.
     window.addEventListener('pointerdown', onDown, true);
-    window.addEventListener('keydown', onKey, true);
-    window.addEventListener('blur', onClose);
+    window.addEventListener('blur', onBlur);
     return () => {
       window.removeEventListener('pointerdown', onDown, true);
-      window.removeEventListener('keydown', onKey, true);
-      window.removeEventListener('blur', onClose);
+      window.removeEventListener('blur', onBlur);
     };
-  }, [onClose]);
+  }, [trigger]);
 
-  if (!anchor) return null;
+  // Focus moves in once the popover is placed (it cannot take focus while hidden): to the current
+  // option of a select, to the first entry of a menu opened from the keyboard, to the first field
+  // of a panel, and otherwise to the popover itself so that the arrow keys start from the top.
+  const placed = pos !== null;
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !placed || el.contains(document.activeElement)) return;
+    const items = menuItems(el);
+    const chosen = items.find((i) => i.getAttribute('aria-selected') === 'true');
+    const target = chosen ?? (items.length ? (usingKeyboard() ? items[0] : el) : (focusables(el)[0] ?? el));
+    target.focus({ preventScroll: target === el });
+  }, [placed]);
+
   const width = matchWidth && 'width' in anchor ? anchor.width : undefined;
   return createPortal(
     <div
       ref={ref}
+      tabIndex={-1}
       className={cx('popover', className)}
       style={{
         left: pos?.left ?? -9999,
@@ -600,6 +736,17 @@ export function Popover({
         ...style,
       }}
       onContextMenu={(e) => e.preventDefault()}
+      // One highlight for pointer and keyboard alike: the entry under the pointer takes focus.
+      onPointerMove={(e) => {
+        const item = (e.target as HTMLElement).closest<HTMLElement>(MENU_ITEM);
+        if (item && item !== document.activeElement) item.focus({ preventScroll: true });
+      }}
+      onPointerLeave={() => {
+        const el = ref.current;
+        if (el && menuItems(el).includes(document.activeElement as HTMLElement)) {
+          el.focus({ preventScroll: true });
+        }
+      }}
     >
       {children}
     </div>,
@@ -649,6 +796,7 @@ export function MenuList({ items, onClose }: { items: MenuEntry[]; onClose: () =
                   key={sw.color}
                   type="button"
                   role="menuitemradio"
+                  tabIndex={-1}
                   aria-checked={!!sw.checked}
                   aria-label={sw.label}
                   title={sw.label}
@@ -668,6 +816,7 @@ export function MenuList({ items, onClose }: { items: MenuEntry[]; onClose: () =
             key={i}
             type="button"
             role="menuitem"
+            tabIndex={-1}
             className={cx('menu-item', item.danger && 'menu-item--danger')}
             disabled={item.disabled}
             onClick={() => {
@@ -686,6 +835,47 @@ export function MenuList({ items, onClose }: { items: MenuEntry[]; onClose: () =
   );
 }
 
+/**
+ * Handlers for the button of a menu or select. A press toggles its list, and the arrow keys open
+ * it, as Enter and Space do, for someone working it from the keyboard. After a press with the
+ * pointer the arrow keys stay the editor's shortcuts, where those are live (not under a dialog),
+ * until the person leaves the control or opens it with a key: looking into a list with the
+ * pointer and then stepping through the timeline is not asking for the list again.
+ */
+function useListButton(
+  button: RefObject<HTMLElement | null>,
+  anchor: DOMRect | null,
+  setAnchor: (anchor: DOMRect | null) => void,
+) {
+  const open = !!anchor;
+  const pressed = useRef(false);
+  // The control is left when focus goes from the button to anything but its own list, or does
+  // not come back to the button when that list closes.
+  useEffect(() => {
+    if (!open && document.activeElement !== button.current) pressed.current = false;
+  }, [button, open]);
+  return {
+    onPointerDown: () => {
+      pressed.current = true;
+    },
+    onBlur: () => {
+      if (!open) pressed.current = false;
+    },
+    onClick: (e: React.MouseEvent<HTMLElement>) => {
+      // A click that no pointer made comes from Enter or Space.
+      if (e.detail === 0) pressed.current = false;
+      setAnchor(open ? null : e.currentTarget.getBoundingClientRect());
+    },
+    onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => {
+      if (open || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return;
+      if (pressed.current && !layerOpen()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setAnchor(e.currentTarget.getBoundingClientRect());
+    },
+  };
+}
+
 /** A button that opens a menu. */
 export function MenuButton({
   items,
@@ -701,26 +891,32 @@ export function MenuButton({
   label?: string;
 }) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const button = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => setAnchor(null), []);
+  const handlers = useListButton(button, anchor, setAnchor);
   const t = label ? tip(label) : null;
   return (
     <>
       <button
+        ref={button}
         type="button"
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={!!anchor}
         className={className}
         data-active={anchor ? 'true' : undefined}
-        onClick={(e) => setAnchor(anchor ? null : e.currentTarget.getBoundingClientRect())}
+        {...handlers}
         onPointerEnter={t?.onPointerEnter}
         onPointerLeave={t?.onPointerLeave}
-        onPointerDown={t?.onPointerDown}
+        onPointerDown={() => {
+          handlers.onPointerDown();
+          t?.onPointerDown();
+        }}
       >
         {children}
       </button>
       {anchor && (
-        <Popover anchor={anchor} onClose={close} align={align}>
+        <Popover anchor={anchor} onClose={close} align={align} trigger={button}>
           <MenuList items={typeof items === 'function' ? items() : items} onClose={close} />
         </Popover>
       )}
@@ -781,25 +977,29 @@ export function Select<T extends string | number>({
   ariaLabel?: string;
 }) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const button = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => setAnchor(null), []);
+  const handlers = useListButton(button, anchor, setAnchor);
   const current = options.find((o) => o.value === value);
   let lastGroup: string | undefined;
   return (
     <>
       <button
+        ref={button}
         type="button"
         className="select"
         style={style}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
-        onClick={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}
+        aria-expanded={!!anchor}
+        {...handlers}
       >
         <span style={current?.style}>{current?.label ?? placeholder ?? '—'}</span>
         <ChevronDown />
       </button>
       {anchor && (
-        <Popover anchor={anchor} onClose={close} matchWidth>
-          <div role="listbox">
+        <Popover anchor={anchor} onClose={close} matchWidth trigger={button}>
+          <div role="listbox" aria-label={ariaLabel}>
             {options.map((o) => {
               const heading = o.group && o.group !== lastGroup ? o.group : null;
               lastGroup = o.group;
@@ -809,6 +1009,7 @@ export function Select<T extends string | number>({
                   <button
                     type="button"
                     role="option"
+                    tabIndex={-1}
                     aria-selected={o.value === value}
                     className="menu-item"
                     onClick={() => {
@@ -905,32 +1106,50 @@ export function ColorField({
   onEnd,
 }: { value: string; onChange: (v: string) => void } & GestureProps) {
   const [text, setText] = useState<string | null>(null);
+  // Mirrors `text` for the blur that Enter and Escape cause from inside their own handler.
+  const typed = useRef<string | null>(null);
+  const edit = (hex: string | null) => {
+    typed.current = hex;
+    setText(hex);
+  };
+  const picker = useRef<HTMLInputElement>(null);
   const started = useRef(false);
+  const live = useRef(onEnd);
+  useLayoutEffect(() => {
+    live.current = onEnd;
+  });
+  // One pick is one gesture, however far the pointer travels inside the picker. It ends when
+  // the browser reports the final colour: the native `change` event, which fires once when the
+  // picker closes. React's onChange cannot tell, because it fires on every `input` event.
+  useEffect(() => {
+    const el = picker.current;
+    if (!el) return;
+    const end = () => {
+      if (!started.current) return;
+      started.current = false;
+      live.current?.();
+    };
+    el.addEventListener('change', end);
+    el.addEventListener('blur', end);
+    return () => {
+      el.removeEventListener('change', end);
+      el.removeEventListener('blur', end);
+    };
+  }, []);
   return (
     <div style={{ display: 'flex', gap: 6, alignItems: 'center', minWidth: 0, flex: 1 }}>
       <div className="swatch" style={{ background: value }}>
         <input
+          ref={picker}
           type="color"
           value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'}
           aria-label="Pick colour"
-          onInput={(e) => {
+          onChange={(e) => {
             if (!started.current) {
               started.current = true;
               onStart?.();
             }
-            onChange((e.target as HTMLInputElement).value);
-          }}
-          onBlur={() => {
-            if (started.current) {
-              started.current = false;
-              onEnd?.();
-            }
-          }}
-          onChange={() => {
-            if (started.current) {
-              started.current = false;
-              onEnd?.();
-            }
+            onChange(e.target.value);
           }}
         />
       </div>
@@ -939,23 +1158,25 @@ export function ColorField({
           className="mono"
           aria-label="Hex colour"
           value={text ?? value.toUpperCase()}
+          data-dirty={text !== null ? '' : undefined}
           spellCheck={false}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => edit(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') (e.target as HTMLElement).blur();
+            if (e.key === 'Escape') edit(null);
+            if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLElement).blur();
             e.stopPropagation();
           }}
           onBlur={() => {
-            if (text !== null) {
-              let v = text.trim();
-              if (!v.startsWith('#')) v = `#${v}`;
-              if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) {
-                if (v.length === 4) v = `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`;
-                onStart?.();
-                onChange(v.toLowerCase());
-                onEnd?.();
-              }
-              setText(null);
+            const hex = typed.current;
+            if (hex === null) return;
+            edit(null);
+            let v = hex.trim();
+            if (!v.startsWith('#')) v = `#${v}`;
+            if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) {
+              if (v.length === 4) v = `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`;
+              onStart?.();
+              onChange(v.toLowerCase());
+              onEnd?.();
             }
           }}
         />
@@ -972,47 +1193,101 @@ export function Dialog({
   children,
   footer,
   wide,
+  narrow,
   icon,
   solid,
+  describedBy,
 }: {
   title: ReactNode;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;
+  /** A short question rather than a form. */
+  narrow?: boolean;
   icon?: ReactNode;
   /** Dim the page with a flat colour instead of a live blur (for long-running, GPU-heavy work). */
   solid?: boolean;
+  /** Id of the element that says what the dialog is about, when the title alone does not. */
+  describedBy?: string;
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  const backdrop = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
+  const foot = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+
+  // Modal: the page behind is inert, Tab stays inside and focus returns to where it was.
+  useLayer(backdrop, true, (e) => {
+    const el = panel.current;
+    if (!el) return;
+    if (e.key === 'Tab') trapTab(el, e);
+    // A field holding an edit that is not applied yet takes Escape first, to drop that edit.
+    else if (e.key === 'Escape' && !(e.target as Element).matches?.('[data-dirty]')) {
+      e.stopPropagation();
+      onClose();
+    }
+  });
+
+  // Focus starts on the first control of the content, not on the close button in the header.
+  // Content without a control takes it itself, so that the keys that scroll act on it.
+  useLayoutEffect(() => {
+    const el = panel.current;
+    if (!el || el.contains(document.activeElement)) return;
+    const first = [body.current, foot.current].flatMap((part) => (part ? focusables(part) : []))[0];
+    (first ?? body.current)?.focus();
+    if (!el.contains(document.activeElement)) el.focus();
+  }, []);
+
+  // Content that scrolls and holds no control is a stop for Tab itself: nothing else in it could
+  // have focus, and without focus there the keyboard cannot scroll it.
+  const [scrolls, setScrolls] = useState(false);
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() =>
+      setScrolls(el.scrollHeight > el.clientHeight && focusables(el).length === 0),
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   return createPortal(
     <div
+      ref={backdrop}
       className={cx('dialog-backdrop', solid && 'dialog-backdrop--solid')}
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className={cx('dialog', wide && 'dialog--wide')} role="dialog" aria-modal="true">
+      <div
+        ref={panel}
+        className={cx('dialog', wide && 'dialog--wide', narrow && 'dialog--narrow')}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={describedBy}
+        tabIndex={-1}
+      >
         <div className="dialog__head">
           {icon}
-          <div className="dialog__title">{title}</div>
+          <div className="dialog__title" id={titleId}>
+            {title}
+          </div>
           <IconButton label="Close" keys="escape" onClick={onClose}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round">
               <path d="M6 6l12 12M18 6L6 18" />
             </svg>
           </IconButton>
         </div>
-        <div className="dialog__body">{children}</div>
-        {footer && <div className="dialog__foot">{footer}</div>}
+        <div className="dialog__body" ref={body} tabIndex={scrolls ? 0 : -1}>
+          {children}
+        </div>
+        {footer && (
+          <div className="dialog__foot" ref={foot}>
+            {footer}
+          </div>
+        )}
       </div>
     </div>,
     document.body,

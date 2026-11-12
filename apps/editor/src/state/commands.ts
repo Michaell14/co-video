@@ -61,10 +61,12 @@ import {
 } from '@tandem/core';
 import { AudioBufferSink, renderStill, VoiceRecorder } from '@tandem/engine';
 import { navigate } from '../App';
+import { fitPanels, windowSize } from '../features/editor/layout';
 import { currentSession } from '../session/hooks';
 import { copyProjectMedia } from '../session/mediaStore';
 import { createProject } from '../session/projects';
 import type { Session } from '../session/session';
+import { confirm } from '../ui/confirm';
 import { toast } from '../ui/core';
 import {
   clipsBeside,
@@ -76,6 +78,7 @@ import {
   rippleDeleteRange,
   unlocked,
 } from './edits';
+import { durationEdits, moveEdits, reverseEdits } from './timing';
 import { useUI, type Tool } from './ui';
 import { fitView, zoomView } from './view';
 
@@ -210,6 +213,14 @@ async function measureClip(s: Session, clip: Clip, p: Project): Promise<Loudness
 }
 
 /**
+ * Make room for the side panel a command is about to use. In a window too small for a column of
+ * comments they stand in for one of the side panels, and give that column back when it is asked for.
+ */
+function uncover(side: 'left' | 'right'): void {
+  if (fitPanels(ui(), windowSize()).comments === side) ui().set({ commentsOpen: false });
+}
+
+/**
  * Focus the inspector's text field for `clipId` and select what is in it. The inspector draws the
  * field after the selection has changed (and only in an open section), so this looks again over
  * the next few frames and gives up if the selection has moved on by then.
@@ -330,6 +341,33 @@ export const cmd = {
     }
     const assetId = m.clip.assetId!;
     ui().set({ sourceAsset: assetId, sourceCue: { assetId, time: m.time } });
+  },
+  /**
+   * Show where a clip's media sits in the pool: the clip a menu names, else the first selected
+   * clip that has media, else the one under the playhead.
+   */
+  revealInPool(clipId?: ID): void {
+    const s = session();
+    if (!s) return;
+    const p = s.store.get();
+    const hasMedia = (c: Clip | undefined): c is Clip & { assetId: ID } =>
+      !!c?.assetId && !!p.assets[c.assetId];
+    const clip = clipId
+      ? p.clips[clipId]
+      : (ui()
+          .selection.map((id) => p.clips[id])
+          .find(hasMedia) ?? matchFrameAt(p, frame())?.clip);
+    if (!hasMedia(clip)) {
+      toast(
+        clipId ? 'That clip has no media in the pool.' : 'Select a clip to find its media in the pool.',
+        'info',
+      );
+      return;
+    }
+    // Only the colour workspace has no library; the audio one keeps its mixer.
+    const workspace = ui().workspace === 'color' ? 'edit' : ui().workspace;
+    ui().set({ workspace, libraryTab: 'media', revealAsset: clip.assetId });
+    uncover('left');
   },
 
   // ─────────────────────────────────────────────────────────── selection ──
@@ -555,6 +593,34 @@ export const cmd = {
   setSpeed(speed: number, reverse?: boolean): void {
     editing((s, p) => s.store.commit(setSpeed(p, effectiveSelection(p), speed, reverse)));
   },
+  /** Play the selected clips backwards or forwards, each at the speed it already has. */
+  setReverse(reverse: boolean): void {
+    editing((s, p) => s.store.commit(reverseEdits(p, effectiveSelection(p), reverse)));
+  },
+  /**
+   * Give the selected clips, or `clipIds`, an exact length by moving their ends, linked partners
+   * included. With ripple mode on, what follows moves along; without it a clip stops at the next one.
+   */
+  setDuration(frames: number, clipIds: ID[] = ui().selection): void {
+    editing((s, p) => {
+      const groups = unlocked(p, clipIds).map((id) => [
+        id,
+        ...effectiveSelection(p, [id]).filter((other) => other !== id),
+      ]);
+      const r = durationEdits(p, groups, frames, ui().rippleMode);
+      if (r.edits.length) s.store.commit(r.edits);
+      if (r.refused) toast(r.refused);
+      else if (r.limited) toast('Stopped at the end of the media or at the next clip.', 'info');
+    });
+  },
+  /** Move the selected clips, or `clipIds`, together, so that the earliest of them starts at `frame`. */
+  moveTo(frame: number, clipIds: ID[] = ui().selection): void {
+    editing((s, p) => {
+      const r = moveEdits(p, effectiveSelection(p, clipIds), frame);
+      if (r.edits.length) s.store.commit(r.edits);
+      if (r.limited) toast('Another clip is in the way, so the move stops there.', 'info');
+    });
+  },
   updateSelected(patch: Partial<Clip>, merge = false): void {
     editing((s, p) => {
       const clips = selectedClips(p);
@@ -576,6 +642,8 @@ export const cmd = {
       sourceIn?: number;
       sourceOut?: number;
       insert?: boolean;
+      /** Only the picture, or only the sound, of a video that has both. */
+      only?: 'video' | 'audio';
     } = {},
   ): void {
     editing((s, p) => {
@@ -636,6 +704,7 @@ export const cmd = {
         return;
       }
       ui().set({ selection: [clip.id], selectedTransition: null, workspace: 'edit' });
+      uncover('right');
       focusTextField(clip.id);
     });
   },
@@ -777,10 +846,12 @@ export const cmd = {
       );
     });
   },
-  copyAttributes(): void {
+  /** Copy the look of the first selected clip, or of `clipId` when a panel shows a clip of its own. */
+  copyAttributes(clipId?: ID): void {
     const s = session();
     if (!s) return;
-    const c = selectedClips(s.store.get())[0];
+    const p = s.store.get();
+    const c = clipId ? p.clips[clipId] : selectedClips(p)[0];
     if (!c) return;
     ui().set({
       attributes: {
@@ -803,11 +874,17 @@ export const cmd = {
     });
     toast('Attributes copied', 'info');
   },
-  pasteAttributes(what: 'all' | 'grade' | 'effects' = 'all'): void {
+  /** Paste copied attributes onto the selected clips, or onto `clipIds`. */
+  pasteAttributes(what: 'all' | 'grade' | 'effects' = 'all', clipIds?: ID[]): void {
     editing((s, p) => {
       const a = ui().attributes;
-      const clips = selectedClips(p).filter((c) => c.type !== 'audio');
-      if (!a || !clips.length) return;
+      if (!a) return;
+      const wanted = (clipIds ?? ui().selection).filter((id) => p.clips[id] && p.clips[id].type !== 'audio');
+      const clips = unlocked(p, wanted).map((id) => p.clips[id]);
+      if (!clips.length) {
+        if (wanted.length) toast(LOCKED_TRACK, 'info');
+        return;
+      }
       // Attributes can be carried between projects; a LUT that is not in this one stays behind.
       const grade = a.grade?.lutId && !p.assets[a.grade.lutId] ? { ...a.grade, lutId: null } : a.grade;
       s.store.commit(
@@ -1270,22 +1347,25 @@ export const cmd = {
     }
     const parsed = await pickProjectFile();
     if (!parsed) return;
+    const open = s.store.get();
+    const contents = [
+      count(Object.keys(open.clips).length, 'clip'),
+      count(Object.keys(open.tracks).length, 'track'),
+      count(Object.keys(open.assets).length, 'media file'),
+    ];
+    const everyone = s.getMeta().shared ? ' for everyone working on it' : '';
+    const go = await confirm({
+      title: `Replace “${open.settings.name}” with “${parsed.settings.name}”?`,
+      message:
+        `Everything in the open project is removed${everyone}: ${contents[0]}, ${contents[1]} and ${contents[2]}. ` +
+        'Undo brings it back only until the project is closed or reloaded. After that, media that is ' +
+        'not part of the new project is deleted from this device as well.',
+      confirmLabel: 'Replace project',
+      danger: true,
+    });
+    // The question was about the project that was open when it was asked.
+    if (!go || session() !== s) return;
     editing((s, p) => {
-      const contents = [
-        count(Object.keys(p.clips).length, 'clip'),
-        count(Object.keys(p.tracks).length, 'track'),
-        count(Object.keys(p.assets).length, 'media file'),
-      ];
-      const everyone = s.getMeta().shared ? ' for everyone working on it' : '';
-      if (
-        !confirm(
-          `Replace “${p.settings.name}” with “${parsed.settings.name}”?\n\n` +
-            `Everything in the open project is removed${everyone}: ${contents[0]}, ${contents[1]} and ${contents[2]}. ` +
-            'Undo brings it back only until the project is closed or reloaded. After that, media that is ' +
-            'not part of the new project is deleted from this device as well.',
-        )
-      )
-        return;
       // The server holds what was uploaded to this project, whatever the file remembers.
       s.store.replaceAll(withUploads(parsed, (a) => !!p.assets[a.id]?.uploaded));
       ui().clearSelection();
@@ -1301,7 +1381,7 @@ export const cmd = {
     try {
       const p = s.store.get();
       const resolver = s.exportResolver();
-      const blob = await renderStill(p, resolver, frame());
+      const blob = await renderStill(p, resolver, frame(), (w) => toast(w.message));
       downloadBlob(blob, `${safeName(p.settings.name)}-frame-${frame()}.png`);
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not capture the frame', 'error');

@@ -1,14 +1,9 @@
-import {
-  changeFrameRate,
-  describeFps,
-  FRAME_RATE_PRESETS,
-  RESOLUTION_PRESETS,
-  type ProjectSettings,
-} from '@tandem/core';
+import { describeFps, FRAME_RATE_PRESETS, RESOLUTION_PRESETS, type ProjectSettings } from '@tandem/core';
 import { useProject, useSession } from '../../session/hooks';
 import { beginGesture, commit } from '../../state/props';
 import { Button, ColorField, Dialog, NumberField, Select, TextField } from '../../ui/core';
 import { Row } from './controls';
+import { changeProjectFrameRate } from './frameRate';
 
 /** Sequence settings. Everything here is non-destructive: clips are resolution independent. */
 export function ProjectSettingsForm({ full }: { full?: boolean }) {
@@ -76,8 +71,8 @@ export function ProjectSettingsForm({ full }: { full?: boolean }) {
           ]}
           onChange={(v) => {
             const f = FRAME_RATE_PRESETS.find((x) => x.label === v);
-            // Changing the rate re-times every clip so the edit keeps its real-world timing.
-            if (f) commit(changeFrameRate(session.store.get(), f.fpsNum, f.fpsDen));
+            // Changing the rate re-times the whole edit so that it keeps its real-world timing.
+            if (f) changeProjectFrameRate(session, f.fpsNum, f.fpsDen);
           }}
         />
       </Row>
@@ -164,6 +159,8 @@ export function ProjectSettingsDialog({ onClose }: { onClose: () => void }) {
       <p className="form__hint">
         Projects are resolution independent — switch between 1080p, 4K or vertical at any time. HDR modes use
         a Rec.2020 working space; SDR media is placed at diffuse white and HDR sources keep their highlights.
+        On an SDR project the tone map applies to log, linear and HDR sources only: the finished picture is
+        not tone-mapped.
       </p>
     </Dialog>
   );

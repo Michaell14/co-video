@@ -50,6 +50,8 @@ export interface UIState {
   sourceAsset: ID | null;
   /** Match frame: the source monitor holds this asset at `time` seconds instead of playing it. */
   sourceCue: { assetId: ID; time: number } | null;
+  /** Asset the media pool is asked to bring into view; the pool clears it once it has. */
+  revealAsset: ID | null;
   scopes: { waveform: boolean; parade: boolean; vectorscope: boolean; histogram: boolean };
   /** A voiceover is being recorded: where on the timeline it began, and when. */
   recording: { startFrame: number; startedAt: number } | null;
@@ -95,6 +97,7 @@ export const useUI = create<UIState>((set, get) => ({
   attributes: null,
   sourceAsset: null,
   sourceCue: null,
+  revealAsset: null,
   recording: null,
   scopes: persisted.scopes ?? { waveform: true, parade: true, vectorscope: true, histogram: false },
 

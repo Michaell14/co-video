@@ -5,7 +5,7 @@ import { Session } from '../../session/session';
 import { cmd } from '../../state/commands';
 import { handleKey } from '../../state/shortcuts';
 import { useUI } from '../../state/ui';
-import { Button } from '../../ui/core';
+import { Button, cx } from '../../ui/core';
 import { ColorPanel } from '../color/ColorPanel';
 import { Scopes } from '../color/Scopes';
 import { CommentsPanel } from '../collab/Comments';
@@ -18,6 +18,15 @@ import { Mixer } from '../audio/Mixer';
 import { CommandPalette, ShortcutsDialog } from '../palette/Palette';
 import { Timeline } from '../timeline/Timeline';
 import { Viewer } from '../viewer/Viewer';
+import {
+  COMMENTS_WIDTH,
+  fitPanels,
+  GAP,
+  resizePanel,
+  windowSize,
+  type Splitter,
+  type Viewport,
+} from './layout';
 import { TopBar } from './TopBar';
 import { DragLayer } from '../../ui/dnd';
 import './editor.css';
@@ -63,6 +72,8 @@ export function Editor({ projectId, token }: { projectId: string; token: string 
         dialog: null,
         following: null,
         sourceAsset: null,
+        sourceCue: null,
+        revealAsset: null,
       });
       if (opened) {
         setCurrentSession(null);
@@ -98,6 +109,7 @@ function Workspace() {
   const dialog = useUI((s) => s.dialog);
   const comments = useUI((s) => s.commentsOpen);
   const set = useUI((s) => s.set);
+  const { viewport, resizing } = useViewport();
   const [dropping, setDropping] = useState(false);
   const dragDepth = useRef(0);
 
@@ -141,8 +153,11 @@ function Workspace() {
   }
 
   const closeDialog = () => set({ dialog: null });
-  const rightWide =
-    workspace === 'color' ? Math.max(right, 400) : workspace === 'audio' ? Math.max(right, 360) : right;
+  const layout = fitPanels(
+    { leftWidth: left, rightWidth: right, timelineHeight: tlHeight, commentsOpen: comments, workspace },
+    viewport,
+  );
+  const commentsColumn = layout.comments === 'column';
 
   return (
     <div
@@ -168,48 +183,43 @@ function Workspace() {
       <div className="work">
         <div
           className="work__top"
+          data-resizing={resizing || undefined}
           style={{
-            gridTemplateColumns: `${left}px minmax(0, 1fr) ${rightWide}px${comments ? ' 300px' : ''}`,
+            gridTemplateColumns: `${layout.left}px minmax(0, 1fr) ${layout.right}px${commentsColumn ? ` ${COMMENTS_WIDTH}px` : ''}`,
           }}
         >
-          <section className="panel" aria-label={workspace === 'color' ? 'Scopes' : 'Library'}>
-            {workspace === 'color' ? <Scopes /> : <Library />}
-          </section>
-          <Resizer
-            axis="x"
-            onDrag={(d) => set({ leftWidth: clampW(useUI.getState().leftWidth + d, 220, 560) })}
-            style={{ left: left }}
-          />
+          {layout.comments !== 'left' && (
+            <section className="panel" aria-label={workspace === 'color' ? 'Scopes' : 'Library'}>
+              {workspace === 'color' ? <Scopes /> : <Library />}
+            </section>
+          )}
+          <Resizer axis="x" onDrag={(d) => dragPanel('left', d)} style={{ left: layout.left }} />
           <section className="panel panel--viewer" aria-label="Viewer">
             <Viewer />
           </section>
           <Resizer
             axis="x"
-            onDrag={(d) => set({ rightWidth: clampW(useUI.getState().rightWidth - d, 260, 560) })}
-            style={{ right: rightWide + (comments ? 306 : 0) }}
+            onDrag={(d) => -dragPanel('right', -d)}
+            style={{ right: layout.right + (commentsColumn ? COMMENTS_WIDTH + GAP : 0) }}
           />
-          <section className="panel" aria-label="Inspector">
-            {workspace === 'color' ? <ColorPanel /> : workspace === 'audio' ? <Mixer /> : <Inspector />}
-          </section>
-          {comments && (
-            <section className="panel panel--enter" aria-label="Comments">
+          {layout.comments !== 'right' && (
+            <section className="panel" aria-label="Inspector">
+              {workspace === 'color' ? <ColorPanel /> : workspace === 'audio' ? <Mixer /> : <Inspector />}
+            </section>
+          )}
+          {/* One place among the children for every column the comments are drawn in, so that a
+              half-written comment is still there when the window or the workspace moves them. */}
+          {layout.comments && (
+            <section
+              className={cx('panel panel--enter', layout.comments === 'left' && 'panel--first')}
+              aria-label="Comments"
+            >
               <CommentsPanel />
             </section>
           )}
         </div>
-        <Resizer
-          axis="y"
-          onDrag={(d) =>
-            set({
-              timelineHeight: clampW(
-                useUI.getState().timelineHeight - d,
-                160,
-                Math.max(200, window.innerHeight - 280),
-              ),
-            })
-          }
-        />
-        <section className="panel panel--timeline" style={{ height: tlHeight }} aria-label="Timeline">
+        <Resizer axis="y" onDrag={(d) => -dragPanel('timeline', -d)} />
+        <section className="panel panel--timeline" style={{ height: layout.timeline }} aria-label="Timeline">
           <Timeline />
         </section>
       </div>
@@ -234,7 +244,37 @@ function Workspace() {
   );
 }
 
-const clampW = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+/** The window's size, and whether it is being resized at the moment. */
+function useViewport(): { viewport: Viewport; resizing: boolean } {
+  const [state, setState] = useState(() => ({ viewport: windowSize(), resizing: false }));
+  useEffect(() => {
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const onResize = () => {
+      setState({ viewport: windowSize(), resizing: true });
+      clearTimeout(settle);
+      settle = setTimeout(() => setState((s) => ({ ...s, resizing: false })), 200);
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      clearTimeout(settle);
+    };
+  }, []);
+  return state;
+}
+
+/**
+ * A splitter was dragged: keep the sizes that come of it, if it had anywhere to go. Returns how
+ * much the panel grew, which is less than asked where it met its limit.
+ */
+function dragPanel(splitter: Splitter, grow: number): number {
+  const ui = useUI.getState();
+  const viewport = windowSize();
+  const sizes = resizePanel(ui, viewport, splitter, grow);
+  if (!sizes) return 0;
+  ui.set(sizes);
+  return fitPanels(useUI.getState(), viewport)[splitter] - fitPanels(ui, viewport)[splitter];
+}
 
 function Resizer({
   axis,
@@ -242,7 +282,8 @@ function Resizer({
   style,
 }: {
   axis: 'x' | 'y';
-  onDrag: (delta: number) => void;
+  /** Moves the panel edge by up to `delta` pixels and returns how far it went. */
+  onDrag: (delta: number) => number;
   style?: React.CSSProperties;
 }) {
   const last = useRef(0);
@@ -262,11 +303,9 @@ function Resizer({
       onPointerMove={(e) => {
         if (!active) return;
         const cur = axis === 'x' ? e.clientX : e.clientY;
-        const d = cur - last.current;
-        if (d !== 0) {
-          last.current = cur;
-          onDrag(d);
-        }
+        // Only the distance the edge really went counts as covered. A pointer that has overshot a
+        // limit then has to come all the way back to the splitter before it moves again.
+        if (cur !== last.current) last.current += onDrag(cur - last.current);
       }}
       onPointerUp={(e) => {
         e.currentTarget.releasePointerCapture(e.pointerId);

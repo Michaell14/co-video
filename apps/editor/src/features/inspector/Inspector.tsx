@@ -15,9 +15,8 @@ import {
   Trash2,
   Unlink2,
   SlidersHorizontal,
-  Diamond,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   clipEnd,
   DEFAULT_MASK,
@@ -40,13 +39,13 @@ import {
   type ShapeProps,
   type TextProps,
   type Transition,
-  toggleKeyframe,
 } from '@tandem/core';
 import { isNeutralGrade } from '@tandem/engine';
 import { FONTS, fontByFamily } from '../../fonts';
 import { currentSession, useLiveProject, useSession, useThrottledFrame } from '../../session/hooks';
-import { cmd } from '../../state/commands';
-import { beginGesture, localFrameOf, patchClips, setClipValues } from '../../state/props';
+import { cmd, effectiveSelection } from '../../state/commands';
+import { beginGesture, commit, patchClips, setClipValues } from '../../state/props';
+import { speedEdits, speedGesture, speedStepped, type SpeedGesture } from '../../state/timing';
 import { useUI } from '../../state/ui';
 import {
   Button,
@@ -61,7 +60,7 @@ import {
   TextField,
   tip,
 } from '../../ui/core';
-import { NumericRow, ParamControl, Row, Section, valueOf } from './controls';
+import { KeyframeButton, NumericRow, ParamControl, Row, Section, TimecodeField, valueOf } from './controls';
 import { ProjectSettingsForm } from './ProjectSettings';
 import './inspector.css';
 
@@ -69,11 +68,11 @@ const BLEND_MODES: { value: BlendMode; label: string; group: string }[] = [
   { value: 'normal', label: 'Normal', group: 'Normal' },
   { value: 'darken', label: 'Darken', group: 'Darken' },
   { value: 'multiply', label: 'Multiply', group: 'Darken' },
-  { value: 'color-burn', label: 'Color Burn', group: 'Darken' },
+  { value: 'color-burn', label: 'Colour Burn', group: 'Darken' },
   { value: 'subtract', label: 'Subtract', group: 'Darken' },
   { value: 'lighten', label: 'Lighten', group: 'Lighten' },
   { value: 'screen', label: 'Screen', group: 'Lighten' },
-  { value: 'color-dodge', label: 'Color Dodge', group: 'Lighten' },
+  { value: 'color-dodge', label: 'Colour Dodge', group: 'Lighten' },
   { value: 'add', label: 'Add', group: 'Lighten' },
   { value: 'overlay', label: 'Overlay', group: 'Contrast' },
   { value: 'soft-light', label: 'Soft Light', group: 'Contrast' },
@@ -82,7 +81,7 @@ const BLEND_MODES: { value: BlendMode; label: string; group: string }[] = [
   { value: 'exclusion', label: 'Exclusion', group: 'Inversion' },
   { value: 'hue', label: 'Hue', group: 'Component' },
   { value: 'saturation', label: 'Saturation', group: 'Component' },
-  { value: 'color', label: 'Color', group: 'Component' },
+  { value: 'color', label: 'Colour', group: 'Component' },
   { value: 'luminosity', label: 'Luminosity', group: 'Component' },
 ];
 
@@ -144,15 +143,9 @@ function ClipInspector({ project, clips }: { project: Project; clips: Clip[] }) 
   const timed = clips.filter((c) => (c.type === 'video' || c.type === 'audio') && !c.freeze);
   const transformable = visual.filter((c) => c.type !== 'adjustment');
   const first = clips[0];
-  const s = project.settings;
   return (
     <div className="rows">
-      <div className="insp__timing mono">
-        <span {...tip('Start')}>{formatTimecode(first.start, s)}</span>
-        <i />
-        <span {...tip('End')}>{formatTimecode(clipEnd(first), s)}</span>
-        <b {...tip('Duration')}>{formatTimecode(first.duration, s)}</b>
-      </div>
+      <ClipSection clips={clips} project={project} />
       {first.type === 'text' && first.text && clips.length === 1 && <TextSection clip={first} />}
       {first.type === 'shape' && first.shape && clips.length === 1 && <ShapeSection clip={first} />}
       {first.type === 'solid' && clips.length === 1 && <SolidSection clip={first} />}
@@ -165,6 +158,50 @@ function ClipInspector({ project, clips }: { project: Project; clips: Clip[] }) 
       {visual.length > 0 && <ColorSummary clips={visual} />}
       {visual.length === 1 && <EffectsSection clip={visual[0]} />}
     </div>
+  );
+}
+
+/** What the clip is called and where it sits: name, start and length, by number. */
+function ClipSection({ clips, project }: { clips: Clip[]; project: Project }) {
+  const first = clips[0];
+  const ids = clips.map((c) => c.id);
+  const s = project.settings;
+  return (
+    <Section id="clip" title="Clip">
+      {/* A title is known by its text, which is what the timeline shows for it. */}
+      {clips.length === 1 && first.type !== 'text' && (
+        <Row label="Name">
+          <TextField
+            value={first.name}
+            onChange={(name) => patchClips([first.id], { name }, true)}
+            onFocus={beginGesture}
+            ariaLabel="Clip name"
+            placeholder={labelFor(first)}
+          />
+        </Row>
+      )}
+      <Row label="Start">
+        <TimecodeField
+          value={Math.min(...clips.map((c) => c.start))}
+          fps={s}
+          onCommit={(frame) => cmd.moveTo(frame, ids)}
+          ariaLabel="Start"
+        />
+      </Row>
+      <Row label="Duration">
+        <TimecodeField
+          value={first.duration}
+          mixed={clips.some((c) => c.duration !== first.duration)}
+          min={1}
+          fps={s}
+          onCommit={(frames) => cmd.setDuration(frames, ids)}
+          ariaLabel="Duration"
+        />
+      </Row>
+      <Row label="End">
+        <span className="mono insp__read">{formatTimecode(Math.max(...clips.map(clipEnd)), s)}</span>
+      </Row>
+    </Section>
   );
 }
 
@@ -263,6 +300,9 @@ function TransformSection({ clips, project }: { clips: Clip[]; project: Project 
         min={-180}
         max={180}
         origin={0}
+        // Keyframed rotation counts whole turns (a spin from 0° to 720°), so the number is not
+        // held to the half turn either way that the slider covers.
+        numberRange={clips.some((c) => c.keyframes.rotation?.length) ? [-3600, 3600] : undefined}
       />
       {(first.type === 'video' || first.type === 'image') && (
         <Row label="Fit">
@@ -303,9 +343,6 @@ function LinkedScale({ clips, onUnlink }: { clips: Clip[]; onUnlink: () => void 
   const ids = clips.map((c) => c.id);
   const first = clips[0];
   const v = Math.abs(valueOf(first, 'scaleX', 1));
-  const animatedNow = !!first.keyframes.scaleX?.length;
-  const lf = localFrameOf(first);
-  const onKey = animatedNow && first.keyframes.scaleX.some((k) => k.t === lf);
   const set = (val: number) => {
     const p = currentSession()?.store.get();
     if (!p) return;
@@ -321,25 +358,16 @@ function LinkedScale({ clips, onUnlink }: { clips: Clip[]; onUnlink: () => void 
   return (
     <div className="row">
       <div className="row__label">
-        <button
-          className="kf"
-          data-animated={animatedNow}
-          aria-label="Toggle keyframe for Scale"
-          aria-pressed={onKey}
-          onClick={() =>
-            patchClips(ids, (c) => {
-              const a = toggleKeyframe(c, 'scaleX', localFrameOf(c), valueOf(c, 'scaleX', 1));
-              return {
-                ...a,
-                ...toggleKeyframe({ ...c, ...a }, 'scaleY', localFrameOf(c), valueOf(c, 'scaleY', 1)),
-              };
-            })
-          }
-          {...tip(animatedNow ? 'Add / remove keyframe' : 'Animate: add a keyframe')}
-        >
-          <Diamond fill={onKey ? 'currentColor' : 'none'} strokeWidth={2.5} />
-        </button>
+        <KeyframeButton clips={clips} paths={['scaleX', 'scaleY']} label="Scale" fallback={1} />
         <span>Scale</span>
+        <button
+          className="insp__link"
+          onClick={onUnlink}
+          aria-label="Unlink scale axes"
+          {...tip('Scale X and Y separately')}
+        >
+          <Unlink2 />
+        </button>
       </div>
       <div className="row__ctrl">
         <Slider
@@ -363,14 +391,6 @@ function LinkedScale({ clips, onUnlink }: { clips: Clip[]; onUnlink: () => void 
           defaultValue={1}
           ariaLabel="Scale"
         />
-        <button
-          className="insp__link"
-          onClick={onUnlink}
-          aria-label="Unlink scale axes"
-          {...tip('Scale X and Y separately')}
-        >
-          <Unlink2 />
-        </button>
       </div>
     </div>
   );
@@ -491,26 +511,44 @@ function MaskSection({ clips }: { clips: Clip[] }) {
 
 function SpeedSection({ clips, project }: { clips: Clip[]; project: Project }) {
   const first = clips[0];
-  const [draft, setDraft] = useState<number | null>(null);
-  const speed = draft ?? first.speed;
+  // Folded for a clip that plays at normal speed, and opened once it no longer does. It never folds
+  // by itself while the clip is shown: a drag that passes through 100% would lose the section from
+  // under the pointer.
+  const plain = first.speed === 1 && !first.reverse;
+  const [shown, setShown] = useState({ id: first.id, folded: plain });
+  if (shown.id !== first.id) setShown({ id: first.id, folded: plain });
+  else if (shown.folded && !plain) setShown({ id: first.id, folded: false });
+  // One interaction with either control is one gesture and one undo step: what counts is where it
+  // ends, not the way there. The slider's double-click reset comes without a start of its own, so
+  // it belongs to the press before it.
+  const gesture = useRef<SpeedGesture | null>(null);
+  const begin = () => {
+    gesture.current = null;
+  };
+  const change = (speed: number) => {
+    const store = currentSession()?.store;
+    if (!store) return;
+    const g = speedGesture(gesture.current, store.get(), effectiveSelection(store.get()));
+    if (g !== gesture.current) beginGesture();
+    commit(speedEdits(g, store.get(), speed), true);
+    gesture.current = speedStepped(g, store.get());
+  };
   return (
-    <Section id="speed" title="Speed" defaultCollapsed={first.speed === 1 && !first.reverse}>
+    <Section id="speed" title="Speed" defaultCollapsed={shown.folded}>
       <Row label="Speed">
         <Slider
-          value={Math.log2(speed)}
+          value={Math.log2(first.speed)}
           min={-3}
           max={4}
-          onChange={(v) => setDraft(Math.round(Math.pow(2, v) * 100) / 100)}
-          onEnd={() => {
-            if (draft !== null) cmd.setSpeed(draft);
-            setDraft(null);
-          }}
+          onStart={begin}
+          onChange={(v) => change(Math.round(Math.pow(2, v) * 100) / 100)}
           origin={0}
           defaultValue={0}
         />
         <NumberField
-          value={speed}
-          onChange={(v) => cmd.setSpeed(v)}
+          value={first.speed}
+          onStart={begin}
+          onChange={change}
           min={0.05}
           max={100}
           step={0.01}
@@ -518,6 +556,7 @@ function SpeedSection({ clips, project }: { clips: Clip[]; project: Project }) {
           precision={0}
           suffix="%"
           defaultValue={1}
+          ariaLabel="Speed"
         />
       </Row>
       <Row label="Presets">
@@ -528,7 +567,7 @@ function SpeedSection({ clips, project }: { clips: Clip[]; project: Project }) {
         ))}
       </Row>
       <Row label="Reverse">
-        <Switch checked={first.reverse} onChange={(r) => cmd.setSpeed(first.speed, r)} label="Reverse" />
+        <Switch checked={first.reverse} onChange={(r) => cmd.setReverse(r)} label="Reverse" />
       </Row>
       <Row label="Duration">
         <span className="mono insp__read">{formatTimecode(first.duration, project.settings)}</span>
@@ -625,7 +664,7 @@ function ColorSummary({ clips }: { clips: Clip[] }) {
   const first = clips[0];
   const active = !!first.grade && first.grade.enabled && !isNeutralGrade(first.grade);
   return (
-    <Section id="colorsum" title="Color">
+    <Section id="colorsum" title="Colour">
       <Row label="Grade">
         <span className="insp__read">{active ? 'Graded' : 'No grade'}</span>
         <span style={{ flex: 1 }} />
@@ -640,7 +679,7 @@ function ColorSummary({ clips }: { clips: Clip[] }) {
         )}
       </Row>
       <Button block icon={<Palette />} onClick={() => useUI.getState().set({ workspace: 'color' })}>
-        Open in Color workspace
+        Open in Colour workspace
       </Button>
     </Section>
   );
@@ -908,7 +947,7 @@ function TextSection({ clip }: { clip: Clip }) {
           />
         </Row>
         {t.gradient.enabled && (
-          <>
+          <div className="subrows">
             <Row label="From">
               <ColorField
                 value={t.gradient.from}
@@ -927,7 +966,7 @@ function TextSection({ clip }: { clip: Clip }) {
               precision: 0,
               suffix: '°',
             })}
-          </>
+          </div>
         )}
         <Row label="Outline">
           <Switch
@@ -937,7 +976,7 @@ function TextSection({ clip }: { clip: Clip }) {
           />
         </Row>
         {t.stroke.enabled && (
-          <>
+          <div className="subrows">
             <Row label="Colour">
               <ColorField
                 value={t.stroke.color}
@@ -949,7 +988,7 @@ function TextSection({ clip }: { clip: Clip }) {
               scale: 100,
               precision: 1,
             })}
-          </>
+          </div>
         )}
         <Row label="Shadow">
           <Switch
@@ -959,7 +998,7 @@ function TextSection({ clip }: { clip: Clip }) {
           />
         </Row>
         {t.shadow.enabled && (
-          <>
+          <div className="subrows">
             <Row label="Colour">
               <ColorField
                 value={t.shadow.color}
@@ -984,7 +1023,7 @@ function TextSection({ clip }: { clip: Clip }) {
               scale: 100,
               precision: 0,
             })}
-          </>
+          </div>
         )}
         <Row label="Background">
           <Switch
@@ -994,7 +1033,7 @@ function TextSection({ clip }: { clip: Clip }) {
           />
         </Row>
         {t.bg.enabled && (
-          <>
+          <div className="subrows">
             <Row label="Colour">
               <ColorField
                 value={t.bg.color}
@@ -1019,7 +1058,7 @@ function TextSection({ clip }: { clip: Clip }) {
               scale: 100,
               precision: 0,
             })}
-          </>
+          </div>
         )}
       </Section>
       <Section id="text-anim" title="Animation">
@@ -1141,7 +1180,7 @@ function ShapeSection({ clip }: { clip: Clip }) {
             />
           </Row>
           {sh.gradient.enabled && (
-            <>
+            <div className="subrows">
               <Row label="From">
                 <ColorField
                   value={sh.gradient.from}
@@ -1156,7 +1195,7 @@ function ShapeSection({ clip }: { clip: Clip }) {
                   onStart={beginGesture}
                 />
               </Row>
-            </>
+            </div>
           )}
         </>
       )}
@@ -1188,7 +1227,7 @@ function SolidSection({ clip }: { clip: Clip }) {
         />
       </Row>
       {sh.gradient.enabled && (
-        <>
+        <div className="subrows">
           <Row label="From">
             <ColorField
               value={sh.gradient.from}
@@ -1212,7 +1251,7 @@ function SolidSection({ clip }: { clip: Clip }) {
               onStart={beginGesture}
             />
           </Row>
-        </>
+        </div>
       )}
     </Section>
   );

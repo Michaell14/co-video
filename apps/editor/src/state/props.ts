@@ -1,7 +1,8 @@
 /** Helpers for writing clip properties from UI controls (keyframe-aware, gesture-aware). */
-import { clamp, writeProp, type Clip, type Edit, type ID } from '@tandem/core';
+import { clamp, writeProp, type Clip, type Edit, type ID, type Project } from '@tandem/core';
 import { currentSession } from '../session/hooks';
 import { toast } from '../ui/core';
+import { unlocked } from './edits';
 
 /** Clip-local frame under the playhead, clamped into the clip. */
 export function localFrameOf(clip: Clip): number {
@@ -36,6 +37,21 @@ function guard(): ReturnType<typeof currentSession> {
   return s;
 }
 
+let lockWarned = 0;
+
+/**
+ * The clips among `ids` a control may write to. A lock protects a track from every control, also
+ * from a panel that shows a clip without it being selected; when nothing is left, that is said.
+ */
+function writable(p: Project, ids: ID[]): ID[] {
+  const free = unlocked(p, ids);
+  if (!free.length && ids.some((id) => p.clips[id]) && performance.now() - lockWarned > 4000) {
+    lockWarned = performance.now();
+    toast('That track is locked. Unlock it to change its clips.', 'info');
+  }
+  return free;
+}
+
 /** Start an undo step for a continuous interaction (slider drag, gizmo drag). */
 export function beginGesture(): void {
   currentSession()?.store.beginGesture();
@@ -47,14 +63,14 @@ export function setClipValues(ids: ID[], values: Record<string, number>, merge =
   if (!s) return;
   const p = s.store.get();
   const edits: Edit[] = [];
-  for (const id of ids) {
+  for (const id of writable(p, ids)) {
     const c = p.clips[id];
-    if (c) edits.push({ op: 'updateClip', id, patch: writeProps(c, values, localFrameOf(c)) });
+    edits.push({ op: 'updateClip', id, patch: writeProps(c, values, localFrameOf(c)) });
   }
   s.store.commit(edits, { merge });
 }
 
-/** Patch arbitrary clip fields. */
+/** Patch arbitrary clip fields, as one undo step however many clips it touches. */
 export function patchClips(
   ids: ID[],
   patch: Partial<Clip> | ((c: Clip) => Partial<Clip>),
@@ -64,9 +80,10 @@ export function patchClips(
   if (!s) return;
   const p = s.store.get();
   const edits: Edit[] = [];
-  for (const id of ids) {
-    const c = p.clips[id];
-    if (c) edits.push({ op: 'updateClip', id, patch: typeof patch === 'function' ? patch(c) : patch });
+  for (const id of writable(p, ids)) {
+    const next = typeof patch === 'function' ? patch(p.clips[id]) : patch;
+    // A patch can come back empty (nothing to change on this clip); that is not an edit.
+    if (Object.keys(next).length) edits.push({ op: 'updateClip', id, patch: next });
   }
   if (edits.length) s.store.commit(edits, { merge });
 }

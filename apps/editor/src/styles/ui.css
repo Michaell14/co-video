@@ -77,6 +77,10 @@
 .btn--block {
   width: 100%;
 }
+/* A button's own shadow, or a variant's lack of one, must not take the place of the focus ring. */
+.btn:focus-visible {
+  box-shadow: var(--ring);
+}
 
 .icon-btn {
   display: inline-grid;
@@ -138,7 +142,13 @@
   font-weight: 500;
   box-shadow: var(--shadow-2);
   white-space: nowrap;
+  max-width: calc(100vw - 12px);
   animation: pop-in var(--dur-2) var(--ease-out);
+}
+.tooltip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .kbd {
   display: inline-flex;
@@ -323,6 +333,11 @@
 .select:hover {
   background: var(--bg-4);
 }
+.select:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px var(--line-1),
+    var(--ring);
+}
 .select > span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -433,6 +448,10 @@
 .swatch:hover {
   transform: scale(1.06);
 }
+/* The colour input fills the swatch unseen, so the swatch shows the focus for it. */
+.swatch:has(input:focus-visible) {
+  box-shadow: var(--ring);
+}
 .swatch input {
   position: absolute;
   inset: -8px;
@@ -458,6 +477,14 @@
   animation: pop-in var(--dur-2) var(--ease-out);
   transform-origin: var(--origin, top left);
 }
+/* A popover or dialog holds focus itself when none of its controls does. That is not a place to
+   draw a focus ring, which would also replace the surface's own shadow. */
+.popover:focus-visible,
+.dialog:focus-visible {
+  box-shadow:
+    var(--shadow-3),
+    inset 0 0 0 1px var(--line-2);
+}
 .menu-item {
   display: flex;
   align-items: center;
@@ -477,9 +504,11 @@
   color: var(--fg-3);
   flex: none;
 }
-.menu-item:hover,
+/* The entry under the pointer takes focus, so pointer and keyboard share one highlight. */
+.menu-item:focus,
 .menu-item[data-active='true'] {
   background: var(--bg-6);
+  box-shadow: none;
 }
 .menu-item:disabled {
   opacity: 0.4;
@@ -548,6 +577,15 @@
 .dialog--wide {
   width: min(760px, 100%);
 }
+.dialog--narrow {
+  width: min(400px, 100%);
+}
+.dialog__message {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
 .dialog__head {
   display: flex;
   align-items: center;
@@ -563,6 +601,17 @@
 .dialog__body {
   padding: 4px 20px 20px;
   overflow: auto;
+}
+/* Content that has the keyboard itself, to be scrolled, shows it the way a field does. */
+.dialog__body:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.dialog__body:last-child {
+  border-radius: 0 0 var(--r-xl) var(--r-xl);
+}
+/* A question that is all title has no body to pad. */
+.dialog__body:empty {
+  display: none;
 }
 .dialog__foot {
   display: flex;
@@ -661,7 +710,8 @@
   font-size: var(--text-sm);
   height: 100%;
 }
-.empty svg {
+/* Only the illustration: a button inside an empty state keeps its own icon size and colour. */
+.empty > svg {
   width: 28px;
   height: 28px;
   color: var(--fg-4);
@@ -716,7 +766,7 @@
     box-shadow 0.12s ease;
 }
 .menu-swatch:hover,
-.menu-swatch:focus-visible {
+.menu-swatch:focus {
   transform: scale(1.18);
   outline: none;
 }

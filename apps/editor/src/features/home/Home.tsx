@@ -1,6 +1,20 @@
-import { Clock, Film, FolderOpen, MoreHorizontal, Plus, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import {
+  Clock,
+  Copy,
+  FileUp,
+  Film,
+  FolderOpen,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Trash2,
+  Users,
+  Wifi,
+  WifiOff,
+} from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  canEdit,
   describeFps,
   FRAME_RATE_PRESETS,
   formatClock,
@@ -11,7 +25,19 @@ import { Logo, navigate } from '../../App';
 import { serverAvailable } from '../../session/api';
 import { getUser, registry, setUser, type ProjectEntry } from '../../session/registry';
 import { createProject, deleteLocalProject } from '../../session/projects';
-import { Button, Dialog, MenuButton, NumberField, Select, TextField, toast } from '../../ui/core';
+import { confirm } from '../../ui/confirm';
+import {
+  Button,
+  Dialog,
+  MenuButton,
+  NumberField,
+  openContextMenu,
+  Select,
+  TextField,
+  toast,
+  type MenuEntry,
+} from '../../ui/core';
+import { duplicateProject, projectFromFile, renameProject } from './manage';
 import './home.css';
 
 const STARTERS: {
@@ -45,6 +71,7 @@ export function Home() {
   const [custom, setCustom] = useState(false);
   const [join, setJoin] = useState(false);
   const [name, setName] = useState(() => getUser().name);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     document.title = 'Tandem';
@@ -62,6 +89,30 @@ export function Home() {
       navigate(id);
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not create the project', 'error');
+      setCreating(false);
+    }
+  };
+
+  const openFile = async (file: File) => {
+    if (creating) return;
+    setCreating(true);
+    try {
+      const made = await projectFromFile(file);
+      if (!made) {
+        toast('That is not a Tandem project file.', 'error');
+        setCreating(false);
+        return;
+      }
+      navigate(made.id);
+      const opened = `Opened “${made.project.settings.name}” as a new project.`;
+      toast(
+        Object.keys(made.project.assets).length
+          ? `${opened} A project file does not carry media: relink each file from its menu in the media pool.`
+          : opened,
+        'success',
+      );
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not open the project file', 'error');
       setCreating(false);
     }
   };
@@ -130,9 +181,25 @@ export function Home() {
             <Button icon={<Film />} onClick={() => setCustom(true)} disabled={creating}>
               Custom project…
             </Button>
+            <Button icon={<FileUp />} onClick={() => fileInput.current?.click()} disabled={creating}>
+              Open project file…
+            </Button>
             <Button icon={<Users />} onClick={() => setJoin(true)}>
               Join with a link…
             </Button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".tandem,application/json"
+              aria-label="Project file"
+              hidden
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                // Choosing the same file again has to count as a choice.
+                e.target.value = '';
+                if (file) void openFile(file);
+              }}
+            />
           </div>
         </section>
 
@@ -163,8 +230,61 @@ export function Home() {
 }
 
 function ProjectCard({ project: p, index }: { project: ProjectEntry; index: number }) {
+  const [renaming, setRenaming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const duplicate = async () => {
+    if (busy) return;
+    setBusy(true);
+    toast(`Duplicating “${p.name}”…`);
+    try {
+      await duplicateProject(p);
+      toast(
+        p.token
+          ? `Duplicated “${p.name}”. Media that was never downloaded to this device shows as offline in the copy.`
+          : `Duplicated “${p.name}”.`,
+        'success',
+      );
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not duplicate the project', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    const sure = await confirm({
+      title: `Delete “${p.name}” from this device?`,
+      message: p.token
+        ? 'The project and the media stored for it on this device are deleted. The shared copy on the server stays, but this device forgets its link to it: you need a share link to open it again.'
+        : 'The project and its media are deleted from this device. It exists nowhere else, so this cannot be undone.',
+      confirmLabel: 'Delete project',
+      danger: true,
+    });
+    if (sure) void deleteLocalProject(p.id);
+  };
+
+  // Only someone who may edit a shared project can rename it; the server would undo anyone else's.
+  const mayRename = !p.token || !p.role || canEdit(p.role);
+  const items: MenuEntry[] = [
+    { label: 'Open', icon: <FolderOpen />, onSelect: () => navigate(p.id) },
+    { label: 'Rename…', icon: <Pencil />, disabled: !mayRename, onSelect: () => setRenaming(true) },
+    { label: 'Duplicate', icon: <Copy />, disabled: busy, onSelect: () => void duplicate() },
+    'separator',
+    { label: 'Delete from this device…', icon: <Trash2 />, danger: true, onSelect: () => void remove() },
+  ];
+
   return (
-    <div className="pcard" style={{ animationDelay: `${Math.min(index, 12) * 30}ms` }}>
+    <div
+      className="pcard"
+      style={{ animationDelay: `${Math.min(index, 12) * 30}ms` }}
+      aria-busy={busy}
+      onContextMenu={(e) => {
+        // The card's own menu and its rename dialog are drawn elsewhere on the page, yet their
+        // events arrive here too: a right-click in those is not one on the card.
+        if (e.currentTarget.contains(e.target as Node)) openContextMenu(e, items);
+      }}
+    >
       <button className="pcard__open" onClick={() => navigate(p.id)} aria-label={`Open ${p.name}`}>
         <div className="pcard__thumb">
           {p.thumb ? <img src={p.thumb} alt="" draggable={false} /> : <Film />}
@@ -185,30 +305,63 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
       </button>
       <MenuButton
         className="icon-btn icon-btn--sm pcard__menu"
-        label="Project options"
+        label={`Options for ${p.name}`}
         align="end"
-        items={[
-          { label: 'Open', icon: <FolderOpen />, onSelect: () => navigate(p.id) },
-          'separator',
-          {
-            label: 'Delete from this device',
-            icon: <Trash2 />,
-            danger: true,
-            onSelect: () => {
-              if (
-                confirm(
-                  `Delete “${p.name}” and its locally stored media from this device?${p.token ? '\n\nThe shared copy on the server is not affected.' : ''}`,
-                )
-              ) {
-                void deleteLocalProject(p.id);
-              }
-            },
-          },
-        ]}
+        items={items}
       >
         <MoreHorizontal />
       </MenuButton>
+      {renaming && <RenameDialog project={p} onClose={() => setRenaming(false)} />}
     </div>
+  );
+}
+
+function RenameDialog({ project, onClose }: { project: ProjectEntry; onClose: () => void }) {
+  const [name, setName] = useState(project.name);
+  const [busy, setBusy] = useState(false);
+  const field = useRef<HTMLDivElement>(null);
+  // Typing replaces the old name; the arrow keys keep it to be corrected.
+  useEffect(() => field.current?.querySelector('input')?.select(), []);
+
+  const save = async () => {
+    if (busy || !name.trim()) return;
+    setBusy(true);
+    try {
+      await renameProject(project, name);
+      onClose();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not rename the project', 'error');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      title="Rename project"
+      narrow
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={busy || !name.trim()} onClick={() => void save()}>
+            Rename
+          </Button>
+        </>
+      }
+    >
+      <div ref={field}>
+        <TextField
+          value={name}
+          onChange={setName}
+          autoFocus
+          ariaLabel="Project name"
+          onEnter={() => void save()}
+          style={{ height: 32 }}
+        />
+      </div>
+    </Dialog>
   );
 }
 

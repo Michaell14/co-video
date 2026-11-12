@@ -445,6 +445,9 @@ export class Session {
     this.token = null;
     if (this.store.isEmpty()) this.setMeta({ denied: true });
     else if (this.meta.shared) {
+      // A refusal is final, so the link goes from the project list too: kept there, every later
+      // visit would offer it to the server again and end in this same message.
+      if (registry.get(this.id)?.token) registry.upsert({ id: this.id, token: null, role: undefined });
       this.setMeta({ shared: false });
       this.applyRole('owner');
       toast(
