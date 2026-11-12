@@ -33,6 +33,7 @@ import {
   type FrameDesc,
   type Grade,
   type Layer,
+  type Primaries,
   type Project,
   type ResolvedParams,
 } from '@tandem/core';
@@ -158,6 +159,14 @@ export class Compositor {
   private readonly dummy3d: WebGLTexture;
   private last: RenderTarget | null = null;
   private lumaW: [number, number, number] = [0.2126, 0.7152, 0.0722];
+  /** The working primaries `lumaW` belongs to. */
+  private lumaOf: Primaries | null = null;
+  /**
+   * Matrices from one set of primaries to another, as uniforms. They depend on nothing else, and
+   * working one out anew for every pass of every frame costs more than the pass's other uniforms
+   * together.
+   */
+  private readonly gamuts = new Map<string, Float32Array>();
   private project: Project | null = null;
   private provider: SourceProvider | null = null;
   private fast = false;
@@ -276,7 +285,11 @@ export class Compositor {
     this.provider = provider;
     this.fast = !!opts.fast;
     this.fps = project.settings.fpsNum / project.settings.fpsDen;
-    this.lumaW = lumaWeights(workingPrimaries(project.settings.colorMode));
+    const primaries = workingPrimaries(project.settings.colorMode);
+    if (primaries !== this.lumaOf) {
+      this.lumaW = lumaWeights(primaries);
+      this.lumaOf = primaries;
+    }
 
     gl.disable(gl.BLEND);
     let acc = glx.acquire(this.width, this.height);
@@ -701,6 +714,13 @@ export class Compositor {
     return space !== 'rec709' && space !== 'srgb';
   }
 
+  private gamut(from: Primaries, to: Primaries): Float32Array {
+    const key = `${from}>${to}`;
+    let m = this.gamuts.get(key);
+    if (!m) this.gamuts.set(key, (m = toGlMat3(gamutMatrix(from, to))));
+    return m;
+  }
+
   private identityMatrix(): Float32Array {
     return new Float32Array([2, 0, 0, 0, 2, 0, -1, -1, 1]);
   }
@@ -852,7 +872,7 @@ export class Compositor {
       if (needs) {
         u.u_inEnabled = 1;
         u.u_inTransfer = TRANSFER_IDS[effective.transfer] ?? 0;
-        u.u_inMat = toGlMat3(gamutMatrix(effective.primaries, workingPrimaries(s.colorMode)));
+        u.u_inMat = this.gamut(effective.primaries, workingPrimaries(s.colorMode));
         u.u_hlgGamma = 1.2;
         let scale = 1;
         if (effective.transfer === 'pq') scale = 10000 / s.refWhiteNits;

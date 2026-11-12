@@ -1,4 +1,5 @@
 import {
+  AudioLines,
   ChevronFirst,
   ChevronLast,
   Gauge,
@@ -66,6 +67,7 @@ import { beginGesture, setClipValues } from '../../state/props';
 import { isTyping } from '../../state/shortcuts';
 import { useUI } from '../../state/ui';
 import { IconButton, MenuButton, Slider, tip, cx, Button } from '../../ui/core';
+import { layerOpen } from '../../ui/layers';
 import { angleStep, pointInQuad, quadCovers, wrapDegrees } from './geometry';
 import { SourceTransport } from './sourceTransport';
 import './viewer.css';
@@ -77,6 +79,11 @@ const FIT_PAD_X = 20;
 const FIT_PAD_Y = ROTATE_STEM + 12;
 /** How far a press may travel, in CSS pixels, and still be a click where a click means something else. */
 const CLICK_SLOP = 3;
+/**
+ * The widest viewer, in CSS pixels, whose transport bar has no room beside the mute button for the
+ * volume slider: opened there it would reach the buttons in the middle of the bar.
+ */
+const VOLUME_ABOVE_W = 760;
 
 export function Viewer() {
   const session = useSession();
@@ -430,11 +437,14 @@ function Gizmo({ scale }: { scale: number }) {
         onPointerUp={end}
       />
     );
+    const outline = q.map((p) => p.join(',')).join(' ');
     shape = (
       <g>
+        <polygon className="gizmo__halo" points={outline} strokeWidth={sw * 3} />
+        <line className="gizmo__halo" x1={top[0]} y1={top[1]} x2={rh[0]} y2={rh[1]} strokeWidth={sw * 3} />
         <polygon
           className="gizmo__body"
-          points={q.map((p) => p.join(',')).join(' ')}
+          points={outline}
           strokeWidth={sw}
           onPointerDown={pressBody}
           onPointerMove={move}
@@ -641,9 +651,20 @@ function Transport() {
   const showStats = useUI((s) => s.showStats);
   const set = useUI((s) => s.set);
   const rate = state.playing && state.rate !== 1 ? `${state.rate}×` : null;
+  const bar = useRef<HTMLDivElement>(null);
+  const [tight, setTight] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = bar.current!;
+    const measure = () => setTight(el.offsetWidth <= VOLUME_ABOVE_W);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   return (
-    <div className="transport">
+    <div className="transport" ref={bar}>
       <div className="transport__left">
         <Timecode />
         <span className="transport__dur mono">/ {formatTimecode(end, settings)}</span>
@@ -682,10 +703,11 @@ function Transport() {
         </IconButton>
       </div>
       <div className="transport__right">
-        <div className="vol">
+        <div className="vol" data-place={tight ? 'above' : 'beside'}>
+          {/* Above the button is where the slider opens in a narrow viewer: the tip goes below. */}
           <IconButton
             label={state.muted ? 'Unmute' : 'Mute'}
-            tipPlace="top"
+            tipPlace={tight ? 'bottom' : 'top'}
             onClick={() => player?.setMuted(!state.muted)}
           >
             {state.muted || state.volume === 0 ? <VolumeX /> : <Volume2 />}
@@ -875,10 +897,11 @@ function SourceMonitor({ assetId }: { assetId: string }) {
 
   // While the monitor is open the transport and marking keys are its own; the programme keeps
   // every other shortcut. Listening on the document puts this after menus and drags in progress,
-  // which take Escape on the window, and before the programme's shortcuts.
+  // which take Escape on the window, and before the programme's shortcuts. Under a dialog or any
+  // other layer the keys belong to that layer: Space there presses its focused button.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isTyping(e.target) || useUI.getState().dialog) return;
+      if (isTyping(e.target) || useUI.getState().dialog || layerOpen()) return;
       const keys = eventKeys(e);
       const held = e.repeat && !keys.includes('arrow');
       switch (keys) {
@@ -956,7 +979,10 @@ function SourceMonitor({ assetId }: { assetId: string }) {
         ) : asset.kind === 'image' ? (
           <img src={url} alt={asset.name} draggable={false} />
         ) : asset.kind === 'audio' ? (
-          <audio ref={attach} src={url} controls autoPlay={!cue} />
+          <div className="source__sound">
+            <AudioLines />
+            <audio ref={attach} src={url} controls autoPlay={!cue} />
+          </div>
         ) : (
           <video ref={attach} src={url} controls autoPlay={!cue} playsInline />
         )}

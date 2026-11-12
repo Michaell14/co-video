@@ -5,7 +5,18 @@ export const RULER_H = 30;
 export const LANE_GAP = 2;
 /** Extra space between the video and audio groups. */
 export const GROUP_GAP = 8;
+/** Empty room under the last lane, for dropping below it and for dragging a clip out past it. */
+export const LANES_TAIL = 24;
 export const LABEL_H = 17;
+/** How much of a clip's colour its label strip keeps; the rest is black, so the name reads on it. */
+export const LABEL_TINT = 0.62;
+/** A clip no wider than this, in CSS pixels, has no room for its name. */
+export const LABEL_MIN_W = 44;
+/** Below this width a clip is a sliver: it gets tighter corners and no grips. */
+export const NARROW_W = 16;
+
+/** The width a clip is drawn at: a pixel short of its length, so that neighbours do not touch. */
+export const clipWidth = (duration: number, ppf: number): number => Math.max(2, duration * ppf - 1);
 
 export interface Lane {
   track: Track;
@@ -24,7 +35,7 @@ export function layoutLanes(project: Project): { lanes: Lane[]; height: number }
     y += track.height + LANE_GAP;
     prevKind = track.kind;
   }
-  return { lanes, height: y + 24 };
+  return { lanes, height: y + LANES_TAIL };
 }
 
 export function laneAt(lanes: Lane[], y: number): Lane | null {
@@ -60,8 +71,15 @@ export function tickInterval(ppf: number, fps: number): { major: number; minor: 
   const want = 96;
   for (const c of candidates) {
     if (c * ppf >= want) {
+      // Below a second the small ticks have to fall on whole frames: the most of them that do.
       const minor =
-        c >= f ? (c % (5 * f) === 0 ? 5 : c === f ? Math.min(f, 5) : 4) : c >= 10 ? 5 : c >= 2 ? 2 : 1;
+        c >= f
+          ? c % (5 * f) === 0
+            ? 5
+            : c === f
+              ? Math.min(f, 5)
+              : 4
+          : ([5, 4, 3, 2].find((n) => c % n === 0) ?? 1);
       return { major: c, minor };
     }
   }

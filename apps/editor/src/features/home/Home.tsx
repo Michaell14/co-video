@@ -12,7 +12,7 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   canEdit,
   describeFps,
@@ -476,8 +476,7 @@ function CustomProjectDialog({
           />
         </div>
         <p className="form__hint">
-          Everything is resolution independent, so you can change any of this later without re-doing your
-          edit.
+          Everything is resolution independent, so you can change any of this later without redoing your edit.
         </p>
       </div>
     </Dialog>
@@ -486,10 +485,13 @@ function CustomProjectDialog({
 
 function JoinDialog({ onClose }: { onClose: () => void }) {
   const [link, setLink] = useState('');
+  // Said at the field, where the person is looking, and until the link is changed.
+  const [refused, setRefused] = useState(false);
+  const problem = useId();
   const go = () => {
     const m = /#\/p\/([A-Za-z0-9_-]+)(\?.*)?$/.exec(link.trim());
     if (!m) {
-      toast('That does not look like a Tandem share link.', 'error');
+      setRefused(true);
       return;
     }
     location.hash = `#/p/${m[1]}${m[2] ?? ''}`;
@@ -516,13 +518,23 @@ function JoinDialog({ onClose }: { onClose: () => void }) {
         </p>
         <TextField
           value={link}
-          onChange={setLink}
+          onChange={(next) => {
+            setLink(next);
+            setRefused(false);
+          }}
           placeholder="https://…/app/#/p/…"
           autoFocus
           onEnter={go}
           ariaLabel="Share link"
           style={{ height: 32 }}
+          invalid={refused}
+          describedBy={refused ? problem : undefined}
         />
+        {refused && (
+          <p className="form__error" id={problem} role="alert">
+            That does not look like a Tandem share link.
+          </p>
+        )}
       </div>
     </Dialog>
   );

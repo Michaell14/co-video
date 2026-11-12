@@ -15,6 +15,7 @@
 import * as Y from 'yjs';
 import { newId } from './ids';
 import type { Comment, CommentReply, ID } from './types';
+import { hexColor } from './util';
 
 type Listener = () => void;
 type Json = Record<string, unknown>;
@@ -26,9 +27,7 @@ const UNKNOWN_AUTHOR = { id: '', name: 'Unknown', color: '#64748b' };
 const isObj = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const str = (v: unknown, fallback: string): string => (typeof v === 'string' ? v : fallback);
-/** The colour ends up in a style attribute, where anything but a plain colour could load a remote URL. */
-const color = (v: unknown): string =>
-  typeof v === 'string' && /^#[0-9a-f]{3,8}$/i.test(v) ? v : UNKNOWN_AUTHOR.color;
+const color = (v: unknown): string => hexColor(v) ?? UNKNOWN_AUTHOR.color;
 
 /** The comment a reply key belongs to. Reply ids never contain a slash; comment ids may. */
 const commentOf = (replyKey: string): ID => replyKey.slice(0, Math.max(0, replyKey.lastIndexOf('/')));

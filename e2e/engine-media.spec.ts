@@ -97,6 +97,65 @@ async function openMediaLab(page: Page): Promise<void> {
           rate,
         );
       },
+      /** A 32-bit float WAV file, one array per channel: nothing is rounded on the way in. */
+      floatWav(channels: Float32Array[], rate: number): Blob {
+        const n = channels[0].length;
+        const size = n * channels.length * 4;
+        const buf = new ArrayBuffer(44 + size);
+        const v = new DataView(buf);
+        const text = (o: number, s: string) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+        text(0, 'RIFF');
+        v.setUint32(4, 36 + size, true);
+        text(8, 'WAVEfmt ');
+        v.setUint32(16, 16, true);
+        v.setUint16(20, 3, true);
+        v.setUint16(22, channels.length, true);
+        v.setUint32(24, rate, true);
+        v.setUint32(28, rate * channels.length * 4, true);
+        v.setUint16(32, channels.length * 4, true);
+        v.setUint16(34, 32, true);
+        text(36, 'data');
+        v.setUint32(40, size, true);
+        for (let i = 0; i < n; i++)
+          for (let c = 0; c < channels.length; c++)
+            v.setFloat32(44 + (i * channels.length + c) * 4, channels[c][i], true);
+        return new Blob([buf], { type: 'audio/wav' });
+      },
+      /** `seconds` of a sine as samples. */
+      sine(hz: number, rate: number, seconds: number, amp = 0.5): Float32Array {
+        return Float32Array.from(
+          { length: Math.round(rate * seconds) },
+          (_, i) => amp * Math.sin((2 * Math.PI * hz * i) / rate),
+        );
+      },
+      /**
+       * The `hz` component of `x[from..to)` by least squares: its level, and the level of everything
+       * that is left when it is taken out, both in dB relative to a sine of amplitude `amp`.
+       */
+      purity(x: Float32Array, hz: number, rate: number, amp: number, from: number, to: number) {
+        let [ss, sc, cc, ys, yc] = [0, 0, 0, 0, 0];
+        for (let i = from; i < to; i++) {
+          const w = (2 * Math.PI * hz * i) / rate;
+          const [sin, cos] = [Math.sin(w), Math.cos(w)];
+          ss += sin * sin;
+          sc += sin * cos;
+          cc += cos * cos;
+          ys += x[i] * sin;
+          yc += x[i] * cos;
+        }
+        const det = ss * cc - sc * sc;
+        const a = (ys * cc - yc * sc) / det;
+        const b = (yc * ss - ys * sc) / det;
+        let rest = 0;
+        for (let i = from; i < to; i++) {
+          const w = (2 * Math.PI * hz * i) / rate;
+          rest += (x[i] - a * Math.sin(w) - b * Math.cos(w)) ** 2;
+        }
+        return {
+          gain: 20 * Math.log10(Math.hypot(a, b) / amp + 1e-30),
+          rest: 10 * Math.log10(rest / (to - from) / ((amp * amp) / 2) + 1e-30),
+        };
+      },
     };
     (window as any).kit = kit;
   });
@@ -441,6 +500,231 @@ test.describe('media engine', () => {
     expect(r.steppingMs).toBeLessThan(12000);
   });
 
+  test('a decoder that never delivers a frame gets a few spaced tries, then is reported and left alone', async ({
+    page,
+  }) => {
+    await openMediaLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, kit } = window as any;
+      const { core, engine } = lab;
+      lab.init(320, 180);
+      const vid = await lab.addFile('vid', '/fixtures/testsrc.mp4', 'testsrc.mp4');
+      const project = kit.project(320, 180, [vid], [{ assetId: 'vid', start: 0, duration: 150 }]);
+      const want = kit.hash((await lab.renderFrame(project, 5)).pixels);
+      const wantFar = kit.hash((await lab.renderFrame(project, 100)).pixels);
+
+      const sink = engine.VideoSampleSink.prototype;
+      const samples = sink.samples;
+      let starts = 0;
+      const dead = function () {
+        starts++;
+        return (async function* () {
+          throw new Error('decoder gave up');
+        })();
+      };
+      const exact = async (frame: number) => {
+        const [before, t0] = [starts, performance.now()];
+        const problems = await lab.sources.prepare(project, core.resolveFrame(project, frame), true);
+        return {
+          reasons: problems.map((p: any) => `${p.part}:${p.reason}`),
+          ms: performance.now() - t0,
+          starts: starts - before,
+        };
+      };
+
+      // A paused viewer resting on the clip.
+      sink.samples = dead;
+      lab.init(320, 180);
+      const draws = await kit.view(project, 5, 2000);
+      const viewer = { draws, starts };
+
+      // Exact renders: the first learns that the clip does not decode, its neighbours are told at once.
+      lab.init(320, 180);
+      const first = await exact(5);
+      const next = await exact(6);
+
+      // The same from a decoder that ends without an error and without a frame.
+      sink.samples = function () {
+        starts++;
+        return (async function* () {})();
+      };
+      lab.init(320, 180);
+      const empty = await exact(5);
+
+      // An export says so once and does not wait for every frame. Nor when the clip runs so fast
+      // that each frame lies seconds further into the file than the one before.
+      sink.samples = dead;
+      const exportOf = async (what: unknown, frames: number) => {
+        starts = 0;
+        const out = await lab.exportBase64(what, {
+          container: 'webm',
+          videoCodec: 'vp9',
+          audioCodec: 'opus',
+          width: 160,
+          height: 90,
+          fpsNum: 30,
+          fpsDen: 1,
+          videoBitrate: 300_000,
+          audioBitrate: 96_000,
+          range: { in: 0, out: frames },
+          includeVideo: true,
+          includeAudio: false,
+          dynamicRange: 'sdr',
+          keyFrameInterval: 1,
+          hardwareAcceleration: 'no-preference',
+        });
+        return {
+          frames: out.frames,
+          seconds: out.seconds,
+          starts,
+          warnings: out.warnings.map((w: any) => `${w.part}:${w.reason}@${w.frame}`),
+          message: out.warnings[0]?.message,
+        };
+      };
+      const exported = await exportOf(project, 45);
+      const fast = kit.project(320, 180, [vid], [{ assetId: 'vid', start: 0, duration: 3, speed: 50 }]);
+      const exportedFast = await exportOf(fast, 3);
+
+      // The verdict stands for the frames around it even when the decoder would work again, and
+      // for whatever frame is asked for next while frames are asked for in order. A viewer at
+      // rest in another part of the file gets a new try, and so does a reset of the asset.
+      lab.init(320, 180);
+      await exact(5);
+      sink.samples = function (...args: unknown[]) {
+        starts++;
+        return samples.apply(this, args);
+      };
+      const stands = await exact(7);
+      lab.sources.sequential = true;
+      const inOrder = await exact(100);
+      lab.sources.sequential = false;
+      const far = await exact(100);
+      const farShown = kit.hash((await lab.renderFrame(project, 100)).pixels) === wantFar;
+      sink.samples = dead;
+      lab.init(320, 180);
+      await exact(5);
+      sink.samples = samples;
+      lab.sources.resetAsset('vid');
+      const reset = kit.hash((await lab.renderFrame(project, 5)).pixels) === want;
+      return { viewer, first, next, empty, exported, exportedFast, stands, inOrder, far, farShown, reset };
+    });
+    // Three starts, a redraw for each and for each wait that ended: not one of each per frame.
+    expect(r.viewer.starts).toBe(3);
+    expect(r.viewer.draws).toBeLessThan(10);
+    expect(r.first).toMatchObject({ reasons: ['video:decode-error'], starts: 3 });
+    expect(r.first.ms).toBeLessThan(1000);
+    expect(r.next).toMatchObject({ reasons: ['video:decode-error'], starts: 0 });
+    expect(r.next.ms).toBeLessThan(100);
+    expect(r.empty).toMatchObject({ reasons: ['video:decode-error'], starts: 3 });
+    expect(r.empty.ms).toBeLessThan(1000);
+    expect(r.exported.frames).toBe(45);
+    expect(r.exported.warnings).toEqual(['video:decode-error@0']);
+    expect(r.exported.message).toContain('“testsrc.mp4” stopped decoding');
+    expect(r.exported.starts).toBe(3);
+    expect(r.exported.seconds).toBeLessThan(8);
+    expect(r.exportedFast).toMatchObject({ frames: 3, warnings: ['video:decode-error@0'], starts: 3 });
+    expect(r.stands).toMatchObject({ reasons: ['video:decode-error'], starts: 0 });
+    expect(r.inOrder).toMatchObject({ reasons: ['video:decode-error'], starts: 0 });
+    expect(r.far).toMatchObject({ reasons: [], starts: 1 });
+    expect(r.farShown).toBe(true);
+    expect(r.reset).toBe(true);
+  });
+
+  test('a decoder that fails once is started again: before its first frame, and after a break further in', async ({
+    page,
+  }) => {
+    await openMediaLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, kit } = window as any;
+      const { core, engine } = lab;
+      lab.init(320, 180);
+      const vid = await lab.addFile('vid', '/fixtures/testsrc.mp4', 'testsrc.mp4');
+      const project = kit.project(320, 180, [vid], [{ assetId: 'vid', start: 0, duration: 90 }]);
+      const want: number[] = [];
+      for (const f of [3, 5, 9, 40]) want[f] = kit.hash((await lab.renderFrame(project, f)).pixels);
+
+      const sink = engine.VideoSampleSink.prototype;
+      const samples = sink.samples;
+      let starts = 0;
+      /** The real decoder, except that its first `failures` starts throw before any frame. */
+      const flaky = (failures: number) => {
+        starts = 0;
+        sink.samples = function (...args: unknown[]) {
+          if (++starts > failures) return samples.apply(this, args);
+          return (async function* () {
+            throw new Error('decoder not ready');
+          })();
+        };
+      };
+      const shows = (f: number) => () => kit.hash(lab.compositor.readPixels()) === want[f];
+
+      // Exact render: one failed start, then two.
+      const exact = [];
+      for (const failures of [1, 2]) {
+        flaky(failures);
+        lab.init(320, 180);
+        const t0 = performance.now();
+        const problems = await lab.sources.prepare(project, core.resolveFrame(project, 5), true);
+        lab.compositor.render(project, core.resolveFrame(project, 5), lab.sources, {});
+        exact.push({ problems, ms: performance.now() - t0, shown: shows(5)(), starts });
+      }
+      // A paused viewer: nobody waits for the frame, the cursor has to ask for the redraw itself.
+      flaky(1);
+      lab.init(320, 180);
+      await kit.view(project, 5, 4000, shows(5));
+      const viewer = { shown: shows(5)(), starts };
+
+      // A decoder that breaks after its ninth frame: the picture holds there, nothing is
+      // restarted for the frames past the break, and going back in front of it decodes again.
+      starts = 0;
+      sink.samples = function (...args: unknown[]) {
+        starts++;
+        const inner = samples.apply(this, args);
+        return (async function* () {
+          let n = 0;
+          for await (const sample of inner) {
+            if (++n > 9) {
+              sample.close();
+              throw new Error('bad data');
+            }
+            yield sample;
+          }
+        })();
+      };
+      lab.init(320, 180);
+      await lab.renderFrame(project, 3);
+      const t1 = performance.now();
+      const past = await lab.sources.prepare(project, core.resolveFrame(project, 40), true);
+      const pastMs = performance.now() - t1;
+      lab.compositor.render(project, core.resolveFrame(project, 40), lab.sources, {});
+      const held = shows(40)();
+      const brokenStarts = starts;
+      sink.samples = samples;
+      const before = kit.hash((await lab.renderFrame(project, 3)).pixels) === want[3];
+      const recovered = kit.hash((await lab.renderFrame(project, 40)).pixels) === want[40];
+      return {
+        exact,
+        viewer,
+        past: past.map((p: any) => p.reason),
+        pastMs,
+        held,
+        brokenStarts,
+        before,
+        recovered,
+      };
+    });
+    expect(r.exact[0]).toMatchObject({ problems: [], shown: true, starts: 2 });
+    expect(r.exact[1]).toMatchObject({ problems: [], shown: true, starts: 3 });
+    expect(r.exact[1].ms).toBeLessThan(2500);
+    expect(r.viewer).toEqual({ shown: true, starts: 2 });
+    expect(r.past).toEqual(['decode-error']);
+    expect(r.pastMs).toBeLessThan(1500);
+    expect(r.held).toBe(false); // the last good frame, not the one asked for
+    expect(r.brokenStarts).toBe(1);
+    expect(r.before).toBe(true);
+    expect(r.recovered).toBe(true);
+  });
+
   test('media that turns up later is shown and heard without a reload', async ({ page }) => {
     await openMediaLab(page);
     const r = await page.evaluate(async () => {
@@ -684,6 +968,424 @@ test.describe('media engine', () => {
     expect(r.offGrid).toEqual({ lengths: [192000, 24000], wrong: 0 });
     expect(r.halfWay).toEqual({ lengths: [176400, 22050], wrong: 0 });
     for (const db of r.levels) expect(Math.abs(db)).toBeLessThan(0.05);
+  });
+
+  test('sound at another sample rate or speed is converted without dulling it or adding what was not there', async ({
+    page,
+  }) => {
+    await openMediaLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, kit } = window as any;
+      const { engine } = lab;
+      lab.init(160, 90);
+      const add = async (id: string, samples: Float32Array, rate: number) =>
+        lab.addFile(id, URL.createObjectURL(kit.floatWav([samples], rate)), `${id}.wav`);
+      const settings = { sampleRate: 48000 };
+      const render = async (project: any, start: number, seconds: number) =>
+        (await engine.renderAudioChunk(project, lab.library, start, seconds, 48000)).getChannelData(0);
+
+      // 44.1 kHz material in a 48 kHz project, one tone at a time: its level, everything that is
+      // not the tone, and the tone's mirror image around half the source rate.
+      const tones = [];
+      for (const hz of [100, 1000, 4000, 10000, 15000, 18000]) {
+        const asset = await add(`t${hz}`, kit.sine(hz, 44100, 6), 44100);
+        const project = kit.project(
+          160,
+          90,
+          [asset],
+          [{ type: 'audio', assetId: `t${hz}`, start: 0, duration: 180 }],
+          settings,
+        );
+        const out = await render(project, 1, 4);
+        const image = kit.purity(
+          out,
+          44100 - hz > 24000 ? 48000 - (44100 - hz) : 44100 - hz,
+          48000,
+          0.5,
+          4800,
+          187200,
+        );
+        tones.push({ hz, ...kit.purity(out, hz, 48000, 0.5, 4800, 187200), image: image.gain });
+      }
+
+      // A real export of such a clip: 16-bit WAV, ten seconds from frame 15, rendered in three chunks.
+      const asset = await add('export', kit.sine(10000, 44100, 12), 44100);
+      const project = kit.project(
+        160,
+        90,
+        [asset],
+        [{ type: 'audio', assetId: 'export', start: 0, duration: 360 }],
+        settings,
+      );
+      const file = await lab.exportBase64(project, {
+        container: 'wav',
+        videoCodec: 'vp9',
+        audioCodec: 'pcm-s16',
+        width: 160,
+        height: 90,
+        fpsNum: 30,
+        fpsDen: 1,
+        videoBitrate: 300_000,
+        audioBitrate: 96_000,
+        range: { in: 15, out: 315 },
+        includeVideo: false,
+        includeAudio: true,
+        dynamicRange: 'sdr',
+        keyFrameInterval: 1,
+        hardwareAcceleration: 'no-preference',
+      });
+      const bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+      const view = new DataView(bytes.buffer);
+      let at = 12;
+      while (String.fromCharCode(...bytes.subarray(at, at + 4)) !== 'data')
+        at += 8 + view.getUint32(at + 4, true);
+      const frames = view.getUint32(at + 4, true) / 4;
+      const pcm = Float32Array.from(
+        { length: frames },
+        (_, i) => view.getInt16(at + 8 + i * 4, true) / 32768,
+      );
+      const exported = { frames, ...kit.purity(pcm, 10000, 48000, 0.5, 4800, frames - 4800) };
+
+      // Faster and slower: a 48 kHz file at double and at half speed. At double speed 15 kHz would
+      // come out at 30 kHz, beyond what 48 kHz can carry; it must not come back as 18 kHz.
+      const fast = await add('fast', kit.sine(15000, 48000, 9), 48000);
+      const low = await add('low', kit.sine(3000, 48000, 9), 48000);
+      const speed = async (assetId: string, speed: number) =>
+        render(
+          kit.project(
+            160,
+            90,
+            [fast, low],
+            [{ type: 'audio', assetId, start: 0, duration: 120, speed }],
+            settings,
+          ),
+          0.5,
+          3,
+        );
+      const folded = await speed('fast', 2);
+      let foldedPeak = 0;
+      for (let i = 4800; i < 139200; i++) foldedPeak = Math.max(foldedPeak, Math.abs(folded[i]));
+      return {
+        tones,
+        exported,
+        foldedPeak,
+        doubled: kit.purity(await speed('low', 2), 6000, 48000, 0.5, 4800, 139200),
+        halved: kit.purity(await speed('low', 0.5), 1500, 48000, 0.5, 4800, 139200),
+      };
+    });
+    for (const t of r.tones) {
+      expect(Math.abs(t.gain), `${t.hz} Hz level`).toBeLessThan(0.1);
+      expect(t.rest, `${t.hz} Hz residue`).toBeLessThan(-80);
+      expect(t.image, `${t.hz} Hz image`).toBeLessThan(-80);
+    }
+    expect(r.exported.frames).toBe(480000);
+    expect(Math.abs(r.exported.gain)).toBeLessThan(0.1);
+    // 16 bits put their own floor 92 dB under a tone at half scale.
+    expect(r.exported.rest).toBeLessThan(-80);
+    expect(20 * Math.log10(r.foldedPeak / 0.5 + 1e-30)).toBeLessThan(-80);
+    expect(Math.abs(r.doubled.gain)).toBeLessThan(0.1);
+    expect(r.doubled.rest).toBeLessThan(-80);
+    expect(Math.abs(r.halved.gain)).toBeLessThan(0.1);
+    expect(r.halved.rest).toBeLessThan(-80);
+  });
+
+  test('converted sound joins without a seam across the chunks of an export, and stays in sync', async ({
+    page,
+  }) => {
+    await openMediaLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, kit } = window as any;
+      const { engine } = lab;
+      lab.init(160, 90);
+      const add = async (id: string, samples: Float32Array, rate: number) =>
+        lab.addFile(id, URL.createObjectURL(kit.floatWav([samples], rate)), `${id}.wav`);
+      const clicks = (rate: number, at: number[]) => {
+        const x = new Float32Array(rate * 10);
+        for (const i of at) x[i] = 0.9;
+        return x;
+      };
+      const at44 = [44100, 110250, 319725];
+      const at48 = [48000, 120000, 348000];
+      const assets = [
+        await add('cd', kit.sine(1000, 44100, 11), 44100),
+        await add('dat', kit.sine(3000, 48000, 16), 48000),
+        await add('clicks44', clicks(44100, at44), 44100),
+        await add('clicks48', clicks(48000, at48), 48000),
+      ];
+      const ntsc = { fpsNum: 30000, fpsDen: 1001, sampleRate: 48000 };
+      const fps = 30000 / 1001;
+      const render = async (project: any, start: number, seconds: number): Promise<Float32Array> =>
+        (await engine.renderAudioChunk(project, lab.library, start, seconds, 48000))
+          .getChannelData(0)
+          .slice();
+      /** Nine seconds from `start`, rendered the way an export does: four seconds at a time. */
+      const chunked = async (project: any, start: number) => {
+        const parts = [
+          await render(project, start, 4),
+          await render(project, start + 4, 4),
+          await render(project, start + 8, 1),
+        ];
+        const joined = new Float32Array(432000);
+        parts.forEach((part, i) => joined.set(part, i * 192000));
+        return { joined, lengths: parts.map((part) => part.length) };
+      };
+      /** The largest bend (second difference) of `x` in `[from, to)`: a click shows as one. */
+      const bend = (x: Float32Array, from: number, to: number) => {
+        let most = 0;
+        for (let i = from; i < to; i++) most = Math.max(most, Math.abs(x[i + 1] - 2 * x[i] + x[i - 1]));
+        return most;
+      };
+      const seams = async (clip: object, start: number) => {
+        const project = kit.project(160, 90, assets, [{ type: 'audio', ...clip }], ntsc);
+        const { joined, lengths } = await chunked(project, start);
+        const whole = await render(project, start, 9);
+        let apart = 0;
+        for (let i = 0; i < joined.length; i++) apart = Math.max(apart, Math.abs(joined[i] - whole[i]));
+        const again = (await chunked(project, start)).joined;
+        let same = true;
+        for (let i = 0; i < joined.length; i++) if (joined[i] !== again[i]) same = false;
+        return {
+          lengths,
+          apart,
+          same,
+          atSeams: Math.max(bend(joined, 192000 - 64, 192000 + 64), bend(joined, 384000 - 64, 384000 + 64)),
+          between: Math.max(bend(joined, 9600, 182400), bend(joined, 201600, 374400)),
+        };
+      };
+      /** Where the loudest samples of a nine-second render fall, one per click. */
+      const landed = async (clip: object, count: number) => {
+        const project = kit.project(160, 90, assets, [{ type: 'audio', ...clip }], ntsc);
+        const x = Float32Array.from((await chunked(project, 0)).joined, Math.abs);
+        const found: number[] = [];
+        for (let n = 0; n < count; n++) {
+          let peak = 0;
+          for (let i = 0; i < x.length; i++) if (x[i] > x[peak]) peak = i;
+          found.push(peak);
+          x.fill(0, Math.max(0, peak - 400), peak + 400);
+        }
+        return found.sort((a, b) => a - b);
+      };
+      const start = 7 / fps;
+      return {
+        // 44.1 kHz in a 48 kHz mix, on a frame and from an in-point that both lie between samples.
+        rate: await seams({ assetId: 'cd', start: 7, duration: 290, sourceIn: 5 / fps }, 11 / fps),
+        reversed: await seams({ assetId: 'cd', start: 3, duration: 290, reverse: true }, 8 / fps),
+        faster: await seams({ assetId: 'dat', start: 4, duration: 290, speed: 1.5 }, 9 / fps),
+        slowerBackwards: await seams(
+          { assetId: 'dat', start: 4, duration: 290, speed: 0.5, reverse: true },
+          9 / fps,
+        ),
+        // A click at source time t belongs on output sample (clip start + (t - in-point) / speed) * 48000.
+        forward: {
+          found: await landed({ assetId: 'clicks44', start: 7, duration: 280, sourceIn: 0.4 }, 3),
+          ideal: at44.map((i) => (start + i / 44100 - 0.4) * 48000),
+        },
+        backwards: {
+          found: await landed({ assetId: 'clicks44', start: 7, duration: 280, reverse: true }, 3),
+          ideal: at44.map((i) => (start + 280 / fps - i / 44100) * 48000).reverse(),
+        },
+        doubleSpeed: {
+          found: await landed({ assetId: 'clicks48', start: 7, duration: 140, speed: 2 }, 3),
+          ideal: at48.map((i) => (start + i / 48000 / 2) * 48000),
+        },
+      };
+    });
+    // 1 kHz at half scale bends by 0.0086 from sample to sample, 3 kHz at speed 1.5 by 0.169.
+    for (const [name, steady] of [
+      ['rate', 0.0086],
+      ['reversed', 0.0086],
+      ['faster', 0.169],
+      ['slowerBackwards', 0.0193],
+    ] as const) {
+      const m = r[name];
+      expect(m.lengths, name).toEqual([192000, 192000, 48000]);
+      // In chunks or in one go: the same sound, and the same bytes every time.
+      expect(m.apart, name).toBeLessThan(1e-6);
+      expect(m.same, name).toBe(true);
+      expect(m.between, name).toBeGreaterThan(steady * 0.98);
+      expect(m.between, name).toBeLessThan(steady * 1.02);
+      expect(m.atSeams, name).toBeLessThan(m.between * 1.001);
+    }
+    for (const name of ['forward', 'backwards', 'doubleSpeed'] as const) {
+      const { found, ideal } = r[name];
+      expect(found, name).toHaveLength(3);
+      // Backwards, a sample is heard one sample early, as it is at the timeline's own rate.
+      found.forEach((at: number, i: number) =>
+        expect(Math.abs(at - ideal[i]), `${name} ${i}`).toBeLessThan(1.5),
+      );
+    }
+  });
+
+  test('a preview schedules converted sound from several clips ahead of time, on whole samples and without a gap', async ({
+    page,
+  }) => {
+    await openMediaLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, kit } = window as any;
+      const { core, engine } = lab;
+      lab.init(160, 90);
+      // Multiples of 100 Hz, so that a whole number of periods of each fits the stretch analysed.
+      const tones = [300, 500, 1100, 2300];
+      const assets = [];
+      for (const hz of tones) {
+        const x = kit.sine(hz, 44100, 8, 0.1);
+        assets.push(
+          await lab.addFile(`v${hz}`, URL.createObjectURL(kit.floatWav([x, x], 44100)), `v${hz}.wav`),
+        );
+      }
+      const tracks = tones.map((_, i) => core.makeTrack('audio', i));
+      const project = core.applyEdits(core.emptyProject({ width: 160, height: 90, sampleRate: 48000 }), [
+        ...tracks.map((track: any) => ({ op: 'addTrack', track })),
+        ...assets.map((asset) => ({ op: 'addAsset', asset })),
+        ...tones.map((hz, i) => ({
+          op: 'addClip',
+          clip: core.makeClip('audio', tracks[i].id, { assetId: `v${hz}`, start: 0, duration: 230 }),
+        })),
+      ]);
+      const ctx = new AudioContext({ sampleRate: 48000 });
+      await ctx.resume();
+      // What the mixer hands to the browser, and when: every buffer source it starts. Such a
+      // buffer, at the context's rate and started on a whole sample, is played as it is.
+      const started: { at: number; lead: number; samples: Float32Array; rate: number; whole: boolean }[] = [];
+      const start = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function (when = 0, offset?: number, duration?: number) {
+        started.push({
+          at: when * 48000,
+          lead: when - ctx.currentTime,
+          samples: this.buffer!.getChannelData(0),
+          rate: this.buffer!.sampleRate * this.playbackRate.value,
+          whole: offset === undefined && duration === undefined,
+        });
+        return start.call(this, when, offset, duration);
+      };
+      const graph = new engine.AudioGraph(ctx, lab.library, true);
+      const t0 = ctx.currentTime + 0.3;
+      graph.start(project, { startSec: 0.25, t0, rate: 1, endSec: 7 });
+      const pump = setInterval(() => void graph.pump(), 200);
+      void graph.pump();
+      // Three seconds from half a second in, on the context's own sample count.
+      const from = Math.round((t0 + 0.5) * 48000);
+      const mix = new Float32Array(144000);
+      while (ctx.currentTime * 48000 < from + mix.length) await new Promise((res) => setTimeout(res, 100));
+      clearInterval(pump);
+      graph.dispose();
+      await ctx.close();
+      AudioBufferSourceNode.prototype.start = start;
+
+      for (const { at, samples } of started) {
+        const first = Math.round(at);
+        for (let i = Math.max(0, from - first); i < samples.length && first + i - from < mix.length; i++)
+          mix[first + i - from] += samples[i];
+      }
+      const levels = [];
+      for (const hz of tones) {
+        levels.push(kit.purity(mix, hz, 48000, 0.1, 0, mix.length).gain);
+        // Take the tone out, so that what is left in the end is what should not be there.
+        let [ys, yc] = [0, 0];
+        for (let i = 0; i < mix.length; i++) {
+          const w = (2 * Math.PI * hz * i) / 48000;
+          ys += mix[i] * Math.sin(w);
+          yc += mix[i] * Math.cos(w);
+        }
+        for (let i = 0; i < mix.length; i++) {
+          const w = (2 * Math.PI * hz * i) / 48000;
+          mix[i] -= (ys * Math.sin(w) + yc * Math.cos(w)) / (mix.length / 2);
+        }
+      }
+      let rest = 0;
+      for (let i = 0; i < mix.length; i++) rest = Math.max(rest, Math.abs(mix[i]));
+      return {
+        buffers: started.length,
+        converted: started.every((b) => b.rate === 48000 && b.whole),
+        offGrid: started.filter((b) => Math.abs(b.at - Math.round(b.at)) > 1e-6).length,
+        // In the stretch analysed; the very first buffers of a voice may have to catch up.
+        late: started.filter((b) => b.at >= from && b.lead < 0).length,
+        levels,
+        rest: 20 * Math.log10(rest / 0.1 + 1e-30),
+      };
+    });
+    expect(r.buffers).toBeGreaterThan(200);
+    expect(r.converted).toBe(true);
+    expect(r.offGrid).toBe(0);
+    expect(r.late).toBe(0);
+    for (const db of r.levels) expect(Math.abs(db)).toBeLessThan(0.1);
+    // The largest sample that is not one of the four tones, against one tone: a gap, an overlap or
+    // a click where two buffers meet would be thousands of times this.
+    expect(r.rest).toBeLessThan(-80);
+  });
+
+  test('a preview keeps up with clips sped up a hundred times by not converting them; an export converts them', async ({
+    page,
+  }) => {
+    await openMediaLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, kit } = window as any;
+      const { core, engine } = lab;
+      lab.init(160, 90);
+      // A hundred times faster, 20 Hz is heard as 2 kHz, and 300 Hz would be 30 kHz: more than a
+      // 48 kHz mix can hold. Read without a filter it turns up at 18 kHz instead.
+      const samples = new Int16Array(48000 * 140);
+      for (let i = 0; i < samples.length; i++)
+        samples[i] =
+          4000 * (Math.sin((2 * Math.PI * 20 * i) / 48000) + Math.sin((2 * Math.PI * 300 * i) / 48000));
+      const asset = await lab.addFile('long', URL.createObjectURL(kit.wav(samples, 48000)), 'long.wav');
+      const tracks = [0, 1, 2].map((i) => core.makeTrack('audio', i));
+      const project = core.applyEdits(core.emptyProject({ width: 160, height: 90, sampleRate: 48000 }), [
+        ...tracks.map((track: any) => ({ op: 'addTrack', track })),
+        { op: 'addAsset', asset },
+        ...tracks.map((track: any) => ({
+          op: 'addClip',
+          clip: core.makeClip('audio', track.id, { assetId: 'long', start: 0, duration: 40, speed: 100 }),
+        })),
+      ]);
+
+      const ctx = new AudioContext({ sampleRate: 48000 });
+      await ctx.resume();
+      // Every stretch of sound the mixer hands to the browser: where it starts and how long it
+      // plays, in samples of the context, and how fast it is read.
+      const started: { at: number; length: number; speed: number }[] = [];
+      const start = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function (when = 0, offset?: number, duration?: number) {
+        const speed = this.playbackRate.value;
+        started.push({
+          at: when * 48000,
+          length: ((duration ?? this.buffer!.duration) / speed) * 48000,
+          speed,
+        });
+        return start.call(this, when, offset, duration);
+      };
+      const graph = new engine.AudioGraph(ctx, lab.library, true);
+      const t0 = ctx.currentTime + 0.3;
+      graph.start(project, { startSec: 0, t0, rate: 1, endSec: 1.3 });
+      const pump = setInterval(() => void graph.pump(), 200);
+      void graph.pump();
+      // How much of 0.8 s, from 0.4 s in, the three clips were given sound for.
+      const from = (t0 + 0.4) * 48000;
+      const to = from + 38400;
+      while (ctx.currentTime * 48000 < to) await new Promise((res) => setTimeout(res, 100));
+      clearInterval(pump);
+      graph.dispose();
+      await ctx.close();
+      AudioBufferSourceNode.prototype.start = start;
+      let covered = 0;
+      for (const b of started) covered += Math.max(0, Math.min(to, b.at + b.length) - Math.max(from, b.at));
+
+      const out = (await engine.renderAudioChunk(project, lab.library, 0.5, 0.25, 48000)).getChannelData(0);
+      return {
+        speeds: Array.from(new Set(started.map((b) => b.speed))),
+        covered: covered / (tracks.length * (to - from)),
+        // The three clips play the same sound.
+        exported: kit.purity(out, 2000, 48000, (tracks.length * 4000) / 32768, 0, out.length),
+      };
+    });
+    // Converted as well, three such clips take a preview's mixer about as long as they play or
+    // longer, and what it has not scheduled in time is not heard.
+    expect(r.speeds).toEqual([100]);
+    expect(r.covered).toBeGreaterThan(0.9);
+    expect(r.covered).toBeLessThan(1.001);
+    // An export takes that time: the tone at its level, and nothing folded down from above the band.
+    expect(Math.abs(r.exported.gain)).toBeLessThan(0.1);
+    expect(r.exported.rest).toBeLessThan(-70);
   });
 
   test('an export releases each decoder as soon as its clip has left the picture', async ({ page }) => {

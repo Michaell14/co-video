@@ -58,7 +58,7 @@ const NOTES = [
   },
   {
     title: 'A server with two small jobs',
-    text: 'When you share a project, the server relays its Yjs updates and stores its originals for collaborators to stream. It never decodes or renders a frame, and a project you have not shared is never sent to it.',
+    text: 'The server relays a project’s Yjs updates and stores its originals, so whoever you send a link to can stream them straight away. It never decodes or renders a frame. A project made with no server in reach stays on your device until you publish it.',
   },
 ];
 
@@ -84,7 +84,7 @@ export function Architecture() {
               Your GPU does the work. The server <em>renders nothing.</em>
             </>
           }
-          lead="There is no render farm behind Tandem. Decoding, compositing and encoding all happen in your tab, on your hardware. A project you keep to yourself stays on your device; share it, and a small server relays the edits and stores the project’s media for your collaborators."
+          lead="There is no render farm behind Tandem. Decoding, compositing and encoding all happen in your tab, on your hardware. A small server relays the edits and keeps a project’s media, so that a link is all a collaborator needs. Run the editor without one and everything stays on your device."
         />
 
         <Reveal>
@@ -132,13 +132,13 @@ export function Architecture() {
 
             <div className="arch__net">
               <p className="arch__legend">
-                When you share
+                Through the server
                 <span className="arch__tags">
                   <span className="arch__tag arch__tag--edits">edits</span>
                   <span className="arch__tag arch__tag--media">media</span>
                 </span>
               </p>
-              <ol className="sync" aria-label="What a shared project sends, in order">
+              <ol className="sync" aria-label="What goes through the server, in order">
                 <Node
                   icon={<Network size="1.1rem" />}
                   title="Project and media"
@@ -149,7 +149,7 @@ export function Architecture() {
                 <Node
                   icon={<Server size="1.1rem" />}
                   title="Tandem server"
-                  detail="One small Node process. Relays edits, stores shared media"
+                  detail="One small Node process. Relays edits, stores the media"
                   tone="edits"
                 />
                 <Wire kind="shared" />

@@ -19,10 +19,10 @@
 
 ![The Tandem editor](docs/images/editor.webp)
 
-Tandem is free, MIT-licensed, has no accounts and no watermark, and never uploads your footage
-anywhere you did not put it. Decoding, compositing, grading and encoding all happen on your own
-machine through WebCodecs and WebGL2; the optional server only relays edits between collaborators
-and stores the project's media for them.
+Tandem is free, MIT-licensed, has no accounts and no watermark. Decoding, compositing, grading and
+encoding all happen on your own machine through WebCodecs and WebGL2. The optional server relays
+edits between collaborators and keeps a project's media for them to stream. Footage goes to that
+server and nowhere else, and with no server it never leaves your device.
 
 ## Quick start
 
@@ -50,14 +50,17 @@ with projects stored in your browser.
 ### Editing
 
 - Unlimited video and audio tracks; clips are **resolution independent**, so a project can switch
-  between 1080p, 4K, 8K or vertical without redoing anything
+  between 1080p, 4K, 8K or vertical without redoing anything. A change of frame rate re-times the
+  whole edit, and clips, keyframes, markers and comments keep their place in real time
 - Overwrite, insert, **ripple**, **roll**, **slip** and blade edits; magnetic snapping; linked
   audio / video; in / out ranges; J-K-L shuttle; frame-accurate stepping
 - Markers with a note and a colour, and keys to step from one to the next
 - A drag that reaches the edge of the timeline scrolls it, and the timeline's menus act where you
   click: “Add marker here”, “Close gap here”
 - **Keyframes on every numeric property** — transform, opacity, crop, volume, pan and every effect
-  parameter — with hold, linear, ease and custom bezier interpolation
+  parameter — with linear, hold, ease-in, ease-out or ease-in-out interpolation chosen per keyframe
+- A clip's name, start and duration can be typed in the inspector: as timecode, as frames, as
+  seconds (`2.5s`), or relative to where it is (`+12`, `-12`)
 - Speed changes from 5 % to 10 000 %, reverse playback and freeze frames
 - Titles with 13 bundled open-source typefaces, outlines, shadows, gradients, backgrounds and
   animated in / out presets; shapes, solids and **adjustment layers**
@@ -109,7 +112,7 @@ with projects stored in your browser.
 - Live cursors, playheads, selections and in-flight drags; follow someone's playhead with one click
 - Time-coded comments with replies and resolve
 - Share links with **editor**, **commenter** and **viewer** roles, enforced by the server
-- Named versions plus automatic snapshots, with one-click (undoable) restore
+- Named versions plus automatic snapshots; restoring one is a single undoable step
 - Offline-first: the editor is an installable web app that opens with no network, projects and
   media live on your device, and changes merge when you reconnect
 - Media syncs itself — originals upload in resumable chunks and collaborators stream them
@@ -134,6 +137,8 @@ with projects stored in your browser.
 - Any resolution up to the encoder's limit (8K where the hardware allows) and any frame rate up to
   240 fps
 - Deterministic, frame-by-frame rendering — a slow machine takes longer but produces the same file
+- Media that is missing or will not decode is listed before the export starts. You can export
+  anyway; the result then names every clip that left a gap
 - Streams straight to disk, so file size is not limited by memory
 
 ## Keyboard
@@ -209,7 +214,7 @@ accounts, and you should put the server behind HTTPS.
 
 ```bash
 pnpm typecheck
-pnpm test         # unit tests: model, edit operations, colour math, server
+pnpm test         # unit tests: model, edit operations, colour math, server, editor logic
 pnpm test:e2e     # Playwright: editor + server + render engine in Chromium
 ```
 
@@ -252,7 +257,10 @@ Three ideas carry most of the weight:
   are true HDR. Wide-gamut canvas output is not wired up yet.
 - Speed changes resample audio (pitch follows speed); there is no pitch-preserving time stretch,
   and no keyframed speed ramps.
+- Keyframes ease by preset; there is no curve editor with bezier handles.
 - No multicam, no nested sequences, no motion tracking, no AI features. Not yet.
+- A change of frame rate re-times what the project holds at that moment. Edits a collaborator made
+  offline at the old rate arrive with their old frame numbers when they reconnect.
 - Proxies are made and kept per device; collaborators each create their own. HDR sources are not
   proxied.
 - EDL export is cuts-only (transitions are listed as comments) and assumes source timecode starts

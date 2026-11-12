@@ -41,7 +41,7 @@ import { cmd } from '../../state/commands';
 import { commit } from '../../state/props';
 import { useUI, type LibraryTab } from '../../state/ui';
 import { Button, cx, hideTip, IconButton, openContextMenu, tip } from '../../ui/core';
-import { beginDrag, type DragPayload } from '../../ui/dnd';
+import { beginDrag, useDrag, type DragPayload } from '../../ui/dnd';
 import { usingKeyboard } from '../../ui/layers';
 import { FxThumb } from './fxPreview';
 import { tileToward } from './tiles';
@@ -111,10 +111,30 @@ function TileGrid({ className, children }: { className: string; children: ReactN
       stop.current = tile;
       keepOneStop();
     };
+    // The keys that move between tiles are also the transport's, and the source monitor takes
+    // them on the document for as long as it is open. Heard on the window, ahead of both, they
+    // have one owner while a tile shows the focus ring.
+    const onKey = (e: KeyboardEvent): void => {
+      const from = e.target as HTMLElement;
+      if (byPointer.current || !el.contains(from) || !from.matches('[data-tile]')) return;
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const tiles = tilesIn(el);
+      const to = tileToward(
+        tiles.map((t) => t.getBoundingClientRect()),
+        tiles.indexOf(from),
+        e.key,
+      );
+      if (to === undefined) return;
+      e.preventDefault();
+      e.stopPropagation();
+      tiles[to].focus();
+    };
     el.addEventListener('focusin', onFocus);
+    window.addEventListener('keydown', onKey, true);
     return () => {
       observer.disconnect();
       el.removeEventListener('focusin', onFocus);
+      window.removeEventListener('keydown', onKey, true);
     };
   }, []);
   return (
@@ -127,22 +147,6 @@ function TileGrid({ className, children }: { className: string; children: ReactN
       onClick={(e) => {
         // A click that no pointer made comes from Enter or Space.
         if (e.detail === 0) byPointer.current = false;
-      }}
-      onKeyDown={(e) => {
-        const from = e.target as HTMLElement;
-        if (byPointer.current || !from.matches('[data-tile]')) return;
-        if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-        const tiles = tilesIn(e.currentTarget);
-        const to = tileToward(
-          tiles.map((t) => t.getBoundingClientRect()),
-          tiles.indexOf(from),
-          e.key,
-        );
-        if (to === undefined) return;
-        // Not the transport's keys while they move between tiles.
-        e.preventDefault();
-        e.stopPropagation();
-        tiles[to].focus();
       }}
     >
       {children}
@@ -158,6 +162,8 @@ export function Library() {
   const [ink, setInk] = useState({ x: 0, w: 0 });
   // In a panel too narrow for four labels, only the open tab keeps its own.
   const [compact, setCompact] = useState(false);
+  // A tile on its way to the timeline passes over the others: they stay as they are meanwhile.
+  const dragging = useDrag((d) => d.payload !== null);
   useLayoutEffect(() => {
     const head = headRef.current;
     const tabs = tabsRef.current;
@@ -214,7 +220,7 @@ export function Library() {
           <div className="tabs__ink" style={{ width: ink.w, transform: `translateX(${ink.x}px)` }} />
         </div>
       </div>
-      <div className="panel__body lib" key={tab}>
+      <div className="panel__body lib" key={tab} data-dragging={dragging || undefined}>
         {tab === 'media' && <MediaPool />}
         {tab === 'text' && <Titles />}
         {tab === 'effects' && <EffectsBrowser />}
@@ -460,7 +466,6 @@ function AssetCard({ asset, revealed }: { asset: Asset; revealed: boolean }) {
       <div className="asset__thumb">
         {asset.thumb ? <img src={asset.thumb} alt="" draggable={false} /> : <Icon />}
         {asset.duration > 0 && <span className="asset__dur mono">{formatClock(asset.duration)}</span>}
-        {asset.hdr && <span className="asset__hdr badge badge--amber">HDR</span>}
         <span className="asset__status">
           {status.transferError ? (
             <button
@@ -501,17 +506,22 @@ function AssetCard({ asset, revealed }: { asset: Asset; revealed: boolean }) {
             </span>
           ) : null}
         </span>
-        {status.proxy && (
-          <span
-            className="asset__proxy badge"
-            {...tip(
-              meta.proxies
-                ? 'Previewing from a proxy. Exports use the original.'
-                : 'A proxy exists but proxies are switched off.',
+        {(asset.hdr || status.proxy) && (
+          <span className="asset__badges">
+            {asset.hdr && <span className="asset__hdr badge badge--amber">HDR</span>}
+            {status.proxy && (
+              <span
+                className="asset__proxy badge"
+                {...tip(
+                  meta.proxies
+                    ? 'Previewing from a proxy. Exports use the original.'
+                    : 'A proxy exists but proxies are switched off.',
+                )}
+                data-off={!meta.proxies}
+              >
+                Proxy
+              </span>
             )}
-            data-off={!meta.proxies}
-          >
-            Proxy
           </span>
         )}
         {(status.uploading !== null || status.downloading !== null || status.proxying !== null) && (

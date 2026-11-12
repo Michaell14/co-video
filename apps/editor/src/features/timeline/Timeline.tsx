@@ -63,10 +63,18 @@ import {
   cx,
   hideTip,
 } from '../../ui/core';
-import { EdgeScroller, scrollLimit } from './edgeScroll';
+import { canvasTheme } from './canvasTheme';
+import { EdgeScroller, timeAxis } from './edgeScroll';
 import { Lanes } from './Lanes';
-import { HEADER_W, layoutLanes, RULER_H, tickInterval, type Lane } from './layout';
+import { HEADER_W, LABEL_H, LABEL_TINT, layoutLanes, RULER_H, tickInterval, type Lane } from './layout';
 import './timeline.css';
+
+/** The layout constants the stylesheet needs as well, handed to it as custom properties. */
+const LAYOUT_VARS = {
+  '--tl-header-w': `${HEADER_W}px`,
+  '--tl-label-h': `${LABEL_H}px`,
+  '--tl-label-tint': `${LABEL_TINT * 100}%`,
+} as React.CSSProperties;
 
 export function Timeline() {
   const session = useSession();
@@ -143,7 +151,7 @@ export function Timeline() {
   }, [player, width, set]);
 
   return (
-    <div className="tl">
+    <div className="tl" style={LAYOUT_VARS}>
       <Toolbar />
       <div className="tl__main" ref={mainRef}>
         <div className="tl__corner" style={{ width: HEADER_W, height: RULER_H }}>
@@ -369,12 +377,15 @@ function Ruler({ width, project }: { width: number; project: Project }) {
 
   const scroller = useMemo(
     () =>
-      new EdgeScroller({
-        bounds: () => rulerRef.current?.getBoundingClientRect() ?? null,
-        limit: () =>
-          scrollLimit(session.store.get(), useUI.getState().ppf, rulerRef.current?.clientWidth ?? 0),
-        onScroll: () => rerun.current(),
-      }),
+      new EdgeScroller(
+        [
+          timeAxis(
+            () => rulerRef.current,
+            () => session.store.get(),
+          ),
+        ],
+        () => rerun.current(),
+      ),
     [session],
   );
   useEffect(() => () => scroller.stop(), [scroller]);
@@ -385,6 +396,7 @@ function Ruler({ width, project }: { width: number; project: Project }) {
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(RULER_H * dpr);
     const ctx = canvas.getContext('2d')!;
+    const theme = canvasTheme(canvas);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, RULER_H);
     const { major, minor } = tickInterval(ppf, fps);
@@ -397,7 +409,7 @@ function Ruler({ width, project }: { width: number; project: Project }) {
       for (let k = 0; k < minor; k++) {
         const x = Math.round((f + k * step) * ppf - scrollX) + 0.5;
         if (x < -1 || x > width + 1) continue;
-        ctx.strokeStyle = k === 0 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.1)';
+        ctx.strokeStyle = k === 0 ? theme.tick : theme.tickMinor;
         ctx.beginPath();
         ctx.moveTo(x, k === 0 ? RULER_H - 11 : RULER_H - 5);
         ctx.lineTo(x, RULER_H);
@@ -405,7 +417,7 @@ function Ruler({ width, project }: { width: number; project: Project }) {
       }
       const x = f * ppf - scrollX;
       if (x > -80 && x < width) {
-        ctx.fillStyle = 'rgba(180,180,190,0.85)';
+        ctx.fillStyle = theme.rulerLabel;
         ctx.fillText(formatTimecode(f, settings), x + 4, 5);
       }
     }
@@ -577,6 +589,9 @@ function Ruler({ width, project }: { width: number; project: Project }) {
   );
 }
 
+/** What the marker colours are called, in the order of `MARKER_COLORS`. */
+const MARKER_COLOR_NAMES = ['Amber', 'Red', 'Green', 'Blue', 'Purple', 'Pink', 'White'];
+
 function MarkerEditor({ marker, rect, onClose }: { marker: Marker; rect: DOMRect; onClose: () => void }) {
   const session = useSession();
   const m = useProject((p) => p.markers[marker.id]) ?? marker;
@@ -586,8 +601,8 @@ function MarkerEditor({ marker, rect, onClose }: { marker: Marker; rect: DOMRect
     if (current) commit([{ op: 'setMarker', marker: { ...current, ...patch } }]);
   };
   return (
-    <Popover anchor={rect} onClose={onClose} style={{ width: 240, padding: 10 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <Popover anchor={rect} onClose={onClose} style={{ width: 240, padding: 8 }}>
+      <div className="marker-ed">
         <TextField
           value={m.name}
           onChange={(name) => update({ name })}
@@ -603,22 +618,21 @@ function MarkerEditor({ marker, rect, onClose }: { marker: Marker; rect: DOMRect
           placeholder="Note"
           ariaLabel="Marker note"
         />
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          {MARKER_COLORS.map((c) => (
-            <button
-              key={c}
-              aria-label={`Colour ${c}`}
-              onClick={() => update({ color: c })}
-              style={{
-                width: 18,
-                height: 18,
-                borderRadius: '50%',
-                background: c,
-                boxShadow: m.color === c ? '0 0 0 2px var(--bg-4), 0 0 0 3.5px #fff' : 'none',
-              }}
-            />
-          ))}
-          <span style={{ flex: 1 }} />
+        <div className="marker-ed__foot">
+          <div className="marker-ed__colors" role="radiogroup" aria-label="Marker colour">
+            {MARKER_COLORS.map((c, i) => (
+              <button
+                key={c}
+                className="menu-swatch"
+                role="radio"
+                aria-checked={m.color === c}
+                aria-label={`Colour ${c}`}
+                onClick={() => update({ color: c })}
+                style={{ background: c }}
+                {...tip(MARKER_COLOR_NAMES[i] ?? c)}
+              />
+            ))}
+          </div>
           <Button
             size="sm"
             variant="danger"
@@ -707,6 +721,7 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
   const update = (patch: Partial<Track>) => commit([{ op: 'updateTrack', id: t.id, patch }]);
   const label = trackLabel(project, t);
   const resize = useRef<{ y: number; h: number } | null>(null);
+  const nameTip = tip(t.name);
 
   // Live level meter for audio tracks.
   useEffect(() => {
@@ -784,7 +799,15 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
             }}
           />
         ) : (
-          <span className="th__name" onDoubleClick={() => session.canEdit && setRenaming(t.name || label)}>
+          <span
+            className="th__name"
+            onDoubleClick={() => session.canEdit && setRenaming(t.name || label)}
+            {...nameTip}
+            onPointerEnter={(e) => {
+              // The whole name, where the header is too narrow to show it.
+              if (e.currentTarget.scrollWidth > e.currentTarget.clientWidth) nameTip.onPointerEnter(e);
+            }}
+          >
             {t.name}
           </span>
         )}

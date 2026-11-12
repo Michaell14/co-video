@@ -233,21 +233,24 @@ export class Session {
    * twice: only transactions that came from outside count.
    */
   private followFrameRate(): void {
-    let before: { fps: number; frame: number | null } | null = null;
+    // Kept per transaction: one that a listener starts while another is being wound up begins
+    // before that one has ended.
+    const pending = new WeakMap<Y.Transaction, { fps: number; frame: number | null }>();
     const onBefore = (tr: Y.Transaction): void => {
       // A document that is still empty is being loaded, not re-timed.
-      before =
-        tr.local || this.store.isEmpty()
-          ? null
-          : { fps: fpsOf(this.store.get().settings), frame: this.meta.player?.getFrame() ?? null };
+      if (tr.local || this.store.isEmpty()) return;
+      pending.set(tr, {
+        fps: fpsOf(this.store.get().settings),
+        frame: this.meta.player?.getFrame() ?? null,
+      });
     };
     // Registered after the store's own listener, so the player has the re-timed project by now. It
     // may have pulled the playhead inside a sequence of fewer frames: hence the frame from before.
     const onAfter = (tr: Y.Transaction): void => {
-      if (tr.local || !before) return;
+      const before = pending.get(tr);
+      if (!before) return;
       const k = fpsOf(this.store.get().settings) / before.fps;
       if (Math.abs(k - 1) > 1e-9) retimeView(this, k, before.frame);
-      before = null;
     };
     this.doc.on('beforeTransaction', onBefore);
     this.doc.on('afterTransaction', onAfter);

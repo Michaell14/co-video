@@ -1,6 +1,7 @@
 import {
   AudioLines,
   Blend,
+  CircleAlert,
   Film,
   Gauge,
   Image as ImageIcon,
@@ -54,9 +55,18 @@ import { commit } from '../../state/props';
 import { useUI } from '../../state/ui';
 import { openContextMenu, toast, type MenuEntry } from '../../ui/core';
 import { insideRect, onDrop, useDrag, type DragPayload } from '../../ui/dnd';
-import { EdgeScroller, scrollLimit } from './edgeScroll';
+import { EdgeScroller, laneAxis, timeAxis } from './edgeScroll';
 import { drawLane } from './laneCanvas';
-import { LANE_GAP, laneAt, layoutLanes, type Lane } from './layout';
+import {
+  clipWidth,
+  LABEL_MIN_W,
+  LANE_GAP,
+  laneAt,
+  LANES_TAIL,
+  layoutLanes,
+  NARROW_W,
+  type Lane,
+} from './layout';
 
 const ICONS: Record<ClipType, typeof Film> = {
   video: Film,
@@ -67,6 +77,16 @@ const ICONS: Record<ClipType, typeof Film> = {
   solid: Square,
   adjustment: Layers,
 };
+
+/**
+ * The nearest a fade handle at rest comes to its end of the clip, in CSS pixels. A clip without a
+ * fade would have the handle on its very edge, half cut off and under the trim handle that is
+ * there. While it is being dragged the handle is where the fade ends, wherever that is.
+ */
+const FADE_INSET = 12;
+/** How far from its end of the clip the handle of a fade `length` pixels long is drawn. */
+const fadeHandleAt = (length: number, dragged: boolean): number =>
+  dragged ? length : Math.max(FADE_INSET, length);
 
 type Drag =
   | {
@@ -98,7 +118,19 @@ type Drag =
       wanted: number;
     }
   | { kind: 'slip'; ids: ID[]; x0: number; restore: number; delta: number }
-  | { kind: 'fade'; id: ID; side: 'in' | 'out'; f0: number; base: number }
+  | {
+      kind: 'fade';
+      id: ID;
+      side: 'in' | 'out';
+      f0: number;
+      x0: number;
+      /**
+       * The length of fade, in frames, that the handle stood for where it was taken hold of. For
+       * a fade shorter than `FADE_INSET` that is more than the fade itself.
+       */
+      from: number;
+      moved: boolean;
+    }
   | { kind: 'trans'; id: ID; side: 'in' | 'out'; f0: number; base: number }
   | { kind: 'marquee'; x0: number; y0: number; keep: ID[]; moved: boolean; frame: number }
   | { kind: 'pan'; x0: number; scroll0: number };
@@ -117,6 +149,12 @@ interface Pointer {
   altKey: boolean;
   shiftKey: boolean;
 }
+
+/**
+ * How the view follows a drag that is held at its edge: not at all, along the time axis, or
+ * through the lanes as well when there are more of them than fit.
+ */
+type Follow = 'none' | 'time' | 'both';
 
 type DropHint = { clipId: ID; side: 'in' | 'out' | 'all' };
 
@@ -154,12 +192,20 @@ export function Lanes({ lanes, height, width, live }: Props) {
   const drop = useRef<{ tracks: AddTrack[] } | null>(null);
   /** A track the drag in progress has opened and that should be in view. */
   const [opened, setOpened] = useState<ID | null>(null);
-  /** Where the body was scrolled to before it was scrolled to show that track. */
-  const reveal = useRef<number | null>(null);
+  /**
+   * How far the body has been scrolled to show that track, and where it stood when last looked
+   * at. The distance is kept rather than the place to go back to, so that scrolling the lanes by
+   * wheel meanwhile counts: for what the pointer is over, and when the lanes go back.
+   */
+  const reveal = useRef<{ by: number; seen: number } | null>(null);
   /** Runs the drag in progress again where the pointer last was. */
   const rerun = useRef<() => void>(() => {});
+  /** The line that shows where the blade would cut. It is placed by hand, on every pointer move. */
+  const blade = useRef<HTMLDivElement>(null);
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [dropHint, setDropHint] = useState<DropHint | null>(null);
+  /** The fade handle that is held, and whether it has been taken anywhere yet. */
+  const [fading, setFading] = useState<{ id: ID; side: 'in' | 'out'; moved: boolean } | null>(null);
   const selectedSet = useMemo(() => new Set(selection), [selection]);
 
   const ui = () => useUI.getState();
@@ -171,15 +217,21 @@ export function Lanes({ lanes, height, width, live }: Props) {
     return (clientX - r.left + ui().scrollX) / ui().ppf;
   };
   const toY = (clientY: number): number => clientY - ref.current!.getBoundingClientRect().top;
+  /** The element the lanes scroll in when there are more of them than fit. */
+  const body = (): HTMLElement | null => ref.current?.closest<HTMLElement>('.tl__body') ?? null;
+  /** Take note of where the lanes stand, for when a track that was scrolled to is given up. */
+  const noteScroll = () => {
+    const el = body();
+    if (reveal.current && el) reveal.current.seen = el.scrollTop;
+  };
   /**
-   * The pointer's height in the lanes as they lie when no drag has scrolled them. Bringing a
-   * track that a drag opened into view moves every lane, and what the pointer is over must not
-   * change because of that.
+   * The pointer's height in the lanes as they lie without the scrolling done to show a track the
+   * drag opened. Bringing that track into view moves every lane, and what the pointer is over
+   * must not change because of that. Any other scrolling counts: the lanes really are elsewhere.
    */
   const laneY = (clientY: number): number => {
-    const body = ref.current!.closest('.tl__body');
-    const scrolled = body && reveal.current !== null ? body.scrollTop - reveal.current : 0;
-    return toY(clientY) - scrolled;
+    noteScroll();
+    return toY(clientY) - (reveal.current?.by ?? 0);
   };
 
   /** The part of the lanes that is on screen: the body they scroll in cuts them off above and below. */
@@ -187,24 +239,25 @@ export function Lanes({ lanes, height, width, live }: Props) {
     const el = ref.current;
     if (!el) return null;
     const r = el.getBoundingClientRect();
-    const body = el.closest('.tl__body')?.getBoundingClientRect();
-    if (!body) return r;
-    const top = Math.max(r.top, body.top);
-    return new DOMRect(r.left, top, r.width, Math.max(0, Math.min(r.bottom, body.bottom) - top));
+    const around = body()?.getBoundingClientRect();
+    if (!around) return r;
+    const top = Math.max(r.top, around.top);
+    return new DOMRect(r.left, top, r.width, Math.max(0, Math.min(r.bottom, around.bottom) - top));
   };
 
   const scroller = useMemo(
     () =>
-      new EdgeScroller({
-        bounds: () => ref.current?.getBoundingClientRect() ?? null,
-        limit: () =>
-          scrollLimit(
-            useUI.getState().preview ?? session.store.get(),
-            useUI.getState().ppf,
-            ref.current?.clientWidth ?? 0,
+      new EdgeScroller(
+        [
+          timeAxis(
+            () => ref.current,
+            () => useUI.getState().preview ?? session.store.get(),
           ),
-        onScroll: () => rerun.current(),
-      }),
+          // Under the last lane lie the gap that follows every lane and the room after that.
+          laneAxis(() => ref.current?.closest<HTMLElement>('.tl__body') ?? null, LANE_GAP + LANES_TAIL),
+        ],
+        () => rerun.current(),
+      ),
     [session],
   );
   useEffect(() => () => scroller.stop(), [scroller]);
@@ -213,23 +266,55 @@ export function Lanes({ lanes, height, width, live }: Props) {
   // added below the last one): bring it into view once it has been laid out. When the drag gives
   // the track up again, the lanes go back to where they were.
   useLayoutEffect(() => {
-    const body = ref.current?.closest('.tl__body');
-    if (!body) return;
+    const el = body();
+    if (!el) return;
     if (!opened) {
-      if (reveal.current !== null) body.scrollTop = reveal.current;
+      if (reveal.current) el.scrollTop = reveal.current.seen - reveal.current.by;
       reveal.current = null;
       return;
     }
     const lane = lanes.find((l) => l.track.id === opened);
     if (!lane) return;
-    let to = body.scrollTop;
+    const from = el.scrollTop;
+    let to = from;
     if (lane.top - LANE_GAP < to) to = Math.max(0, lane.top - LANE_GAP);
-    else if (lane.top + lane.height + LANE_GAP > to + body.clientHeight)
-      to = lane.top + lane.height + LANE_GAP - body.clientHeight;
-    if (to === body.scrollTop) return;
-    reveal.current ??= body.scrollTop;
-    body.scrollTop = to;
+    else if (lane.top + lane.height + LANE_GAP > to + el.clientHeight)
+      to = lane.top + lane.height + LANE_GAP - el.clientHeight;
+    if (to === from) return;
+    el.scrollTop = to;
+    // What the body did is read back: it may not have gone all the way.
+    const r = (reveal.current ??= { by: 0, seen: from });
+    r.by += el.scrollTop - from;
+    r.seen = el.scrollTop;
   }, [lanes, opened]);
+
+  /** The frame the blade cuts at for a pointer at frame `f`: the playhead, when that is close by. */
+  const cutFrame = (f: number): number => {
+    const at = Math.round(f);
+    const ph = playhead();
+    return ui().snapping && Math.abs(at - ph) * ui().ppf < 8 ? ph : at;
+  };
+
+  /** Show where a press of the blade would cut the clip under the pointer, if it would cut one. */
+  const showCut = (e: React.PointerEvent) => {
+    const line = blade.current;
+    if (!line) return;
+    const p = store();
+    const id = (e.target as HTMLElement).closest<HTMLElement>('[data-clip]')?.dataset.clip;
+    const lane = id && p.clips[id] ? lanes.find((l) => l.track.id === p.clips[id].trackId) : null;
+    if (!lane || lane.track.locked || !session.canEdit) {
+      line.style.visibility = 'hidden';
+      return;
+    }
+    const x = cutFrame(toFrame(e.clientX)) * ui().ppf - ui().scrollX;
+    line.style.transform = `translate3d(${x}px, ${lane.top}px, 0)`;
+    line.style.height = `${lane.height}px`;
+    line.style.visibility = 'visible';
+  };
+  // The line stands where the pointer last was: once the lanes move under it, it says nothing true.
+  useEffect(() => {
+    if (blade.current) blade.current.style.visibility = 'hidden';
+  }, [scrollX, ppf, lanes]);
 
   /** Snap `edges` (already offset by the raw delta) to nearby cut points. Returns the correction. */
   const snap = (
@@ -309,6 +394,9 @@ export function Lanes({ lanes, height, width, live }: Props) {
     if (beyond) toIdx = kind === 'video' ? 0 : tracks.length - 1;
     else if (over && over.track.kind === kind) toIdx = tracks.findIndex((t) => t.id === over.track.id);
     else if (!over && y < (first?.top ?? 0)) toIdx = 0;
+    // Sound just under its last lane, not yet far enough out to open a track, still means that
+    // lane. Otherwise the clip would go back to its own track for the pixel or two in between.
+    else if (!over && kind === 'audio' && last && y >= last.top + last.height) toIdx = tracks.length - 1;
     let shift = toIdx - fromIdx;
     // Keep every moving clip of that kind on an existing, unlocked track.
     for (const c of clips) {
@@ -362,10 +450,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
       const group = effectiveSelection(p, [clip.id]);
       if (tool === 'blade') {
         if (!editable) return;
-        let at = Math.round(f);
-        const ph = playhead();
-        if (ui().snapping && Math.abs(at - ph) * ui().ppf < 8) at = ph;
-        commit(splitClips(p, group, at).edits);
+        commit(splitClips(p, group, cutFrame(f)).edits);
         return;
       }
       if (tool === 'slip') {
@@ -387,14 +472,18 @@ export function Lanes({ lanes, height, width, live }: Props) {
         return;
       }
       if ((handle === 'fade-in' || handle === 'fade-out') && editable) {
+        const side = handle === 'fade-in' ? 'in' : 'out';
         session.store.beginGesture();
         drag.current = {
           kind: 'fade',
           id: clip.id,
-          side: handle === 'fade-in' ? 'in' : 'out',
+          side,
           f0: f,
-          base: handle === 'fade-in' ? clip.fadeIn : clip.fadeOut,
+          x0: e.clientX,
+          from: Math.max(side === 'in' ? clip.fadeIn : clip.fadeOut, FADE_INSET / ui().ppf),
+          moved: false,
         };
+        setFading({ id: clip.id, side, moved: false });
         return;
       }
       if ((handle === 'start' || handle === 'end') && editable) {
@@ -459,20 +548,21 @@ export function Lanes({ lanes, height, width, live }: Props) {
   };
 
   /**
-   * Carry the drag in progress to where the pointer is. Returns true for the drags that follow
-   * the pointer along the time axis, which are the ones the view scrolls with at its edges.
+   * Carry the drag in progress to where the pointer is. Returns how the view follows it at its
+   * edges. Drags that follow the pointer in time scroll time; of those, the ones that also go
+   * from lane to lane scroll the lanes.
    */
-  const dragTo = (e: Pointer): boolean => {
+  const dragTo = (e: Pointer): Follow => {
     const d = drag.current;
-    if (!d) return false;
+    if (!d) return 'none';
     const p = store();
     switch (d.kind) {
       case 'pan':
         ui().set({ scrollX: Math.max(0, d.scroll0 - (e.clientX - d.x0)) });
-        return false;
+        return 'none';
       case 'move': {
         if (!d.moved) {
-          if (Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return false;
+          if (Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return 'none';
           d.moved = true;
         }
         const plan = planMove(d, e);
@@ -486,7 +576,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
             trackId: m.trackId,
           })),
         });
-        return true;
+        // A track the drag has opened is scrolled to as it is: there the edge leaves the lanes be.
+        return plan.opened ? 'time' : 'both';
       }
       case 'trim': {
         d.wanted = Math.round(toFrame(e.clientX) - d.f0);
@@ -497,10 +588,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
           setPreview(rollEdit(p, d.roll[0], d.roll[1], d.delta), s.line);
           const pv = ui().preview;
           if (pv?.clips[d.roll[1]]) session.player?.seek(pv.clips[d.roll[1]].start);
-          return true;
+          return 'time';
         }
         const first = p.clips[d.ids[0]];
-        if (!first) return true;
+        if (!first) return 'time';
         const edgeFrame = d.edge === 'start' ? first.start : clipEnd(first);
         const range = trimRange(p, d.ids, d.edge, d.ripple);
         const delta = clamp(d.wanted, range.min, range.max);
@@ -512,30 +603,37 @@ export function Lanes({ lanes, height, width, live }: Props) {
         const pv = ui().preview ?? p;
         const c = pv.clips[d.ids[0]];
         if (c) session.player?.seek(d.edge === 'start' ? c.start : clipEnd(c) - 1);
-        return true;
+        return 'time';
       }
       case 'slip': {
         d.delta = Math.round((d.x0 - e.clientX) / ui().ppf);
         setPreview(slipClips(p, d.ids, d.delta));
         const c = p.clips[d.ids[0]];
         if (c) session.player?.seek(c.start);
-        return false;
+        return 'none';
       }
       case 'fade': {
         const c = p.clips[d.id];
-        if (!c) return true;
-        const df = Math.round(toFrame(e.clientX) - d.f0);
-        const v = clamp(d.side === 'in' ? d.base + df : d.base - df, 0, c.duration);
+        if (!c) return 'time';
+        if (!d.moved) {
+          // The fade ends where the handle is taken to. The handle of a short fade stands further
+          // in than that fade ends, so a press that goes nowhere must not count as taking it there.
+          if (Math.abs(e.clientX - d.x0) < 4) return 'none';
+          d.moved = true;
+          setFading({ id: d.id, side: d.side, moved: true });
+        }
+        const df = toFrame(e.clientX) - d.f0;
+        const v = clamp(Math.round(d.side === 'in' ? d.from + df : d.from - df), 0, c.duration);
         commit(
           [{ op: 'updateClip', id: d.id, patch: d.side === 'in' ? { fadeIn: v } : { fadeOut: v } }],
           true,
         );
-        return true;
+        return 'time';
       }
       case 'trans': {
         const c = p.clips[d.id];
         const t = c && (d.side === 'in' ? c.transIn : c.transOut);
-        if (!c || !t) return true;
+        if (!c || !t) return 'time';
         const df = Math.round(toFrame(e.clientX) - d.f0);
         const twoSided = d.side === 'in' && !!adjacentPrev(p, c);
         const raw = d.side === 'in' ? d.base + df * (twoSided ? 2 : 1) : d.base - df;
@@ -550,12 +648,12 @@ export function Lanes({ lanes, height, width, live }: Props) {
           ],
           true,
         );
-        return true;
+        return 'time';
       }
       case 'marquee': {
         const x = toFrame(e.clientX) * ui().ppf;
         const y = toY(e.clientY);
-        if (!d.moved && Math.hypot(x - d.x0, y - d.y0) < 4) return false;
+        if (!d.moved && Math.hypot(x - d.x0, y - d.y0) < 4) return 'none';
         d.moved = true;
         const box = {
           x: Math.min(x, d.x0),
@@ -572,9 +670,15 @@ export function Lanes({ lanes, height, width, live }: Props) {
           }
         }
         ui().select(Array.from(new Set([...d.keep, ...(ui().linkedSelection ? withLinked(p, hit) : hit)])));
-        return true;
+        return 'both';
       }
     }
+  };
+
+  /** Carry the drag to where the pointer is and let the view follow it there. */
+  const follow = (at: Pointer) => {
+    const how = dragTo(at);
+    if (how !== 'none') scroller.track(at.clientX, how === 'both' ? at.clientY : null);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -583,9 +687,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
       const lane = laneAt(lanes, toY(e.clientY));
       session.setPresence({ cursor: { area: 'timeline', x: toFrame(e.clientX), y: lane?.track.id ?? '' } });
     }
+    if (tool === 'blade') showCut(e);
     if (!drag.current) return;
     pointer.current = { clientX: e.clientX, clientY: e.clientY, altKey: e.altKey, shiftKey: e.shiftKey };
-    if (dragTo(pointer.current)) scroller.track(e.clientX);
+    follow(pointer.current);
   };
 
   const finish = (e: React.PointerEvent | null, cancelled: boolean) => {
@@ -594,7 +699,9 @@ export function Lanes({ lanes, height, width, live }: Props) {
     if (!d) return;
     pointer.current = null;
     scroller.stop();
+    noteScroll();
     setOpened(null);
+    setFading(null);
     if (e) (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
     const p = store();
     switch (d.kind) {
@@ -747,25 +854,30 @@ export function Lanes({ lanes, height, width, live }: Props) {
   const endDrop = () => {
     drop.current = null;
     scroller.stop();
+    noteScroll();
     setOpened(null);
     setDropHint(null);
     setPreview(null);
   };
 
-  /** Show where the thing being dragged in from the library would land right now. */
-  const hover = (): boolean => {
+  /**
+   * Show where the thing being dragged in from the library would land right now, and let the
+   * view follow the pointer at its edges. As in a move, a track the drag has opened is scrolled
+   * to as it is, and the edge leaves the lanes be meanwhile.
+   */
+  const hover = () => {
     const s = useDrag.getState();
     const plan =
       s.payload && session.canEdit ? dropPlan(s.payload, s.x, s.y, drop.current?.tracks ?? []) : null;
     if (!plan) {
       if (drop.current) endDrop();
-      return false;
+      return;
     }
     drop.current = { tracks: plan.tracks };
     setOpened(plan.opened ?? null);
     setDropHint(plan.hint ?? null);
     setPreview(plan.edits, plan.line ?? null);
-    return true;
+    scroller.track(s.x, plan.opened ? null : s.y);
   };
 
   const dropped = (payload: DragPayload, x: number, y: number): boolean => {
@@ -798,14 +910,12 @@ export function Lanes({ lanes, height, width, live }: Props) {
   const library = useRef({ hover, dropped, endDrop });
   library.current = { hover, dropped, endDrop };
   rerun.current = () => {
-    if (drag.current && pointer.current) dragTo(pointer.current);
+    if (drag.current && pointer.current) follow(pointer.current);
     else if (drop.current) hover();
   };
 
   useEffect(() => {
-    const unsub = useDrag.subscribe((s) => {
-      if (library.current.hover()) scroller.track(s.x);
-    });
+    const unsub = useDrag.subscribe(() => library.current.hover());
     const undrop = onDrop((payload, x, y) => library.current.dropped(payload, x, y));
     return () => {
       unsub();
@@ -838,7 +948,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
       onPointerMove={onPointerMove}
       onPointerUp={(e) => finish(e, false)}
       onPointerCancel={(e) => finish(e, true)}
-      onPointerLeave={() => session.setPresence({ cursor: null })}
+      onPointerLeave={() => {
+        session.setPresence({ cursor: null });
+        if (blade.current) blade.current.style.visibility = 'hidden';
+      }}
       onDoubleClick={(e) => {
         // The lanes hold the pointer from the press on, so the event is aimed at them, not at the
         // clip: look up what lies under it.
@@ -896,6 +1009,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
                     peerColor={peer?.color ?? null}
                     peerName={peer?.name ?? null}
                     hint={dropHint?.clipId === c.id ? dropHint.side : null}
+                    fading={fading?.id === c.id ? fading.side : null}
+                    fadeMoved={fading?.id === c.id && fading.moved}
                     missing={!!c.assetId && !live.assets[c.assetId]}
                   />
                 );
@@ -955,6 +1070,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
         );
       })}
 
+      {tool === 'blade' && <div ref={blade} className="blade" />}
       {snapLine !== null && <div className="snapline" style={{ left: snapLine * ppf - scrollX }} />}
       {marquee && (
         <div
@@ -1149,6 +1265,10 @@ interface ClipViewProps {
   peerColor: string | null;
   peerName: string | null;
   hint: 'in' | 'out' | 'all' | null;
+  /** The side whose fade handle is held, if one is. */
+  fading: 'in' | 'out' | null;
+  /** Whether that handle has been taken anywhere yet. From then on it marks the end of the fade. */
+  fadeMoved: boolean;
   missing: boolean;
 }
 
@@ -1163,12 +1283,14 @@ const ClipView = memo(function ClipView({
   peerColor,
   peerName,
   hint,
+  fading,
+  fadeMoved,
   missing,
 }: ClipViewProps) {
-  const w = Math.max(2, clip.duration * ppf - 1);
+  const w = clipWidth(clip.duration, ppf);
   const Icon = ICONS[clip.type];
   const color = clip.label ?? CLIP_TYPE_COLORS[clip.type];
-  const roomy = w > 44;
+  const roomy = w > LABEL_MIN_W;
   // The least a transition is drawn at, so it can be grabbed. On a short clip that would leave
   // nothing of the clip itself to take hold of, so there it gives way.
   const grip = Math.min(6, w * 0.3);
@@ -1194,7 +1316,7 @@ const ClipView = memo(function ClipView({
       data-hint={hint ?? undefined}
       data-missing={missing}
       data-compact={height < 40}
-      data-narrow={w < 16}
+      data-narrow={w < NARROW_W}
       style={{
         left: clip.start * ppf,
         width: w,
@@ -1207,6 +1329,12 @@ const ClipView = memo(function ClipView({
         <div className="clip__label">
           <Icon />
           <span className="clip__name">{label}</span>
+          {missing && (
+            <span className="clip__chip">
+              <CircleAlert />
+              Offline
+            </span>
+          )}
           {clip.linkId && <Link2 className="clip__flag" />}
           {clip.freeze && (
             <span className="clip__chip">
@@ -1221,9 +1349,9 @@ const ClipView = memo(function ClipView({
               {Math.round(clip.speed * 100)}%
             </span>
           )}
-          {graded && <Blend className="clip__flag clip__flag--accent" />}
+          {graded && <Blend className="clip__flag" />}
           {fx && (
-            <span className="clip__chip clip__chip--fx">
+            <span className="clip__chip">
               <Sparkles />
               {clip.effects.length}
             </span>
@@ -1255,12 +1383,14 @@ const ClipView = memo(function ClipView({
           <div
             className="clip__fade clip__fade--in"
             data-handle="fade-in"
-            style={{ left: clip.fadeIn * ppf }}
+            data-held={fading === 'in'}
+            style={{ left: fadeHandleAt(clip.fadeIn * ppf, fading === 'in' && fadeMoved) }}
           />
           <div
             className="clip__fade clip__fade--out"
             data-handle="fade-out"
-            style={{ right: clip.fadeOut * ppf }}
+            data-held={fading === 'out'}
+            style={{ right: fadeHandleAt(clip.fadeOut * ppf, fading === 'out' && fadeMoved) }}
           />
         </>
       )}

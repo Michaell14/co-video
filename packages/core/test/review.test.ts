@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { ReviewStore, initials } from '../src';
 
-const ana = { authorId: 'u1', authorName: 'Ana', authorColor: '#f00' };
-const ben = { authorId: 'u2', authorName: 'Ben', authorColor: '#0f0' };
+const ana = { authorId: 'u1', authorName: 'Ana', authorColor: '#ff5d5d' };
+const ben = { authorId: 'u2', authorName: 'Ben', authorColor: '#51cf66' };
 
 /** Two reviewers who only exchange updates when `sync()` is called, like one of them being offline. */
 function reviewers() {
@@ -178,6 +178,8 @@ describe('ReviewStore with hostile data', () => {
         ],
       });
       comments.set('remote', { text: 'y', frame: 5, authorColor: 'url(https://tracker.example/p.png)' });
+      comments.set('short', { text: 'z', frame: 9, authorColor: '#F0A' });
+      comments.set('odd', { text: 'z', frame: 9, authorColor: '#f0a1b' });
       comments.set('nan', { text: 'x', frame: NaN });
       comments.set('noText', { frame: 3 });
       comments.set('null', null);
@@ -190,7 +192,8 @@ describe('ReviewStore with hostile data', () => {
       s.doc.getMap('commentReplies').set('noslash', { text: 'lost' });
     });
     // A colour is a colour: nothing that could make the panel fetch something.
-    expect(s.get().map((c) => c.authorColor)).toEqual(['#64748b', '#64748b']);
+    const colours = Object.fromEntries(s.get().map((c) => [c.id, c.authorColor]));
+    expect(colours).toEqual({ bad: '#64748b', remote: '#64748b', short: '#ff00aa', odd: '#64748b' });
     expect(s.get().slice(0, 1)).toEqual([
       {
         id: 'bad',

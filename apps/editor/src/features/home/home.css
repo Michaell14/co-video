@@ -135,9 +135,9 @@
   box-shadow: inset 0 0 0 1px var(--line-1);
   text-align: left;
   transition:
-    transform var(--dur-2) var(--ease-out),
-    background var(--dur-2) ease,
-    box-shadow var(--dur-2) ease;
+    transform var(--dur-hover) var(--ease-out),
+    background var(--dur-hover) ease,
+    box-shadow var(--dur-hover) ease;
   animation: slide-up var(--dur-4) var(--ease-out) backwards;
 }
 .starter:nth-child(2) {
@@ -185,14 +185,14 @@
   border: 1.5px dashed var(--line-3);
   color: var(--fg-3);
   transition:
-    border-color var(--dur-2) ease,
-    color var(--dur-2) ease,
-    background var(--dur-2) ease;
+    border-color var(--dur-hover) ease,
+    color var(--dur-hover) ease,
+    background var(--dur-hover) ease;
 }
 .starter__shape svg {
   width: 18px;
   height: 18px;
-  transition: transform var(--dur-3) var(--ease-spring);
+  transition: transform var(--dur-hover) var(--ease-spring);
 }
 .starter:hover .starter__shape {
   border-color: var(--accent);
@@ -210,6 +210,11 @@
   margin-top: 2px;
   color: var(--fg-3);
   font-size: var(--text-xs);
+  transition: color var(--dur-hover) ease;
+}
+/* The card under the pointer is a step lighter: its hint steps up with it, to stay as readable. */
+.starter:hover .starter__hint {
+  color: var(--fg-3-raised);
 }
 /* The other ways in: three tiles of the starters' own surface, together as tall as a starter. */
 .home__side {
@@ -295,8 +300,8 @@
   border-radius: var(--r-xl);
   text-align: left;
   transition:
-    background var(--dur-2) ease,
-    transform var(--dur-2) var(--ease-out);
+    background var(--dur-hover) ease,
+    transform var(--dur-hover) var(--ease-out);
 }
 .pcard__open:hover {
   background: var(--bg-2);
@@ -317,7 +322,7 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform var(--dur-4) var(--ease-out);
+  transition: transform var(--dur-hover) var(--ease-out);
 }
 .pcard__open:hover .pcard__thumb img {
   transform: scale(1.04);
@@ -367,7 +372,7 @@
   backdrop-filter: blur(8px);
   color: var(--fg-1);
   opacity: 0;
-  transition: opacity var(--dur-2) ease;
+  transition: opacity var(--dur-hover) ease;
 }
 .pcard:hover .pcard__menu,
 .pcard__menu[data-active='true'],
@@ -400,6 +405,22 @@
   color: var(--fg-3-raised);
   font-size: var(--text-sm);
   line-height: 1.5;
+}
+.form__error {
+  margin: 0;
+  color: var(--red);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/* The entrances are staggered by delays, which outlast the motion they were made for: without
+   motion the cards would blink in one after the other, so there they are simply present. */
+@media (prefers-reduced-motion: reduce) {
+  .starter,
+  .home__side .btn,
+  .pcard {
+    animation: none;
+  }
 }
 
 @media (max-width: 900px) {

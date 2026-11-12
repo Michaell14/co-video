@@ -29,7 +29,7 @@ import {
   tracksOf,
 } from './query';
 import { applyEdits } from './store';
-import { secondsToFrame } from './time';
+import { clipAtRate, fpsOf, sameRate, secondsToFrame } from './time';
 import type {
   Asset,
   Clip,
@@ -1355,40 +1355,18 @@ export function removeEffect(clip: Clip, effectId: ID): Partial<Clip> {
 
 // ───────────────────────────────────────────────────────────── conforming ──
 
-/** Re-time the entire sequence for a new frame rate, preserving real-time positions. */
+/**
+ * Re-time the entire sequence for a new frame rate, preserving real-time positions. Clips that are
+ * in the document without a track (`ProjectStore.hiddenClips`) are not in the snapshot; the store
+ * re-times those itself when it commits the new rate.
+ */
 export function changeFrameRate(p: Project, fpsNum: number, fpsDen: number): Edit[] {
-  const old = p.settings.fpsNum / p.settings.fpsDen;
-  const next = fpsNum / fpsDen;
-  const k = next / old;
+  const k = fpsNum / fpsDen / fpsOf(p.settings);
   const edits: Edit[] = [{ op: 'settings', patch: { fpsNum, fpsDen } }];
-  if (Math.abs(k - 1) < 1e-9) return edits;
-  const r = (v: number) => Math.round(v * k);
-  for (const c of Object.values(p.clips)) {
-    const start = r(c.start);
-    const end = Math.max(start + 1, r(clipEnd(c)));
-    edits.push({
-      op: 'updateClip',
-      id: c.id,
-      patch: {
-        start,
-        duration: end - start,
-        fadeIn: r(c.fadeIn),
-        fadeOut: r(c.fadeOut),
-        keyframes: scaleKeyframes(c.keyframes, k),
-        transIn: c.transIn ? { ...c.transIn, duration: Math.max(1, r(c.transIn.duration)) } : null,
-        transOut: c.transOut ? { ...c.transOut, duration: Math.max(1, r(c.transOut.duration)) } : null,
-        text: c.text
-          ? {
-              ...c.text,
-              animIn: { ...c.text.animIn, duration: r(c.text.animIn.duration) },
-              animOut: { ...c.text.animOut, duration: r(c.text.animOut.duration) },
-            }
-          : null,
-      },
-    });
-  }
+  if (sameRate(k)) return edits;
+  for (const c of Object.values(p.clips)) edits.push({ op: 'updateClip', id: c.id, patch: clipAtRate(c, k) });
   for (const m of Object.values(p.markers))
-    edits.push({ op: 'setMarker', marker: { ...m, frame: r(m.frame) } });
+    edits.push({ op: 'setMarker', marker: { ...m, frame: Math.round(m.frame * k) } });
   return edits;
 }
 

@@ -165,6 +165,143 @@ test.describe('render engine: resources', () => {
     expect(r.live).toEqual([1, 1, 1, 1, 0, 3, 0]);
   });
 
+  test('what only changes with the project is not worked out again for every frame', async ({ page }) => {
+    await openLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab } = window as any;
+      const { core, engine } = lab;
+      lab.init(640, 360);
+      const gl = lab.compositor.gl;
+      const v1 = core.makeTrack('video', 0);
+      const v2 = core.makeTrack('video', 1);
+      const title = core.makeClip('text', v2.id, {
+        start: 0,
+        duration: 60,
+        fit: 'none',
+        text: { ...core.DEFAULT_TEXT, content: 'OPENING TITLE', font: 'Bebas Neue', weight: 400 },
+      });
+      const project = (settings = {}) =>
+        core.applyEdits(core.emptyProject({ width: 640, height: 360, ...settings }), [
+          { op: 'addTrack', track: v1 },
+          { op: 'addTrack', track: v2 },
+          {
+            op: 'addClip',
+            clip: core.makeClip('solid', v1.id, {
+              start: 0,
+              duration: 60,
+              shape: { ...core.DEFAULT_SHAPE, fill: '#203860' },
+              grade: { ...core.DEFAULT_GRADE, exposure: 0.4, saturation: 1.3 },
+            }),
+          },
+          { op: 'addClip', clip: title },
+        ]);
+      const sdr = project();
+      const hash = (px: Uint8Array) => {
+        let h = 0;
+        for (let i = 0; i < px.length; i += 7) h = (h * 31 + px[i]) | 0;
+        return h;
+      };
+      /** How wide the title is drawn: the columns of the frame that hold a near-white pixel. */
+      const width = (px: Uint8Array) => {
+        let columns = 0;
+        for (let x = 0; x < 640; x++) {
+          let lit = false;
+          for (let y = 0; y < 360 && !lit; y++) lit = px[(y * 640 + x) * 4] > 230;
+          if (lit) columns++;
+        }
+        return columns;
+      };
+
+      // Ten frames drawn the way a viewer draws them, with what they ask of the browser counted.
+      const counts = { check: 0, uniform1i: 0, bindTexture: 0, stringify: 0 };
+      const check = document.fonts.check;
+      document.fonts.check = function (...args: [string, string?]) {
+        counts.check++;
+        return check.apply(this, args);
+      };
+      const stringify = JSON.stringify;
+      JSON.stringify = function (...args: Parameters<typeof JSON.stringify>) {
+        counts.stringify++;
+        return stringify.apply(this, args);
+      } as typeof JSON.stringify;
+      for (const name of ['uniform1i', 'bindTexture'] as const) {
+        const inner = gl[name].bind(gl);
+        gl[name] = (...args: unknown[]) => {
+          counts[name]++;
+          return inner(...args);
+        };
+      }
+      await lab.renderFrame(sdr, 0);
+      const first = { ...counts };
+      for (let f = 1; f <= 10; f++) {
+        const desc = core.resolveFrame(sdr, f);
+        void lab.sources.prepare(sdr, desc, false);
+        lab.compositor.render(sdr, desc, lab.sources, {});
+      }
+      const steady = { check: counts.check - first.check, stringify: counts.stringify - first.stringify };
+      // A pass whose only integer uniform would be the unit its sampler reads: a plain copy.
+      const { glx } = lab.compositor;
+      const [from, to] = [glx.acquire(16, 16), glx.acquire(16, 16)];
+      const copy = glx.program('copy', engine.COPY_FS);
+      const before = { ...counts };
+      for (let i = 0; i < 5; i++) glx.pass(copy, to, { u_tex: from.tex, u_opacity: 1 });
+      const copies = {
+        uniform1i: counts.uniform1i - before.uniform1i,
+        bindTexture: counts.bindTexture - before.bindTexture,
+      };
+      glx.release(from);
+      glx.release(to);
+      delete (document.fonts as any).check;
+      JSON.stringify = stringify;
+      delete gl.uniform1i;
+      delete gl.bindTexture;
+
+      // The same compositor on another working space and back: nothing kept from the one before.
+      const a = hash((await lab.renderFrame(sdr, 3)).pixels);
+      const hdr = hash((await lab.renderFrame(project({ colorMode: 'hdr-pq', peakNits: 1000 }), 3)).pixels);
+      const fallback = await lab.renderFrame(sdr, 3);
+      const b = hash(fallback.pixels);
+
+      // The title's family was unknown to the document until now, so its text counted as ready to
+      // draw. Registering the editor's faces must not leave that answer standing.
+      const spec = engine.fontSpec(title.text, 32);
+      const knownBefore = document.fonts.check(spec, title.text.content);
+      const epoch = engine.fontEpoch();
+      await lab.registerTitleFonts();
+      await lab.renderFrame(sdr, 3);
+      // The document announces the new face a moment after its file has arrived.
+      for (const end = performance.now() + 10_000; engine.fontEpoch() === epoch && performance.now() < end;)
+        await new Promise((res) => setTimeout(res, 50));
+      const loaded = await lab.renderFrame(sdr, 3);
+      return {
+        steady,
+        copies,
+        a,
+        b,
+        hdr,
+        knownBefore,
+        loadedAfter: document.fonts.check(spec, title.text.content),
+        fallbackWidth: width(fallback.pixels),
+        loadedWidth: width(loaded.pixels),
+        glError: gl.getError(),
+      };
+    });
+    // Once asked, the browser is not asked again whether the title's font is there, and the title
+    // is not written out again to look up its picture.
+    expect(r.steady.check).toBe(0);
+    expect(r.steady.stringify).toBe(0);
+    // A program is told which unit each of its samplers reads when it is made, not at every pass.
+    expect(r.copies).toEqual({ uniform1i: 0, bindTexture: 5 });
+    expect(r.b).toBe(r.a);
+    expect(r.hdr).not.toBe(r.a);
+    expect(r.knownBefore).toBe(true);
+    expect(r.loadedAfter).toBe(true);
+    // Bebas Neue is a condensed face: the fallback drew the title far wider.
+    expect(r.fallbackWidth).toBeGreaterThan(r.loadedWidth * 1.2);
+    expect(r.loadedWidth).toBeGreaterThan(40);
+    expect(r.glError).toBe(0);
+  });
+
   test('mipmaps are built once per picture, not once per draw', async ({ page }) => {
     await openLab(page);
     const r = await page.evaluate(async () => {

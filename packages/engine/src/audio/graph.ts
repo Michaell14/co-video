@@ -22,11 +22,14 @@ import {
   type Track,
 } from '@tandem/core';
 import type { MediaFault, MediaLibrary } from '../media/library';
+import { FULL_KERNEL_STEP, Resampler, resampleReach, type Resampled } from './resample';
 
 /** How long a voice waits before asking again for media that is not available yet. */
 const RETRY_MS = 2000;
 /** In samples: far more than the rounding noise of a time computed in seconds, far less than a sample. */
 const HALF_SAMPLE_BIAS = 1e-4;
+/** A preview's mixer gives way to the rest of the page after scheduling for this long at a stretch. */
+const SLICE_MS = 6;
 
 /** An audio clip that could not be mixed as asked. */
 export interface AudioProblem {
@@ -40,7 +43,19 @@ export interface AudioProblem {
   reason: MediaFault | 'undecodable' | 'decode-error';
 }
 
-type OpenAudio = { sink: AudioBufferSink; start: number };
+/** `rate` is the sample rate the file declares for its sound; decoded buffers carry their own. */
+type OpenAudio = { sink: AudioBufferSink; start: number; rate: number };
+
+/**
+ * A run of buffers that follow one another, on its way through rate conversion. `next` is where
+ * the buffer after the last one given has to begin to belong to the run: seconds of source from
+ * the point of the file at which the clip starts to play.
+ */
+interface Conversion {
+  resampler: Resampler;
+  rate: number;
+  next: number;
+}
 
 interface TrackNodes {
   input: GainNode;
@@ -78,6 +93,8 @@ interface Voice {
   retryAt: number;
   /** Fraction of an output sample the voice is moved by to sit on the sample grid; null until known. */
   nudge: number | null;
+  /** Set while the voice's sound is being converted to the context's rate (see `convert`). */
+  conversion: Conversion | null;
 }
 
 /** Fields whose change requires re-scheduling a clip's buffers. */
@@ -95,6 +112,8 @@ export class AudioGraph {
   private project: Project | null = null;
   private session: Session | null = null;
   private fps = 30;
+  /** When the voices of a preview last gave way to the rest of the page (`performance.now()`). */
+  private yieldedAt = 0;
   private readonly meterBuf = new Float32Array(1024);
 
   constructor(
@@ -232,7 +251,7 @@ export class AudioGraph {
   private sinkFor(assetId: string): Promise<OpenAudio | AudioProblem['reason'] | null> {
     let p = this.sinks.get(assetId);
     if (!p) {
-      const opening = this.library.open(assetId).then((m) => {
+      const opening = this.library.open(assetId).then(async (m) => {
         if (typeof m === 'string') {
           // Nothing that lasts: a missing file may have arrived by the time the next voice asks,
           // and one that did not open is tried again when playback next starts.
@@ -241,7 +260,11 @@ export class AudioGraph {
         }
         if (!m.audio) return null;
         if (!m.audioDecodable) return 'undecodable';
-        return { sink: new AudioBufferSink(m.audio), start: m.audioStart };
+        return {
+          sink: new AudioBufferSink(m.audio),
+          start: m.audioStart,
+          rate: await m.audio.getSampleRate(),
+        };
       });
       this.sinks.set(assetId, (p = opening));
     }
@@ -317,6 +340,7 @@ export class AudioGraph {
       done: false,
       retryAt: 0,
       nudge: null,
+      conversion: null,
     };
   }
 
@@ -331,15 +355,139 @@ export class AudioGraph {
       s.disconnect();
     }
     v.sources.clear();
+    v.conversion = null;
     v.gain.disconnect();
     v.pan.disconnect();
+  }
+
+  /** Whether sound at `sampleRate`, read at `speed`, is the context's own samples one for one. */
+  private passes(sampleRate: number, speed: number): boolean {
+    return sampleRate === this.ctx.sampleRate && Math.abs(speed - 1) < 1e-9;
+  }
+
+  /**
+   * Whether sound that does not pass as it is, read at `step` of its samples per output sample,
+   * gets converted here (see `convert`). In an export it always is. A preview has to stay ahead
+   * of the clock on the thread that also draws the picture, and what it does not convert in time
+   * is not heard at all. The work grows with the step: a few clips sped up a hundred times take
+   * longer to convert than to play. So beyond the step up to which the kernel has all its lobes a
+   * preview leaves the sound to the buffer sources, which play at the matching rate themselves,
+   * coarsely and for a fraction of the work. It does the same with everything while shuttling,
+   * which is for finding one's place.
+   */
+  private converting(step: number): boolean {
+    return this.session!.rate === 1 && (!this.realtime || step < FULL_KERNEL_STEP + 1e-9);
+  }
+
+  /** Hand a node to the voice that plays it, to be stopped with the voice and let go when it ends. */
+  private adopt(v: Voice, node: AudioBufferSourceNode): void {
+    v.sources.add(node);
+    node.onended = () => {
+      v.sources.delete(node);
+      node.disconnect();
+    };
+  }
+
+  /** Schedule converted samples; the first of them belongs on context sample `out.first`. */
+  private play(v: Voice, out: Resampled | null): void {
+    if (!out) return;
+    const rate = this.ctx.sampleRate;
+    // Late (decode lag): skip the part that should already have played.
+    const late = Math.max(0, Math.ceil(this.ctx.currentTime * rate) - out.first);
+    const length = out.data[0].length - late;
+    if (length <= 0) return;
+    const buffer = this.ctx.createBuffer(out.data.length, length, rate);
+    out.data.forEach((samples, c) => buffer.copyToChannel(samples.subarray(late), c));
+    const node = this.ctx.createBufferSource();
+    node.buffer = buffer;
+    node.connect(v.gain);
+    // On a whole sample, at the context's rate and at normal speed: played as computed.
+    node.start((out.first + late) / rate);
+    this.adopt(v, node);
+  }
+
+  /** The run of buffers being converted has ended: play out what its last samples still reach. */
+  private endConversion(v: Voice): void {
+    if (!v.conversion) return;
+    this.play(v, v.conversion.resampler.finish());
+    v.conversion = null;
+  }
+
+  /**
+   * Schedule one decoded buffer of a voice whose sound is not the context's samples one for one:
+   * another sample rate, another speed, or both. A buffer source left to play it at the matching
+   * rate would draw a line between neighbouring samples. Instead the output samples are computed
+   * here, band-limited, each at its exact place on the context's sample grid, and played as they
+   * are. Returns the context time at which the buffer ends.
+   */
+  private convert(v: Voice, wb: WrappedAudioBuffer, srcOffset: number): number {
+    const project = this.project!;
+    const s = this.session!;
+    const clip = v.clip;
+    const buffer = wb.buffer;
+    const per = sourcePerFrame(clip, project) * this.fps;
+    const clipStartSec = framesToSeconds(clip.start, project.settings);
+    const clipEndSec = framesToSeconds(clipEnd(clip), project.settings);
+    const bufStart = wb.timestamp - srcOffset;
+    const seconds = buffer.length / buffer.sampleRate;
+    // Source seconds from where the clip starts to play to the first sample of this buffer that
+    // is heard: its first one, or its last when the clip runs backwards, as the reversed buffers
+    // of the other path are placed.
+    const lead = clip.reverse
+      ? clip.sourceIn + (clipEndSec - clipStartSec) * per - (bufStart + seconds)
+      : bufStart - clip.sourceIn;
+    let run = v.conversion;
+    if (
+      run &&
+      (run.rate !== buffer.sampleRate ||
+        run.resampler.channels !== buffer.numberOfChannels ||
+        Math.abs(lead - run.next) * buffer.sampleRate > 1e-3)
+    ) {
+      // Not the continuation of what came before (a gap in the file, a change of format). Each
+      // run fades into silence at its ends over the reach of the kernel, and runs add up.
+      this.endConversion(v);
+      run = null;
+    }
+    if (!run) {
+      const rate = this.ctx.sampleRate;
+      // Context sample `i` is heard at timeline time `startSec + (i / rate - t0) * s.rate`, which
+      // lies `(that - clipStartSec) * per` source seconds into the clip: `origin + i * step`
+      // source samples from the start of this run.
+      const step = (per * s.rate * buffer.sampleRate) / rate;
+      const origin = ((s.startSec - s.t0 * s.rate - clipStartSec) * per - lead) * buffer.sampleRate;
+      // The clip sounds on the samples from its start up to its end, and a sample that rounding
+      // noise puts a hair before either edge is on it.
+      const sampleAt = (timelineSec: number) =>
+        Math.ceil(this.ctxTime(timelineSec) * rate - HALF_SAMPLE_BIAS);
+      const first = sampleAt(Math.max(s.startSec, clipStartSec));
+      const last = sampleAt(Math.min(s.endSec, clipEndSec));
+      run = {
+        resampler: new Resampler(buffer.numberOfChannels, origin, step, first, last),
+        rate: buffer.sampleRate,
+        next: lead,
+      };
+      v.conversion = run;
+    }
+    run.next = lead + seconds;
+    const channels: Float32Array[] = [];
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      const samples = buffer.getChannelData(c);
+      channels.push(clip.reverse ? samples.slice().reverse() : samples);
+    }
+    this.play(v, run.resampler.push(channels));
+    return this.ctxTime(clipStartSec + (lead + seconds) / per);
   }
 
   /** Schedule one decoded buffer of a voice. Returns the context time at which it ends. */
   private scheduleBuffer(v: Voice, wb: WrappedAudioBuffer, srcOffset: number): number {
     const project = this.project!;
     const clip = v.clip;
+    const s = this.session!;
     const per = sourcePerFrame(clip, project) * this.fps; // source seconds per timeline second
+    const exact = this.passes(wb.buffer.sampleRate, per * s.rate);
+    const step = (per * s.rate * wb.buffer.sampleRate) / this.ctx.sampleRate;
+    if (!exact && this.converting(step)) return this.convert(v, wb, srcOffset);
+    this.endConversion(v);
     const clipStartSec = framesToSeconds(clip.start, project.settings);
     const clipEndSec = framesToSeconds(clipEnd(clip), project.settings);
     const bufStart = wb.timestamp - srcOffset; // source time of the buffer's first sample
@@ -351,7 +499,6 @@ export class AudioGraph {
     let a = Math.max(bufStart, srcA);
     let b = Math.min(bufEnd, srcB);
     // …clipped to what the session will actually play.
-    const s = this.session!;
     const sessFrom = clip.reverse
       ? srcB - (Math.min(s.endSec, clipEndSec) - clipStartSec) * per
       : srcA + (Math.max(s.startSec, clipStartSec) - clipStartSec) * per;
@@ -386,7 +533,7 @@ export class AudioGraph {
     // fraction of a sample that puts its first buffer on the grid (at most 10 µs at 48 kHz), and
     // the buffers after it, which follow at whole-sample distances, land there as well.
     const rate = this.ctx.sampleRate;
-    if (buffer.sampleRate === rate && Math.abs(per * s.rate - 1) < 1e-9) {
+    if (exact) {
       // A voice that lies exactly half-way between two samples (44.1 kHz at 24 fps does that on
       // every other frame) has to fall the same way each time it is scheduled, or the chunks of an
       // export would not join: rounding noise must not decide. So the edges of what plays round
@@ -413,12 +560,25 @@ export class AudioGraph {
       if (late >= dur) return endAt;
       node.start(now, offset + late, dur - late);
     }
-    v.sources.add(node);
-    node.onended = () => {
-      v.sources.delete(node);
-      node.disconnect();
-    };
+    this.adopt(v, node);
     return endAt;
+  }
+
+  /**
+   * Between two buffers of a preview's voice: wait while it is scheduled as far ahead as it need
+   * be, and otherwise let the page have a turn once the voices have kept it for a while. Decoded
+   * buffers can arrive many at a time, converting them is real work, and the picture is drawn on
+   * the same thread.
+   */
+  private async pace(v: Voice, horizon: () => number): Promise<void> {
+    let waited = false;
+    while (!v.cancelled && v.scheduledUntil > horizon()) {
+      await new Promise((r) => setTimeout(r, 120));
+      waited = true;
+    }
+    if (!waited && performance.now() - this.yieldedAt < SLICE_MS) return;
+    if (!waited) await new Promise((r) => setTimeout(r, 0));
+    this.yieldedAt = performance.now();
   }
 
   /** Keep a voice's buffers scheduled up to `horizon` (context time). */
@@ -464,32 +624,43 @@ export class AudioGraph {
       const srcTo = clip.reverse
         ? srcB - (fromTl - clipStartSec) * per
         : clip.sourceIn + (toTl - clipStartSec) * per;
+      // Converted sound is made from the samples around each position, so the first and the last
+      // of it need the source a little beyond what plays: what really is there, not silence.
+      const speed = per * session.rate;
+      const step = (speed * opened.rate) / this.ctx.sampleRate;
+      const around =
+        this.passes(opened.rate, speed) || !this.converting(step)
+          ? 0
+          : (resampleReach(step) + 1) / opened.rate;
+      const buffers = opened.sink.buffers(srcFrom - around + opened.start, srcTo + around + opened.start);
 
       if (clip.reverse) {
         // Reverse playback needs the buffers in descending order: collect, then schedule backwards.
         const all: WrappedAudioBuffer[] = [];
-        for await (const wb of opened.sink.buffers(srcFrom + opened.start, srcTo + opened.start)) {
+        for await (const wb of buffers) {
           if (v.cancelled) return;
           all.push(wb);
           if (all.length > 20000) break;
         }
-        for (let i = all.length - 1; i >= 0; i--) this.scheduleBuffer(v, all[i], opened.start);
-        v.done = true;
-        return;
-      }
-
-      for await (const wb of opened.sink.buffers(srcFrom + opened.start, srcTo + opened.start)) {
-        if (v.cancelled) return;
-        v.scheduledUntil = this.scheduleBuffer(v, wb, opened.start);
-        while (!v.cancelled && this.realtime && v.scheduledUntil > horizon()) {
-          await new Promise((r) => setTimeout(r, 120));
+        for (let i = all.length - 1; i >= 0; i--) {
+          if (v.cancelled) return;
+          v.scheduledUntil = this.scheduleBuffer(v, all[i], opened.start);
+          if (this.realtime) await this.pace(v, horizon);
+        }
+      } else {
+        for await (const wb of buffers) {
+          if (v.cancelled) return;
+          v.scheduledUntil = this.scheduleBuffer(v, wb, opened.start);
+          if (this.realtime) await this.pace(v, horizon);
         }
       }
+      this.endConversion(v);
       v.done = true;
     } catch (err) {
       if (!v.cancelled) {
         console.warn('[audio] decode error', err);
         if (assetId) this.onProblem?.({ clipId: clip.id, assetId, reason: 'decode-error' });
+        this.endConversion(v);
       }
       v.done = true;
     } finally {

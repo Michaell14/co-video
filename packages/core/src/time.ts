@@ -1,4 +1,5 @@
-import type { ProjectSettings } from './types';
+import { scaleKeyframes } from './keyframes';
+import type { Clip, ProjectSettings } from './types';
 
 export interface Fps {
   fpsNum: number;
@@ -86,6 +87,36 @@ export function formatClock(seconds: number, showTenths = false): string {
   const t = Math.floor((sAbs % 1) * 10);
   const tail = showTenths ? `.${t}` : '';
   return h > 0 ? `${h}:${pad(m)}:${pad(sec)}${tail}` : `${m}:${pad(sec)}${tail}`;
+}
+
+/** Whether `k`, one frame rate over another, says they are the same rate (30000/1000 and 30/1). */
+export const sameRate = (k: number): boolean => Math.abs(k - 1) < 1e-9;
+
+/**
+ * Everything a clip counts in frames, at a frame rate `k` times the present one, so that the clip
+ * keeps its place and its length in real time. The two ends are rounded each on their own: clips
+ * that touch still touch afterwards.
+ */
+export function clipAtRate(c: Clip, k: number): Partial<Clip> {
+  const r = (v: number) => Math.round(v * k);
+  const start = r(c.start);
+  const end = Math.max(start + 1, r(c.start + c.duration));
+  return {
+    start,
+    duration: end - start,
+    fadeIn: r(c.fadeIn),
+    fadeOut: r(c.fadeOut),
+    keyframes: scaleKeyframes(c.keyframes, k),
+    transIn: c.transIn ? { ...c.transIn, duration: Math.max(1, r(c.transIn.duration)) } : null,
+    transOut: c.transOut ? { ...c.transOut, duration: Math.max(1, r(c.transOut.duration)) } : null,
+    text: c.text
+      ? {
+          ...c.text,
+          animIn: { ...c.text.animIn, duration: r(c.text.animIn.duration) },
+          animOut: { ...c.text.animOut, duration: r(c.text.animOut.duration) },
+        }
+      : null,
+  };
 }
 
 export const FRAME_RATE_PRESETS: { label: string; fpsNum: number; fpsDen: number }[] = [

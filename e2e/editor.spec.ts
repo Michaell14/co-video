@@ -425,6 +425,11 @@ test.describe('editor', () => {
       ]);
       cmd.seek(15);
       await wait(700);
+      // The LUT's file is read once the first frame that uses it has been drawn.
+      for (const until = performance.now() + 20_000; performance.now() < until;) {
+        if (session.player.sources.getLut(lut.id)) break;
+        await wait(100);
+      }
       out.lutLoaded = !!session.player.sources.getLut(lut.id);
 
       ui.getState().select([videos()[1].id]);
@@ -462,8 +467,13 @@ test.describe('editor', () => {
 
       store.commit([{ op: 'settings', patch: { colorMode: 'hdr-pq', toneMap: 'bt2390' } }]);
       cmd.seek(30);
-      await wait(500);
-      const scope = await session.player.readScope(128);
+      // The scope reads the frame drawn last, and answers null while another read is under way:
+      // ask until the first frame of the HDR project is the one it measured.
+      let scope = await session.player.readScope(128);
+      for (const until = performance.now() + 20_000; !scope?.pq && performance.now() < until;) {
+        await wait(100);
+        scope = await session.player.readScope(128);
+      }
       out.hdrScope = scope ? scope.pq : null;
       store.commit([
         { op: 'settings', patch: { colorMode: 'sdr', toneMap: 'none', width: 1080, height: 1920 } },

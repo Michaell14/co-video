@@ -24,7 +24,7 @@ export const TRANSITION_CATEGORIES: { id: TransitionCategory; label: string }[] 
   { id: 'dissolve', label: 'Dissolve' },
   { id: 'wipe', label: 'Wipe' },
   { id: 'motion', label: 'Motion' },
-  { id: 'stylize', label: 'Stylize' },
+  { id: 'stylize', label: 'Stylise' },
 ];
 
 const f = (key: string, label: string, min: number, max: number, def: number, step = 0.01): ParamDef => ({
@@ -75,7 +75,7 @@ export const TRANSITIONS: TransitionDef[] = [
     category: 'dissolve',
     description: 'Fade out to a colour, then in to the next shot.',
     ease: 'linear',
-    params: [{ key: 'color', label: 'Color', type: 'color', default: '#000000' }],
+    params: [{ key: 'color', label: 'Colour', type: 'color', default: '#000000' }],
     glsl: `vec4 transition(vec2 uv) {
   vec4 c = vec4(u_color, 1.0);
   return u_progress < 0.5 ? mix(A(uv), c, u_progress * 2.0) : mix(c, B(uv), (u_progress - 0.5) * 2.0);
@@ -87,7 +87,7 @@ export const TRANSITIONS: TransitionDef[] = [
     category: 'dissolve',
     description: 'A bright wash between shots.',
     ease: 'linear',
-    params: [{ key: 'color', label: 'Color', type: 'color', default: '#ffffff' }],
+    params: [{ key: 'color', label: 'Colour', type: 'color', default: '#ffffff' }],
     glsl: `vec4 transition(vec2 uv) {
   vec4 c = vec4(u_color, 1.0);
   return u_progress < 0.5 ? mix(A(uv), c, u_progress * 2.0) : mix(c, B(uv), (u_progress - 0.5) * 2.0);
@@ -190,7 +190,7 @@ export const TRANSITIONS: TransitionDef[] = [
     ease: 'inOut',
     params: [
       f('softness', 'Softness', 0, 1, 0.05),
-      { key: 'center', label: 'Center', type: 'point', default: [0.5, 0.5] },
+      { key: 'center', label: 'Centre', type: 'point', default: [0.5, 0.5] },
     ],
     glsl: `vec4 transition(vec2 uv) {
   vec2 p = (uv - u_center) * vec2(u_aspect, 1.0);
@@ -376,7 +376,7 @@ vec4 transition(vec2 uv) {
 }`,
   },
 
-  // ── Stylize ─────────────────────────────────────────────────────────────
+  // ── Stylise ─────────────────────────────────────────────────────────────
   {
     id: 'glitchCut',
     name: 'Glitch',
@@ -401,7 +401,7 @@ vec4 transition(vec2 uv) {
   },
   {
     id: 'pixelize',
-    name: 'Pixelize',
+    name: 'Pixelise',
     category: 'stylize',
     description: 'Dissolve through a burst of chunky pixels.',
     ease: 'linear',
@@ -422,7 +422,7 @@ vec4 transition(vec2 uv) {
     ease: 'linear',
     params: [
       f('intensity', 'Intensity', 0, 3, 1.2),
-      { key: 'color', label: 'Color', type: 'color', default: '#ffffff' },
+      { key: 'color', label: 'Colour', type: 'color', default: '#ffffff' },
     ],
     glsl: `vec4 transition(vec2 uv) {
   float fl = pow(1.0 - abs(u_progress * 2.0 - 1.0), 2.0) * u_intensity;

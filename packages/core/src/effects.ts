@@ -76,10 +76,10 @@ export interface EffectDef {
 }
 
 export const EFFECT_CATEGORIES: { id: EffectCategory; label: string }[] = [
-  { id: 'color', label: 'Color' },
+  { id: 'color', label: 'Colour' },
   { id: 'blur', label: 'Blur & Sharpen' },
   { id: 'light', label: 'Light' },
-  { id: 'stylize', label: 'Stylize' },
+  { id: 'stylize', label: 'Stylise' },
   { id: 'retro', label: 'Retro' },
   { id: 'distort', label: 'Distort' },
   { id: 'keying', label: 'Keying' },
@@ -246,7 +246,7 @@ vec4 effect(vec2 uv) {
 // ───────────────────────────────────────────────────────────────── library ──
 
 export const EFFECTS: EffectDef[] = [
-  // ── Color ───────────────────────────────────────────────────────────────
+  // ── Colour ──────────────────────────────────────────────────────────────
   {
     id: 'brightnessContrast',
     name: 'Brightness & Contrast',
@@ -302,7 +302,7 @@ export const EFFECTS: EffectDef[] = [
     name: 'Temperature & Tint',
     category: 'color',
     description: 'Warm or cool the image and correct green / magenta casts.',
-    params: [f('temperature', 'Temperature', -1, 1, 0), f('tint', 'Tint', -1, 1, 0)],
+    params: [f('temperature', 'Warmth', -1, 1, 0), f('tint', 'Tint', -1, 1, 0)],
     preview: { temperature: -0.8 },
     passes:
       colorFx(`vec3 gain = vec3(1.0 + 0.35 * u_temperature, 1.0 - 0.3 * u_tint, 1.0 - 0.35 * u_temperature);
@@ -315,11 +315,11 @@ export const EFFECTS: EffectDef[] = [
     category: 'color',
     description: 'Remap input black / white points, gamma and output range.',
     params: [
-      f('inBlack', 'Input black', 0, 1, 0),
-      f('inWhite', 'Input white', 0, 1, 1),
+      f('inBlack', 'In black', 0, 1, 0),
+      f('inWhite', 'In white', 0, 1, 1),
       f('gamma', 'Gamma', 0.1, 4, 1),
-      f('outBlack', 'Output black', 0, 1, 0),
-      f('outWhite', 'Output white', 0, 1, 1),
+      f('outBlack', 'Out black', 0, 1, 0),
+      f('outWhite', 'Out white', 0, 1, 1),
     ],
     preview: { inBlack: 0.25, inWhite: 0.7 },
     passes: colorFx(`vec3 v = (c.rgb - u_inBlack) / max(u_inWhite - u_inBlack, 1e-4);
@@ -336,11 +336,11 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     id: 'tint',
-    name: 'Colorize',
+    name: 'Colourise',
     category: 'color',
     description: 'Map the image onto a single colour while preserving luminance.',
     params: [
-      { key: 'color', label: 'Color', type: 'color', default: '#ff9a3c' },
+      { key: 'color', label: 'Colour', type: 'color', default: '#ff9a3c' },
       f('amount', 'Amount', 0, 1, 1),
     ],
     passes: colorFx(`float l = clamp(luma(c.rgb), 0.0, 1.0);
@@ -386,7 +386,7 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     id: 'posterize',
-    name: 'Posterize',
+    name: 'Posterise',
     category: 'color',
     description: 'Reduce the number of tonal steps.',
     params: [f('levels', 'Levels', 2, 32, 6, 1)],
@@ -409,11 +409,11 @@ export const EFFECTS: EffectDef[] = [
   },
   {
     id: 'fill',
-    name: 'Color Overlay',
+    name: 'Colour Overlay',
     category: 'color',
     description: 'Flood the layer with a flat colour, keeping its alpha.',
     params: [
-      { key: 'color', label: 'Color', type: 'color', default: '#ffffff' },
+      { key: 'color', label: 'Colour', type: 'color', default: '#ffffff' },
       f('amount', 'Amount', 0, 1, 1),
     ],
     preview: { color: '#2f7bff', amount: 0.5 },
@@ -456,7 +456,7 @@ export const EFFECTS: EffectDef[] = [
     description: 'Blur that streaks outward from a centre point.',
     params: [
       f('amount', 'Amount', 0, 1, 0.25),
-      { key: 'center', label: 'Center', type: 'point', default: [0.5, 0.5] },
+      { key: 'center', label: 'Centre', type: 'point', default: [0.5, 0.5] },
     ],
     passes: [
       {
@@ -515,8 +515,8 @@ export const EFFECTS: EffectDef[] = [
     category: 'blur',
     description: 'Keep a horizontal band sharp and blur the rest for a miniature look.',
     params: [
-      f('position', 'Focus position', 0, 1, 0.5),
-      f('range', 'Focus range', 0, 1, 0.25),
+      f('position', 'Position', 0, 1, 0.5),
+      f('range', 'Range', 0, 1, 0.25),
       f('falloff', 'Falloff', 0.01, 1, 0.3),
       f('blur', 'Blur', 0, 60, 16, 0.1, 'px'),
     ],
@@ -571,7 +571,7 @@ export const EFFECTS: EffectDef[] = [
       f('size', 'Size', 0, 1, 0.45),
       f('softness', 'Softness', 0.01, 1, 0.5),
       f('roundness', 'Roundness', 0, 1, 0.5),
-      { key: 'color', label: 'Color', type: 'color', default: '#000000' },
+      { key: 'color', label: 'Colour', type: 'color', default: '#000000' },
     ],
     passes: [
       {
@@ -595,7 +595,7 @@ export const EFFECTS: EffectDef[] = [
     params: [
       f('amount', 'Amount', 0, 1, 0.6),
       f('speed', 'Speed', 0, 4, 1),
-      { key: 'color', label: 'Color', type: 'color', default: '#ff7a2e' },
+      { key: 'color', label: 'Colour', type: 'color', default: '#ff7a2e' },
     ],
     passes: [
       {
@@ -612,7 +612,7 @@ export const EFFECTS: EffectDef[] = [
     ],
   },
 
-  // ── Stylize ─────────────────────────────────────────────────────────────
+  // ── Stylise ─────────────────────────────────────────────────────────────
   {
     id: 'filmGrain',
     name: 'Film Grain',
@@ -805,7 +805,7 @@ vec4 effect(vec2 uv) {
     space: 'frame',
     params: [
       f('width', 'Width', 0, 60, 6, 0.1, 'px'),
-      { key: 'color', label: 'Color', type: 'color', default: '#ffffff' },
+      { key: 'color', label: 'Colour', type: 'color', default: '#ffffff' },
       f('opacity', 'Opacity', 0, 1, 1),
     ],
     passes: [
@@ -833,7 +833,7 @@ vec4 effect(vec2 uv) {
     description: 'Soft shadow cast behind the layer.',
     space: 'frame',
     params: [
-      { key: 'color', label: 'Color', type: 'color', default: '#000000' },
+      { key: 'color', label: 'Colour', type: 'color', default: '#000000' },
       f('opacity', 'Opacity', 0, 1, 0.6),
       { key: 'angle', label: 'Angle', type: 'angle', default: 45 },
       f('distance', 'Distance', 0, 200, 16, 0.1, 'px'),
@@ -934,7 +934,7 @@ vec4 effect(vec2 uv) {
     params: [
       f('curvature', 'Curvature', 0, 1, 0.35),
       f('scanlines', 'Scanlines', 0, 1, 0.4),
-      f('mask', 'Phosphor mask', 0, 1, 0.3),
+      f('mask', 'Phosphors', 0, 1, 0.3),
     ],
     passes: [
       {
@@ -1123,7 +1123,7 @@ vec4 effect(vec2 uv) {
     params: [
       { key: 'angle', label: 'Twist', type: 'angle', default: 180 },
       f('radius', 'Radius', 0.05, 1.5, 0.5),
-      { key: 'center', label: 'Center', type: 'point', default: [0.5, 0.5] },
+      { key: 'center', label: 'Centre', type: 'point', default: [0.5, 0.5] },
     ],
     passes: [
       {
@@ -1146,7 +1146,7 @@ vec4 effect(vec2 uv) {
     params: [
       f('strength', 'Strength', -1, 1, 0.5),
       f('radius', 'Radius', 0.05, 1.5, 0.4),
-      { key: 'center', label: 'Center', type: 'point', default: [0.5, 0.5] },
+      { key: 'center', label: 'Centre', type: 'point', default: [0.5, 0.5] },
     ],
     passes: [
       {
@@ -1218,10 +1218,10 @@ vec4 effect(vec2 uv) {
     category: 'keying',
     description: 'Remove a green or blue screen, with spill suppression.',
     params: [
-      { key: 'color', label: 'Key color', type: 'color', default: '#00d000' },
+      { key: 'color', label: 'Key colour', type: 'color', default: '#00d000' },
       f('similarity', 'Similarity', 0, 1, 0.3),
-      f('smoothness', 'Smoothness', 0, 1, 0.1),
-      f('spill', 'Spill suppression', 0, 1, 0.5),
+      f('smoothness', 'Softness', 0, 1, 0.1),
+      f('spill', 'Despill', 0, 1, 0.5),
     ],
     preview: { color: '#e0568a', similarity: 0.35 },
     passes: [
@@ -1254,7 +1254,7 @@ vec4 effect(vec2 uv) {
     params: [
       f('threshold', 'Threshold', 0, 1, 0.2),
       f('softness', 'Softness', 0, 0.5, 0.1),
-      { key: 'invert', label: 'Key out highlights', type: 'bool', default: false },
+      { key: 'invert', label: 'Invert', type: 'bool', default: false },
     ],
     passes:
       colorFx(`float a = smoothstep(u_threshold - u_softness, u_threshold + u_softness + 1e-4, luma(c.rgb));
@@ -1271,7 +1271,7 @@ vec4 effect(vec2 uv) {
     space: 'frame',
     params: [
       f('ratio', 'Aspect ratio', 1, 3, 2.39),
-      { key: 'color', label: 'Color', type: 'color', default: '#000000' },
+      { key: 'color', label: 'Colour', type: 'color', default: '#000000' },
     ],
     passes: [
       {

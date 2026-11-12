@@ -1,12 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import {
   blurScaleFor,
+  CLIP_TYPE_COLORS,
+  DEFAULT_SETTINGS,
+  DEFAULT_SHAPE,
+  DEFAULT_TEXT,
   defaultParams,
+  EFFECT_CATEGORIES,
   EFFECTS,
   getEffectDef,
+  hexColor,
+  LABEL_COLORS,
+  MARKER_COLORS,
   previewParams,
   resolveParams,
+  TEXT_ANIMATIONS,
+  TRANSITION_CATEGORIES,
+  TRANSITIONS,
+  USER_COLORS,
   type EffectDef,
+  type ParamDef,
   type PassContext,
   type ResolvedParams,
 } from '../src';
@@ -128,5 +141,54 @@ describe('effect previews', () => {
       const shown = resolveParams(def.params, previewParams(def));
       expect(shown, id).not.toEqual(neutral);
     }
+  });
+});
+
+describe('names and labels people read', () => {
+  const labels = (defs: ParamDef[]): string[] =>
+    defs.flatMap((d) => [d.label, ...(d.type === 'select' ? d.options.map((o) => o.label) : [])]);
+
+  it('are spelled the British way, like the rest of the editor', () => {
+    const visible = [
+      ...EFFECT_CATEGORIES.map((c) => c.label),
+      ...TRANSITION_CATEGORIES.map((c) => c.label),
+      ...EFFECTS.flatMap((e) => [e.name, e.description, ...labels(e.params)]),
+      ...TRANSITIONS.flatMap((t) => [t.name, t.description, ...labels(t.params)]),
+      ...TEXT_ANIMATIONS.map((a) => a.name),
+    ];
+    expect(visible.length).toBeGreaterThan(300);
+    // "Size" is the one word here that ends like an American "-ize".
+    const american = /colo(?!u)r|center|gray|[^s]iz(e|ed|ing|ation)\b/i;
+    expect(visible.filter((text) => american.test(text))).toEqual([]);
+    expect(EFFECT_CATEGORIES.find((c) => c.id === 'color')!.label).toBe('Colour');
+    expect(getEffectDef('fill')!.name).toBe('Colour Overlay');
+  });
+});
+
+describe('colours the editor itself writes', () => {
+  it('are hex colours the document reader hands back unchanged', () => {
+    const text = DEFAULT_TEXT;
+    const shape = DEFAULT_SHAPE;
+    const written = [
+      DEFAULT_SETTINGS.background,
+      ...Object.values(CLIP_TYPE_COLORS),
+      ...LABEL_COLORS,
+      ...MARKER_COLORS,
+      ...USER_COLORS,
+      ...[
+        text.color,
+        text.gradient.from,
+        text.gradient.to,
+        text.stroke.color,
+        text.shadow.color,
+        text.bg.color,
+      ],
+      ...[shape.fill, shape.stroke, shape.gradient.from, shape.gradient.to],
+      ...[...EFFECTS, ...TRANSITIONS].flatMap((def) =>
+        def.params.flatMap((d) => (d.type === 'color' ? [d.default] : [])),
+      ),
+    ];
+    expect(written.length).toBeGreaterThan(60);
+    for (const colour of written) expect(hexColor(colour), colour).toBe(colour);
   });
 });

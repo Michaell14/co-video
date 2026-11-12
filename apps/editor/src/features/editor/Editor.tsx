@@ -86,7 +86,7 @@ export function Editor({ projectId, token }: { projectId: string; token: string 
   if (error) {
     return (
       <div className="splash">
-        <div style={{ fontWeight: 600 }}>{error}</div>
+        <div className="splash__title">{error}</div>
         <Button onClick={() => navigate(null)}>Back to projects</Button>
       </div>
     );
@@ -122,15 +122,20 @@ function Workspace() {
   if (meta.denied) {
     return (
       <div className="splash">
-        <div style={{ fontWeight: 600, fontSize: 15 }}>This project is not available</div>
-        <div style={{ color: 'var(--fg-3)', maxWidth: 380, textAlign: 'center', lineHeight: 1.5 }}>
-          {meta.unlisted
-            ? 'The collaboration server no longer accepts the link to it, and nothing of it is stored on this device. It has been removed from your projects.'
-            : 'It is not stored on this device, and the link either expired or the collaboration server cannot be reached.'}
-        </div>
-        {!meta.online && (
-          <div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Still trying to reach the server…</div>
-        )}
+        <div className="splash__title">This project is not available</div>
+        <p className="splash__text">
+          {meta.unlisted ? (
+            <>
+              The collaboration server no longer accepts the link to it, and nothing of it is stored on this
+              device.
+              <br />
+              It has been removed from your projects.
+            </>
+          ) : (
+            'It is not stored on this device, and the link either expired or the collaboration server cannot be reached.'
+          )}
+        </p>
+        {!meta.online && <div className="splash__label">Still trying to reach the server…</div>}
         <Button onClick={() => navigate(null)}>Back to projects</Button>
       </div>
     );
@@ -139,11 +144,11 @@ function Workspace() {
   if (meta.busy && !meta.synced && session.store.isEmpty()) {
     return (
       <div className="splash">
-        <div style={{ fontWeight: 600, fontSize: 15 }}>Waiting for a place in this project</div>
-        <div style={{ color: 'var(--fg-3)', maxWidth: 380, textAlign: 'center', lineHeight: 1.5 }}>
+        <div className="splash__title">Waiting for a place in this project</div>
+        <p className="splash__text">
           Your link is fine, but the collaboration server is at capacity right now. This page joins by itself
           as soon as there is room.
-        </div>
+        </p>
         <div className="splash__label">
           <span className="spinner" />
           Still trying

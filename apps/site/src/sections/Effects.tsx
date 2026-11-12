@@ -223,7 +223,7 @@ const ALSO = [
   { icon: Shapes, text: 'Masks and shapes' },
   { icon: Type, text: 'Text with animation presets' },
   { icon: Layers2, text: 'Adjustment layers' },
-  { icon: Captions, text: 'Subtitles, SRT and VTT in and out' },
+  { icon: Captions, text: 'Subtitles: SRT and VTT in, SRT out' },
 ];
 
 /** Every effect in the editor's catalogue, for the ticker. */
@@ -235,13 +235,13 @@ const CATALOGUE = [
   'Temperature & Tint',
   'Levels',
   'Invert',
-  'Colorize',
+  'Colourise',
   'Duotone',
   'Black & White',
   'Sepia',
-  'Posterize',
+  'Posterise',
   'Threshold',
-  'Color Overlay',
+  'Colour Overlay',
   'Gaussian Blur',
   'Directional Blur',
   'Zoom Blur',

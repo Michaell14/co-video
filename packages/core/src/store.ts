@@ -31,7 +31,10 @@ import {
   SCHEMA_VERSION,
   starterTracks,
 } from './defaults';
+import { getEffectDef, type ParamDef } from './effects';
 import { conformEasing } from './keyframes';
+import { clipAtRate, fpsOf, sameRate } from './time';
+import { getTransitionDef } from './transitions';
 import type {
   Asset,
   AssetColorInfo,
@@ -56,7 +59,7 @@ import type {
   Track,
   Transition,
 } from './types';
-import { clamp, deepEqual } from './util';
+import { clamp, deepEqual, hexColor } from './util';
 
 type Listener = () => void;
 type Json = Record<string, unknown>;
@@ -122,6 +125,8 @@ function inOrder<T>(list: T[], key: (item: T) => number): T[] {
 const strOrNull: Reader = (v) => (v === null || typeof v === 'string' ? v : undefined);
 const numOrNull: Reader = (v) => (v === null || isNum(v) ? v : undefined);
 const boolOrNull: Reader = (v) => (v === null || typeof v === 'boolean' ? v : undefined);
+/** Every colour in the model goes through `hexColor`, which says why. */
+const color: Reader = (v) => hexColor(v) ?? undefined;
 
 /** Reader for a closed set of strings, written as a record so the compiler keeps it exhaustive. */
 const oneOf =
@@ -203,18 +208,30 @@ const TONE_MAP_OPS: Record<ToneMapOp, true> = {
 const isParam = (v: unknown): v is ParamValue =>
   isNum(v) || typeof v === 'boolean' || typeof v === 'string' || (Array.isArray(v) && v.every(isNum));
 
-function readParams(v: unknown): Record<string, ParamValue> {
+/**
+ * Parameter values of an effect or transition. `defs` is its schema when the type is a known one:
+ * it says which of the strings are colours.
+ */
+function readParams(v: unknown, defs: readonly ParamDef[] = []): Record<string, ParamValue> {
   if (!isObj(v)) return {};
   const entries = Object.entries(v);
   const good = entries.filter(
     (entry): entry is [string, ParamValue] => isSafeId(entry[0]) && isParam(entry[1]),
   );
-  return good.length === entries.length ? (v as Record<string, ParamValue>) : Object.fromEntries(good);
+  let params = good.length === entries.length ? (v as Record<string, ParamValue>) : Object.fromEntries(good);
+  for (const d of defs) {
+    if (d.type !== 'color' || !Object.hasOwn(params, d.key)) continue;
+    const hex = hexColor(params[d.key]) ?? d.default;
+    if (hex === params[d.key]) continue;
+    if (params === v) params = { ...params };
+    params[d.key] = hex;
+  }
+  return params;
 }
 
 function readEffect(e: unknown): EffectInstance | undefined {
   if (!isObj(e) || typeof e.id !== 'string' || typeof e.type !== 'string') return undefined;
-  const params = readParams(e.params);
+  const params = readParams(e.params, getEffectDef(e.type)?.params);
   const enabled = e.enabled !== false;
   if (enabled === e.enabled && params === e.params && Object.keys(e).length === 4)
     return e as unknown as EffectInstance;
@@ -226,7 +243,7 @@ const readEffects: Reader = (v) => (Array.isArray(v) ? conformList(v, readEffect
 const readTransition: Reader = (v) => {
   if (v === null) return null;
   if (!isObj(v) || typeof v.type !== 'string' || !isNum(v.duration)) return undefined;
-  const params = readParams(v.params);
+  const params = readParams(v.params, getTransitionDef(v.type)?.params);
   const duration = Math.max(1, v.duration);
   if (duration === v.duration && params === v.params && Object.keys(v).length === 3) return v;
   const t: Transition = { type: v.type, duration, params };
@@ -269,7 +286,7 @@ const readCurve: Reader = (v) => {
 
 const CLIP_READERS: Readers<typeof CLIP_DEFAULTS> = {
   assetId: strOrNull,
-  label: strOrNull,
+  label: nullable(color),
   linkId: strOrNull,
   blend: oneOf(BLEND_MODES),
   fit: oneOf(FIT_MODES),
@@ -293,13 +310,21 @@ const CLIP_READERS: Readers<typeof CLIP_DEFAULTS> = {
   transOut: readTransition,
   text: nullable(
     shaped(DEFAULT_TEXT, {
+      color,
       align: oneOf({ left: true, center: true, right: true }),
       boxWidth: numOrNull,
+      gradient: shaped(DEFAULT_TEXT.gradient, { from: color, to: color }),
+      stroke: shaped(DEFAULT_TEXT.stroke, { color }),
+      shadow: shaped(DEFAULT_TEXT.shadow, { color }),
+      bg: shaped(DEFAULT_TEXT.bg, { color }),
     }),
   ),
   shape: nullable(
     shaped(DEFAULT_SHAPE, {
       kind: oneOf(SHAPE_KINDS),
+      fill: color,
+      gradient: shaped(DEFAULT_SHAPE.gradient, { from: color, to: color }),
+      stroke: color,
       // The outline is drawn one vertex at a time.
       sides: (v) => (isNum(v) ? clamp(Math.round(v), 3, 64) : undefined),
     }),
@@ -382,7 +407,7 @@ function readMarker(id: ID, json: unknown): Marker | null {
     id,
     frame: clamp(Math.round(json.frame), 0, MAX_FRAMES),
     name: typeof json.name === 'string' ? json.name : '',
-    color: typeof json.color === 'string' ? json.color : MARKER_COLORS[0],
+    color: hexColor(json.color) ?? MARKER_COLORS[0],
     note: typeof json.note === 'string' ? json.note : '',
   };
 }
@@ -397,6 +422,7 @@ function readFolder(id: ID, json: unknown): Folder | null {
 }
 
 const SETTINGS_READERS: Readers<ProjectSettings> = {
+  background: color,
   colorMode: oneOf(COLOR_MODES),
   toneMap: oneOf(TONE_MAP_OPS),
 };
@@ -449,6 +475,23 @@ function clipsWithTrack(clips: Record<ID, Clip>, tracks: Readonly<Record<ID, Tra
   return out ?? clips;
 }
 
+/** Where an undo step keeps the frame rate it was recorded at. */
+const STEP_RATE = 'tandem.fps';
+
+type UndoStep = Y.UndoManager['undoStack'][number];
+
+/** What an undo or redo wrote: the fields of each clip (`true` for a clip put there whole) and the markers. */
+interface StepWrites {
+  clips: Map<ID, Set<string> | true>;
+  markers: Set<ID>;
+}
+
+const noWrites = (): StepWrites => ({ clips: new Map(), markers: new Set() });
+
+/** The entries of `patch` under the keys that `keep` picks. */
+const only = (patch: Partial<Clip>, keep: (key: string) => boolean): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(patch).filter(([key]) => keep(key)));
+
 export interface CommitOptions {
   /** Merge into the previous undo step (use for continuous gestures such as slider drags). */
   merge?: boolean;
@@ -476,6 +519,13 @@ export class ProjectStore {
   /** Bumps whenever the undo / redo stacks change. */
   undoVersion = 0;
   private dirty = false;
+  /**
+   * The frame rate as of the last transaction that ended. While one is being wound up this is
+   * still the rate it began at, and that is the rate its undo step is stamped with.
+   */
+  private rate: number;
+  /** What the undo or redo in progress has written, noted as it happens for `retimeStep`. */
+  private written = noWrites();
   private readonly ySettings: Y.Map<unknown>;
   private readonly yAssets: Y.Map<Y.Map<unknown>>;
   private readonly yTracks: Y.Map<Y.Map<unknown>>;
@@ -495,6 +545,7 @@ export class ProjectStore {
     this.yMarkers = doc.getMap('markers');
 
     this.project = this.readAll();
+    this.rate = fpsOf(this.project.settings);
 
     this.ySettings.observe(() => {
       this.project = { ...this.project, settings: readSettings(this.ySettings.toJSON()) };
@@ -513,15 +564,55 @@ export class ProjectStore {
       [this.ySettings, this.yAssets, this.yTracks, this.yClips, this.yFolders, this.yMarkers],
       { trackedOrigins: new Set([this.origin]), captureTimeout: 1e12 },
     );
-    this.undoManager.on('stack-item-added', this.emitMeta);
-    this.undoManager.on('stack-item-popped', this.emitMeta);
+    this.undoManager.on('stack-item-added', ({ stackItem }) => {
+      stackItem.meta.set(STEP_RATE, this.rate);
+      this.emitMeta();
+    });
+    this.undoManager.on('stack-item-popped', ({ stackItem, type }) => {
+      this.retimeStep(stackItem, type);
+      this.emitMeta();
+    });
     this.undoManager.on('stack-cleared', this.emitMeta);
+    // What an undo or redo writes is noted field by field: `retimeStep` re-times that and no more.
+    this.yClips.observeDeep((events, tr) => {
+      if (tr.origin !== this.undoManager) return;
+      const { clips } = this.written;
+      for (const ev of events) {
+        if (ev.target === this.yClips) {
+          for (const id of ev.changes.keys.keys()) clips.set(id, true);
+          continue;
+        }
+        const id = String(ev.path[0]);
+        const fields = clips.get(id) ?? new Set<string>();
+        if (fields === true) continue;
+        for (const key of ev.changes.keys.keys()) fields.add(key);
+        clips.set(id, fields);
+      }
+    });
+    this.yMarkers.observe((event, tr) => {
+      if (tr.origin === this.undoManager) for (const id of event.keysChanged) this.written.markers.add(id);
+    });
+    // Listeners run in the order they were added: the undo manager's has stamped the step by now.
+    doc.on('afterTransaction', this.noteRate);
   }
 
   // ───────────────────────────────────────────────────────────── reading ──
 
   get(): Project {
     return this.project;
+  }
+
+  /**
+   * The clips that are in the document but not in the snapshot, because their track is missing.
+   * Nothing renders or edits them; they are listed so that they can be shown and given a track
+   * again. Each is the clip as it would read on a track: move it with an `updateClip` of `trackId`,
+   * or drop it with `removeClip`. Their frame numbers follow the project's frame rate.
+   *
+   * The list is made on each call, and subscribers are not told when only hidden clips change.
+   */
+  hiddenClips(): Clip[] {
+    const { tracks } = this.project;
+    return Array.from(this.allClips.values()).filter((c) => !Object.hasOwn(tracks, c.trackId));
   }
 
   subscribe = (fn: Listener): (() => void) => {
@@ -551,10 +642,15 @@ export class ProjectStore {
   commit(edits: Edit[], opts: CommitOptions = {}): void {
     if (!edits.length) return;
     const undoable = opts.undoable !== false;
-    if (undoable && !opts.merge) this.undoManager.stopCapturing();
+    // A step is recorded at one frame rate (see `retimeStep`). A gesture that is still going when
+    // the rate changes under it goes on in a step of its own.
+    const step = this.undoManager.undoStack.at(-1);
+    const merge = opts.merge && step && sameRate(this.rate / step.meta.get(STEP_RATE));
+    if (undoable && !merge) this.undoManager.stopCapturing();
     this.doc.transact(
       () => {
         for (const e of edits) this.apply(e);
+        if (edits.some((e) => e.op === 'settings')) this.retimeHiddenClips();
       },
       undoable ? this.origin : this.systemOrigin,
     );
@@ -609,6 +705,7 @@ export class ProjectStore {
 
   destroy(): void {
     this.doc.off('afterTransaction', this.flush);
+    this.doc.off('afterTransaction', this.noteRate);
     this.undoManager.destroy();
     this.listeners.clear();
     this.metaListeners.clear();
@@ -620,6 +717,10 @@ export class ProjectStore {
     if (!this.dirty) return;
     this.dirty = false;
     for (const fn of Array.from(this.listeners)) fn();
+  };
+
+  private noteRate = (): void => {
+    this.rate = fpsOf(this.project.settings);
   };
 
   private emitMeta = (): void => {
@@ -731,6 +832,92 @@ export class ProjectStore {
     }
     if (clips) this.project = { ...this.project, clips };
   };
+
+  /**
+   * A new frame rate comes with the edits that re-time the sequence (`changeFrameRate`), and those
+   * are made from the snapshot. The clips the snapshot leaves out are re-timed here, inside the
+   * same transaction: by the same ratio, from what they were before it, and as part of the same
+   * undo step. A clip that gets its track back is then where it was in real time.
+   */
+  private retimeHiddenClips(): void {
+    const k = fpsOf(readSettings(this.ySettings.toJSON())) / fpsOf(this.project.settings);
+    if (sameRate(k)) return;
+    for (const c of this.hiddenClips()) this.patchEntity(this.yClips, c.id, clipAtRate(c, k), CLIP_DEFAULTS);
+  }
+
+  /**
+   * Undo and redo put values back as they were written, and a frame number is only right at the
+   * frame rate it was written at. A step can leave two things at another rate than the document's:
+   *
+   * - what it put back, when the rate is no longer the one the step was recorded at: a deleted
+   *   track that returns with its clips after someone else changed the rate;
+   * - what it left alone, when the step is itself a change of rate: the clip someone else has
+   *   added since, which was never part of it.
+   *
+   * Both are re-timed here, in a transaction that is then made part of the step, so that taking
+   * the step the other way takes the re-timing with it.
+   */
+  private retimeStep(step: UndoStep, type: 'undo' | 'redo'): void {
+    const written = this.written;
+    this.written = noWrites();
+    // The undo or redo has just been filed as a step of its own, stamped with the rate it began at.
+    const stack = type === 'undo' ? this.undoManager.redoStack : this.undoManager.undoStack;
+    const filed = stack.at(-1);
+    if (!filed) return;
+    // To the present rate: from the rate of what the step put back, and from that of all the rest.
+    const now = fpsOf(this.project.settings);
+    const back = now / step.meta.get(STEP_RATE);
+    const rest = now / filed.meta.get(STEP_RATE);
+    if (sameRate(back) && sameRate(rest)) return;
+    const { markers } = this.project;
+    const moveMarker = (m: Marker, k: number): void => {
+      const frame = Math.round(m.frame * k);
+      if (frame !== m.frame) this.yMarkers.set(m.id, { ...m, frame });
+    };
+    this.doc.transact(() => {
+      if (!sameRate(back)) {
+        for (const [id, fields] of written.clips) {
+          const c = this.allClips.get(id);
+          if (!c) continue;
+          const patch = only(clipAtRate(c, back), (key) => fields === true || fields.has(key));
+          this.patchEntity(this.yClips, id, patch, CLIP_DEFAULTS);
+        }
+        for (const id of written.markers) if (Object.hasOwn(markers, id)) moveMarker(markers[id], back);
+      }
+      if (!sameRate(rest)) {
+        // A value that reads the same at both rates (taking it from this one to the one that was
+        // left would not alter it) is a value the change of rate never touched. The step had
+        // nothing to put back in its place, and it stays exactly as it is.
+        for (const c of this.allClips.values()) {
+          const fields = written.clips.get(c.id);
+          if (fields === true) continue;
+          const unmoved: Partial<Clip> = clipAtRate(c, 1 / rest);
+          const patch = only(
+            clipAtRate(c, rest),
+            (key) => !fields?.has(key) && !deepEqual(unmoved[key as keyof Clip], c[key as keyof Clip]),
+          );
+          this.patchEntity(this.yClips, c.id, patch, CLIP_DEFAULTS);
+        }
+        for (const m of Object.values(markers)) {
+          if (!written.markers.has(m.id) && Math.round(m.frame / rest) !== m.frame) moveMarker(m, rest);
+        }
+      }
+    }, this.origin);
+    // One press of undo is one step, for whoever takes it back and for whoever keeps notes on it.
+    for (const extra of stack.splice(stack.indexOf(filed) + 1)) {
+      // A value the step put back and the re-timing then replaced is the same value at another
+      // rate. The undo manager is told so, the way it notes its own restorations: an earlier step
+      // that has to take that value away again then finds the one that stands in for it.
+      this.doc.transact((tr) => {
+        Y.iterateDeletedStructs(tr, extra.deletions, (was) => {
+          if (was instanceof Y.Item && was.right && Y.isDeleted(filed.insertions, was.id))
+            was.redone = was.right.id;
+        });
+      });
+      filed.insertions = Y.mergeDeleteSets([filed.insertions, extra.insertions]);
+      filed.deletions = Y.mergeDeleteSets([filed.deletions, extra.deletions]);
+    }
+  }
 
   private writeEntity(
     map: Y.Map<Y.Map<unknown>>,

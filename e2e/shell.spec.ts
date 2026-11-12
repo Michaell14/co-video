@@ -602,9 +602,111 @@ test.describe('library', () => {
     const second = page.locator('.asset').nth(1);
     await expect(second).toBeFocused();
     await page.keyboard.press('Enter');
-    const shown = await tandem(page, (t) => t.ui.getState().sourceAsset);
-    expect(shown).toBe(await second.getAttribute('data-asset'));
-    expect(shown).toBeTruthy();
+    const shown = (): Promise<string | null> => tandem(page, (t) => t.ui.getState().sourceAsset);
+    expect(await shown()).toBe(await second.getAttribute('data-asset'));
+    expect(await shown()).toBeTruthy();
+
+    // The open monitor steps through its clip with the same keys. With the focus ring on a card
+    // they still move between the cards, all of them, and the monitor keeps the clip it shows.
+    const cards = page.locator('.asset');
+    await page.keyboard.press('ArrowRight');
+    await expect(cards.nth(2)).toBeFocused();
+    await page.keyboard.press('ArrowLeft');
+    await expect(second).toBeFocused();
+    await page.keyboard.press('Home');
+    await expect(first).toBeFocused();
+    await page.keyboard.press('End');
+    await expect(cards.last()).toBeFocused();
+    expect(await shown()).toBe(await second.getAttribute('data-asset'));
+    // A card the pointer chose leaves them to the monitor, and Escape closes it either way.
+    const clip = page.locator('.source video');
+    const source = (): Promise<{ time: number; paused: boolean }> =>
+      clip.evaluate((v: HTMLVideoElement) => ({ time: v.currentTime, paused: v.paused }));
+    await expect.poll(() => clip.evaluate((v: HTMLVideoElement) => v.readyState)).toBeGreaterThanOrEqual(2);
+    await second.click();
+    await page.keyboard.press('Home');
+    await expect.poll(source).toEqual({ time: 0, paused: true });
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(async () => (await source()).time).toBeGreaterThan(0);
+    await expect(second).toBeFocused();
+    await page.keyboard.press('Escape');
+    expect(await shown()).toBeNull();
+  });
+
+  test('a tile on its way to the timeline leaves the tiles it passes alone', async ({ page }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await sample(page);
+    await page.getByRole('tab', { name: 'Effects' }).click();
+    const tiles = page.locator('.fx-grid .fx');
+    await expect(tiles.first()).toBeVisible();
+    const from = await box(tiles.nth(0));
+    const over = await box(tiles.nth(1));
+    const hovered = () => tiles.nth(1).evaluate((el) => el.matches(':hover'));
+    const tooltip = page.getByRole('tooltip');
+
+    // At rest, a tile under the pointer says what it does.
+    await page.mouse.move(over.x + over.width / 2, over.y + 20);
+    await expect(tooltip).toBeVisible();
+    expect(await hovered()).toBe(true);
+
+    // Under a drag it neither rises nor speaks, however long the pointer stays on it.
+    await page.mouse.move(from.x + from.width / 2, from.y + 20);
+    await page.mouse.down();
+    await page.mouse.move(over.x + over.width / 2, over.y + 20, { steps: 6 });
+    await expect(page.locator('.drag-ghost')).toBeVisible();
+    await page.waitForTimeout(700);
+    await expect(tooltip).toHaveCount(0);
+    expect(await hovered()).toBe(false);
+
+    // Let go over the library: nothing is dropped, and the tiles answer the pointer again.
+    await page.mouse.up();
+    await expect(page.locator('.drag-ghost')).toHaveCount(0);
+    await page.mouse.move(over.x + over.width / 2 + 2, over.y + 22);
+    await expect(tooltip).toBeVisible();
+    expect(await hovered()).toBe(true);
+  });
+
+  test('a file that is HDR and has a proxy shows both badges, readable over bright footage', async ({
+    page,
+  }) => {
+    await sample(page);
+    const id = await tandem(page, (t) => {
+      const assets = Object.values(t.session.store.get().assets) as any[];
+      const asset = assets.find((a) => a.name === 'fractal.mp4');
+      t.session.store.commit([{ op: 'updateAsset', id: asset.id, patch: { hdr: true } }]);
+      // Only what the card reports is looked at here, so the proxy is announced, not made.
+      t.session.media.patch(asset.id, { proxy: true });
+      return asset.id as string;
+    });
+    const card = page.locator(`.asset[data-asset="${id}"]`);
+    const hdr = await box(card.locator('.asset__hdr'));
+    const proxy = await box(card.locator('.asset__proxy'));
+    const duration = await box(card.locator('.asset__dur'));
+    expect(proxy.x).toBeGreaterThanOrEqual(hdr.x + hdr.width + 4);
+    expect(duration.x).toBeGreaterThanOrEqual(proxy.x + proxy.width);
+    expect(Math.round(proxy.y + proxy.height)).toBe(Math.round(hdr.y + hdr.height));
+
+    // Whatever lies on the picture keeps its contrast when the picture is white.
+    for (const label of ['.asset__hdr', '.asset__dur']) {
+      const ratio = await card.locator(label).evaluate((el) => {
+        const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!;
+        const luminance = (...layers: string[]): number => {
+          for (const layer of layers) {
+            paint.fillStyle = layer;
+            paint.fillRect(0, 0, 1, 1);
+          }
+          const [r, g, b] = Array.from(paint.getImageData(0, 0, 1, 1).data.slice(0, 3), (v) =>
+            v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4,
+          );
+          return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        };
+        const style = getComputedStyle(el);
+        const ink = luminance('#fff', style.color);
+        const ground = luminance('#fff', style.backgroundColor);
+        return (Math.max(ink, ground) + 0.05) / (Math.min(ink, ground) + 0.05);
+      });
+      expect(ratio, label).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
   test('“Reveal in media pool” shows the file behind a clip whatever the pool was showing', async ({
@@ -724,7 +826,7 @@ test.describe('effect thumbnails', () => {
       'Vibrance',
       'Temperature & Tint',
       'Levels',
-      'Color Overlay',
+      'Colour Overlay',
       'Outline',
       'Drop Shadow',
     ];
@@ -734,7 +836,7 @@ test.describe('effect thumbnails', () => {
     expect(new Set(pictures).size).toBe(names.length);
 
     // An overlay tints the picture instead of hiding it, and an outline is a thin line round a layer.
-    expect(await whiteShare(page, 'Color Overlay')).toBeLessThan(0.2);
+    expect(await whiteShare(page, 'Colour Overlay')).toBeLessThan(0.2);
     const outline = await whiteShare(page, 'Outline');
     expect(outline).toBeGreaterThan(0.02);
     expect(outline).toBeLessThan(0.3);

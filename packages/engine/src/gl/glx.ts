@@ -57,6 +57,10 @@ export class Program {
         info.type === gl.UNSIGNED_INT_SAMPLER_2D;
       this.uniforms.set(name, { loc, type: info.type, size: info.size, unit: isSampler ? unit++ : -1 });
     }
+    // A sampler keeps the texture unit it was given here for the life of the program, so the
+    // program is told once, not again with every texture that is bound for a pass.
+    gl.useProgram(program);
+    for (const u of this.uniforms.values()) if (u.unit >= 0) gl.uniform1i(u.loc, u.unit);
   }
 
   use(): void {
@@ -101,12 +105,10 @@ export class Program {
       case gl.UNSIGNED_INT_SAMPLER_2D:
         gl.activeTexture(gl.TEXTURE0 + u.unit);
         gl.bindTexture(gl.TEXTURE_2D, value as WebGLTexture | null);
-        gl.uniform1i(u.loc, u.unit);
         break;
       case gl.SAMPLER_3D:
         gl.activeTexture(gl.TEXTURE0 + u.unit);
         gl.bindTexture(gl.TEXTURE_3D, value as WebGLTexture | null);
-        gl.uniform1i(u.loc, u.unit);
         break;
     }
   }

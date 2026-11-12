@@ -372,33 +372,59 @@ export function Slider({
 
 // ───────────────────────────────────────────────────── typed entries ──
 
+/** Fields holding text that is not applied yet. Each is told of every press, to settle on it. */
+const pendingEntries = new Set<(pressed: Node) => void>();
+
+if (typeof window !== 'undefined') {
+  // Added as the module loads, so it runs ahead of every listener a component adds: nothing may
+  // act on a press (select another clip, close the layer the field is in) before the entry that
+  // press ends has been applied.
+  window.addEventListener(
+    'pointerdown',
+    (e) => {
+      for (const settle of pendingEntries) settle(e.target as Node);
+    },
+    true,
+  );
+}
+
 /**
- * Text typed into a field that applies it when the field is left. An entry is kept together with
- * `target`, what the field stood for when the typing began: the press that takes focus away can
- * change what the field shows (it selects another clip) before the field loses focus, and the
- * entry is still meant for what it was typed for. For the same reason an entry still in the field
- * when the field itself goes away is applied rather than lost.
+ * Text typed into `field`, applied when the field is left. Losing focus is too late for a press
+ * elsewhere: the press can change what the field stands for (it selects another clip) or take the
+ * field away before focus moves, so the entry is applied the moment the press begins, while the
+ * field still stands for what the text was typed for. It is applied by the field as it is then,
+ * not as it was when the typing began: its handlers write on top of the values they were rendered
+ * with, and those may have changed in the meantime. An entry whose field goes away for any other
+ * reason goes with it, because what it was typed for is gone.
  */
-function useEntry<T>(target: T, apply: (text: string, to: T) => void) {
+function useEntry(field: RefObject<HTMLElement | null>, apply: (text: string) => void) {
   const [text, setText] = useState<string | null>(null);
   // Readable in the same tick it changes: Enter and Escape blur the field from inside their own
   // handler, and that blur must see what they just decided.
-  const entry = useRef<{ text: string; to: T } | null>(null);
+  const typed = useRef<string | null>(null);
   const edit = (next: string | null) => {
-    entry.current = next === null ? null : { text: next, to: entry.current?.to ?? target };
+    typed.current = next;
     setText(next);
   };
   const commit = () => {
-    const typed = entry.current;
-    if (!typed) return;
+    const entered = typed.current;
+    if (entered === null) return;
     edit(null);
-    apply(typed.text, typed.to);
+    apply(entered);
   };
   const latest = useRef(commit);
   useLayoutEffect(() => {
     latest.current = commit;
   });
-  useEffect(() => () => latest.current(), []);
+  const pending = text !== null;
+  useLayoutEffect(() => {
+    if (!pending) return;
+    const settle = (pressed: Node) => {
+      if (!field.current?.contains(pressed)) latest.current();
+    };
+    pendingEntries.add(settle);
+    return () => void pendingEntries.delete(settle);
+  }, [pending, field]);
   return { text, edit, commit };
 }
 
@@ -447,12 +473,12 @@ export function NumberField({
   const inputRef = useRef<HTMLInputElement>(null);
   const clampV = (v: number) => Math.min(max, Math.max(min, v));
   const shown = mixed ? '—' : (value * scale).toFixed(precision);
-  const entry = useEntry({ onStart, onChange, onEnd, min, max, scale }, (text, to) => {
+  const entry = useEntry(inputRef, (text) => {
     const n = parseFloat(text.replace(',', '.'));
     if (!Number.isFinite(n)) return;
-    to.onStart?.();
-    to.onChange(Math.min(to.max, Math.max(to.min, n / to.scale)));
-    to.onEnd?.();
+    onStart?.();
+    onChange(clampV(n / scale));
+    onEnd?.();
   });
 
   return (
@@ -551,6 +577,10 @@ interface TextFieldProps {
   ariaLabel?: string;
   type?: string;
   readOnly?: boolean;
+  /** What was entered cannot be used: the field says so until it changes. */
+  invalid?: boolean;
+  /** Id of the text that explains the field, or what is wrong with its content. */
+  describedBy?: string;
 }
 
 export function TextField({
@@ -568,6 +598,8 @@ export function TextField({
   ariaLabel,
   type,
   readOnly,
+  invalid,
+  describedBy,
 }: TextFieldProps) {
   const stop = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !multiline) onEnter?.();
@@ -575,11 +607,17 @@ export function TextField({
     e.stopPropagation();
   };
   return (
-    <div className={cx('field', multiline && 'field--area')} style={style}>
+    <div
+      className={cx('field', multiline && 'field--area')}
+      style={style}
+      data-invalid={invalid ? '' : undefined}
+    >
       {prefix && <span className="field__prefix">{prefix}</span>}
       {multiline ? (
         <textarea
           aria-label={ariaLabel}
+          aria-invalid={invalid || undefined}
+          aria-describedby={describedBy}
           value={value}
           rows={rows}
           placeholder={placeholder}
@@ -594,6 +632,8 @@ export function TextField({
       ) : (
         <input
           aria-label={ariaLabel}
+          aria-invalid={invalid || undefined}
+          aria-describedby={describedBy}
           type={type}
           value={value}
           placeholder={placeholder}
@@ -1143,14 +1183,15 @@ export function ColorField({
   onStart,
   onEnd,
 }: { value: string; onChange: (v: string) => void } & GestureProps) {
-  const entry = useEntry({ onStart, onChange, onEnd }, (hex, to) => {
+  const hexRef = useRef<HTMLInputElement>(null);
+  const entry = useEntry(hexRef, (hex) => {
     let v = hex.trim();
     if (!v.startsWith('#')) v = `#${v}`;
     if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) return;
     if (v.length === 4) v = `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`;
-    to.onStart?.();
-    to.onChange(v.toLowerCase());
-    to.onEnd?.();
+    onStart?.();
+    onChange(v.toLowerCase());
+    onEnd?.();
   });
   const picker = useRef<HTMLInputElement>(null);
   const started = useRef(false);
@@ -1195,6 +1236,7 @@ export function ColorField({
       </div>
       <div className="field" style={{ flex: 1 }}>
         <input
+          ref={hexRef}
           className="mono"
           aria-label="Hex colour"
           value={entry.text ?? value.toUpperCase()}

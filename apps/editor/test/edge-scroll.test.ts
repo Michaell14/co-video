@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyEdits, emptyProject, makeClip, makeTrack } from '@tandem/core';
-import { EDGE_ZONE, EdgeScroller, edgeSpeed, scrollLimit } from '../src/features/timeline/edgeScroll';
+import {
+  EDGE_ZONE,
+  EdgeScroller,
+  edgeSpeed,
+  laneAxis,
+  scrollLimit,
+  timeAxis,
+  type EdgeAxis,
+} from '../src/features/timeline/edgeScroll';
 import { useUI } from '../src/state/ui';
 
 describe('edgeSpeed', () => {
@@ -47,6 +55,32 @@ describe('scrollLimit', () => {
   });
 });
 
+describe('laneAxis', () => {
+  /** A body 240 high around lanes that are `content` high in all, with 26 of that under the last lane. */
+  const body = (content: number, scrollTop = 0) =>
+    ({ scrollTop, scrollHeight: Math.max(content, 240), clientHeight: 240 }) as HTMLElement;
+
+  it('takes a drag as far as the end of the last lane, not into the room under it', () => {
+    expect(laneAxis(() => body(800), 26).limit()).toBe(534);
+    // The sample as it comes: what is out of view is a part of the last lane and that room.
+    expect(laneAxis(() => body(277), 26).limit()).toBe(11);
+  });
+
+  it('has nowhere to go when only that room is out of view, or nothing is', () => {
+    expect(laneAxis(() => body(250), 26).limit()).toBe(0);
+    expect(laneAxis(() => body(180), 26).limit()).toBe(0);
+    expect(laneAxis(() => null, 26).limit()).toBe(0);
+  });
+
+  it('reads and sets how far the body is scrolled', () => {
+    const el = body(800, 40);
+    const axis = laneAxis(() => el, 26);
+    expect(axis.position()).toBe(40);
+    axis.scrollTo(90);
+    expect(el.scrollTop).toBe(90);
+  });
+});
+
 describe('EdgeScroller', () => {
   let frames: ((now: number) => void)[] = [];
   let now = 0;
@@ -75,13 +109,34 @@ describe('EdgeScroller', () => {
     vi.restoreAllMocks();
   });
 
+  /** Time as the timeline scrolls it, in a view that spans 100…900 with `limit` as its end. */
+  const time = (limit = 10_000): EdgeAxis => ({
+    ...timeAxis(
+      () => null,
+      () => emptyProject(),
+    ),
+    bounds: () => ({ start: 100, end: 900 }),
+    limit: () => limit,
+  });
+
+  /** Lanes in a view that spans 200…500, scrolled to `top` and able to go as far as `max`. */
+  const lanes = (top: number, max: number) => {
+    const state = { top, moves: 0 };
+    const axis: EdgeAxis = {
+      bounds: () => ({ start: 200, end: 500 }),
+      position: () => state.top,
+      limit: () => max,
+      scrollTo: (to) => {
+        state.top = to;
+        state.moves++;
+      },
+    };
+    return { axis, state };
+  };
+
   const make = (limit = 10_000) => {
     const onScroll = vi.fn();
-    const scroller = new EdgeScroller({
-      bounds: () => ({ left: 100, right: 900 }),
-      limit: () => limit,
-      onScroll,
-    });
+    const scroller = new EdgeScroller([time(limit)], onScroll);
     return { scroller, onScroll };
   };
 
@@ -168,13 +223,9 @@ describe('EdgeScroller', () => {
 
   it('keeps to one loop when the drag reports the pointer from inside a step', () => {
     const onScroll = vi.fn();
-    const scroller: EdgeScroller = new EdgeScroller({
-      bounds: () => ({ left: 100, right: 900 }),
-      limit: () => 10_000,
-      onScroll: () => {
-        onScroll();
-        scroller.track(895);
-      },
+    const scroller: EdgeScroller = new EdgeScroller([time()], () => {
+      onScroll();
+      scroller.track(895);
     });
     scroller.track(500);
     scroller.track(895);
@@ -184,14 +235,92 @@ describe('EdgeScroller', () => {
   });
 
   it('survives the drag ending inside a step', () => {
-    const scroller: EdgeScroller = new EdgeScroller({
-      bounds: () => ({ left: 100, right: 900 }),
-      limit: () => 10_000,
-      onScroll: () => scroller.stop(),
-    });
+    const scroller: EdgeScroller = new EdgeScroller([time()], () => scroller.stop());
     scroller.track(500);
     scroller.track(895);
     run(10);
+    expect(frames).toHaveLength(0);
+  });
+
+  it('scrolls the lanes at the bottom edge, as far as they go, and back at the top', () => {
+    const { axis, state } = lanes(40, 120);
+    const onScroll = vi.fn();
+    const scroller = new EdgeScroller([time(), axis], onScroll);
+    scroller.track(500, 350);
+    scroller.track(500, 495);
+    run(10);
+    expect(state.top).toBeGreaterThan(40);
+    expect(Number.isInteger(state.top)).toBe(true);
+    // Time is left alone by a pointer that is nowhere near its edges.
+    expect(useUI.getState().scrollX).toBe(500);
+    run(400);
+    expect(state.top).toBe(120);
+    expect(frames).toHaveLength(0);
+    scroller.track(500, 205);
+    run(400);
+    expect(state.top).toBe(0);
+    expect(frames).toHaveLength(0);
+    expect(onScroll.mock.calls.length).toBe(state.moves);
+  });
+
+  it('runs the drag once for a step that scrolls both ways', () => {
+    const { axis, state } = lanes(40, 10_000);
+    const onScroll = vi.fn();
+    const scroller = new EdgeScroller([time(), axis], onScroll);
+    scroller.track(500, 350);
+    scroller.track(895, 495);
+    run(10);
+    expect(useUI.getState().scrollX).toBeGreaterThan(500);
+    expect(state.top).toBeGreaterThan(40);
+    expect(onScroll.mock.calls.length).toBeLessThanOrEqual(10);
+    expect(frames.length).toBeLessThanOrEqual(1);
+  });
+
+  it('leaves the lanes alone while the drag does not scroll them, and wants a fresh approach after', () => {
+    const { axis, state } = lanes(40, 10_000);
+    const scroller = new EdgeScroller([time(), axis], () => {});
+    scroller.track(500, 350);
+    scroller.track(500, 495);
+    run(5);
+    const reached = state.top;
+    expect(reached).toBeGreaterThan(40);
+    // A track opened by the drag is being shown: the lane axis is not reported.
+    scroller.track(500, null);
+    run(20);
+    expect(state.top).toBe(reached);
+    expect(frames).toHaveLength(0);
+    // Reported again from inside the strip, the pointer has to head for the edge once more.
+    scroller.track(500, 495);
+    run(20);
+    expect(state.top).toBe(reached);
+    scroller.track(500, 502);
+    run(5);
+    expect(state.top).toBeGreaterThan(reached);
+  });
+
+  it('stops when the view does not take the step', () => {
+    const stuck: EdgeAxis = {
+      bounds: () => ({ start: 200, end: 500 }),
+      position: () => 64,
+      limit: () => 10_000,
+      scrollTo: () => {},
+    };
+    const onScroll = vi.fn();
+    const scroller = new EdgeScroller([stuck], onScroll);
+    scroller.track(350);
+    scroller.track(495);
+    run(30);
+    expect(onScroll).not.toHaveBeenCalled();
+    expect(frames).toHaveLength(0);
+  });
+
+  it('does not scroll lanes that all fit', () => {
+    const { axis, state } = lanes(0, 0);
+    const scroller = new EdgeScroller([time(), axis], () => {});
+    scroller.track(500, 350);
+    scroller.track(500, 499);
+    run(30);
+    expect(state.moves).toBe(0);
     expect(frames).toHaveLength(0);
   });
 });

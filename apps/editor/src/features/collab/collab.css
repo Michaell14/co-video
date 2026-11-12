@@ -31,7 +31,7 @@
   height: 24px;
   border-radius: 50%;
   transition:
-    transform var(--dur-2) var(--ease-spring),
+    transform var(--dur-hover) var(--ease-spring),
     box-shadow var(--dur-1) ease;
 }
 .swatch-btn:hover {
@@ -43,10 +43,12 @@
     0 0 0 2px var(--bg-3),
     0 0 0 4px var(--fg-1);
 }
-.swatch-btn:focus-visible {
+/* With the keyboard on it, the chosen colour keeps its ring and the focus ring goes round that. */
+.swatch-btn[aria-pressed='true']:focus-visible {
   box-shadow:
     0 0 0 2px var(--bg-3),
-    0 0 0 4px var(--accent);
+    0 0 0 4px var(--fg-1),
+    0 0 0 6px var(--accent-line);
 }
 .comments {
   display: flex;
@@ -77,6 +79,15 @@
 }
 .comment--resolved .comment__tc {
   color: var(--fg-2);
+}
+/* The mark that says so is a sign, not a word: in a narrow panel the author's name needs the room. */
+.comment__done {
+  display: flex;
+  flex: none;
+}
+.comment__done svg {
+  width: 14px;
+  height: 14px;
 }
 .comment__head {
   display: flex;

@@ -1,4 +1,4 @@
-import { CircleCheck, Download, Film, Info, TriangleAlert } from 'lucide-react';
+import { CircleAlert, CircleCheck, Download, Film, Info, TriangleAlert } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   describeFps,
@@ -599,8 +599,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         {phase.kind === 'error' && (
-          <div className="callout callout--warn">
-            <TriangleAlert />
+          <div className="callout exp__failed" role="alert">
+            <CircleAlert />
             <div>
               <b>Export failed.</b> {phase.message}
             </div>

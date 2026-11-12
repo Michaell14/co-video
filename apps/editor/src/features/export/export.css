@@ -71,6 +71,14 @@
   color: var(--fg-2);
   font-size: var(--text-sm);
 }
+/* A failure is not a warning: it takes the colour errors have everywhere else. */
+.callout.exp__failed {
+  background: var(--red-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 30%, transparent);
+}
+.callout.exp__failed svg {
+  color: var(--red);
+}
 .exp__run {
   display: flex;
   flex-direction: column;
@@ -86,6 +94,11 @@
 }
 .exp__bar {
   height: 6px;
+}
+/* While a file is being written the one way out is "Cancel export": a close button beside the
+   title would have nothing to do. */
+.dialog:has(.exp__run) .dialog__head .icon-btn {
+  display: none;
 }
 .exp__done {
   display: flex;

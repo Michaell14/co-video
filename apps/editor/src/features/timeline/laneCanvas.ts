@@ -1,6 +1,7 @@
 /** Canvas painting for a track lane: filmstrips for picture clips, waveforms for sound. */
 import { CLIP_TYPE_COLORS, dbToGain, hexToRgb, sourcePerFrame, type Clip, type Project } from '@tandem/core';
-import { LABEL_H } from './layout';
+import { canvasTheme, type CanvasTheme } from './canvasTheme';
+import { clipWidth, LABEL_H, LABEL_MIN_W, LABEL_TINT, NARROW_W } from './layout';
 import { FilmstripCache, type TimelineMedia } from './mediaCache';
 
 export interface LaneView {
@@ -11,11 +12,10 @@ export interface LaneView {
   dpr: number;
 }
 
-const RADIUS = 5;
-
-function tint(hex: string, alpha: number): string {
-  const [r, g, b] = hexToRgb(hex);
-  return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${alpha})`;
+/** `hex` at `alpha`, darkened towards black by `keep` (1 leaves it as it is). */
+function tint(hex: string, alpha: number, keep = 1): string {
+  const [r, g, b] = hexToRgb(hex).map((v) => Math.round(v * keep * 255));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 export function drawLane(
@@ -26,6 +26,7 @@ export function drawLane(
   media: TimelineMedia,
 ): void {
   const { scrollX, ppf, width, height, dpr } = view;
+  const theme = canvasTheme(ctx.canvas);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
   const fps = project.settings.fpsNum / project.settings.fpsDen;
@@ -43,13 +44,23 @@ export function drawLane(
     const visL = Math.max(0, x0);
     const visR = Math.min(width, x0 + w);
 
+    // The same box as the clip's element, so the picture ends where its outline does.
+    const boxW = clipWidth(clip.duration, ppf);
+    const radius = boxW < NARROW_W ? theme.narrowClipRadius : theme.clipRadius;
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(x0, 0, Math.max(1, w - 1), height, Math.min(RADIUS, w / 2));
+    ctx.roundRect(x0, 0, boxW, height, Math.min(radius, boxW / 2));
     ctx.clip();
     ctx.globalAlpha = clip.enabled ? 1 : 0.35;
     ctx.fillStyle = tint(color, clip.type === 'audio' ? 0.3 : 0.22);
     ctx.fillRect(visL, 0, visR - visL, height);
+    // A clip too short for its name still gets the strip the name would stand on, so a lane of
+    // short clips keeps its band of colour instead of breaking into darker gaps. It is the strip
+    // of a clip with room for its name in every respect: red when the media is missing.
+    if (!compact && boxW <= LABEL_MIN_W) {
+      ctx.fillStyle = clip.assetId && !asset ? theme.offlineLabel : tint(color, 1, LABEL_TINT);
+      ctx.fillRect(visL, 0, visR - visL, LABEL_H);
+    }
 
     if (clip.type === 'audio') {
       drawWaveform(
@@ -60,6 +71,7 @@ export function drawLane(
         { x0, visL, visR, top, bodyH, fps, ppf },
         media,
         color,
+        theme,
       );
     } else if (asset && bodyH > 8) {
       const aspect = asset.width > 0 && asset.height > 0 ? asset.width / asset.height : 16 / 9;
@@ -88,7 +100,7 @@ export function drawLane(
         if (img) ctx.drawImage(img, tx, top, tw, th);
       }
       // A soft shade so the label strip and trim handles stay readable over bright footage.
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+      ctx.fillStyle = theme.thumbShade;
       ctx.fillRect(visL, top, visR - visL, th);
     }
     ctx.restore();
@@ -103,6 +115,7 @@ function drawWaveform(
   g: { x0: number; visL: number; visR: number; top: number; bodyH: number; fps: number; ppf: number },
   media: TimelineMedia,
   color: string,
+  theme: CanvasTheme,
 ): void {
   if (!clip.assetId || g.bodyH < 6) return;
   const wave = media.wave.get(clip.assetId, assetDuration);
@@ -138,7 +151,7 @@ function drawWaveform(
   ctx.fill();
 
   // Fades: shade the attenuated region.
-  ctx.fillStyle = 'rgba(8, 8, 10, 0.55)';
+  ctx.fillStyle = theme.fadeShade;
   if (clip.fadeIn > 0) {
     const fw = clip.fadeIn * g.ppf;
     ctx.beginPath();
@@ -162,7 +175,7 @@ function drawWaveform(
     // Still analysing: hatch the part we have not reached yet.
     const loadedX = g.x0 + ((wave.loaded - clip.sourceIn) / per) * g.ppf;
     if (loadedX < g.visR) {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.fillStyle = theme.pending;
       ctx.fillRect(Math.max(g.visL, loadedX), g.top, g.visR - Math.max(g.visL, loadedX), g.bodyH);
     }
   }

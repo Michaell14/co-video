@@ -72,6 +72,16 @@ async function enter(field: Locator, text: string): Promise<void> {
 
 const inspector = (page: Page) => page.locator('[aria-label="Inspector"]');
 
+/** The colour a design token stands for, as computed styles report it. */
+const token = (page: Page, name: string): Promise<string> =>
+  page.evaluate((name) => {
+    const probe = document.body.appendChild(document.createElement('span'));
+    probe.style.backgroundColor = `var(${name})`;
+    const colour = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return colour;
+  }, name);
+
 const toast = (page: Page, text: string) => page.locator('.toast', { hasText: text }).first();
 
 // A file saved while the suite runs makes the dev server reload the page under the test; its
@@ -451,6 +461,62 @@ test.describe('inspector', () => {
     await page.getByRole('option', { name: '30 fps', exact: true }).click();
     expect(await state()).toEqual(at30);
   });
+
+  test('the panel follows the selection without moving, also under a drag in the timeline', async ({
+    page,
+  }) => {
+    await sample(page);
+    await set(page, { selection: [] });
+    await page.evaluate(() => {
+      const started: string[] = ((window as any).started = []);
+      const note = (e: AnimationEvent): void => {
+        if ((e.target as Element).closest('[aria-label="Inspector"]')) started.push(e.animationName);
+      };
+      document.addEventListener('animationstart', note, true);
+    });
+    /** The animations that began inside the panel since this was last asked. */
+    const started = (): Promise<string[]> => page.evaluate(() => (window as any).started.splice(0));
+    const selected = (): Promise<number> =>
+      page.evaluate(() => (window as any).tandem.ui.getState().selection.length);
+    const sections = inspector(page).locator('.section');
+    const dusk = await clip(page, 'dusk.mp4');
+    const onDusk = await box(page.locator(`[data-clip="${dusk.id}"]`));
+    const middle = [onDusk.x + onDusk.width / 2, onDusk.y + onDusk.height / 2] as const;
+    const free = await box(page.locator('.lane').last());
+
+    // A marquee selects and lets go again while it is dragged: the panel shows the clips, then
+    // the project, with the pointer down throughout.
+    await page.mouse.move(free.x + 40, free.y + free.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(...middle, { steps: 6 });
+    await expect.poll(selected).toBeGreaterThan(0);
+    await expect(sections.first()).toBeVisible();
+    await page.mouse.move(free.x + 50, free.y + free.height / 2, { steps: 6 });
+    await expect.poll(selected).toBe(0);
+    await expect(sections).toHaveCount(0);
+    await page.mouse.up();
+    // The press that picks up a clip selects it: its sections and its effect are there at once.
+    await page.mouse.move(...middle);
+    await page.mouse.down();
+    await expect(inspector(page).locator('.fxitem')).toHaveCount(dusk.effects.length);
+    await page.waitForTimeout(200);
+    await page.mouse.up();
+    expect(dusk.effects.length).toBeGreaterThan(0);
+    expect(await started()).toEqual([]);
+
+    // What a person opens or adds in the panel does move: a section under its head, a new effect
+    // into the list. And the panel itself fades in when the workspace brings it back.
+    const transform = inspector(page).locator('.section__head', { hasText: 'Transform' });
+    await transform.click();
+    await expect(transform).toHaveAttribute('aria-expanded', 'false');
+    await transform.click();
+    await expect.poll(started).toEqual(['section-open']);
+    await page.evaluate(() => (window as any).tandem.cmd.applyEffect('invert'));
+    await expect.poll(started).toEqual(['slide-up']);
+    await set(page, { workspace: 'color' });
+    await set(page, { workspace: 'edit' });
+    await expect(inspector(page).locator('.panel__body')).toHaveCSS('animation-name', 'fade-in');
+  });
 });
 
 test.describe('colour', () => {
@@ -598,14 +664,6 @@ test.describe('mixer', () => {
     expect((await a1()).volume).toBe(-9);
 
     // Solo and mute show what they are switched to while the pointer is still on the button.
-    const token = (name: string) =>
-      page.evaluate((name) => {
-        const probe = document.body.appendChild(document.createElement('span'));
-        probe.style.backgroundColor = `var(${name})`;
-        const colour = getComputedStyle(probe).backgroundColor;
-        probe.remove();
-        return colour;
-      }, name);
     for (const [name, colour] of [
       ['S', '--amber'],
       ['M', '--red'],
@@ -614,7 +672,7 @@ test.describe('mixer', () => {
       await button.click();
       await expect(button).toHaveAttribute('aria-pressed', 'true');
       expect(await button.evaluate((el) => el.matches(':hover'))).toBe(true);
-      await expect(button).toHaveCSS('background-color', await token(colour));
+      await expect(button).toHaveCSS('background-color', await token(page, colour));
       await button.click();
       await expect(button).toHaveAttribute('aria-pressed', 'false');
     }
@@ -757,5 +815,56 @@ test.describe('export', () => {
     await clean;
     await expect(page.locator('.dialog')).toContainText('Export complete', { timeout: 100_000 });
     await expect(page.locator('.exp__problems')).toHaveCount(0);
+  });
+
+  test('a running export has one way out, and a failed one is shown as a failure', async ({ page }) => {
+    await sample(page);
+    await page.evaluate(() => {
+      const { session, ui } = (window as any).tandem;
+      session.store.commit([{ op: 'settings', patch: { width: 320, height: 180 } }]);
+      ui.getState().set({ dialog: 'export' });
+    });
+    await expect(page.locator('.exp')).toBeVisible();
+    await probed(page);
+    const dialog = page.locator('.dialog');
+    const close = dialog.getByRole('button', { name: 'Close' });
+    await expect(close).toBeVisible();
+    // The dialog scales in: its title row has its own height once that is over.
+    await dialog.evaluate((el) => Promise.all(el.getAnimations().map((entrance) => entrance.finished)));
+    const head = (await box(dialog.locator('.dialog__head'))).height;
+
+    // The whole sample takes this renderer far longer than the checks below.
+    await exportButton(page).click();
+    const running = page.locator('.exp__run');
+    await expect(running).toBeVisible();
+    // "Cancel export" is the only button: none beside the title that would do nothing, and the
+    // title stays where it was without it.
+    await expect(dialog.getByRole('button')).toHaveText(['Cancel export']);
+    expect((await box(dialog.locator('.dialog__head'))).height).toBe(head);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    await expect(running).toBeVisible();
+    await dialog.getByRole('button', { name: 'Cancel export' }).click();
+    await expect(dialog.locator('.exp__preset').first()).toBeVisible();
+    await expect(close).toBeVisible();
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+
+    // An encoder that will not start is a failure, and looks like one: not like a warning.
+    await page.evaluate(() => {
+      (window as any).VideoEncoder = class {
+        static isConfigSupported = () => Promise.resolve({ supported: true });
+        constructor() {
+          throw new Error('The video encoder could not be started.');
+        }
+      };
+    });
+    await exportButton(page).click();
+    const failed = dialog.getByRole('alert');
+    await expect(failed).toHaveText('Export failed. The video encoder could not be started.');
+    await expect(failed).not.toHaveClass(/callout--warn/);
+    await expect(failed.locator('svg')).toHaveCSS('color', await token(page, '--red'));
+    // The settings are still there to be changed and tried again.
+    await expect(exportButton(page)).toBeEnabled();
+    await expect(close).toBeVisible();
   });
 });

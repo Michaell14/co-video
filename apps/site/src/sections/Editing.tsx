@@ -148,7 +148,7 @@ const TOOLS: Tool[] = [
   },
   {
     title: 'Keyframes',
-    body: 'Animate any numeric property, with bezier easing between every pair of keys.',
+    body: 'Animate any numeric property, and choose how each key eases into the next: linear, hold, in, out or both.',
     icon: <Spline size="1.1rem" aria-hidden="true" />,
     demo: <KeyframeDemo />,
   },

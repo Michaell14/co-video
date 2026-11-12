@@ -1,3 +1,8 @@
+/* Fades in when the workspace brings the panel back, as the colour panel and the mixer do. What
+   it shows then follows the selection without moving: that changes under drags in the timeline. */
+.insp {
+  animation: fade-in var(--dur-2) ease;
+}
 .insp__title {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -11,13 +16,9 @@
 /* What the panel shows when it is not sections: the same side margins as their rows. */
 .insp__project {
   padding: 12px 10px;
-  animation: fade-in var(--dur-2) ease;
 }
 .insp__hint {
   padding: 0 10px;
-}
-.panel__body > .rows {
-  animation: fade-in var(--dur-2) ease;
 }
 /* A value that cannot be typed over starts where the text of the fields around it does. */
 .insp__read {
@@ -85,6 +86,8 @@
   border-radius: var(--r-md);
   background: var(--bg-3);
   box-shadow: inset 0 0 0 1px var(--line-1);
+}
+.fxitem[data-added] {
   animation: slide-up var(--dur-2) var(--ease-out);
 }
 .fxitem[data-off='true'] .fxitem__name {
@@ -127,7 +130,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .fxitem {
+  .fxitem[data-added] {
     animation-name: fade-in;
   }
 }

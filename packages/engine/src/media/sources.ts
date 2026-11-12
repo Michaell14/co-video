@@ -51,6 +51,10 @@ const MIN_HELD = AHEAD + 2;
 const STARVED_MS = 600;
 /** Given frames back, a decoder that was waiting for them delivers within this time. */
 const CONFIRM_MS = 250;
+/** A decoder that stops before its first frame is started again after these waits, then given up on. */
+const RESTART_MS = [100, 400];
+/** A frame further than this (seconds) from where a decoder gave up is in another part of the file. */
+const ELSEWHERE = 1.5;
 
 /** Why a clip's media could not be shown as asked. */
 export type SourceFault = MediaFault | 'undecodable' | 'timeout' | 'decode-error';
@@ -65,7 +69,7 @@ export interface SourceProblem {
    * `missing`: the file is neither on this device nor on the server. `unreadable`: it is there but
    * could not be opened (damaged, not media, refused by the server). `undecodable`: it opens, and
    * this browser cannot decode what is in it. `timeout`: the frame did not arrive in time.
-   * `decode-error`: decoding stopped part-way through the file.
+   * `decode-error`: decoding stopped part-way through the file, or would not start there at all.
    */
   reason: SourceFault;
 }
@@ -140,8 +144,11 @@ class VideoCursor {
   pass = 0;
   /** Counts uploads into `tex`, so work derived from its pixels is redone only when they change. */
   version = 0;
-  /** Why there is no picture: the file cannot be found (asked for again shortly), opened or decoded. */
-  problem: MediaFault | 'undecodable' | null = null;
+  /**
+   * Why there is no picture: the file cannot be found (asked for again shortly), opened or decoded,
+   * or its decoder gave up before the first frame (`decode-error`, see `stopped`).
+   */
+  problem: MediaFault | 'undecodable' | 'decode-error' | null = null;
 
   private media: OpenMedia | null = null;
   private sink: VideoSampleSink | null = null;
@@ -161,6 +168,12 @@ class VideoCursor {
   private pumpFrom = 0;
   private pumpTo = 0;
   private pumpStartedAt = 0;
+  /** Decoders in a row that stopped before their first frame. */
+  private failures = 0;
+  /** No decoder is started before this time (`performance.now()`): the last one has just failed. */
+  private holdUntil = 0;
+  /** Where the decoder gave up, or the time a viewer at rest has asked for last since then. */
+  private gaveUpAt = 0;
   private uploadedTs = NaN;
   private waiters: (() => void)[] = [];
   private resume: (() => void) | null = null;
@@ -171,6 +184,7 @@ class VideoCursor {
   private trial: { limit: number; at: number } | null = null;
   private disposed = false;
   private reverse = false;
+  private sequential = false;
   private history = 0;
   private sharers = 1;
   /** Decode HDR sources at full bit depth (planar read-back) instead of the browser's 8-bit path. */
@@ -192,13 +206,15 @@ class VideoCursor {
   }
 
   /**
-   * `reverse`: the wanted time runs backwards (a reversed clip, or J-shuttle). `history`: seconds of
-   * picture to keep behind the playhead, for a viewer that may step back. `sharers`: how many
-   * cursors are at work, which is how many ways the memory for kept frames is split.
+   * `reverse`: the wanted time runs backwards (a reversed clip, or J-shuttle). `sequential`: frames
+   * are asked for strictly in order (playback, an export); otherwise some picture is kept behind
+   * the playhead, for a viewer that may step back. `sharers`: how many cursors are at work, which
+   * is how many ways the memory for kept frames is split.
    */
-  setMode(reverse: boolean, history: number, sharers: number): void {
+  setMode(reverse: boolean, sequential: boolean, sharers: number): void {
     this.reverse = reverse;
-    this.history = history;
+    this.sequential = sequential;
+    this.history = sequential ? 0 : HISTORY;
     this.sharers = Math.max(1, sharers);
   }
 
@@ -225,9 +241,11 @@ class VideoCursor {
     if (raw === this.raw) return;
     this.raw = raw;
     if (!raw) this.yuvInfo = undefined;
-    // Frames already buffered were prepared for the other path; decode afresh.
+    // Frames already buffered were prepared for the other path; decode afresh. A decoder that is
+    // being held back, or was given up on, has none: its next start is the one `request` makes.
     this.uploadedTs = NaN;
-    if (this.sink && !this.disposed) this.startPump(this.want);
+    if (this.sink && !this.disposed && !this.problem && performance.now() >= this.holdUntil)
+      this.startPump(this.want);
   }
 
   /** Copy a sample's planes off the decoder so they can be uploaded synchronously later. */
@@ -377,6 +395,19 @@ class VideoCursor {
       this.open();
       return;
     }
+    if (this.problem === 'decode-error') {
+      // Frames asked for in order (playback, an export) go on from the one that would not decode
+      // and share its fate, however far a fast clip moves through its file from one to the next:
+      // nothing is started for them. Damage is often local though. A viewer at rest that asks for
+      // another part of the file gets a new try, and one that steps on frame by frame takes the
+      // verdict along.
+      if (this.sequential) return;
+      const near = Math.abs(t - this.gaveUpAt) <= ELSEWHERE;
+      this.gaveUpAt = t;
+      if (near) return;
+      this.problem = null;
+      this.failures = 0;
+    }
     if (this.inRange(t)) {
       this.trim();
       this.resume?.();
@@ -386,7 +417,29 @@ class VideoCursor {
     // A seek is already in flight and has not produced anything yet: let it land first so fast
     // scrubbing always shows *something*. The pump re-checks `want` when its first frame arrives.
     if (this.pumping && this.buffer.length === 0 && performance.now() - this.pumpStartedAt < 300) return;
+    if (performance.now() < this.holdUntil) return;
     this.startPump(t);
+  }
+
+  /**
+   * The decoder stopped without a single frame: it threw, or had nothing to give. Started again at
+   * once it does the same, and whoever waits for its picture asks again as soon as it has stopped,
+   * so each new start waits longer than the one before, and after the last of them the file is
+   * taken as one that does not decode here. Whoever is waiting is told when a wait is over.
+   */
+  private stopped(): void {
+    const wait = RESTART_MS[this.failures++];
+    if (wait === undefined) {
+      this.problem = 'decode-error';
+      this.gaveUpAt = this.want;
+      return;
+    }
+    this.holdUntil = performance.now() + wait;
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = setTimeout(() => {
+      this.retry = null;
+      this.notify();
+    }, wait);
   }
 
   /** The most decoded frames this cursor's decoder has been seen to spare (see `starved`). */
@@ -531,8 +584,11 @@ class VideoCursor {
     this.pumpFrom = Math.max(0, t - lead);
     this.pumpTo = t;
     void (async () => {
+      let delivered = false;
       try {
         for await (const sample of this.frames(id, this.pumpFrom)) {
+          delivered = true;
+          this.failures = 0;
           this.buffer.push(sample);
           this.trim();
           this.notify();
@@ -555,6 +611,7 @@ class VideoCursor {
         if (id === this.pumpId && !this.disposed) {
           this.pumpEnded = true;
           this.pumping = false;
+          if (!delivered) this.stopped();
           this.notify();
         }
       } catch (err) {
@@ -563,6 +620,7 @@ class VideoCursor {
           this.pumping = false;
           this.pumpEnded = true;
           this.broken = true;
+          if (!delivered) this.stopped();
           this.notify();
         }
       }
@@ -844,9 +902,11 @@ export class SourceManager implements SourceProvider {
   /** +1 when the timeline plays forward, -1 when shuttling backwards. */
   direction: 1 | -1 = 1;
   /**
-   * True while frames are asked for strictly in order (playback, export), when nothing behind the
-   * playhead is worth keeping. Otherwise (paused, scrubbing) each decoder keeps about half a second
-   * of frames behind it, so that stepping back is served from memory instead of a seek per frame.
+   * True while frames are asked for strictly in order (playback, export). Nothing behind the
+   * playhead is worth keeping then, and a decoder that would not start is not tried again for the
+   * frames that follow. Otherwise (paused, scrubbing) each decoder keeps about half a second of
+   * frames behind it, so that stepping back is served from memory instead of a seek per frame, and
+   * one that would not start gets a new try in another part of its file.
    */
   sequential = false;
   /**
@@ -855,11 +915,15 @@ export class SourceManager implements SourceProvider {
    */
   stillBudget = 384 * MIB;
   /**
-   * Fonts that were asked for: the pending load, or null once it settled. Each is asked for once. A
-   * face whose file cannot be fetched never loads however often it is requested, while `check` goes
-   * on answering false.
+   * Fonts that were asked about: the pending load, or null when there is nothing (more) to wait
+   * for. Each is asked about once for as long as the document has the faces it has. A face whose
+   * file cannot be fetched never loads however often it is requested, while `check` goes on
+   * answering false; and asking `check` about a font that is there costs more, on every frame, than
+   * the rest of what a title needs to be drawn again.
    */
   private readonly fonts = new Map<string, Promise<void> | null>();
+  /** How many faces the document had when the answers in `fonts` were given. */
+  private fontFaces = -1;
   private tick = 0;
   private pass = 0;
   private uses = 0;
@@ -1099,7 +1163,7 @@ export class SourceManager implements SourceProvider {
       cur = new VideoCursor(this.glx, this.library, assetId, this.spare, this.invalidate);
       this.cursors.set(clipId, cur);
     }
-    cur.setMode(reverse !== this.direction < 0, this.sequential ? 0 : HISTORY, this.cursors.size);
+    cur.setMode(reverse !== this.direction < 0, this.sequential, this.cursors.size);
     cur.pass = this.pass;
     return cur;
   }
@@ -1257,14 +1321,27 @@ export class SourceManager implements SourceProvider {
     return e;
   }
 
+  private forgetSettledFonts(): void {
+    for (const [key, pending] of this.fonts) if (!pending) this.fonts.delete(key);
+  }
+
   private ensureFont(spec: string, sample: string): Promise<void> | null {
     if (typeof document === 'undefined' || !document.fonts) return null;
+    // A family nobody has registered yet counts as available (the fallback will draw it). Once
+    // its faces are added to the document, what was settled before says nothing about them.
+    if (document.fonts.size !== this.fontFaces) {
+      this.fontFaces = document.fonts.size;
+      this.forgetSettledFonts();
+    }
     const key = `${spec}\n${sample}`;
     const asked = this.fonts.get(key);
     if (asked !== undefined) return asked;
-    if (document.fonts.check(spec, sample)) return null;
-    // Only text typed in a face that did not load gets here time and again; keep the record small.
-    if (this.fonts.size >= 256) for (const [k, p] of this.fonts) if (!p) this.fonts.delete(k);
+    // Text being typed asks about a new string with every key; keep the record small.
+    if (this.fonts.size >= 256) this.forgetSettledFonts();
+    if (document.fonts.check(spec, sample)) {
+      this.fonts.set(key, null);
+      return null;
+    }
     // Success shows through `fontEpoch` (the document's fonts announce it); failure needs no redraw.
     const load = document.fonts
       .load(spec, sample)

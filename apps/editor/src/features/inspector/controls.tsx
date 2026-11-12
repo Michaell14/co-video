@@ -44,10 +44,20 @@ export function Section({
   defaultCollapsed?: boolean;
 }) {
   const [collapsed, toggle] = useCollapsed(id, defaultCollapsed);
+  // A body its head has just opened settles into place. One that comes with a new selection is
+  // simply there: the selection changes under a drag in the timeline, where nothing else may move.
+  const [opened, setOpened] = useState(false);
   return (
     <div className="section" data-collapsed={collapsed}>
       <div style={{ display: 'flex', alignItems: 'center' }}>
-        <button className="section__head" onClick={toggle} aria-expanded={!collapsed}>
+        <button
+          className="section__head"
+          onClick={() => {
+            setOpened(collapsed);
+            toggle();
+          }}
+          aria-expanded={!collapsed}
+        >
           <ChevronDown className="section__chev" />
           <span className="section__title">{title}</span>
         </button>
@@ -55,7 +65,11 @@ export function Section({
           <div style={{ display: 'flex', alignItems: 'center', gap: 2, paddingRight: 6 }}>{actions}</div>
         )}
       </div>
-      {!collapsed && <div className="section__body">{children}</div>}
+      {!collapsed && (
+        <div className="section__body" data-opened={opened || undefined}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }

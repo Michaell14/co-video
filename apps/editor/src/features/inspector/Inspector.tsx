@@ -134,7 +134,7 @@ export function Inspector() {
         <span className="panel__spacer" />
         {readOnly && <span className="badge badge--amber">Read only</span>}
       </div>
-      <div className="panel__body" data-readonly={readOnly}>
+      <div className="panel__body insp" data-readonly={readOnly}>
         {body}
       </div>
     </>
@@ -165,7 +165,7 @@ function ClipInspector({ project, clips }: { project: Project; clips: Clip[] }) 
       {timed.length > 0 && <SpeedSection clips={timed} project={project} />}
       {audio.length > 0 && <AudioSection clips={audio} project={project} />}
       {visual.length > 0 && <ColorSummary clips={visual} />}
-      {visual.length === 1 && <EffectsSection clip={visual[0]} />}
+      {visual.length === 1 && <EffectsSection key={visual[0].id} clip={visual[0]} />}
     </div>
   );
 }
@@ -699,6 +699,9 @@ function ColorSummary({ clips }: { clips: Clip[] }) {
 
 function EffectsSection({ clip }: { clip: Clip }) {
   const ids = [clip.id];
+  // An effect slides into the list when it is added. Those the clip had when it was selected are
+  // simply there: a press that starts a drag in the timeline selects, and nothing else may move.
+  const [had] = useState(() => new Set(clip.effects.map((fx) => fx.id)));
   const move = (i: number, dir: -1 | 1) => {
     const list = clip.effects.slice();
     const j = i + dir;
@@ -744,7 +747,12 @@ function EffectsSection({ clip }: { clip: Clip }) {
       {clip.effects.map((fx, i) => {
         const def = getEffectDef(fx.type);
         return (
-          <div key={fx.id} className="fxitem" data-off={!fx.enabled}>
+          <div
+            key={fx.id}
+            className="fxitem"
+            data-off={!fx.enabled}
+            data-added={!had.has(fx.id) || undefined}
+          >
             <div className="fxitem__head">
               <Switch
                 checked={fx.enabled}

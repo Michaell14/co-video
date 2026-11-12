@@ -11,7 +11,9 @@
   display: grid;
   place-items: center;
   overflow: hidden;
-  background: radial-gradient(circle at 50% 40%, rgba(255, 255, 255, 0.025), transparent 60%), var(--bg-1);
+  background:
+    radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--fg-1) 2.5%, transparent), transparent 60%),
+    var(--bg-1);
 }
 .viewer__stage--scroll {
   overflow: auto;
@@ -25,7 +27,7 @@
   background: #000;
   box-shadow:
     0 0 0 1px var(--line-2),
-    0 18px 50px rgba(0, 0, 0, 0.5);
+    var(--shadow-2);
 }
 .viewer__canvas {
   display: block;
@@ -39,27 +41,33 @@
   height: 100%;
   pointer-events: none;
   fill: none;
-  stroke: rgba(255, 255, 255, 0.5);
+  stroke: color-mix(in srgb, var(--fg-1) 50%, transparent);
   stroke-width: 1;
 }
+/* Both of these lie over a picture that is redrawn on every frame of playback. A blurred backdrop
+   would be blurred again each time, so they are plain scrims. */
 .viewer__stats {
   position: absolute;
-  top: 10px;
-  left: 10px;
+  top: 8px;
+  left: 8px;
   padding: 6px 8px;
   border-radius: var(--r-sm);
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(6px);
-  color: var(--accent);
+  background: color-mix(in srgb, var(--bg-0) 78%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  color: var(--fg-2);
   font-size: var(--text-2xs);
   line-height: 1.5;
   pointer-events: none;
 }
+.viewer__stats > :first-child {
+  color: var(--fg-1);
+}
 .viewer__lost {
   position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 12px;
+  left: 8px;
+  right: 8px;
+  /* In the margin the fitted frame leaves below itself, clear of the picture's edge. */
+  bottom: 4px;
   z-index: 5;
   display: flex;
   align-items: center;
@@ -68,12 +76,11 @@
   margin: 0 auto;
   padding: 6px 10px;
   border-radius: var(--r-md);
-  background: rgba(0, 0, 0, 0.72);
-  backdrop-filter: blur(6px);
+  background: color-mix(in srgb, var(--bg-0) 86%, transparent);
   box-shadow: inset 0 0 0 1px var(--line-2);
   color: var(--fg-2);
   font-size: var(--text-xs);
-  animation: fade-in var(--dur-3) ease;
+  animation: slide-up var(--dur-2) var(--ease-out);
 }
 
 /* Transform handles */
@@ -84,17 +91,25 @@
   height: 100%;
   overflow: visible;
 }
+/* A dark line under the accent one: the box has to show on footage of any colour, its own included. */
+.gizmo__halo {
+  fill: none;
+  stroke: color-mix(in srgb, var(--bg-0) 55%, transparent);
+  pointer-events: none;
+}
 .gizmo__body {
   fill: transparent;
   stroke: var(--accent);
   cursor: move;
 }
-.gizmo__handle {
-  fill: #fff;
+.gizmo__handle,
+.gizmo__rotate {
+  fill: var(--fg-1);
   stroke: var(--accent);
   transition: fill var(--dur-1) ease;
 }
-.gizmo__handle:hover {
+.gizmo__handle:hover,
+.gizmo__rotate:hover {
   fill: var(--accent);
 }
 .gizmo__stem {
@@ -102,12 +117,10 @@
   pointer-events: none;
 }
 .gizmo__rotate {
-  fill: #fff;
-  stroke: var(--accent);
   cursor: grab;
 }
-.gizmo__rotate:hover {
-  fill: var(--accent);
+.gizmo__rotate:active {
+  cursor: grabbing;
 }
 .gizmo__guide {
   stroke: #ff4fa3;
@@ -131,10 +144,10 @@
   left: 12px;
   top: 14px;
   padding: 1px 6px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--c);
-  color: #0b0b0d;
-  font-size: 10px;
+  color: var(--accent-ink);
+  font-size: var(--text-2xs);
   font-weight: 700;
   white-space: nowrap;
 }
@@ -147,13 +160,13 @@
   align-items: center;
   gap: 6px;
   padding: 3px 4px 3px 10px;
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--c);
-  color: #0b0b0d;
+  color: var(--accent-ink);
   font-size: var(--text-xs);
   font-weight: 700;
   box-shadow: var(--shadow-2);
-  animation: pop-in var(--dur-3) var(--ease-spring);
+  animation: pop-in var(--dur-2) var(--ease-out);
 }
 .following button {
   display: grid;
@@ -161,11 +174,12 @@
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.18);
+  background: color-mix(in srgb, var(--accent-ink) 18%, transparent);
   color: inherit;
+  transition: background var(--dur-1) ease;
 }
 .following button:hover {
-  background: rgba(0, 0, 0, 0.32);
+  background: color-mix(in srgb, var(--accent-ink) 32%, transparent);
 }
 
 /* Transport */
@@ -221,7 +235,9 @@
   }
 }
 .tc {
-  width: 118px;
+  /* Eleven characters of timecode, and a little room for a "+" or "−" typed in front. */
+  width: 12ch;
+  box-sizing: content-box;
   height: 26px;
   padding: 0 6px;
   border: none;
@@ -231,7 +247,9 @@
   font-size: 14px;
   font-weight: 500;
   letter-spacing: 0.01em;
-  transition: background var(--dur-1) ease;
+  transition:
+    background var(--dur-1) ease,
+    box-shadow var(--dur-1) ease;
 }
 .tc:hover {
   background: var(--bg-4);
@@ -239,7 +257,6 @@
 .tc:focus {
   background: var(--bg-0);
   box-shadow: inset 0 0 0 1px var(--accent-line);
-  color: var(--accent);
 }
 .transport__dur {
   color: var(--fg-3);
@@ -256,7 +273,7 @@
   background: var(--fg-1);
   color: var(--bg-0);
   transition:
-    transform var(--dur-2) var(--ease-spring),
+    transform var(--dur-1) var(--ease-spring),
     background var(--dur-1) ease;
 }
 .play svg {
@@ -276,23 +293,82 @@
   transform: scale(0.94);
 }
 .vol {
+  position: relative;
   display: flex;
+  /* The slider opens on the far side of the button: the group is held at its right end, so the
+     button under the pointer stays where it is instead of sliding away from it. */
+  flex-direction: row-reverse;
   align-items: center;
 }
 .vol__slider {
-  width: 0;
-  opacity: 0;
-  overflow: hidden;
   display: flex;
-  transition:
-    width var(--dur-3) var(--ease-out),
-    opacity var(--dur-2) ease;
+  align-items: center;
+  opacity: 0;
 }
-.vol:hover .vol__slider,
-.vol:focus-within .vol__slider {
+/* Beside the button, in the bar, where the bar has the room. Leaves faster than it comes. */
+.vol[data-place='beside'] .vol__slider {
+  width: 0;
+  overflow: hidden;
+  transition:
+    width var(--dur-1) ease,
+    opacity var(--dur-1) ease;
+}
+.vol[data-place='beside']:hover .vol__slider,
+.vol[data-place='beside']:focus-within .vol__slider {
   width: 72px;
   opacity: 1;
   padding: 0 6px;
+  transition:
+    width var(--dur-2) var(--ease-out),
+    opacity var(--dur-2) ease;
+}
+/* In a narrower viewer the slider would reach the buttons in the middle of the bar. There it
+   opens above the button, in the margin under the picture. */
+.vol[data-place='above'] .vol__slider {
+  position: absolute;
+  z-index: 7;
+  left: 50%;
+  bottom: calc(100% + 12px);
+  width: 120px;
+  height: 28px;
+  margin-left: -60px;
+  padding: 0 8px;
+  border-radius: var(--r-md);
+  background: var(--bg-4);
+  box-shadow:
+    var(--shadow-2),
+    inset 0 0 0 1px var(--line-2);
+  visibility: hidden;
+  transform: translateY(4px);
+  transition:
+    opacity var(--dur-1) ease,
+    transform var(--dur-1) ease,
+    visibility 0s linear var(--dur-1);
+}
+/* The way up from the button to the slider belongs to the control, so that the slider does not
+   close under a pointer that is on its way there. */
+.vol[data-place='above'] .vol__slider::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 12px;
+}
+/* A press on the button leaves the focus on it, which is no reason to keep the slider over the
+   picture: it stays for the pointer, for focus that came by keyboard, and while it is dragged.
+   It waits a moment before it opens, as long as the panel resizers do before they light up: a
+   pointer that only crosses the button on its way to the picture must not find a slider there. */
+.vol[data-place='above']:hover .vol__slider,
+.vol[data-place='above']:has(:focus-visible) .vol__slider,
+.vol[data-place='above']:has(.slider[data-active='true']) .vol__slider {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition:
+    opacity var(--dur-2) var(--ease-out) 120ms,
+    transform var(--dur-2) var(--ease-out) 120ms,
+    visibility 0s linear 120ms;
 }
 
 /* Source monitor */
@@ -308,7 +384,7 @@
     var(--shadow-3),
     inset 0 0 0 1px var(--line-2);
   overflow: hidden;
-  animation: pop-in var(--dur-3) var(--ease-out);
+  animation: pop-in var(--dur-2) var(--ease-out);
 }
 .source__head,
 .source__foot {
@@ -343,6 +419,33 @@
   height: 100%;
   object-fit: contain;
 }
-.source__body audio {
+/* Sound has no picture to fill the body with: it is a surface of the monitor, with the player on it. */
+.source__body:has(.source__sound) {
+  background: var(--bg-1);
+  box-shadow:
+    inset 0 1px 0 var(--line-1),
+    inset 0 -1px 0 var(--line-1);
+}
+.source__sound {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
   width: min(480px, 90%);
+  color: var(--fg-4);
+}
+.source__sound svg {
+  width: 40px;
+  height: 40px;
+  stroke-width: 1.3;
+}
+.source__sound audio {
+  width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* As on the timeline: a collaborator's pointer moves in the steps it arrives in. */
+  .peer-cursor {
+    transition: none;
+  }
 }

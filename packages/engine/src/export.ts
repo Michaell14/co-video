@@ -89,7 +89,8 @@ export interface ExportWarning {
    * `missing`: the file is neither on this device nor on the server. `unreadable`: it is there but
    * could not be opened (damaged, not media, refused by the server). `undecodable`: it opens, and
    * this browser cannot decode what is in it. `timeout`: a frame did not arrive in time and a
-   * neighbouring one was used. `decode-error`: decoding stopped part-way through the file.
+   * neighbouring one was used. `decode-error`: decoding stopped part-way through the file, or
+   * would not start at all.
    */
   reason: SourceFault;
   /** Project frame at which the problem starts (for a pre-flight check, where the clip enters the range). */
@@ -324,7 +325,7 @@ function describeProblem(project: Project, p: Problem): string {
     default:
       return p.part === 'audio'
         ? `The audio in ${name} stopped decoding part-way through, so the export is silent from there.`
-        : `${name} stopped decoding part-way through, so the export holds its last good frame from there.`;
+        : `${name} stopped decoding, so the export holds its last good frame from there, or leaves it out where there is none.`;
   }
 }
 

@@ -202,7 +202,7 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
       await api.saveVersion(
         session.id,
         token,
-        name.trim() || `Version ${new Date().toLocaleString()}`,
+        name.trim() || `Version ${savedAt(Date.now())}`,
         meta.user.name,
       );
       setName('');

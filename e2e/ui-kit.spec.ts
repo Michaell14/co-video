@@ -78,6 +78,36 @@ async function expectRing(control: Locator): Promise<void> {
     .toBe(true);
 }
 
+/**
+ * Contrast of each element's text against what is painted behind it: every background from the
+ * page down to the element, one over the other. Painted, a colour is three bytes however the
+ * browser writes it out (a mixed one is not rgb()).
+ */
+const contrasts = (texts: Locator): Promise<number[]> =>
+  texts.evaluateAll((elements) => {
+    const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!;
+    const linear = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    const luminance = () => {
+      const [r, g, b] = Array.from(paint.getImageData(0, 0, 1, 1).data, (v) => linear(v / 255));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const cover = (colour: string) => {
+      paint.fillStyle = colour;
+      paint.fillRect(0, 0, 1, 1);
+    };
+    return elements.map((el) => {
+      const layers: string[] = [];
+      for (let node: Element | null = el; node; node = node.parentElement) {
+        layers.unshift(getComputedStyle(node).backgroundColor);
+      }
+      layers.forEach(cover);
+      const behind = luminance();
+      cover(getComputedStyle(el).color);
+      const ink = luminance();
+      return (Math.max(ink, behind) + 0.05) / (Math.min(ink, behind) + 0.05);
+    });
+  });
+
 // A file saved while the suite runs makes the dev server reload the page under the test; its
 // socket is left unanswered so that cannot happen.
 test.beforeEach(async ({ context }) => {
@@ -205,15 +235,33 @@ test.describe('dialogs', () => {
     const content = sheet.locator('.dialog__body');
     const close = sheet.getByRole('button', { name: 'Close' });
     const top = () => content.evaluate((el) => el.scrollTop);
+    // The browser eases a scroll made with a key, and lets the next key go by when it arrives in
+    // the instant that scroll settles: the keys below are pressed with the content at rest.
+    const rest = async () => {
+      let last = -1;
+      await expect
+        .poll(
+          async () => {
+            const before = last;
+            last = await top();
+            return last === before;
+          },
+          { intervals: [100] },
+        )
+        .toBe(true);
+    };
     await expect(content).toBeFocused();
     expect(await content.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    await sheet.evaluate((el) => Promise.all(el.getAnimations().map((entrance) => entrance.finished)));
 
     await page.keyboard.press('ArrowDown');
     await expect.poll(top).toBeGreaterThan(0);
+    await rest();
     await page.keyboard.press('End');
     await expect
       .poll(() => content.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
       .toBeLessThan(2);
+    await rest();
 
     // Tab goes round between the close button and the content, in both directions.
     await page.keyboard.press('Tab');
@@ -226,6 +274,25 @@ test.describe('dialogs', () => {
     await expect(close).toBeFocused();
     await page.keyboard.press('Shift+Tab');
     await expect(content).toBeFocused();
+  });
+
+  test('content with nothing to press or to scroll holds the focus without a line round it', async ({
+    page,
+  }) => {
+    await sample(page);
+    // Without a server the Share dialog is a notice: no control in it, and nothing to scroll.
+    await page.getByRole('button', { name: 'Selection tool' }).focus();
+    await page.keyboard.press('Shift');
+    await page.evaluate(() => (window as any).tandem.ui.getState().set({ dialog: 'share' }));
+    const content = page.getByRole('dialog', { name: 'Share project' }).locator('.dialog__body');
+    await expect(content).toBeFocused();
+    expect(
+      await content.evaluate((el: HTMLElement) => [
+        el.matches(':focus-visible'),
+        el.tabIndex,
+        getComputedStyle(el).boxShadow,
+      ]),
+    ).toEqual([true, -1, 'none']);
   });
 });
 
@@ -484,6 +551,61 @@ test.describe('menus and selects', () => {
     await page.keyboard.press('Escape');
     await expect(page.locator('.popover')).toHaveCount(0);
   });
+
+  test('entries line up, the whole menu shows, and a long list keeps clear of its control', async ({
+    page,
+  }) => {
+    await sample(page);
+    const popover = page.locator('.popover');
+
+    // Whether or not an entry has an icon, its label starts where the others do; and the menu is
+    // on screen down to its last row, with nothing left to scroll to.
+    await page.locator('.clip').first().click({ button: 'right' });
+    await expect(page.getByRole('menu')).toBeVisible();
+    const lefts = await popover
+      .locator('.menu-item__label')
+      .evaluateAll((labels) => labels.map((label) => Math.round(label.getBoundingClientRect().left)));
+    expect(lefts.length).toBeGreaterThan(5);
+    expect(new Set(lefts).size).toBe(1);
+    expect(await popover.evaluate((el) => el.scrollHeight - el.clientHeight)).toBe(0);
+    const menu = (await popover.boundingBox())!;
+    expect(menu.y).toBeGreaterThanOrEqual(0);
+    expect(menu.y + menu.height).toBeLessThanOrEqual(900);
+    await page.keyboard.press('Escape');
+
+    // A list too long for either side of its control scrolls on the roomier one, with the chosen
+    // option in view; it never lies over the control it belongs to.
+    await select(page, 'video');
+    const blend = row(page, 'Blend mode').locator('.select');
+    await blend.scrollIntoViewIfNeeded();
+    await blend.click();
+    const chosen = page.getByRole('option', { selected: true });
+    await expect(chosen).toBeFocused();
+    // Measured at rest: the list grows into place, and the readings are taken one after another.
+    await popover.evaluate((el) => Promise.all(el.getAnimations().map((entrance) => entrance.finished)));
+    const [control, list, option] = [
+      (await blend.boundingBox())!,
+      (await popover.boundingBox())!,
+      (await chosen.boundingBox())!,
+    ];
+    expect(list.y >= control.y + control.height || list.y + list.height <= control.y).toBe(true);
+    expect(list.y).toBeGreaterThanOrEqual(0);
+    expect(list.y + list.height).toBeLessThanOrEqual(900);
+    expect(option.y).toBeGreaterThanOrEqual(list.y);
+    expect(option.y + option.height).toBeLessThanOrEqual(list.y + list.height);
+
+    // The mark on the chosen option is the accent, the one colour a list has.
+    const colours = await chosen.locator('.menu-item__check svg').evaluate((mark) => {
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--accent)';
+      document.body.appendChild(probe);
+      const accent = getComputedStyle(probe).color;
+      probe.remove();
+      return [getComputedStyle(mark).color, accent];
+    });
+    expect(colours[0]).toBe(colours[1]);
+    await page.keyboard.press('Escape');
+  });
 });
 
 test.describe('fields', () => {
@@ -616,6 +738,77 @@ test.describe('fields', () => {
     expect(await selection()).toEqual([titles[1].id]);
     expect((await clipsOf('text')).map((c) => c.text.color)).toEqual(['#123456', titles[1].text.color]);
     await expect(hex).toHaveValue(shown);
+    expect(problems).toEqual([]);
+  });
+
+  test('what is typed lands on top of what changed meanwhile, and not on what is gone', async ({ page }) => {
+    const problems = trackProblems(page);
+    await sample(page);
+    // A transition is written as a whole, so a field of it that wrote what it knew when the
+    // typing began would take every other change made since back with it.
+    const clipId: string = await page.evaluate(
+      () =>
+        (Object.values((window as any).tandem.session.store.get().clips) as any[]).find(
+          (c) => c.transIn?.type === 'crossZoom',
+        ).id,
+    );
+    const transition = (): Promise<any> =>
+      page.evaluate((id) => (window as any).tandem.session.store.get().clips[id].transIn, clipId);
+    const write = (transIn: unknown) =>
+      page.evaluate(
+        ([id, transIn]) =>
+          (window as any).tandem.session.store.commit([{ op: 'updateClip', id, patch: { transIn } }]),
+        [clipId, transIn] as const,
+      );
+    await page.evaluate(
+      (clipId) =>
+        (window as any).tandem.ui
+          .getState()
+          .set({ selection: [], selectedTransition: { clipId, side: 'in' } }),
+      clipId,
+    );
+    const strength = row(page, 'Strength').locator('.num input');
+    const duration = row(page, 'Duration').locator('.num input');
+    const before = await transition();
+    const steps = await undoSteps(page);
+
+    // The press on the field beside it applies the entry; the drag that follows is a step of its
+    // own and builds on it.
+    await strength.click();
+    await page.keyboard.type('1.5');
+    const box = (await duration.boundingBox())!;
+    await page.mouse.move(box.x + 10, box.y + box.height / 2);
+    await page.mouse.down();
+    expect(await transition()).toEqual({ ...before, params: { ...before.params, strength: 1.5 } });
+    await page.mouse.move(box.x + 30, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    const scrubbed = await transition();
+    expect(scrubbed.duration).toBeGreaterThan(before.duration);
+    expect(scrubbed.params.strength).toBe(1.5);
+    expect(await undoSteps(page)).toBe(steps + 2);
+
+    // Someone else lengthens the transition while its strength is being typed. (A drag on a
+    // number field does not take the keyboard, so the field still has it and its text is replaced.)
+    await expect(strength).toBeFocused();
+    await strength.fill('0.5');
+    await write({ ...scrubbed, duration: scrubbed.duration + 4 });
+    await page.keyboard.press('Enter');
+    expect(await transition()).toEqual({
+      ...scrubbed,
+      duration: scrubbed.duration + 4,
+      params: { ...scrubbed.params, strength: 0.5 },
+    });
+
+    // Someone else removes it: what was being typed for it must not bring it back.
+    await strength.click();
+    await page.keyboard.type('0.7');
+    await write(null);
+    await expect(strength).toHaveCount(0);
+    const removed = await undoSteps(page);
+    const lane = (await page.locator('.lane').nth(1).boundingBox())!;
+    await page.mouse.click(lane.x + lane.width - 30, lane.y + lane.height / 2);
+    expect(await transition()).toBeNull();
+    expect(await undoSteps(page)).toBe(removed);
     expect(problems).toEqual([]);
   });
 });
@@ -850,24 +1043,7 @@ test.describe('command palette', () => {
     expect(await uiState(page)).toEqual({ ...before, dialog: 'palette' });
 
     // The group names are informative text: readable on the list and on the highlighted row.
-    const ratios = await page.evaluate(() => {
-      const linear = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
-      // Painted, a colour is three bytes however the browser writes it out (a mixed one is not rgb()).
-      const paint = document.createElement('canvas').getContext('2d')!;
-      const luminance = (colour: string) => {
-        paint.fillStyle = colour;
-        paint.fillRect(0, 0, 1, 1);
-        const [r, g, b] = Array.from(paint.getImageData(0, 0, 1, 1).data, (v) => linear(v / 255));
-        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      };
-      const surface = getComputedStyle(document.querySelector('.palette')!).backgroundColor;
-      return Array.from(document.querySelectorAll('.palette__item'), (row) => {
-        const own = getComputedStyle(row).backgroundColor;
-        const text = luminance(getComputedStyle(row.querySelector('.palette__group')!).color);
-        const behind = luminance(own === 'rgba(0, 0, 0, 0)' ? surface : own);
-        return (Math.max(text, behind) + 0.05) / (Math.min(text, behind) + 0.05);
-      });
-    });
+    const ratios = await contrasts(page.locator('.palette__group'));
     expect(ratios.length).toBeGreaterThan(0);
     expect(Math.min(...ratios)).toBeGreaterThanOrEqual(4.5);
 
@@ -1022,6 +1198,32 @@ test.describe('confirmation dialog', () => {
     await page.keyboard.press('Escape');
     await expect(sheet).toHaveCount(0);
   });
+
+  test('a title that runs to several lines keeps the close button on its first', async ({ page }) => {
+    await sample(page);
+    await ask(page, {
+      title:
+        'Restore “Interview with the founders of a very small and very determined coffee roastery, part two”?',
+      confirmLabel: 'Restore version',
+    });
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    // Measured at rest: while the dialog is still arriving, two readings are of two places.
+    await dialog.evaluate((el) => Promise.all(el.getAnimations().map((entrance) => entrance.finished)));
+    const lines = await dialog.locator('.dialog__title').evaluate((title) => {
+      const text = document.createRange();
+      text.selectNodeContents(title);
+      const boxes = Array.from(text.getClientRects());
+      return {
+        count: new Set(boxes.map((box) => Math.round(box.top))).size,
+        firstMiddle: boxes[0].top + boxes[0].height / 2,
+      };
+    });
+    const close = (await dialog.getByRole('button', { name: 'Close' }).boundingBox())!;
+    expect(lines.count).toBeGreaterThan(1);
+    expect(Math.abs(close.y + close.height / 2 - lines.firstMiddle)).toBeLessThanOrEqual(1.5);
+    await page.keyboard.press('Escape');
+  });
 });
 
 test.describe('shortcut sheet and empty states', () => {
@@ -1067,5 +1269,153 @@ test.describe('shortcut sheet and empty states', () => {
       };
     });
     expect(sizes).toEqual({ illustration: '28px', button: '14px' });
+  });
+});
+
+test.describe('toasts', () => {
+  test('fade out before they are taken away', async ({ page }) => {
+    await sample(page);
+    await select(page, 'video');
+    // What happens to the toast, in order: it is shown, marked as leaving, and removed.
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__toasts = [];
+      const note = (what: string, node: Node) => {
+        if ((node as Element).classList?.contains('toast')) w.__toasts.push([what, node.textContent]);
+      };
+      new MutationObserver((changes) => {
+        for (const change of changes) {
+          if (change.type === 'attributes') note('leaving', change.target);
+          change.addedNodes.forEach((node) => note('shown', node));
+          change.removedNodes.forEach((node) => note('removed', node));
+        }
+      }).observe(document.querySelector('.toasts')!, {
+        childList: true,
+        subtree: true,
+        attributeFilter: ['data-leaving'],
+      });
+      w.tandem.cmd.copy();
+    });
+    const toast = page.locator('.toast', { hasText: /^Copied \d+ clips?$/ });
+    await expect(toast).toBeVisible();
+    await expect(toast).toHaveCount(0, { timeout: 10_000 });
+    const seen: [string, string][] = await page.evaluate(() => (window as any).__toasts);
+    expect(seen.filter(([, text]) => text.startsWith('Copied')).map(([what]) => what)).toEqual([
+      'shown',
+      'leaving',
+      'removed',
+    ]);
+  });
+});
+
+test.describe('home and profile', () => {
+  test('the keyboard shows on the starter cards, the other ways in and the profile colours', async ({
+    page,
+  }) => {
+    await page.route('**/api/health', (route) => route.abort());
+    await page.goto('/');
+    const name = page.getByRole('textbox', { name: 'Display name' });
+    await name.focus();
+    await page.keyboard.press('Tab');
+    const starter = page.locator('.starter').first();
+    await expect(starter).toBeFocused();
+    await expectRing(starter);
+    for (let i = 0; i < 4; i++) await page.keyboard.press('Tab');
+    const custom = page.getByRole('button', { name: 'Custom project…' });
+    await expect(custom).toBeFocused();
+    await expectRing(custom);
+
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.tl')).toBeVisible();
+    await page.waitForFunction(() => !!(window as any).tandem?.session?.player);
+    await page.evaluate(() => (window as any).tandem.ui.getState().set({ dialog: 'profile' }));
+    const profile = page.getByRole('dialog', { name: 'Your profile' });
+    await expect(profile.getByRole('textbox', { name: 'Display name' })).toBeFocused();
+    const chosen = profile.locator('.swatch-btn[aria-pressed="true"]');
+    await expect(chosen).toHaveCount(1);
+    const other = profile.locator('.swatch-btn[aria-pressed="false"]').first();
+    const rings = (colour: Locator) =>
+      colour.evaluate((el) => getComputedStyle(el).boxShadow.split(/,(?![^(]*\))/).length);
+
+    // A colour that has the keyboard wears the focus ring; the chosen one keeps its own inside it.
+    await other.focus();
+    await expectRing(other);
+    await chosen.focus();
+    await expect.poll(() => rings(chosen)).toBe(3);
+    await other.focus();
+    await expect.poll(() => rings(chosen)).toBe(2);
+  });
+
+  test('a link that cannot be one is refused at the field, until it is changed', async ({ page }) => {
+    const problems = trackProblems(page);
+    await page.route('**/api/health', (route) => route.abort());
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Join with a link…' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Join a project' });
+    const link = dialog.getByRole('textbox', { name: 'Share link' });
+    await expect(link).toBeFocused();
+    await expect(link).not.toHaveAttribute('aria-invalid', 'true');
+
+    await page.keyboard.type('not a link');
+    await page.keyboard.press('Enter');
+    await expect(link).toHaveAttribute('aria-invalid', 'true');
+    await expect(link).toHaveAccessibleDescription('That does not look like a Tandem share link.');
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    await expect(link).toBeFocused();
+    await expect(dialog).toBeVisible();
+    expect(await page.evaluate(() => location.hash)).not.toContain('/p/');
+    // The field wears the error's colour, also while it has the keyboard (its line eases into it).
+    await expect
+      .poll(() =>
+        link.evaluate((input) => {
+          const probe = document.createElement('span');
+          probe.style.color = 'var(--red)';
+          document.body.appendChild(probe);
+          const red = getComputedStyle(probe).color;
+          probe.remove();
+          return getComputedStyle(input.closest('.field')!).boxShadow.includes(red);
+        }),
+      )
+      .toBe(true);
+    expect(Math.min(...(await contrasts(dialog.getByRole('alert'))))).toBeGreaterThanOrEqual(4.5);
+
+    await page.keyboard.type('!');
+    await expect(link).not.toHaveAttribute('aria-invalid', 'true');
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+});
+
+test.describe('comments', () => {
+  test('a resolved comment says so, stays readable and keeps its author in view', async ({ page }) => {
+    // The window at its smallest, where the panel is narrowest.
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await sample(page);
+    await page.evaluate(() => {
+      const { session, ui } = (window as any).tandem;
+      const me = session.getMeta().user;
+      const by = { authorId: me.id, authorName: 'Ada Lovelace', authorColor: me.color };
+      session.review.add({ frame: 30, text: 'Hold this shot longer', x: null, y: null, ...by });
+      session.review.update(session.review.get()[0].id, { resolved: true });
+      ui.getState().set({ commentsOpen: true });
+    });
+    await page.locator('.chip', { hasText: 'Resolved' }).click();
+    const comment = page.locator('.comment--resolved');
+    await expect(comment).toBeVisible();
+    await expect(comment.getByRole('img', { name: 'Resolved' })).toBeVisible();
+    await expect(comment.getByRole('button', { name: 'Reopen' })).toBeVisible();
+    const author = comment.locator('.comment__head b');
+    await expect(author).toHaveText('Ada Lovelace');
+    expect(await author.evaluate((name) => name.scrollWidth <= name.clientWidth)).toBe(true);
+
+    // Stepping back is done with the surface and the text colour, not by fading the whole card.
+    await expect(comment).toHaveCSS('opacity', '1');
+    const ratios = await contrasts(
+      comment.locator('.comment__text, .comment__ago, .comment__head b, .comment__actions button'),
+    );
+    expect(ratios.length).toBeGreaterThanOrEqual(5);
+    expect(Math.min(...ratios)).toBeGreaterThanOrEqual(4.5);
+    expect((await contrasts(comment.locator('.comment__done')))[0]).toBeGreaterThanOrEqual(3);
   });
 });

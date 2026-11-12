@@ -126,7 +126,7 @@ export function OpenSource() {
             <Terminal />
             <p className="os__note">
               That starts one small Node server, which serves the editor, relays edits and keeps the media of
-              the projects you share. Your footage stays on your machine and on the server you run.
+              the projects made on it. Your footage stays on your machine and on the server you run.
             </p>
           </Reveal>
         </div>

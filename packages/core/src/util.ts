@@ -20,6 +20,18 @@ export const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo
 
 export const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
+/**
+ * A colour from a shared document as `#rrggbb` or `#rrggbbaa` in lower case, or null when it is not
+ * a hex colour (`#rgb` is written out in full). Colours end up in style attributes and canvas fill
+ * styles, where any other string, a `url(…)` or a megabyte of text, would be acted on by the
+ * browser of everyone who has the project open.
+ */
+export function hexColor(v: unknown): string | null {
+  if (typeof v !== 'string' || !/^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v)) return null;
+  const hex = v.toLowerCase();
+  return hex.length === 4 ? `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}` : hex;
+}
+
 export const dbToGain = (db: number): number => (db <= -60 ? 0 : Math.pow(10, db / 20));
 
 export const gainToDb = (gain: number): number => (gain <= 0.001 ? -60 : 20 * Math.log10(gain));

@@ -11,12 +11,17 @@ body,
   margin: 0;
 }
 
+/* Derived from the design tokens, for the whole app. The editor's own stylesheet states the same
+   two for its panels; they must stay the same values. */
 :root {
   /* Secondary text on a raised surface (--bg-3 and --bg-4: fields, dialogs, menus). The lighter
      the surface, the less --fg-3 stands out from it: it falls under 4.5:1 from --bg-3 on. This
-     step towards --fg-2 holds 5:1 there. The editor's own stylesheet states the same mix for its
-     panels; the two must stay the same value. */
+     step towards --fg-2 holds 5:1 there. */
   --fg-3-raised: color-mix(in srgb, var(--fg-3) 70%, var(--fg-2));
+  /* The time a control takes to move under the pointer (a card rising, a button coming into
+     view): halfway between the two shortest steps of the motion scale, and nothing when those are
+     zero for reduced motion. */
+  --dur-hover: calc((var(--dur-1) + var(--dur-2)) / 2);
 }
 
 body {

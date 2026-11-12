@@ -323,6 +323,23 @@ export function rasterizeSolid(s: ShapeProps | null): Raster {
   return { canvas, width: size, height: size };
 }
 
+/**
+ * What a title or a shape looks like, written out. A project snapshot never changes an object it
+ * holds (an edit puts a new one in its place), so each is written out once and not again on every
+ * frame it is drawn in.
+ */
+const written = new WeakMap<TextProps | ShapeProps, string>();
+
+function describe(props: TextProps | ShapeProps): string {
+  let json = written.get(props);
+  if (json === undefined) {
+    // How a title comes and goes changes where its pixels are put, not the pixels.
+    json = JSON.stringify(props, (k, v) => (k === 'animIn' || k === 'animOut' ? undefined : v));
+    written.set(props, json);
+  }
+  return json;
+}
+
 /** Cache key covering everything that affects a generator's pixels. */
 export function generatorKey(
   clip: Clip,
@@ -333,11 +350,11 @@ export function generatorKey(
 ): string {
   if (clip.type === 'text' && clip.text) {
     const c = chars >= 1 ? 1 : Math.round(chars * 1000);
-    return `t|${frameW}x${frameH}|${c}|${fontEpoch}|${JSON.stringify(clip.text, (k, v) => (k === 'animIn' || k === 'animOut' ? undefined : v))}`;
+    return `t|${frameW}x${frameH}|${c}|${fontEpoch}|${describe(clip.text)}`;
   }
-  if (clip.type === 'shape' && clip.shape) return `s|${frameW}x${frameH}|${JSON.stringify(clip.shape)}`;
+  if (clip.type === 'shape' && clip.shape) return `s|${frameW}x${frameH}|${describe(clip.shape)}`;
   if (clip.type === 'solid')
-    return `c|${JSON.stringify(clip.shape?.gradient.enabled ? clip.shape : clip.shape?.fill)}`;
+    return `c|${clip.shape?.gradient.enabled ? describe(clip.shape) : clip.shape?.fill}`;
   return '';
 }
 

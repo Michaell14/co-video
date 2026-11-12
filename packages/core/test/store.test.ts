@@ -18,6 +18,7 @@ import {
   clipsUnderFrame,
   displayTracks,
   formatTimecode,
+  framesToSeconds,
   gainBreakpoints,
   initials,
   makeClip,
@@ -36,7 +37,7 @@ import {
   tracksOf,
   trimRange,
 } from '../src';
-import type { Asset, Clip, Project, ProjectSettings, Track } from '../src';
+import type { Asset, Clip, Edit, Project, ProjectSettings, Track } from '../src';
 import { connect } from './helpers';
 
 describe('ProjectStore', () => {
@@ -611,6 +612,152 @@ describe('ProjectStore', () => {
     expect(a.svg.thumb).toBeNull();
   });
 
+  describe('colours', () => {
+    const remote = 'url(https://tracker.example/pixel.png)';
+    const hostile: unknown[] = [
+      remote,
+      `#fff url(https://tracker.example/pixel.png)`,
+      `#${'f'.repeat(1_000_000)}`,
+      'red',
+      'rgb(255, 0, 0)',
+      'var(--accent)',
+      '#12345',
+      '#ggg',
+      '',
+      ' #ffffff',
+      '#ffffff\n',
+      0xffffff,
+      ['#ffffff'],
+      { r: 1 },
+    ];
+
+    /** A store whose document holds `fields` as a clip called `c`, written the way a peer could. */
+    const withClip = (type: string, fields: Record<string, unknown>): ProjectStore => {
+      const s = new ProjectStore();
+      s.initIfEmpty();
+      const m = new Y.Map<unknown>();
+      s.doc.transact(() => {
+        m.set('trackId', tracksOf(s.get()).video[0].id);
+        m.set('type', type);
+        for (const [key, value] of Object.entries(fields)) m.set(key, value);
+        s.doc.getMap('clips').set('c', m);
+      });
+      return s;
+    };
+
+    it('reads a clip label, a marker colour and the background as hex or not at all', () => {
+      for (const bad of hostile) {
+        const s = withClip('video', { label: bad });
+        s.doc.transact(() => {
+          s.doc.getMap('markers').set('m', { frame: 10, name: 'Beat', color: bad, note: '' });
+          s.doc.getMap('settings').set('background', bad);
+        });
+        const p = s.get();
+        expect(p.clips.c.label, String(bad).slice(0, 40)).toBeNull();
+        expect(p.markers.m.color).toBe('#f59e0b');
+        expect(p.settings.background).toBe('#000000');
+        expect(parseProjectFile(serializeProject(p))).toEqual(p);
+      }
+    });
+
+    it('keeps hex colours and writes them out in full, in lower case', () => {
+      const forms: [string, string][] = [
+        ['#ef4444', '#ef4444'],
+        ['#EF4444', '#ef4444'],
+        ['#1af', '#11aaff'],
+        ['#FA0', '#ffaa00'],
+        ['#00000080', '#00000080'],
+        ['#C6F84FCC', '#c6f84fcc'],
+      ];
+      for (const [written, read] of forms) {
+        const s = withClip('video', { label: written });
+        s.doc.transact(() => {
+          s.doc.getMap('markers').set('m', { frame: 10, name: 'Beat', color: written, note: '' });
+          s.doc.getMap('settings').set('background', written);
+        });
+        const p = s.get();
+        expect(p.clips.c.label).toBe(read);
+        expect(p.markers.m.color).toBe(read);
+        expect(p.settings.background).toBe(read);
+      }
+      // No label is a value of its own: the chip takes the colour of its type.
+      expect(withClip('video', { label: null }).get().clips.c.label).toBeNull();
+    });
+
+    it('reads the colours of titles, shapes, effects and transitions the same way', () => {
+      const overlay = makeEffect('fill');
+      const unknown = {
+        id: 'fx9',
+        type: 'fromTheFuture',
+        enabled: true,
+        params: { color: remote, amount: 1 },
+      };
+      const s = withClip('text', {
+        text: {
+          ...DEFAULT_TEXT,
+          color: remote,
+          gradient: { enabled: true, from: '#ABC', to: remote, angle: 30 },
+          stroke: { enabled: true, color: remote, width: 0.1 },
+          shadow: { ...DEFAULT_TEXT.shadow, color: remote },
+          bg: { ...DEFAULT_TEXT.bg, enabled: true, color: '#00000080' },
+        },
+        shape: {
+          ...DEFAULT_SHAPE,
+          fill: remote,
+          stroke: '#0F0',
+          gradient: { enabled: true, from: remote, to: '#a855f7', angle: 45 },
+        },
+        effects: [
+          { ...overlay, params: { ...overlay.params, color: remote } },
+          { ...makeEffect('duotone'), params: { shadow: '#1B1464', highlight: remote, amount: 0.5 } },
+          unknown,
+        ],
+        transIn: { ...makeTransition('dipToBlack', 12), params: { color: remote } },
+        transOut: { ...makeTransition('flash', 8), params: { color: '#FFF', intensity: 2 } },
+      });
+      const c = s.get().clips.c;
+      expect(c.text).toEqual({
+        ...DEFAULT_TEXT,
+        gradient: { enabled: true, from: '#aabbcc', to: DEFAULT_TEXT.gradient.to, angle: 30 },
+        stroke: { enabled: true, color: DEFAULT_TEXT.stroke.color, width: 0.1 },
+        bg: { ...DEFAULT_TEXT.bg, enabled: true, color: '#00000080' },
+      });
+      expect(c.shape).toEqual({
+        ...DEFAULT_SHAPE,
+        stroke: '#00ff00',
+        gradient: { enabled: true, from: DEFAULT_SHAPE.gradient.from, to: '#a855f7', angle: 45 },
+      });
+      // A colour nobody can use gives way to the one the effect starts with.
+      expect(c.effects[0].params).toEqual(overlay.params);
+      expect(c.effects[1].params).toEqual({ shadow: '#1b1464', highlight: '#ff5e62', amount: 0.5 });
+      expect(c.transIn!.params).toEqual({ color: '#000000' });
+      expect(c.transOut!.params).toEqual({ color: '#ffffff', intensity: 2 });
+      // An effect this version does not know has no schema to say which strings are colours, and
+      // nothing draws controls for it.
+      expect(c.effects[2]).toEqual(unknown);
+      expect(JSON.stringify({ ...c, effects: c.effects.slice(0, 2) })).not.toContain('tracker.example');
+      expect(parseProjectFile(serializeProject(s.get()))).toEqual(s.get());
+      expect(() => exercise(s.get())).not.toThrow();
+    });
+
+    it('reads a hostile project file like a hostile document', () => {
+      const s = withClip('shape', { label: '#ef4444', shape: { ...DEFAULT_SHAPE, fill: '#123456' } });
+      s.commit([{ op: 'setMarker', marker: { id: 'm', frame: 3, name: '', color: '#10b981', note: '' } }]);
+      const file = JSON.parse(serializeProject(s.get()));
+      expect(parseProjectFile(JSON.stringify(file))).toEqual(s.get());
+      file.project.clips.c.label = remote;
+      file.project.clips.c.shape.fill = remote;
+      file.project.markers.m.color = remote;
+      file.project.settings.background = remote;
+      const loaded = parseProjectFile(JSON.stringify(file))!;
+      expect(loaded.clips.c.label).toBeNull();
+      expect(loaded.clips.c.shape!.fill).toBe(DEFAULT_SHAPE.fill);
+      expect(loaded.markers.m.color).toBe('#f59e0b');
+      expect(loaded.settings.background).toBe('#000000');
+      expect(JSON.stringify(loaded)).not.toContain('tracker.example');
+    });
+  });
+
   it('saves and loads project files', () => {
     const s = new ProjectStore();
     s.initIfEmpty({ name: 'File test' });
@@ -631,6 +778,45 @@ describe('ProjectStore', () => {
     t.undo();
     expect(Object.keys(t.get().clips)).toHaveLength(0);
   });
+});
+
+/** A clip that counts something in frames wherever a clip can. */
+const timed = (trackId: string): Clip =>
+  makeClip('text', trackId, {
+    start: 30,
+    duration: 60,
+    fadeIn: 10,
+    fadeOut: 20,
+    keyframes: {
+      opacity: [
+        { t: 0, v: 0, e: 'linear' },
+        { t: 15, v: 1, e: 'hold' },
+      ],
+    },
+    transIn: makeTransition('crossDissolve', 12),
+    transOut: makeTransition('dipToBlack', 6),
+    text: {
+      ...DEFAULT_TEXT,
+      animIn: { type: 'fade', duration: 15 },
+      animOut: { type: 'fade', duration: 9 },
+    },
+  });
+/** `timed` after going from 30 to 60 frames a second. */
+const doubled = (c: Clip): Clip => ({
+  ...c,
+  start: 60,
+  duration: 120,
+  fadeIn: 20,
+  fadeOut: 40,
+  keyframes: {
+    opacity: [
+      { t: 0, v: 0, e: 'linear' },
+      { t: 30, v: 1, e: 'hold' },
+    ],
+  },
+  transIn: { ...c.transIn!, duration: 24 },
+  transOut: { ...c.transOut!, duration: 12 },
+  text: { ...c.text!, animIn: { type: 'fade', duration: 30 }, animOut: { type: 'fade', duration: 18 } },
 });
 
 describe('clips whose track is gone', () => {
@@ -794,6 +980,405 @@ describe('clips whose track is gone', () => {
     const edited = JSON.parse(file);
     delete edited.project.tracks[v2.id];
     expect(Object.keys(parseProjectFile(JSON.stringify(edited))!.clips)).toEqual([one.id]);
+  });
+
+  it('lists the hidden clips, as they are now', () => {
+    const { a, b, sync } = offlinePair();
+    const [v1, v2] = tracksOf(a.get()).video;
+    const shown = makeClip('video', v1.id, { start: 0, duration: 10 });
+    const one = makeClip('video', v2.id, { start: 0, duration: 40 });
+    const two = makeClip('text', v2.id, { start: 50, duration: 20, text: DEFAULT_TEXT });
+    a.commit([shown, one, two].map((clip): Edit => ({ op: 'addClip', clip })));
+    sync();
+    expect(a.hiddenClips()).toEqual([]);
+
+    a.commit([{ op: 'removeTrack', id: v2.id }]);
+    a.commit([{ op: 'updateClip', id: one.id, patch: { name: 'Kept' } }]);
+    sync();
+    const byId = (list: Clip[]) => list.slice().sort((x, y) => (x.id < y.id ? -1 : 1));
+    for (const s of [a, b, new ProjectStore(a.doc)]) {
+      expect(byId(s.hiddenClips())).toEqual(byId([{ ...one, name: 'Kept' }, two]));
+      expect(Object.keys(s.get().clips)).toEqual([shown.id]);
+    }
+
+    // Giving one a track that exists is all it takes to have it back.
+    b.commit([{ op: 'updateClip', id: two.id, patch: { trackId: v1.id } }]);
+    sync();
+    for (const s of [a, b]) {
+      expect(s.hiddenClips()).toEqual([{ ...one, name: 'Kept' }]);
+      expect(s.get().clips[two.id]).toEqual({ ...two, trackId: v1.id });
+    }
+    a.commit([{ op: 'removeClip', id: one.id }]);
+    expect(a.hiddenClips()).toEqual([]);
+  });
+
+  it('re-times hidden clips with the frame rate, for everyone', () => {
+    const a = new ProjectStore();
+    a.initIfEmpty();
+    const b = new ProjectStore();
+    connect(a.doc, b.doc);
+    const [v1, v2] = tracksOf(a.get()).video;
+    const shown = timed(v1.id);
+    const hidden = timed(v2.id);
+    a.commit([
+      { op: 'addClip', clip: shown },
+      { op: 'addClip', clip: hidden },
+    ]);
+    a.commit([{ op: 'removeTrack', id: v2.id }]);
+    expect(b.hiddenClips()).toEqual([hidden]);
+
+    // Someone else changes the rate while the clip has no track.
+    b.commit(changeFrameRate(b.get(), 60, 1));
+    for (const s of [a, b]) {
+      expect(s.get().settings.fpsNum).toBe(60);
+      expect(s.get().clips[shown.id]).toEqual(doubled(shown));
+      expect(s.hiddenClips()).toEqual([doubled(hidden)]);
+    }
+
+    // The track comes back: its clip is where it was in real time, like the one that never left.
+    a.undo();
+    for (const s of [a, b]) {
+      expect(s.hiddenClips()).toEqual([]);
+      expect(s.get().clips[hidden.id]).toEqual(doubled(hidden));
+    }
+    expect(a.get()).toEqual(b.get());
+    expect(new ProjectStore(b.doc).get()).toEqual(b.get());
+  });
+
+  it('re-times a clip that waits for an undone track to be added again', () => {
+    const a = new ProjectStore();
+    a.initIfEmpty();
+    const b = new ProjectStore();
+    connect(a.doc, b.doc);
+    const added = addTrack(a.get(), 'video');
+    a.commit(added.edits);
+    const clip = makeClip('video', added.trackId, { start: 100, duration: 50, fadeOut: 25 });
+    b.commit([{ op: 'addClip', clip }]);
+    a.undo();
+    expect(a.hiddenClips()).toEqual([clip]);
+
+    b.commit(changeFrameRate(b.get(), 24, 1));
+    a.redo();
+    for (const s of [a, b]) {
+      expect(s.get().clips[clip.id]).toEqual({ ...clip, start: 80, duration: 40, fadeOut: 20 });
+      expect(framesToSeconds(sequenceEnd(s.get()), s.get().settings)).toBe(5);
+    }
+  });
+
+  it('undoes and redoes the re-timing of hidden clips with the rate change', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    const v2 = tracksOf(s.get()).video[1];
+    const clip = timed(v2.id);
+    s.commit([{ op: 'addClip', clip }]);
+    s.commit([{ op: 'removeTrack', id: v2.id }]);
+    s.commit(changeFrameRate(s.get(), 60, 1));
+    expect(s.hiddenClips()).toEqual([doubled(clip)]);
+
+    s.undo();
+    expect(s.get().settings.fpsNum).toBe(30);
+    expect(s.hiddenClips()).toEqual([clip]);
+    s.undo();
+    expect(s.get().clips[clip.id]).toEqual(clip);
+
+    s.redo();
+    s.redo();
+    expect(s.get().settings.fpsNum).toBe(60);
+    expect(s.hiddenClips()).toEqual([doubled(clip)]);
+    expect(s.canRedo).toBe(false);
+  });
+
+  it('leaves hidden clips alone unless the rate really changes', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    const v2 = tracksOf(s.get()).video[1];
+    // Half a frame of fade would be rounded by a re-timing.
+    const clip = makeClip('video', v2.id, { start: 30, duration: 60, fadeIn: 2.5 });
+    s.commit([{ op: 'addClip', clip }]);
+    s.commit([{ op: 'removeTrack', id: v2.id }]);
+    const stored = () => JSON.stringify((s.doc.getMap('clips').get(clip.id) as Y.Map<unknown>).toJSON());
+    const before = stored();
+
+    s.commit([{ op: 'settings', patch: { name: 'Renamed', background: '#101010' } }]);
+    s.commit(changeFrameRate(s.get(), 30, 1));
+    s.commit(changeFrameRate(s.get(), 30000, 1000));
+    // There and back inside one commit is no change at all.
+    s.commit([...changeFrameRate(s.get(), 60, 1), { op: 'settings', patch: { fpsNum: 30, fpsDen: 1 } }]);
+    expect(stored()).toBe(before);
+    expect(s.hiddenClips()).toEqual([clip]);
+
+    // Two changes in one commit count as the one they add up to.
+    s.commit([...changeFrameRate(s.get(), 60, 1), { op: 'settings', patch: { fpsNum: 15, fpsDen: 1 } }]);
+    expect(s.hiddenClips()).toEqual([{ ...clip, start: 15, duration: 30, fadeIn: 1 }]);
+  });
+});
+
+describe('undo and redo across a change of frame rate', () => {
+  /** Two stores that see each other's edits as they are made, on a project of 30 frames a second. */
+  const pair = () => {
+    const a = new ProjectStore();
+    a.initIfEmpty();
+    const b = new ProjectStore();
+    connect(a.doc, b.doc);
+    return { a, b };
+  };
+  const marker = (frame: number) => ({ id: 'm1', frame, name: 'Beat', color: '#f59e0b', note: '' });
+
+  it('brings a deleted track back with its clips where they were in real time', () => {
+    const { a, b } = pair();
+    const [v1, v2] = tracksOf(a.get()).video;
+    const stays = timed(v1.id);
+    const goes = timed(v2.id);
+    a.commit([
+      { op: 'addClip', clip: stays },
+      { op: 'addClip', clip: goes },
+    ]);
+    // Deleting a track takes its clips out of the document: nothing is left to re-time.
+    a.commit(removeTrack(a.get(), v2.id));
+    expect(b.hiddenClips()).toEqual([]);
+    b.commit(changeFrameRate(b.get(), 60, 1));
+
+    a.undo();
+    for (const s of [a, b]) {
+      expect(s.get().tracks[v2.id]).toBeDefined();
+      expect(s.get().clips[stays.id]).toEqual(doubled(stays));
+      expect(s.get().clips[goes.id]).toEqual(doubled(goes));
+    }
+    expect(a.get()).toEqual(b.get());
+    expect(new ProjectStore(b.doc).get()).toEqual(b.get());
+
+    // The re-timing belongs to the undo: one redo takes all of it away, one undo brings it back.
+    expect(a.undoManager.redoStack).toHaveLength(1);
+    a.redo();
+    expect(a.canRedo).toBe(false);
+    for (const s of [a, b]) {
+      expect(s.get().tracks[v2.id]).toBeUndefined();
+      expect(Object.keys(s.get().clips)).toEqual([stays.id]);
+      expect(s.hiddenClips()).toEqual([]);
+    }
+    a.undo();
+    expect(b.get().clips[goes.id]).toEqual(doubled(goes));
+    expect(a.get()).toEqual(b.get());
+  });
+
+  it('keeps one time base on a track that got a clip while it was being deleted', () => {
+    const a = new ProjectStore();
+    a.initIfEmpty({ fpsNum: 60, fpsDen: 1 });
+    const b = new ProjectStore();
+    const sync = () => {
+      Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc), 'remote');
+      Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc), 'remote');
+    };
+    sync();
+    const track = tracksOf(a.get()).video[1];
+    const old = makeClip('video', track.id, { start: 0, duration: 80 });
+    a.commit([{ op: 'addClip', clip: old }]);
+    sync();
+    a.commit(removeTrack(a.get(), track.id));
+    const late = makeClip('video', track.id, { start: 100, duration: 60 });
+    b.commit([{ op: 'addClip', clip: late }]);
+    sync();
+    // The late clip waits without a track and is re-timed; the deleted one is not there to be.
+    b.commit(changeFrameRate(b.get(), 30, 1));
+    sync();
+
+    a.undo();
+    sync();
+    for (const s of [a, b]) {
+      expect(s.get().clips[old.id]).toEqual({ ...old, duration: 40 });
+      expect(s.get().clips[late.id]).toEqual({ ...late, start: 50, duration: 30 });
+    }
+    expect(a.get()).toEqual(b.get());
+  });
+
+  it('re-times a single field that an undo puts back', () => {
+    const { a, b } = pair();
+    const v1 = tracksOf(a.get()).video[0];
+    const clip = makeClip('video', v1.id, { start: 30, duration: 60, fadeIn: 15 });
+    a.commit([{ op: 'addClip', clip }]);
+    a.commit([{ op: 'updateClip', id: clip.id, patch: { start: 0 } }]);
+    a.commit([{ op: 'updateClip', id: clip.id, patch: { fadeIn: 0 } }]);
+    // Neither zero is touched by the change of rate, so both undos go through.
+    b.commit(changeFrameRate(b.get(), 60, 1));
+    expect(a.get().clips[clip.id]).toMatchObject({ start: 0, duration: 120, fadeIn: 0 });
+
+    a.undo();
+    expect(b.get().clips[clip.id]).toMatchObject({ start: 0, duration: 120, fadeIn: 30 });
+    a.undo();
+    expect(b.get().clips[clip.id]).toMatchObject({ start: 60, duration: 120, fadeIn: 30 });
+    a.redo();
+    a.redo();
+    expect(b.get().clips[clip.id]).toMatchObject({ start: 0, duration: 120, fadeIn: 0 });
+    expect(a.canRedo).toBe(false);
+    expect(a.get()).toEqual(b.get());
+  });
+
+  it('lets an earlier step take away what came back re-timed', () => {
+    const { a, b } = pair();
+    const v2 = tracksOf(a.get()).video[1];
+    const clip = makeClip('video', v2.id, { start: 30, duration: 60 });
+    a.commit([{ op: 'addClip', clip }]);
+    a.commit([
+      { op: 'updateClip', id: clip.id, patch: { fadeIn: 15, transIn: makeTransition('crossDissolve', 12) } },
+    ]);
+    a.commit(removeTrack(a.get(), v2.id));
+    b.commit(changeFrameRate(b.get(), 60, 1));
+
+    a.undo();
+    expect(b.get().clips[clip.id]).toMatchObject({ start: 60, fadeIn: 30, transIn: { duration: 24 } });
+    // The step before gave the clip its fade and transition. Undoing it removes them, re-timed as
+    // they are, and does not reach past them for the step that added the clip.
+    a.undo();
+    expect(b.get().clips[clip.id]).toEqual({ ...clip, start: 60, duration: 120 });
+    a.undo();
+    expect(b.get().clips[clip.id]).toBeUndefined();
+    expect(b.get().tracks[v2.id]).toBeDefined();
+
+    a.redo();
+    a.redo();
+    expect(b.get().clips[clip.id]).toMatchObject({ start: 60, fadeIn: 30, transIn: { duration: 24 } });
+    a.redo();
+    expect(a.canRedo).toBe(false);
+    expect(b.get().tracks[v2.id]).toBeUndefined();
+    expect(a.get()).toEqual(b.get());
+  });
+
+  it('re-times a marker that comes back', () => {
+    const { a, b } = pair();
+    a.commit([{ op: 'setMarker', marker: marker(30) }]);
+    a.commit([{ op: 'removeMarker', id: 'm1' }]);
+    b.commit(changeFrameRate(b.get(), 60, 1));
+    a.undo();
+    expect(b.get().markers.m1).toEqual(marker(60));
+    a.redo();
+    expect(b.get().markers.m1).toBeUndefined();
+    a.undo();
+    expect(b.get().markers.m1).toEqual(marker(60));
+
+    // And one that a redo brings back, after the step that added it was undone at the other rate.
+    a.undo();
+    expect(b.get().markers.m1).toBeUndefined();
+    b.commit(changeFrameRate(b.get(), 30, 1));
+    a.redo();
+    expect(b.get().markers.m1).toEqual(marker(30));
+    expect(a.get()).toEqual(b.get());
+  });
+
+  it('re-times what a redo puts back', () => {
+    const { a, b } = pair();
+    const v1 = tracksOf(a.get()).video[0];
+    const clip = timed(v1.id);
+    a.commit([{ op: 'addClip', clip }]);
+    a.undo();
+    b.commit(changeFrameRate(b.get(), 60, 1));
+    a.redo();
+    expect(a.get().clips[clip.id]).toEqual(doubled(clip));
+    expect(b.get().clips[clip.id]).toEqual(doubled(clip));
+    a.undo();
+    expect(b.get().clips[clip.id]).toBeUndefined();
+  });
+
+  it('re-times what others did since when a change of rate is undone, and gives it back on redo', () => {
+    const { a, b } = pair();
+    const v1 = tracksOf(a.get()).video[0];
+    const old = timed(v1.id);
+    a.commit([{ op: 'addClip', clip: old }]);
+    b.commit(changeFrameRate(b.get(), 60, 1));
+    // Made at 60 frames a second, and no part of the change that B is about to undo.
+    const late = makeClip('video', v1.id, { start: 240, duration: 120, fadeOut: 30 });
+    a.commit([
+      { op: 'addClip', clip: late },
+      { op: 'updateClip', id: old.id, patch: { start: 600 } },
+      { op: 'setMarker', marker: marker(300) },
+    ]);
+    const at60 = a.get();
+
+    b.undo();
+    for (const s of [a, b]) {
+      expect(s.get().settings.fpsNum).toBe(30);
+      expect(s.get().clips[late.id]).toEqual({ ...late, start: 120, duration: 60, fadeOut: 15 });
+      expect(s.get().clips[old.id]).toEqual({ ...old, start: 300 });
+      expect(s.get().markers.m1).toEqual(marker(150));
+    }
+    b.redo();
+    expect(b.canRedo).toBe(false);
+    expect(a.get()).toEqual(at60);
+    expect(b.get()).toEqual(at60);
+  });
+
+  it('returns to the numbers of the rate that returns', () => {
+    const { a, b } = pair();
+    const [v1, v2] = tracksOf(a.get()).video;
+    const stays = timed(v1.id);
+    const goes = timed(v2.id);
+    a.commit([
+      { op: 'addClip', clip: stays },
+      { op: 'addClip', clip: goes },
+    ]);
+    a.commit(removeTrack(a.get(), v2.id));
+    b.commit(changeFrameRate(b.get(), 60, 1));
+    a.undo();
+    b.undo();
+    for (const s of [a, b]) {
+      expect(s.get().settings.fpsNum).toBe(30);
+      expect(s.get().clips[stays.id]).toEqual(stays);
+      expect(s.get().clips[goes.id]).toEqual(goes);
+    }
+  });
+
+  it('undoes a change of rate exactly, also where the change left a value as it was', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty({ fpsNum: 60, fpsDen: 1 });
+    const v1 = tracksOf(s.get()).video[0];
+    // Half of one frame rounds to one frame: at 30 frames a second all of this reads the same.
+    const tiny = makeClip('video', v1.id, {
+      start: 1,
+      duration: 1,
+      fadeIn: 1,
+      transIn: makeTransition('crossDissolve', 1),
+    });
+    const odd = makeClip('video', v1.id, { start: 3, duration: 5, fadeIn: 2.5, fadeOut: 1 });
+    s.commit([
+      { op: 'addClip', clip: tiny },
+      { op: 'addClip', clip: odd },
+      { op: 'setMarker', marker: marker(1) },
+    ]);
+    const at60 = s.get();
+    s.commit(changeFrameRate(s.get(), 30, 1));
+    const at30 = s.get();
+    expect(at30.clips[tiny.id]).toEqual(tiny);
+    expect(at30.clips[odd.id]).toMatchObject({ start: 2, duration: 2, fadeIn: 1, fadeOut: 1 });
+
+    s.undo();
+    expect(s.get()).toEqual(at60);
+    s.redo();
+    expect(s.get()).toEqual(at30);
+    s.undo();
+    expect(s.get()).toEqual(at60);
+  });
+
+  it('starts a new step when the rate changes under a gesture', () => {
+    const { a, b } = pair();
+    const v1 = tracksOf(a.get()).video[0];
+    const clip = makeClip('video', v1.id, { start: 30, duration: 60 });
+    a.commit([{ op: 'addClip', clip }]);
+    a.beginGesture();
+    for (const start of [40, 50])
+      a.commit([{ op: 'updateClip', id: clip.id, patch: { start } }], { merge: true });
+    expect(a.undoManager.undoStack).toHaveLength(2);
+    b.commit(changeFrameRate(b.get(), 60, 1));
+    for (const start of [120, 140])
+      a.commit([{ op: 'updateClip', id: clip.id, patch: { start } }], { merge: true });
+    expect(a.undoManager.undoStack).toHaveLength(3);
+
+    // What was dragged at 60 frames a second, then what was dragged at 30.
+    a.undo();
+    expect(b.get().clips[clip.id].start).toBe(100);
+    a.undo();
+    expect(b.get().clips[clip.id].start).toBe(60);
+    a.redo();
+    a.redo();
+    expect(b.get().clips[clip.id].start).toBe(140);
   });
 });
 

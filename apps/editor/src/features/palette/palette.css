@@ -56,10 +56,11 @@
   padding: 6px;
 }
 /* Title, group and shortcut are three columns. The last one is as wide as the longest shortcut,
-   so the group names line up down the list whatever keys follow them, or none. */
+   so the group names line up down the list whatever keys follow them, or none; a shortcut longer
+   than that widens its own row's column rather than running into the group. */
 .palette__item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 80px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(80px, auto);
   align-items: center;
   column-gap: 12px;
   width: 100%;

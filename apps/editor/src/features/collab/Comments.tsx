@@ -1,4 +1,13 @@
-import { Check, CornerDownRight, MessageSquare, MessageSquarePlus, RotateCcw, Trash2, X } from 'lucide-react';
+import {
+  Check,
+  CircleCheck,
+  CornerDownRight,
+  MessageSquare,
+  MessageSquarePlus,
+  RotateCcw,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { useState } from 'react';
 import { formatTimecode, initials, type Comment } from '@tandem/core';
 import { useComments, useFrame, useProject, useSession, useSessionMeta } from '../../session/hooks';
@@ -137,7 +146,11 @@ function CommentCard({ comment: c, current, tc }: { comment: Comment; current: b
         <b>{c.authorName}</b>
         <span className="comment__ago">{ago(c.createdAt)}</span>
         <span style={{ flex: 1 }} />
-        {c.resolved && <span className="badge">Resolved</span>}
+        {c.resolved && (
+          <span className="comment__done" role="img" aria-label="Resolved" {...tip('Resolved')}>
+            <CircleCheck />
+          </span>
+        )}
         <button
           className="comment__tc mono"
           onClick={() => cmd.seek(c.frame)}

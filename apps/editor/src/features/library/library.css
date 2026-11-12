@@ -1,7 +1,14 @@
 .lib {
+  /* What a label lies on when it is set over a picture (duration, status, HDR), so that it reads
+     the same on bright footage as on dark. */
+  --thumb-scrim: color-mix(in srgb, var(--bg-0) 74%, transparent);
   display: flex;
   flex-direction: column;
   animation: fade-in var(--dur-2) ease;
+}
+/* A tile on its way to the timeline passes over the others: no hover and no tooltip under it. */
+.lib[data-dragging] {
+  pointer-events: none;
 }
 /* Four tabs share the panel's width: a little tighter than the tabs of a wider panel. */
 .lib__tabs .tab {
@@ -63,7 +70,7 @@
   gap: 5px;
   height: 22px;
   padding: 0 8px;
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--bg-3);
   color: var(--fg-2);
   font-size: var(--text-xs);
@@ -182,16 +189,30 @@
   right: 4px;
   bottom: 4px;
   padding: 0 4px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.72);
-  color: #fff;
-  font-size: 10px;
-  line-height: 15px;
+  border-radius: var(--r-xs);
+  background: var(--thumb-scrim);
+  color: var(--fg-1);
+  font-size: var(--text-2xs);
+  line-height: 16px;
 }
-.asset__hdr {
+/* HDR and Proxy stand side by side: a file can be both. */
+.asset__badges {
   position: absolute;
   left: 4px;
   bottom: 4px;
+  display: flex;
+  gap: 4px;
+}
+/* One shape for the labels along the foot of a picture, the duration among them. */
+.asset__badges .badge {
+  border-radius: var(--r-xs);
+}
+/* The badge's own tint is too thin to carry its text over a bright picture. */
+.asset__badges .asset__hdr {
+  background: var(--thumb-scrim);
+}
+.asset__proxy[data-off='true'] {
+  opacity: 0.5;
 }
 .asset__status {
   position: absolute;
@@ -205,9 +226,9 @@
   place-items: center;
   width: 20px;
   height: 20px;
-  border-radius: 5px;
-  background: rgba(0, 0, 0, 0.7);
-  color: #fff;
+  border-radius: var(--r-sm);
+  background: var(--thumb-scrim);
+  color: var(--fg-1);
 }
 .asset__status svg {
   width: 12px;
@@ -225,7 +246,7 @@
   right: 0;
   bottom: 0;
   height: 3px;
-  background: rgba(0, 0, 0, 0.5);
+  background: color-mix(in srgb, var(--bg-0) 50%, transparent);
 }
 .asset__progress i {
   display: block;
@@ -284,7 +305,7 @@
   display: flex;
   gap: 4px;
   color: var(--fg-3);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   white-space: nowrap;
   overflow: hidden;
 }
@@ -484,14 +505,6 @@
 .lib__sample svg {
   width: 13px;
   height: 13px;
-}
-.asset__proxy {
-  position: absolute;
-  left: 4px;
-  bottom: 4px;
-}
-.asset__proxy[data-off='true'] {
-  opacity: 0.5;
 }
 
 /* Movement under the pointer is feedback, not information: without it the hairline still answers. */
