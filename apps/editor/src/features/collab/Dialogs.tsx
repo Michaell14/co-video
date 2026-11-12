@@ -19,6 +19,13 @@ const ROLE_COPY: Record<Exclude<Role, 'owner'>, { label: string; text: string }>
   viewer: { label: 'Can view', text: 'Read-only. Sees edits live, cannot change or comment.' },
 };
 
+/** What a person may do here, in the words the invitation used. */
+const roleLabel = (role: Role): string => (role === 'owner' ? 'Owner' : ROLE_COPY[role].label);
+
+/** When a version was saved: the day, and the time to the minute. */
+const savedAt = (time: number): string =>
+  new Date(time).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
 export function ShareDialog({ onClose }: { onClose: () => void }) {
   const session = useSession();
   const meta = useSessionMeta();
@@ -118,7 +125,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                 readOnly
                 placeholder="Create a link to invite people"
                 prefix={<Link2 size={13} />}
-                style={{ flex: 1 }}
+                style={{ flex: 1, height: 28 }}
                 ariaLabel="Share link"
               />
               <Button variant="primary" icon={<Copy />} disabled={busy} onClick={() => void copy()}>
@@ -136,16 +143,14 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
           </div>
         )}
         <div>
-          <div className="color__group" style={{ marginBottom: 8 }}>
-            In this project now
-          </div>
+          <div className="share__heading">In this project now</div>
           <div className="people">
             <div className="person">
               <span className="avatar avatar--sm" style={{ background: meta.user.color }}>
                 {initials(meta.user.name)}
               </span>
               <span>{meta.user.name} (you)</span>
-              <span className="badge">{meta.role}</span>
+              <span className="badge">{roleLabel(meta.role)}</span>
             </div>
             {peers.map((p) => (
               <div key={p.clientId} className="person">
@@ -153,7 +158,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                   {initials(p.user.name)}
                 </span>
                 <span>{p.user.name}</span>
-                <span className="badge">{p.role}</span>
+                <span className="badge">{roleLabel(p.role)}</span>
               </div>
             ))}
           </div>
@@ -253,7 +258,8 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
                 value={name}
                 onChange={setName}
                 placeholder="Name this version (e.g. Rough cut v2)"
-                style={{ flex: 1 }}
+                style={{ flex: 1, height: 28 }}
+                ariaLabel="Version name"
                 onEnter={() => void save()}
               />
               <Button variant="primary" disabled={busy} onClick={() => void save()}>
@@ -263,11 +269,11 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
           )}
           <div className="versions">
             {versions === null ? (
-              <div className="hstack muted" style={{ padding: 16 }}>
+              <div className="versions__note">
                 <span className="spinner" /> Loading
               </div>
             ) : versions.length === 0 ? (
-              <div className="muted" style={{ padding: 16, fontSize: 12 }}>
+              <div className="versions__note">
                 No versions yet. Snapshots are also taken automatically while people are editing.
               </div>
             ) : (
@@ -276,7 +282,7 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
                   <div className="grow">
                     <b>{v.name}</b>
                     <span>
-                      {new Date(v.createdAt).toLocaleString()} {v.author && `· ${v.author}`}
+                      {savedAt(v.createdAt)} {v.author && `· ${v.author}`}
                     </span>
                   </div>
                   {v.auto && <span className="badge">Auto</span>}
@@ -335,17 +341,15 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
             style={{ flex: 1, height: 32 }}
           />
         </div>
-        <div className="hstack" style={{ flexWrap: 'wrap' }}>
+        <div className="swatches">
           {USER_COLORS.map((c) => (
             <button
               key={c}
               aria-label={`Colour ${c}`}
+              aria-pressed={c === color}
               onClick={() => setColor(c)}
               className="swatch-btn"
-              style={{
-                background: c,
-                boxShadow: c === color ? '0 0 0 2px var(--bg-3), 0 0 0 4px #fff' : 'none',
-              }}
+              style={{ background: c }}
             />
           ))}
         </div>

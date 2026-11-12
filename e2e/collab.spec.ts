@@ -129,4 +129,97 @@ test.describe('collaboration', () => {
     expect(errors).toEqual([]);
     expect(errorsB).toEqual([]);
   });
+
+  test('a collaborator’s new frame rate leaves your playhead, range and zoom on the same moment', async ({
+    page,
+    browser,
+  }) => {
+    // A file saved while this runs must not reload either page under it (the dev server's socket).
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await newProject(page);
+    const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
+    test.skip(!meta.online || !meta.shared, 'collaboration server not reachable');
+
+    // Ten seconds of picture at 30 fps, and a comment three seconds in.
+    await page.evaluate(() => {
+      const { session, cmd } = (window as any).tandem;
+      cmd.seek(0);
+      cmd.addSolid('#205080');
+      const solid = Object.values(session.store.get().clips)[0] as any;
+      session.store.commit([{ op: 'updateClip', id: solid.id, patch: { duration: 300 } }]);
+      const u = session.getMeta().user;
+      session.review.add({
+        frame: 90,
+        text: 'Here',
+        authorId: u.id,
+        authorName: u.name,
+        authorColor: u.color,
+        x: null,
+        y: null,
+      });
+      cmd.seek(45);
+      (window as any).tandem.ui.getState().set({ selection: [] });
+    });
+    const link: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('editor'));
+
+    const ctxB = await browser.newContext();
+    await ctxB.routeWebSocket(/\/\?token=/, () => {});
+    const b = await ctxB.newPage();
+    await b.goto(link);
+    await b.waitForFunction(() => {
+      const s = (window as any).tandem?.session;
+      return !!s?.player && Object.keys(s.store.get().clips).length === 1 && s.review.get().length === 1;
+    });
+    // The collaborator is parked two seconds in, with a range marked from one second to five.
+    await b.evaluate(() => {
+      const { session, cmd } = (window as any).tandem;
+      cmd.seek(60);
+      session.player.setRange({ in: 30, out: 150 });
+    });
+    const view = (p: typeof page) =>
+      p.evaluate(() => {
+        const { session, ui } = (window as any).tandem;
+        const s = session.store.get().settings;
+        return {
+          fps: s.fpsNum / s.fpsDen,
+          frame: session.player.getFrame(),
+          range: session.player.getState().range,
+          ppf: ui.getState().ppf,
+          comments: session.review.get().map((c: any) => c.frame),
+        };
+      });
+    const zoom = (await view(b)).ppf;
+    const parked = { fps: 30, frame: 60, range: { in: 30, out: 150 }, ppf: zoom, comments: [90] };
+    expect(await view(b)).toEqual(parked);
+
+    const setRate = async (label: string) => {
+      await page
+        .locator('[aria-label="Inspector"] .row', { hasText: 'Frame rate' })
+        .locator('.select')
+        .click();
+      await page.getByRole('option', { name: label, exact: true }).click();
+    };
+    // Twice the frames: every count of the collaborator's doubles, once, and the zoom halves.
+    await setRate('60 fps');
+    await expect
+      .poll(() => view(b))
+      .toEqual({ fps: 60, frame: 120, range: { in: 60, out: 300 }, ppf: zoom / 2, comments: [180] });
+    // Whoever made the change is re-timed once as well, not a second time by its echo.
+    expect((await view(page)).frame).toBe(90);
+
+    // Undone by its author, it takes the collaborator back to where they were.
+    await page.evaluate(() => (window as any).tandem.cmd.undo());
+    await expect.poll(() => view(b)).toEqual(parked);
+    expect((await view(page)).frame).toBe(45);
+
+    // Fewer frames, with the playhead beyond the new end of the sequence: it lands on the same
+    // moment, not on that end.
+    await b.evaluate(() => (window as any).tandem.cmd.seek(290));
+    await setRate('24 fps');
+    await expect
+      .poll(() => view(b))
+      .toEqual({ fps: 24, frame: 232, range: { in: 24, out: 120 }, ppf: zoom / (24 / 30), comments: [72] });
+
+    await ctxB.close();
+  });
 });

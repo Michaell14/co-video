@@ -204,9 +204,7 @@ export function Home() {
         </section>
 
         <section className="home__recent">
-          <h2>
-            Recent projects <span className="badge">{sorted.length}</span>
-          </h2>
+          <h2>Recent projects {sorted.length > 0 && <span className="badge">{sorted.length}</span>}</h2>
           {sorted.length === 0 ? (
             <div className="home__empty">
               <FolderOpen />
@@ -516,7 +514,15 @@ function JoinDialog({ onClose }: { onClose: () => void }) {
           Paste the link someone shared with you. The link itself carries your access level — treat it like a
           key.
         </p>
-        <TextField value={link} onChange={setLink} placeholder="https://…/app/#/p/…" autoFocus onEnter={go} />
+        <TextField
+          value={link}
+          onChange={setLink}
+          placeholder="https://…/app/#/p/…"
+          autoFocus
+          onEnter={go}
+          ariaLabel="Share link"
+          style={{ height: 32 }}
+        />
       </div>
     </Dialog>
   );

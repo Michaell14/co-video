@@ -77,26 +77,28 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
     return (
       <div className="splash" role="alert">
         <Logo size={40} />
-        <div style={{ fontWeight: 600, fontSize: 15 }}>Something went wrong</div>
-        <div
-          style={{ color: 'var(--fg-3)', maxWidth: 420, textAlign: 'center', lineHeight: 1.5, fontSize: 13 }}
-        >
+        <div className="splash__title">Something went wrong</div>
+        <p className="splash__text">
           Your project is safe — every edit is saved as you make it. Reloading will bring you right back.
+        </p>
+        <code className="splash__detail">{this.state.error.message.split('\n')[0]}</code>
+        <div className="splash__actions">
+          {parseHash().projectId && (
+            // The way out when it is this project that fails, and reloading only fails again.
+            <button
+              className="btn btn--ghost btn--lg"
+              onClick={() => {
+                navigate(null);
+                location.reload();
+              }}
+            >
+              Back to projects
+            </button>
+          )}
+          <button className="btn btn--primary btn--lg" onClick={() => location.reload()}>
+            Reload
+          </button>
         </div>
-        <code
-          style={{
-            color: 'var(--fg-4)',
-            fontSize: 11,
-            maxWidth: 520,
-            textAlign: 'center',
-            userSelect: 'text',
-          }}
-        >
-          {this.state.error.message.split('\n')[0]}
-        </code>
-        <button className="btn btn--primary btn--lg" onClick={() => location.reload()}>
-          Reload
-        </button>
       </div>
     );
   }

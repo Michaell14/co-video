@@ -22,7 +22,7 @@ import {
   Type,
   Wand2,
 } from 'lucide-react';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   EFFECT_CATEGORIES,
   EFFECTS,
@@ -41,8 +41,10 @@ import { cmd } from '../../state/commands';
 import { commit } from '../../state/props';
 import { useUI, type LibraryTab } from '../../state/ui';
 import { Button, cx, hideTip, IconButton, openContextMenu, tip } from '../../ui/core';
-import { beginDrag } from '../../ui/dnd';
+import { beginDrag, type DragPayload } from '../../ui/dnd';
+import { usingKeyboard } from '../../ui/layers';
 import { FxThumb } from './fxPreview';
+import { tileToward } from './tiles';
 import './library.css';
 
 const TABS: { id: LibraryTab; label: string; icon: typeof Film }[] = [
@@ -51,6 +53,102 @@ const TABS: { id: LibraryTab; label: string; icon: typeof Film }[] = [
   { id: 'effects', label: 'Effects', icon: Sparkles },
   { id: 'transitions', label: 'Transitions', icon: Blend },
 ];
+
+/**
+ * What makes a library tile both something to drag and a button. The pointer drags it to the
+ * timeline or clicks it: `beginDrag` tells the two apart and takes a double-click as one click.
+ * A click the keyboard makes has no press of the pointer before it and applies the tile directly.
+ */
+function tile(payload: DragPayload, label: string, apply: () => void) {
+  return {
+    'data-tile': true,
+    onPointerDown: (e: React.PointerEvent) => {
+      hideTip();
+      beginDrag(e, payload, label, apply);
+    },
+    onClick: (e: React.MouseEvent) => {
+      if (e.detail === 0) apply();
+    },
+  };
+}
+
+const tilesIn = (grid: HTMLElement): HTMLElement[] =>
+  Array.from(grid.querySelectorAll<HTMLElement>('[data-tile]'));
+
+/**
+ * A grid of library tiles (the elements marked `data-tile`). Tab stops at it once, on the tile that
+ * was last in use, and the arrow keys, Home and End move between the tiles, so that the keyboard
+ * does not have to walk through fifty effects to get past them. A button inside a tile is reached
+ * with Tab from that tile.
+ */
+function TileGrid({ className, children }: { className: string; children: ReactNode }) {
+  const grid = useRef<HTMLDivElement>(null);
+  const stop = useRef<HTMLElement | null>(null);
+  // A tile that was clicked keeps the focus, and whoever clicked it goes on to step through frames
+  // with the arrow keys: those stay the editor's until the tile is worked from the keyboard.
+  const byPointer = useRef(false);
+  useLayoutEffect(() => {
+    const el = grid.current;
+    if (!el) return;
+    const keepOneStop = (): void => {
+      const tiles = tilesIn(el);
+      const current = tiles.find((t) => t === stop.current) ?? tiles[0];
+      for (const t of tiles) {
+        const tabIndex = t === current ? 0 : -1;
+        t.tabIndex = tabIndex;
+        for (const inner of t.querySelectorAll<HTMLElement>('button')) inner.tabIndex = tabIndex;
+      }
+    };
+    keepOneStop();
+    // Tiles come and go with the search and the filters, and their buttons with what they report.
+    const observer = new MutationObserver(keepOneStop);
+    observer.observe(el, { childList: true, subtree: true });
+    const onFocus = (e: FocusEvent): void => {
+      const tile = (e.target as HTMLElement).closest<HTMLElement>('[data-tile]');
+      if (!tile) return;
+      byPointer.current = !usingKeyboard();
+      if (tile === stop.current) return;
+      stop.current = tile;
+      keepOneStop();
+    };
+    el.addEventListener('focusin', onFocus);
+    return () => {
+      observer.disconnect();
+      el.removeEventListener('focusin', onFocus);
+    };
+  }, []);
+  return (
+    <div
+      className={className}
+      ref={grid}
+      onPointerDown={() => {
+        byPointer.current = true;
+      }}
+      onClick={(e) => {
+        // A click that no pointer made comes from Enter or Space.
+        if (e.detail === 0) byPointer.current = false;
+      }}
+      onKeyDown={(e) => {
+        const from = e.target as HTMLElement;
+        if (byPointer.current || !from.matches('[data-tile]')) return;
+        if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        const tiles = tilesIn(e.currentTarget);
+        const to = tileToward(
+          tiles.map((t) => t.getBoundingClientRect()),
+          tiles.indexOf(from),
+          e.key,
+        );
+        if (to === undefined) return;
+        // Not the transport's keys while they move between tiles.
+        e.preventDefault();
+        e.stopPropagation();
+        tiles[to].focus();
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 export function Library() {
   const tab = useUI((s) => s.libraryTab);
@@ -135,7 +233,7 @@ function MediaPool() {
   const [filter, setFilter] = useState<'all' | Asset['kind']>('all');
   const reveal = useUI((s) => s.revealAsset);
   const [revealed, setRevealed] = useState<{ id: ID } | null>(null);
-  const grid = useRef<HTMLDivElement>(null);
+  const pool = useRef<HTMLDivElement>(null);
 
   // Asked to show an asset: drop whatever narrows the list and hides it, then point at its card.
   useEffect(() => {
@@ -149,7 +247,7 @@ function MediaPool() {
   }, [reveal, assets, filter, query]);
   useEffect(() => {
     if (!revealed) return;
-    grid.current
+    pool.current
       ?.querySelector(`[data-asset="${CSS.escape(revealed.id)}"]`)
       ?.scrollIntoView({ block: 'center' });
     const done = setTimeout(() => setRevealed(null), REVEAL_MS);
@@ -189,7 +287,7 @@ function MediaPool() {
     );
   }
   return (
-    <div className="pool">
+    <div className="pool" ref={pool}>
       <div className="lib__bar">
         <div className="field lib__search">
           <span className="field__prefix">
@@ -224,12 +322,12 @@ function MediaPool() {
           );
         })}
       </div>
-      <div className="pool__grid" ref={grid}>
+      <TileGrid className="pool__grid">
         {list.map((a) => (
           <AssetCard key={a.id} asset={a} revealed={revealed?.id === a.id} />
         ))}
         {list.length === 0 && <div className="lib__none">Nothing matches “{query}”.</div>}
-      </div>
+      </TileGrid>
     </div>
   );
 }
@@ -270,9 +368,18 @@ function AssetCard({ asset, revealed }: { asset: Asset; revealed: boolean }) {
     commit(edits);
   };
 
+  /** What a double-click on the card does, and Enter while it has the keyboard. */
+  const open = () => {
+    if (asset.kind === 'lut') cmd.applyLut(asset.id);
+    else useUI.getState().set({ sourceAsset: asset.id });
+  };
+
   return (
     <div
       className="asset"
+      role="group"
+      aria-label={asset.name}
+      data-tile
       data-asset={asset.id}
       data-kind={asset.kind}
       data-offline={!available}
@@ -282,9 +389,10 @@ function AssetCard({ asset, revealed }: { asset: Asset; revealed: boolean }) {
         beginDrag(e, { kind: 'asset', assetId: asset.id }, asset.name);
       }}
       onDoubleClick={(e) => {
-        if ((e.target as HTMLElement).closest('button')) return;
-        if (asset.kind === 'lut') cmd.applyLut(asset.id);
-        else useUI.getState().set({ sourceAsset: asset.id });
+        if (!(e.target as HTMLElement).closest('button')) open();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && e.target === e.currentTarget) open();
       }}
       onContextMenu={(e) =>
         openContextMenu(e, [
@@ -605,64 +713,59 @@ function Titles() {
   return (
     <div className="lib__scroll">
       <div className="lib__heading">Text</div>
-      <div className="presets">
+      <TileGrid className="presets">
         {TEXT_PRESETS.map((p) => (
           <button
             key={p.name}
             className="preset"
+            aria-label={p.name}
             {...tip(`${p.name} — click to add, or drag to the timeline`)}
-            onPointerDown={(e) => {
-              hideTip();
-              beginDrag(e, { kind: 'text', text: p.text }, p.name, () =>
-                cmd.addTitle(p.text, p.y ? { y: p.y } : {}),
-              );
-            }}
+            {...tile({ kind: 'text', text: p.text }, p.name, () =>
+              cmd.addTitle(p.text, p.y ? { y: p.y } : {}),
+            )}
           >
             <span style={p.style}>{p.sample}</span>
           </button>
         ))}
-      </div>
+      </TileGrid>
       <div className="lib__heading">Shapes</div>
-      <div className="shapes">
-        {SHAPES.map((s) => (
-          <button
-            key={s.kind}
-            className="shape"
-            aria-label={s.label}
-            {...tip(s.label)}
-            onPointerDown={(e) => {
-              hideTip();
-              const shape = {
-                kind: s.kind,
-                ...(s.kind === 'line' || s.kind === 'arrow'
-                  ? { w: 0.4, h: 0.08, strokeWidth: 0.008, stroke: '#ffffff' }
-                  : s.kind === 'rect'
-                    ? { w: 0.4, h: 0.3 }
-                    : { w: 0.25, h: 0.444 }),
-              };
-              beginDrag(e, { kind: 'shape', shape }, s.label, () => cmd.addShape(shape));
-            }}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill={s.kind === 'line' || s.kind === 'arrow' ? 'none' : 'currentColor'}
-              stroke="currentColor"
-              strokeWidth={s.kind === 'line' || s.kind === 'arrow' ? 2 : 0}
-              strokeLinecap="round"
-              strokeLinejoin="round"
+      <TileGrid className="shapes">
+        {SHAPES.map((s) => {
+          const shape = {
+            kind: s.kind,
+            ...(s.kind === 'line' || s.kind === 'arrow'
+              ? { w: 0.4, h: 0.08, strokeWidth: 0.008, stroke: '#ffffff' }
+              : s.kind === 'rect'
+                ? { w: 0.4, h: 0.3 }
+                : { w: 0.25, h: 0.444 }),
+          };
+          return (
+            <button
+              key={s.kind}
+              className="shape"
+              aria-label={s.label}
+              {...tip(s.label)}
+              {...tile({ kind: 'shape', shape }, s.label, () => cmd.addShape(shape))}
             >
-              <path d={s.path} />
-            </svg>
-          </button>
-        ))}
-      </div>
+              <svg
+                viewBox="0 0 24 24"
+                fill={s.kind === 'line' || s.kind === 'arrow' ? 'none' : 'currentColor'}
+                stroke="currentColor"
+                strokeWidth={s.kind === 'line' || s.kind === 'arrow' ? 2 : 0}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d={s.path} />
+              </svg>
+            </button>
+          );
+        })}
+      </TileGrid>
       <div className="lib__heading">Generators</div>
-      <div className="gens">
+      <TileGrid className="gens">
         <button
           className="gen"
-          onPointerDown={(e) =>
-            beginDrag(e, { kind: 'generator', type: 'solid' }, 'Solid colour', () => cmd.addSolid())
-          }
+          {...tile({ kind: 'generator', type: 'solid' }, 'Solid colour', () => cmd.addSolid())}
         >
           <Square />
           <div>
@@ -672,11 +775,7 @@ function Titles() {
         </button>
         <button
           className="gen"
-          onPointerDown={(e) =>
-            beginDrag(e, { kind: 'generator', type: 'adjustment' }, 'Adjustment layer', () =>
-              cmd.addAdjustment(),
-            )
-          }
+          {...tile({ kind: 'generator', type: 'adjustment' }, 'Adjustment layer', () => cmd.addAdjustment())}
         >
           <Layers />
           <div>
@@ -684,7 +783,7 @@ function Titles() {
             <span>Grade or add effects to everything below</span>
           </div>
         </button>
-      </div>
+      </TileGrid>
     </div>
   );
 }
@@ -731,23 +830,20 @@ function EffectsBrowser() {
           </button>
         ))}
       </div>
-      <div className="fx-grid">
+      <TileGrid className="fx-grid">
         {list.map((e) => (
           <button
             key={e.id}
             className="fx"
             {...tip(e.description)}
-            onPointerDown={(ev) => {
-              hideTip();
-              beginDrag(ev, { kind: 'effect', type: e.id }, e.name, () => cmd.applyEffect(e.id));
-            }}
+            {...tile({ kind: 'effect', type: e.id }, e.name, () => cmd.applyEffect(e.id))}
           >
             <FxThumb kind="effect" id={e.id} />
             <span>{e.name}</span>
           </button>
         ))}
         {list.length === 0 && <div className="lib__none">No effects match.</div>}
-      </div>
+      </TileGrid>
     </div>
   );
 }
@@ -783,23 +879,20 @@ function TransitionsBrowser() {
           </button>
         ))}
       </div>
-      <div className="fx-grid">
+      <TileGrid className="fx-grid">
         {list.map((t) => (
           <button
             key={t.id}
             className="fx"
             {...tip(`${t.description} Drag onto a cut.`)}
-            onPointerDown={(ev) => {
-              hideTip();
-              beginDrag(ev, { kind: 'transition', type: t.id }, t.name, () => cmd.applyTransition(t.id));
-            }}
+            {...tile({ kind: 'transition', type: t.id }, t.name, () => cmd.applyTransition(t.id))}
           >
             <FxThumb kind="transition" id={t.id} />
             <span>{t.name}</span>
           </button>
         ))}
         {list.length === 0 && <div className="lib__none">No transitions match.</div>}
-      </div>
+      </TileGrid>
     </div>
   );
 }

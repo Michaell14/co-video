@@ -124,8 +124,9 @@ function Workspace() {
       <div className="splash">
         <div style={{ fontWeight: 600, fontSize: 15 }}>This project is not available</div>
         <div style={{ color: 'var(--fg-3)', maxWidth: 380, textAlign: 'center', lineHeight: 1.5 }}>
-          It is not stored on this device, and the link either expired or the collaboration server cannot be
-          reached.
+          {meta.unlisted
+            ? 'The collaboration server no longer accepts the link to it, and nothing of it is stored on this device. It has been removed from your projects.'
+            : 'It is not stored on this device, and the link either expired or the collaboration server cannot be reached.'}
         </div>
         {!meta.online && (
           <div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Still trying to reach the server…</div>

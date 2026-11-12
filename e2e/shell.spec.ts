@@ -190,7 +190,7 @@ test.describe('panel layout', () => {
     await expect.poll(viewer).toBe(before);
     await expect.poll(async () => (await box(comments)).x).toBe(inspector.x);
 
-    // Timestamps are read, so they are set in the colour for secondary text.
+    // Timestamps are read, so they are set in the colour for secondary text on a raised surface.
     const draft = comments.locator('textarea');
     await draft.fill('Hold this shot longer');
     await draft.press('Enter');
@@ -198,7 +198,7 @@ test.describe('panel layout', () => {
     await expect(stamp).toBeVisible();
     const colours = await stamp.evaluate((el) => {
       const probe = document.body.appendChild(document.createElement('span'));
-      probe.style.color = 'var(--fg-3)';
+      probe.style.color = 'var(--fg-3-raised)';
       const wanted = getComputedStyle(probe).color;
       probe.remove();
       return { stamp: getComputedStyle(el).color, wanted };
@@ -340,6 +340,41 @@ test.describe('top bar', () => {
 
     await expect(page.locator('.topbar__center')).toContainText('Colour');
   });
+
+  test('a long project name never runs under the workspace switcher', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await localProject(page);
+    await tandem(page, (t) =>
+      t.cmd.renameProject('A much longer project name for the launch film, final cut v12'),
+    );
+    const name = page.getByLabel('Project name');
+    await expect(name).toHaveValue(/final cut v12$/);
+    const redo = page.locator('.topbar').getByRole('button', { name: 'Redo' });
+    const switcher = page.locator('.topbar__center');
+    const clear = async () => {
+      const r = await box(redo);
+      return Math.round((await box(switcher)).x - (r.x + r.width));
+    };
+    const offCentre = async (width: number) => {
+      const s = await box(switcher);
+      return Math.abs(s.x + s.width / 2 - width / 2);
+    };
+    const cut = (target: Locator) => target.evaluate((el) => el.scrollWidth > el.clientWidth);
+    // The name gives way: the switcher keeps the middle, Redo stays clear of it, and the size
+    // beside the name is still whole.
+    await expect.poll(clear).toBeGreaterThanOrEqual(8);
+    expect(await offCentre(1280)).toBeLessThanOrEqual(1);
+    expect(await cut(name)).toBe(true);
+    expect(await cut(page.locator('.topbar__meta'))).toBe(false);
+    const narrow = (await box(name)).width;
+
+    // With room, the name is as long as it is allowed to be.
+    await page.setViewportSize({ width: 1920, height: 900 });
+    await expect.poll(async () => (await box(name)).width).toBe(280);
+    expect(narrow).toBeLessThan(280);
+    expect(await clear()).toBeGreaterThanOrEqual(8);
+    expect(await offCentre(1920)).toBeLessThanOrEqual(1);
+  });
 });
 
 test.describe('library', () => {
@@ -473,6 +508,103 @@ test.describe('library', () => {
         ),
       )
       .toEqual(['Ada Lovelace']);
+  });
+
+  test('tiles are worked from the keyboard, and applied once per click', async ({ page }) => {
+    // Focus is what this is about: a file saved meanwhile must not have the dev server redraw the page.
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await sample(page);
+    const effects = (): Promise<string[]> =>
+      tandem(page, (t) => {
+        const clips = Object.values(t.session.store.get().clips) as any[];
+        return clips.find((c) => c.name === 'dusk.mp4').effects.map((e: any) => e.type);
+      });
+    const frame = (): Promise<number> => tandem(page, (t) => t.session.player.getFrame());
+    const focused = (): Promise<string> =>
+      page.evaluate(() => (document.activeElement as HTMLElement).innerText.trim());
+    await tandem(page, (t) => {
+      const clips = Object.values(t.session.store.get().clips) as any[];
+      t.ui.getState().select([clips.find((c) => c.name === 'dusk.mp4').id]);
+    });
+    const before = await effects();
+    await page.getByRole('tab', { name: 'Effects' }).click();
+    const tiles = page.locator('.fx-grid .fx');
+    await expect(tiles.first()).toBeVisible();
+    const names = await tiles.allInnerTexts();
+    const columns = await tiles.evaluateAll(
+      (all) => all.filter((t) => t.getBoundingClientRect().top === all[0].getBoundingClientRect().top).length,
+    );
+    expect(columns).toBeGreaterThan(1);
+    // Every name can be read in full: one too long for its column takes a second line.
+    const cutShort = await tiles
+      .locator('span')
+      .evaluateAll((all) => all.filter((s) => s.scrollHeight > s.clientHeight + 1).map((s) => s.textContent));
+    expect(cutShort).toEqual([]);
+
+    // Tab stops at the grid once; the arrow keys, Home and End move between its tiles and leave
+    // the playhead where it is.
+    const at = await frame();
+    await page.locator('.chips .chip').last().focus();
+    await page.keyboard.press('Tab');
+    expect(await focused()).toBe(names[0]);
+    await page.keyboard.press('ArrowRight');
+    expect(await focused()).toBe(names[1]);
+    await page.keyboard.press('ArrowDown');
+    expect(await focused()).toBe(names[1 + columns]);
+    await page.keyboard.press('ArrowLeft');
+    expect(await focused()).toBe(names[columns]);
+    await page.keyboard.press('ArrowUp');
+    expect(await focused()).toBe(names[0]);
+    await page.keyboard.press('End');
+    expect(await focused()).toBe(names[names.length - 1]);
+    await page.keyboard.press('Home');
+    await page.keyboard.press('ArrowRight');
+    expect(await frame()).toBe(at);
+    // Tab leaves the grid; coming back, it is on the tile it was left on.
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.locator('.chips .chip').last()).toBeFocused();
+    await page.keyboard.press('Tab');
+    expect(await focused()).toBe(names[1]);
+    await expect(tiles.nth(1).locator('.fx__thumb')).not.toHaveCSS('box-shadow', 'none');
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => !!document.activeElement!.closest('.fx-grid'))).toBe(false);
+
+    // Enter applies the tile that has the keyboard, to the selected clip.
+    await page.getByLabel('Search effects').fill('gaussian');
+    await expect(tiles).toHaveCount(1);
+    await page.locator('.chips .chip').last().focus();
+    await page.keyboard.press('Tab');
+    expect(await focused()).toBe('Gaussian Blur');
+    await page.keyboard.press('Enter');
+    await expect.poll(effects).toEqual([...before, 'gaussianBlur']);
+
+    // A click of the pointer applies it once, and so does a double-click.
+    await page.getByLabel('Search effects').fill('');
+    const invert = page.locator('.fx-grid .fx', { hasText: 'Invert' });
+    await invert.click();
+    await expect.poll(effects).toEqual([...before, 'gaussianBlur', 'invert']);
+    // After a click the arrow keys are the transport's again, though the tile still has the focus.
+    await page.keyboard.press('ArrowRight');
+    expect(await frame()).toBe(at + 1);
+    expect(await focused()).toBe('Invert');
+    await page.locator('.fx-grid .fx', { hasText: 'Vignette' }).dblclick();
+    await expect.poll(effects).toEqual([...before, 'gaussianBlur', 'invert', 'vignette']);
+    await page.waitForTimeout(700);
+    expect(await effects()).toEqual([...before, 'gaussianBlur', 'invert', 'vignette']);
+
+    // A card of the media pool opens in the source monitor on Enter, as it does on a double-click.
+    await page.getByRole('tab', { name: 'Media' }).click();
+    await page.locator('.chips .chip').last().focus();
+    await page.keyboard.press('Tab');
+    const first = page.locator('.asset').first();
+    await expect(first).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    const second = page.locator('.asset').nth(1);
+    await expect(second).toBeFocused();
+    await page.keyboard.press('Enter');
+    const shown = await tandem(page, (t) => t.ui.getState().sourceAsset);
+    expect(shown).toBe(await second.getAttribute('data-asset'));
+    expect(shown).toBeTruthy();
   });
 
   test('“Reveal in media pool” shows the file behind a clip whatever the pool was showing', async ({
@@ -835,6 +967,64 @@ test.describe('home screen', () => {
     expect(await toastsWith(page, 'no longer accepts')).toBe(0);
     expect(asked).toBe(1);
     expect(await clipTypes(page)).toEqual(['text']);
+  });
+
+  test('a refused link to a project that is not on this device takes its card away', async ({ page }) => {
+    // Three projects known by their links only: nothing of them was ever stored here.
+    const linked = (id: string, name: string) => ({
+      id,
+      name,
+      createdAt: 1,
+      updatedAt: 1,
+      token: `link-to-${id}`,
+      role: 'editor',
+      thumb: null,
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      duration: 0,
+    });
+    await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true } }));
+    // The server has deleted one, is too busy to say anything about the next, and the request
+    // about the third never arrives.
+    await page.route('**/api/projects/deleted01', (route) =>
+      route.fulfill({ status: 404, json: { error: 'No such project' } }),
+    );
+    await page.route('**/api/projects/crowded01', (route) =>
+      route.fulfill({ status: 503, json: { error: 'Busy' } }),
+    );
+    await page.route('**/api/projects/unreached1', (route) => route.abort('connectionreset'));
+    await page.goto('/#/');
+    await page.evaluate(
+      (list) => localStorage.setItem('tandem.projects.v1', JSON.stringify(list)),
+      [linked('deleted01', 'Deleted'), linked('crowded01', 'Crowded'), linked('unreached1', 'Unreached')],
+    );
+    await page.reload();
+    await expect(page.locator('.pcard')).toHaveCount(3);
+    const ids = async () => (await registry(page)).map((p) => p.id).sort();
+    const notAvailable = page.locator('.splash', { hasText: 'This project is not available' });
+    const removed = 'It has been removed from your projects.';
+
+    // No answer and no room are not a refusal: the card stays for another day.
+    for (const name of ['Unreached', 'Crowded']) {
+      await page.locator('.pcard__open', { hasText: name }).click();
+      await expect(notAvailable).toBeVisible();
+      await expect(notAvailable).not.toContainText(removed);
+      expect(await ids()).toEqual(['crowded01', 'deleted01', 'unreached1']);
+      await notAvailable.getByRole('button', { name: 'Back to projects' }).click();
+      await expect(page.locator('.pcard')).toHaveCount(3);
+    }
+
+    // A refusal is final: the screen says what became of the card, and it is gone from the list.
+    await page.locator('.pcard__open', { hasText: 'Deleted' }).click();
+    await expect(notAvailable).toContainText(removed);
+    expect(await ids()).toEqual(['crowded01', 'unreached1']);
+    await notAvailable.getByRole('button', { name: 'Back to projects' }).click();
+    await expect(page.locator('.pcard')).toHaveCount(2);
+    expect((await page.locator('.pcard__name').allInnerTexts()).sort()).toEqual(['Crowded', 'Unreached']);
+    // Closing the project wrote nothing back.
+    await page.waitForTimeout(2000);
+    expect(await ids()).toEqual(['crowded01', 'unreached1']);
   });
 });
 

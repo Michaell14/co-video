@@ -326,8 +326,68 @@ test.describe('inspector', () => {
     expect(await textLeft('Fit')).toBe(edge);
     expect(await textLeft('Flip')).toBe(edge);
 
+    // A value that is only shown starts where the text inside the fields around it does.
+    const typed = await insp
+      .getByLabel('Start', { exact: true })
+      .evaluate((el) =>
+        Math.round(el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft)),
+      );
+    const shown = await insp
+      .locator('.row', { hasText: 'End' })
+      .locator('.insp__read')
+      .evaluate((el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return Math.round(range.getBoundingClientRect().left);
+      });
+    expect(shown).toBe(typed);
+
+    // A property that is animated gains its keyframe arrows without its number leaving the column.
+    const still = { opacity: await field('Opacity'), y: await field('Position Y') };
+    await page.evaluate((id) => {
+      const key = (t: number, v: number) => ({ t, v, e: 'linear' });
+      (window as any).tandem.session.store.commit([
+        {
+          op: 'updateClip',
+          id,
+          patch: {
+            keyframes: {
+              opacity: [key(0, 0.2), key(60, 1)],
+              x: [key(0, -0.1), key(60, 0.1)],
+              scaleX: [key(0, 1), key(60, 1.2)],
+              scaleY: [key(0, 1), key(60, 1.2)],
+            },
+          },
+        },
+      ]);
+    }, dusk.id);
+    await expect(insp.getByRole('button', { name: 'Next keyframe' })).toHaveCount(3);
+    const moving = {
+      opacity: await field('Opacity'),
+      x: await field('Position X'),
+      scale: await field('Scale'),
+    };
+    expect([moving.opacity.x, moving.opacity.width]).toEqual([still.opacity.x, still.opacity.width]);
+    expect([moving.scale.x, moving.scale.width]).toEqual([scale.x, scale.width]);
+    expect(moving.x.x + moving.x.width).toBe(still.y.x + still.y.width);
+    // The arrows step from key to key, on the linked scale as on any other row.
+    await insp.locator('.row', { hasText: 'Scale' }).getByRole('button', { name: 'Next keyframe' }).click();
+    expect(await page.evaluate(() => (window as any).tandem.session.player.getFrame())).toBe(60);
+    await insp
+      .locator('.row', { hasText: 'Opacity' })
+      .getByRole('button', { name: 'Previous keyframe' })
+      .click();
+    expect(await page.evaluate(() => (window as any).tandem.session.player.getFrame())).toBe(0);
+
     // What a switch of the text style turns on is set off under it, in the same control column.
     await select(page, [title.id]);
+    // And a number a switch turns on stands in the column of the numbers above it.
+    const wrap = insp.locator('.row', { hasText: 'Wrap width' });
+    if ((await wrap.getByRole('switch').getAttribute('aria-checked')) === 'false')
+      await wrap.getByRole('switch').click();
+    const wrapped = await box(wrap.locator('.num'));
+    const tracking = await box(insp.locator('.row', { hasText: 'Tracking' }).locator('.num'));
+    expect([wrapped.x, wrapped.width]).toEqual([tracking.x, tracking.width]);
     await insp.locator('.section__head', { hasText: 'Text style' }).click();
     await page.getByRole('switch', { name: 'Outline' }).click();
     const outline = insp.locator('.subrows').first();
@@ -536,6 +596,28 @@ test.describe('mixer', () => {
     expect(await undoDepth(page)).toBe(depth + 1);
     await undo(page);
     expect((await a1()).volume).toBe(-9);
+
+    // Solo and mute show what they are switched to while the pointer is still on the button.
+    const token = (name: string) =>
+      page.evaluate((name) => {
+        const probe = document.body.appendChild(document.createElement('span'));
+        probe.style.backgroundColor = `var(${name})`;
+        const colour = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return colour;
+      }, name);
+    for (const [name, colour] of [
+      ['S', '--amber'],
+      ['M', '--red'],
+    ]) {
+      const button = page.locator('.strip').first().getByRole('button', { name, exact: true });
+      await button.click();
+      await expect(button).toHaveAttribute('aria-pressed', 'true');
+      expect(await button.evaluate((el) => el.matches(':hover'))).toBe(true);
+      await expect(button).toHaveCSS('background-color', await token(colour));
+      await button.click();
+      await expect(button).toHaveAttribute('aria-pressed', 'false');
+    }
   });
 });
 

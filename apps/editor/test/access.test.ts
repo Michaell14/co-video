@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseAccess, claimedRole, outranks } from '../src/session/access';
+import { chooseAccess, claimedRole, entryFate, outranks } from '../src/session/access';
 
 const b64url = (s: string): string =>
   Buffer.from(s, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -65,5 +65,39 @@ describe('chooseAccess', () => {
     expect(chooseAccess(viewer, editor)).toEqual({ granted: editor, offered: 'adopted' });
     expect(chooseAccess(null, viewer)).toEqual({ granted: viewer, offered: 'adopted' });
     expect(chooseAccess('refused', viewer)).toEqual({ granted: viewer, offered: 'adopted' });
+  });
+});
+
+describe('entryFate', () => {
+  const editor = { token: 'edit', role: 'editor' as const };
+  const nothing = { loaded: true, empty: true };
+  const content = { loaded: true, empty: false };
+  const unread = { loaded: false, empty: true };
+
+  it('forgets a project whose link is refused and of which nothing is on the device', () => {
+    expect(entryFate('refused', nothing)).toBe('forget');
+  });
+
+  it('keeps the copy on the device and drops only the refused link', () => {
+    expect(entryFate('refused', content)).toBe('unlink');
+    // Content that arrived before the stored copy was read is content all the same.
+    expect(entryFate('refused', { loaded: false, empty: false })).toBe('unlink');
+  });
+
+  it('never touches the entry when the server could not be asked', () => {
+    expect(entryFate('unreachable', nothing)).toBe('keep');
+    expect(entryFate('unreachable', content)).toBe('keep');
+    expect(entryFate('unreachable', unread)).toBe('keep');
+  });
+
+  it('leaves an accepted link, and an entry without one, alone', () => {
+    expect(entryFate(editor, nothing)).toBe('keep');
+    expect(entryFate(editor, content)).toBe('keep');
+    expect(entryFate(null, nothing)).toBe('keep');
+    expect(entryFate(null, content)).toBe('keep');
+  });
+
+  it('does not take an unread device for an empty one', () => {
+    expect(entryFate('refused', unread)).toBe('keep');
   });
 });

@@ -78,6 +78,12 @@ async function expectRing(control: Locator): Promise<void> {
     .toBe(true);
 }
 
+// A file saved while the suite runs makes the dev server reload the page under the test; its
+// socket is left unanswered so that cannot happen.
+test.beforeEach(async ({ context }) => {
+  await context.routeWebSocket(/\/\?token=/, () => {});
+});
+
 test.describe('dialogs', () => {
   test('take focus, keep it, name themselves and give it back', async ({ page }) => {
     const problems = trackProblems(page);
@@ -556,6 +562,62 @@ test.describe('fields', () => {
     );
     expect(problems).toEqual([]);
   });
+
+  test('what is typed for one clip goes to that clip, whatever is clicked next', async ({ page }) => {
+    const problems = trackProblems(page);
+    await sample(page);
+    const clipsOf = (type: string): Promise<any[]> =>
+      page.evaluate(
+        (type) =>
+          (Object.values((window as any).tandem.session.store.get().clips) as any[])
+            .filter((c) => c.type === type)
+            .sort((a, b) => a.start - b.start),
+        type,
+      );
+    const selection = () => page.evaluate(() => (window as any).tandem.ui.getState().selection);
+    const pick = (id: string) => page.evaluate((id) => (window as any).tandem.ui.getState().select([id]), id);
+    const width = await page.evaluate(() => (window as any).tandem.session.store.get().settings.width);
+    const positions = async () => (await clipsOf('video')).map((c) => Math.round(c.x * width));
+    const [first, second] = await clipsOf('video');
+    const x = page.locator('[aria-label="Inspector"] input[aria-label="Position X"]');
+
+    // The click selects the other clip before the field loses focus.
+    await pick(first.id);
+    const steps = await undoSteps(page);
+    await x.click();
+    await page.keyboard.type('123');
+    await page.locator(`.clip[data-clip="${second.id}"]`).click();
+    expect(await selection()).toEqual([second.id]);
+    expect(await positions()).toEqual([123, 0, 0]);
+    await expect(x).toHaveValue('0');
+    expect(await undoSteps(page)).toBe(steps + 1);
+
+    // A click on nothing takes the whole field away: the entry still counts.
+    await x.click();
+    await page.keyboard.type('-40');
+    const lane = (await page.locator('.lane').nth(1).boundingBox())!;
+    await page.mouse.click(lane.x + lane.width - 30, lane.y + lane.height / 2);
+    expect(await selection()).toEqual([]);
+    expect(await positions()).toEqual([123, -40, 0]);
+    expect(await undoSteps(page)).toBe(steps + 2);
+
+    // The same for a colour typed as hex.
+    const title = (await clipsOf('text'))[0];
+    await pick(title.id);
+    await page.evaluate(() => (window as any).tandem.cmd.duplicate());
+    const titles = await clipsOf('text');
+    expect(titles).toHaveLength(2);
+    await pick(titles[0].id);
+    const hex = page.locator('[aria-label="Inspector"] input[aria-label="Hex colour"]').first();
+    const shown = await hex.inputValue();
+    await hex.click();
+    await hex.fill('#123456');
+    await page.locator(`.clip[data-clip="${titles[1].id}"]`).click();
+    expect(await selection()).toEqual([titles[1].id]);
+    expect((await clipsOf('text')).map((c) => c.text.color)).toEqual(['#123456', titles[1].text.color]);
+    await expect(hex).toHaveValue(shown);
+    expect(problems).toEqual([]);
+  });
 });
 
 test.describe('sliders', () => {
@@ -696,6 +758,72 @@ test.describe('tooltips', () => {
       expect(b.y >= a.y + a.height || b.y + b.height <= a.y).toBe(true);
     }
   });
+
+  test('go away when what they describe does, or the person turns to something else', async ({ page }) => {
+    await sample(page);
+    const tooltip = page.locator('.tooltip');
+    const show = (libraryTab: string) =>
+      page.evaluate((libraryTab) => (window as any).tandem.ui.getState().set({ libraryTab }), libraryTab);
+    /** Pointer off every control, and long enough for the next tooltip to wait its full delay. */
+    const rest = async () => {
+      await page.mouse.move(700, 300);
+      await expect(tooltip).toHaveCount(0);
+      await page.waitForTimeout(500);
+    };
+
+    // The tile is taken out of the page under a pointer that stays put: nothing tells it to leave.
+    await show('text');
+    const preset = page.locator('.preset').first();
+    await preset.hover();
+    await expect(tooltip).toBeVisible();
+    await show('media');
+    await expect(preset).toHaveCount(0);
+    await expect(tooltip).toHaveCount(0);
+
+    // The same while the tooltip was still waiting to appear.
+    await rest();
+    await show('text');
+    await preset.hover();
+    await show('media');
+    await page.waitForTimeout(700);
+    await expect(tooltip).toHaveCount(0);
+
+    // Scrolled away from the pointer.
+    await rest();
+    await show('effects');
+    const effect = page.locator('.fx-grid .fx', { hasText: 'Gaussian Blur' });
+    await effect.hover();
+    await expect(tooltip).toBeVisible();
+    const said = (await tooltip.textContent())!;
+    await page.locator('.fx-grid').evaluate((el) => (el.scrollTop += 60));
+    await expect(page.locator('.tooltip', { hasText: said })).toHaveCount(0);
+
+    // A key pressed, and the window losing the keyboard.
+    const home = page.locator('.topbar__home');
+    await rest();
+    await home.hover();
+    await expect(tooltip).toBeVisible();
+    await page.keyboard.press('Shift');
+    await expect(tooltip).toHaveCount(0);
+    await rest();
+    await home.hover();
+    await expect(tooltip).toBeVisible();
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect(tooltip).toHaveCount(0);
+
+    // Unrelated things moving leave it alone.
+    await rest();
+    await home.hover();
+    await expect(tooltip).toBeVisible();
+    await page.locator('.fx-grid').evaluate(
+      (el) =>
+        new Promise<void>((scrolled) => {
+          el.addEventListener('scroll', () => scrolled(), { once: true });
+          el.scrollTop += 20;
+        }),
+    );
+    await expect(tooltip).toBeVisible();
+  });
 });
 
 test.describe('command palette', () => {
@@ -721,16 +849,27 @@ test.describe('command palette', () => {
     await expect(input).toBeFocused();
     expect(await uiState(page)).toEqual({ ...before, dialog: 'palette' });
 
-    // The group names are informative text, set in the same grey as other secondary text.
-    const greys = await page.evaluate(() => {
-      const probe = document.createElement('span');
-      probe.style.color = 'var(--fg-3)';
-      document.body.appendChild(probe);
-      const wanted = getComputedStyle(probe).color;
-      probe.remove();
-      return [getComputedStyle(document.querySelector('.palette__group')!).color, wanted];
+    // The group names are informative text: readable on the list and on the highlighted row.
+    const ratios = await page.evaluate(() => {
+      const linear = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+      // Painted, a colour is three bytes however the browser writes it out (a mixed one is not rgb()).
+      const paint = document.createElement('canvas').getContext('2d')!;
+      const luminance = (colour: string) => {
+        paint.fillStyle = colour;
+        paint.fillRect(0, 0, 1, 1);
+        const [r, g, b] = Array.from(paint.getImageData(0, 0, 1, 1).data, (v) => linear(v / 255));
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      };
+      const surface = getComputedStyle(document.querySelector('.palette')!).backgroundColor;
+      return Array.from(document.querySelectorAll('.palette__item'), (row) => {
+        const own = getComputedStyle(row).backgroundColor;
+        const text = luminance(getComputedStyle(row.querySelector('.palette__group')!).color);
+        const behind = luminance(own === 'rgba(0, 0, 0, 0)' ? surface : own);
+        return (Math.max(text, behind) + 0.05) / (Math.min(text, behind) + 0.05);
+      });
     });
-    expect(greys[0]).toBe(greys[1]);
+    expect(ratios.length).toBeGreaterThan(0);
+    expect(Math.min(...ratios)).toBeGreaterThanOrEqual(4.5);
 
     await page.keyboard.press('Escape');
     await expect(page.locator('.palette')).toHaveCount(0);

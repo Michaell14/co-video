@@ -11,6 +11,14 @@ body,
   margin: 0;
 }
 
+:root {
+  /* Secondary text on a raised surface (--bg-3 and --bg-4: fields, dialogs, menus). The lighter
+     the surface, the less --fg-3 stands out from it: it falls under 4.5:1 from --bg-3 on. This
+     step towards --fg-2 holds 5:1 there. The editor's own stylesheet states the same mix for its
+     panels; the two must stay the same value. */
+  --fg-3-raised: color-mix(in srgb, var(--fg-3) 70%, var(--fg-2));
+}
+
 body {
   background: var(--bg-0);
   color: var(--fg-1);

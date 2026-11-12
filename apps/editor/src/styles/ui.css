@@ -77,6 +77,17 @@
 .btn--block {
   width: 100%;
 }
+/* Switched off, every variant is the plain button, dimmed: its label stays readable, which a dimmed
+   accent or red does not, and the accent is kept for what can be pressed. */
+.btn--primary:disabled,
+.btn--danger:disabled,
+.btn--ghost:disabled {
+  color: var(--fg-1);
+}
+.btn--primary:disabled {
+  background: var(--bg-4);
+  box-shadow: inset 0 0 0 1px var(--line-1);
+}
 /* A button's own shadow, or a variant's lack of one, must not take the place of the focus ring. */
 .btn:focus-visible {
   box-shadow: var(--ring);
@@ -115,6 +126,9 @@
 .icon-btn[data-active='true'] {
   color: var(--accent);
   background: var(--accent-soft);
+}
+.icon-btn[data-active='true']:hover {
+  color: var(--accent-hover);
 }
 .icon-btn--sm {
   width: 22px;
@@ -209,7 +223,7 @@
 }
 .field input::placeholder,
 .field textarea::placeholder {
-  color: var(--fg-4);
+  color: var(--fg-3-raised);
 }
 .field--area {
   height: auto;
@@ -223,13 +237,13 @@
 }
 .field__affix {
   padding: 0 7px 0 0;
-  color: var(--fg-3);
+  color: var(--fg-3-raised);
   font-size: var(--text-xs);
   flex: none;
 }
 .field__prefix {
   padding: 0 0 0 7px;
-  color: var(--fg-3);
+  color: var(--fg-3-raised);
   font-size: var(--text-xs);
   flex: none;
 }
@@ -367,16 +381,31 @@
   left: 2px;
   width: 12px;
   height: 12px;
-  border-radius: 50%;
+  border-radius: 6px;
   background: var(--fg-1);
-  transition: transform var(--dur-2) var(--ease-spring);
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    width var(--dur-1) ease;
+}
+.switch:hover {
+  background: var(--fg-4);
 }
 .switch[aria-checked='true'] {
   background: var(--accent);
 }
+.switch[aria-checked='true']:hover {
+  background: var(--accent-hover);
+}
 .switch[aria-checked='true']::after {
   transform: translateX(12px);
   background: var(--accent-ink);
+}
+/* Pressed, the thumb leans towards the side it is about to go to. */
+.switch:active::after {
+  width: 15px;
+}
+.switch[aria-checked='true']:active::after {
+  transform: translateX(9px);
 }
 
 /* Segmented control */
@@ -412,7 +441,7 @@
   border-radius: 6px;
   font-size: var(--text-sm);
   font-weight: 500;
-  color: var(--fg-3);
+  color: var(--fg-3-raised);
   transition: color var(--dur-2) ease;
   flex: 1;
   white-space: nowrap;
@@ -466,7 +495,7 @@
   position: fixed;
   z-index: 900;
   min-width: 160px;
-  max-height: min(70vh, 560px);
+  max-height: min(100vh - 16px, 640px);
   overflow: auto;
   padding: 4px;
   border-radius: var(--r-lg);
@@ -525,9 +554,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.menu-item__check {
+.menu-item__check,
+.menu-item__icon {
   width: 14px;
-  color: var(--accent) !important;
+  flex: none;
+}
+/* The mark of the chosen entry is the one accent in a menu. */
+.menu-item__check svg {
+  color: var(--accent);
 }
 .menu-sep {
   height: 1px;
@@ -540,7 +574,7 @@
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--fg-3);
+  color: var(--fg-3-raised);
 }
 
 /* ───────────────────────────────────────────────────────────── dialog ── */
@@ -571,7 +605,7 @@
   box-shadow:
     var(--shadow-3),
     inset 0 0 0 1px var(--line-2);
-  animation: pop-in var(--dur-3) var(--ease-out);
+  animation: pop-in var(--dur-2) var(--ease-out);
   overflow: hidden;
 }
 .dialog--wide {
@@ -586,24 +620,39 @@
   font-size: var(--text-sm);
   line-height: 1.5;
 }
+/* The icon and the close button sit on the first line of the title, however many lines it runs to. */
 .dialog__head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   padding: 16px 16px 12px 20px;
 }
+/* As tall as the close button, so an icon of any size is centred on that line. */
+.dialog__icon {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 28px;
+}
 .dialog__title {
   flex: 1;
+  min-width: 0;
+  padding: 3px 0 4px;
   font-size: var(--text-lg);
   font-weight: 600;
   letter-spacing: -0.01em;
+  overflow-wrap: break-word;
 }
 .dialog__body {
   padding: 4px 20px 20px;
   overflow: auto;
 }
-/* Content that has the keyboard itself, to be scrolled, shows it the way a field does. */
+/* Content that has the keyboard itself, to be scrolled, shows it the way a field does. Content
+   that merely holds the focus, for want of a control to give it to, has nothing to show. */
 .dialog__body:focus-visible {
+  box-shadow: none;
+}
+.dialog__body[tabindex='0']:focus-visible {
   box-shadow: inset 0 0 0 1px var(--accent-line);
 }
 .dialog__body:last-child {
@@ -636,24 +685,36 @@
   transform: translateX(-50%);
   pointer-events: none;
 }
+/* Icon and action sit on the first line of the message, however many lines it runs to. */
 .toast {
   pointer-events: auto;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   max-width: min(560px, 90vw);
-  padding: 9px 12px 9px 12px;
+  padding: 10px 12px;
   border-radius: var(--r-lg);
   background: var(--bg-5);
   box-shadow:
     var(--shadow-3),
     inset 0 0 0 1px var(--line-2);
   font-size: var(--text-sm);
-  animation: slide-up var(--dur-3) var(--ease-out);
+  line-height: 16px;
+  animation: slide-up var(--dur-2) var(--ease-out);
+}
+.toast[data-leaving] {
+  pointer-events: none;
+  animation: toast-out var(--dur-1) ease-in forwards;
+}
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
 }
 .toast svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   flex: none;
 }
 .toast[data-kind='error'] svg {
@@ -666,10 +727,13 @@
   color: var(--blue);
 }
 .toast__action {
+  flex: none;
+  margin: -2px -4px -2px 0;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
   color: var(--accent);
   font-weight: 600;
-  padding: 2px 4px;
-  border-radius: 4px;
+  transition: background var(--dur-1) ease;
 }
 .toast__action:hover {
   background: var(--accent-soft);
@@ -684,6 +748,12 @@
   border-top-color: var(--accent);
   animation: spin 0.7s linear infinite;
   flex: none;
+}
+/* Without motion it still says "working": it breathes instead of turning. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
 }
 .progress {
   height: 4px;
@@ -760,18 +830,19 @@
   border: 0;
   padding: 0;
   cursor: pointer;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px var(--line-3);
   transition:
-    transform 0.12s ease,
-    box-shadow 0.12s ease;
+    transform var(--dur-1) ease,
+    box-shadow var(--dur-1) ease;
 }
 .menu-swatch:hover,
 .menu-swatch:focus {
   transform: scale(1.18);
   outline: none;
 }
+/* The gap of the ring is the menu's own surface. */
 .menu-swatch[aria-checked='true'] {
   box-shadow:
-    0 0 0 2px var(--bg-2, #151517),
-    0 0 0 4px #fff;
+    0 0 0 2px var(--bg-4),
+    0 0 0 4px var(--fg-1);
 }

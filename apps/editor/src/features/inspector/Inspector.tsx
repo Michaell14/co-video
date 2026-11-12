@@ -60,7 +60,16 @@ import {
   TextField,
   tip,
 } from '../../ui/core';
-import { KeyframeButton, NumericRow, ParamControl, Row, Section, TimecodeField, valueOf } from './controls';
+import {
+  KeyframeButton,
+  KeyframeNav,
+  NumericRow,
+  ParamControl,
+  Row,
+  Section,
+  TimecodeField,
+  valueOf,
+} from './controls';
 import { ProjectSettingsForm } from './ProjectSettings';
 import './inspector.css';
 
@@ -378,6 +387,7 @@ function LinkedScale({ clips, onUnlink }: { clips: Clip[]; onUnlink: () => void 
           onStart={beginGesture}
           defaultValue={1}
         />
+        <KeyframeNav clip={first} path="scaleX" />
         <NumberField
           value={v}
           onChange={set}
@@ -1262,11 +1272,7 @@ function SolidSection({ clip }: { clip: Clip }) {
 function TransitionInspector({ project, clip, side }: { project: Project; clip: Clip; side: 'in' | 'out' }) {
   const t = side === 'in' ? clip.transIn : clip.transOut;
   if (!t) {
-    return (
-      <div className="insp__empty" style={{ padding: 16 }}>
-        This transition was removed.
-      </div>
-    );
+    return <div className="insp__empty insp__project">This transition was removed.</div>;
   }
   const def = getTransitionDef(t.type);
   const fps = project.settings.fpsNum / project.settings.fpsDen;
@@ -1333,7 +1339,7 @@ function TransitionInspector({ project, clip, side }: { project: Project; clip: 
           Remove transition
         </Button>
       </Section>
-      <p className="form__hint" style={{ padding: '0 12px' }}>
+      <p className="form__hint insp__hint">
         {def?.description} Drag the transition’s edge in the timeline to change its length.
       </p>
     </div>

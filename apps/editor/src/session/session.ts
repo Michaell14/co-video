@@ -8,6 +8,7 @@ import * as Y from 'yjs';
 import {
   canComment,
   canEdit,
+  fpsOf,
   framesToSeconds,
   newId,
   ProjectStore,
@@ -25,8 +26,9 @@ import {
 import { Player, probeFile, proxySize, type MediaResolver } from '@tandem/engine';
 import { useUI } from '../state/ui';
 import { toast } from '../ui/core';
-import { chooseAccess, claimedRole, type Verdict } from './access';
+import { chooseAccess, claimedRole, entryFate, type Verdict } from './access';
 import { api, ApiError, isRefusal, serverAvailable, wsBase } from './api';
+import { retimeView } from '../features/inspector/frameRate';
 import { TimelineMedia } from '../features/timeline/mediaCache';
 import { MediaStore, moveProjectMedia } from './mediaStore';
 import { idbName, whenSynced } from './projects';
@@ -48,6 +50,8 @@ export interface SessionMeta {
   player: Player | null;
   user: PresenceUser;
   denied: boolean;
+  /** The project was taken off the project list: its link was refused and nothing of it is here. */
+  unlisted: boolean;
   /** The server accepts our link but has no place for us right now; we keep trying. */
   busy: boolean;
   /** Preview from proxy media where it exists (a per-device preference). */
@@ -138,6 +142,7 @@ export class Session {
       player: null,
       user: getUser(),
       denied: false,
+      unlisted: false,
       busy: false,
       proxies: readProxyPref(),
     };
@@ -221,6 +226,38 @@ export class Session {
   }
 
   /**
+   * A frame rate changed by someone else (their edit, their undo, a version they restored) re-times
+   * the project under what this device counts in frames. Its playhead, marked range and zoom follow
+   * by the same ratio, as they do for whoever made the change (see features/inspector/frameRate.ts),
+   * so this view stays on the same moment of the programme. Changes made here are not followed
+   * twice: only transactions that came from outside count.
+   */
+  private followFrameRate(): void {
+    let before: { fps: number; frame: number | null } | null = null;
+    const onBefore = (tr: Y.Transaction): void => {
+      // A document that is still empty is being loaded, not re-timed.
+      before =
+        tr.local || this.store.isEmpty()
+          ? null
+          : { fps: fpsOf(this.store.get().settings), frame: this.meta.player?.getFrame() ?? null };
+    };
+    // Registered after the store's own listener, so the player has the re-timed project by now. It
+    // may have pulled the playhead inside a sequence of fewer frames: hence the frame from before.
+    const onAfter = (tr: Y.Transaction): void => {
+      if (tr.local || !before) return;
+      const k = fpsOf(this.store.get().settings) / before.fps;
+      if (Math.abs(k - 1) > 1e-9) retimeView(this, k, before.frame);
+      before = null;
+    };
+    this.doc.on('beforeTransaction', onBefore);
+    this.doc.on('afterTransaction', onAfter);
+    this.unsubs.push(() => {
+      this.doc.off('beforeTransaction', onBefore);
+      this.doc.off('afterTransaction', onAfter);
+    });
+  }
+
+  /**
    * A lock puts a track's clips out of reach of every edit, so they do not stay selected either:
    * not when the track is locked under them, and not as the linked partner of a clip that is free.
    * Returns true when it had to change the selection.
@@ -296,6 +333,7 @@ export class Session {
       page: 'edit',
     } satisfies PresenceState);
 
+    this.followFrameRate();
     this.unsubs.push(
       this.store.subscribe(() => {
         this.pushProjectToPlayer();
@@ -426,7 +464,7 @@ export class Session {
       );
     }
     if (!granted) {
-      this.loseAccess();
+      this.loseAccess(kept);
       return null;
     }
     this.token = granted.token;
@@ -438,16 +476,21 @@ export class Session {
 
   /**
    * The server will not have any token we hold: stop asking, and say what that means here. What is
-   * on this device is from now on a copy of its own, and whoever holds it may work on it.
+   * on this device is from now on a copy of its own, and whoever holds it may work on it. `stored`
+   * is the server's answer about the token the project list holds, if it holds one.
    */
-  private loseAccess(): void {
+  private loseAccess(stored: Verdict | null): void {
     this.refused = true;
     this.token = null;
-    if (this.store.isEmpty()) this.setMeta({ denied: true });
-    else if (this.meta.shared) {
-      // A refusal is final, so the link goes from the project list too: kept there, every later
-      // visit would offer it to the server again and end in this same message.
-      if (registry.get(this.id)?.token) registry.upsert({ id: this.id, token: null, role: undefined });
+    // A refusal is final, so the link goes from the project list: kept there, every later visit
+    // would offer it to the server again and end in this same message.
+    const fate = entryFate(stored, { loaded: this.idb[0]?.synced === true, empty: this.store.isEmpty() });
+    if (this.store.isEmpty()) {
+      // With nothing here to open either, the whole entry goes.
+      if (fate === 'forget') registry.remove(this.id);
+      this.setMeta({ denied: true, unlisted: fate === 'forget' });
+    } else if (this.meta.shared) {
+      if (fate === 'unlink') registry.upsert({ id: this.id, token: null, role: undefined });
       this.setMeta({ shared: false });
       this.applyRole('owner');
       toast(
@@ -528,7 +571,8 @@ export class Session {
     if (this.destroyed || !this.providers.length) return;
     if (verdict === 'refused') {
       this.closeRooms();
-      this.loseAccess();
+      // What the server refused is the token it accepted for this session: the one that is stored.
+      this.loseAccess(verdict);
     } else if (verdict === 'unreachable') {
       if (this.store.isEmpty()) this.setMeta({ denied: true, online: false });
     } else if (!this.meta.busy) {

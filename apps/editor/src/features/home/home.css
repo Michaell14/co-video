@@ -4,7 +4,8 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 18px;
+  gap: 16px;
+  padding: 24px;
   animation: fade-in var(--dur-3) ease;
 }
 .splash__label {
@@ -13,6 +14,31 @@
   gap: 10px;
   color: var(--fg-3);
   font-size: var(--text-sm);
+}
+.splash__title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.splash__text {
+  max-width: 420px;
+  margin: 0;
+  color: var(--fg-3);
+  line-height: 1.5;
+  text-align: center;
+}
+/* What went wrong, in the program's own words: for a bug report, so it can be selected. */
+.splash__detail {
+  max-width: 520px;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-align: center;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.splash__actions {
+  display: flex;
+  gap: 8px;
 }
 
 .home {
@@ -50,9 +76,9 @@
   gap: 7px;
   margin-left: 8px;
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--bg-3);
-  color: var(--fg-3);
+  color: var(--fg-3-raised);
   font-size: var(--text-xs);
 }
 .home__status svg {
@@ -133,6 +159,10 @@
 .starter:active {
   transform: translateY(-1px) scale(0.99);
 }
+/* The card's hairline is a shadow too: it must not take the place of the focus ring. */
+.starter:focus-visible {
+  box-shadow: var(--ring);
+}
 .starter:disabled {
   opacity: 0.5;
   pointer-events: none;
@@ -181,16 +211,38 @@
   color: var(--fg-3);
   font-size: var(--text-xs);
 }
+/* The other ways in: three tiles of the starters' own surface, together as tall as a starter. */
 .home__side {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  justify-content: center;
 }
 .home__side .btn {
-  height: 36px;
+  flex: 1;
+  height: auto;
+  min-height: 36px;
   justify-content: flex-start;
+  gap: 10px;
+  padding: 0 14px;
   border-radius: var(--r-lg);
+  background: var(--bg-2);
+  animation: slide-up var(--dur-4) var(--ease-out) 160ms backwards;
+}
+.home__side .btn:hover {
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+.home__side .btn:focus-visible {
+  box-shadow: var(--ring);
+}
+.home__side .btn svg {
+  width: 16px;
+  height: 16px;
+  color: var(--fg-3);
+  transition: color var(--dur-1) ease;
+}
+.home__side .btn:hover svg {
+  color: var(--fg-1);
 }
 .home__recent {
   margin-top: 56px;
@@ -224,10 +276,13 @@
 .home__empty b {
   color: var(--fg-2);
 }
+/* A card's hover surface reaches 8px beyond its picture. The grid gives that back at its edges, so
+   the pictures line up with the heading and the starters above them. */
 .home__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 14px;
+  margin: 0 -8px;
 }
 .pcard {
   position: relative;
@@ -342,7 +397,7 @@
 }
 .form__hint {
   margin: 6px 0 0;
-  color: var(--fg-3);
+  color: var(--fg-3-raised);
   font-size: var(--text-sm);
   line-height: 1.5;
 }
@@ -354,6 +409,9 @@
   .home__side {
     grid-column: 1 / -1;
     flex-direction: row;
+  }
+  .home__side .btn {
+    min-height: 44px;
   }
   .home__status {
     display: none;

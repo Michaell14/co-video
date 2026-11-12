@@ -84,130 +84,137 @@ export function TopBar() {
 
   return (
     <header className="topbar">
-      <button
-        className="topbar__home"
-        onClick={() => navigate(null)}
-        {...tip('All projects')}
-        aria-label="All projects"
-      >
-        <Logo size={22} />
-      </button>
-      <MenuButton
-        className="icon-btn"
-        label="Menu"
-        items={[
-          { heading: 'File' },
-          {
-            label: 'Import media…',
-            icon: <FolderInput />,
-            keys: 'mod+i',
-            onSelect: () => void cmd.importMedia(),
-          },
-          { label: 'Export…', icon: <Download />, keys: 'mod+e', onSelect: () => set({ dialog: 'export' }) },
-          {
-            label: 'Export frame as PNG',
-            icon: <Camera />,
-            keys: 'mod+shift+e',
-            onSelect: () => void cmd.captureStill(),
-          },
-          { label: 'Export captions (.srt)', icon: <Subtitles />, onSelect: () => cmd.exportSubtitles() },
-          { label: 'Export edit list (.edl)', icon: <ListOrdered />, onSelect: () => cmd.exportEdl() },
-          'separator',
-          {
-            label: 'Save project file',
-            icon: <FileDown />,
-            keys: 'mod+s',
-            onSelect: () => cmd.saveProjectFile(),
-          },
-          {
-            label: 'Open project file…',
-            icon: <FileUp />,
-            keys: 'mod+o',
-            onSelect: () => void cmd.openProjectFile(),
-          },
-          {
-            label: 'Replace with project file…',
-            icon: <Replace />,
-            disabled: !session.canEdit,
-            onSelect: () => void cmd.replaceWithProjectFile(),
-          },
-          { label: 'Version history…', icon: <History />, onSelect: () => set({ dialog: 'versions' }) },
-          'separator',
-          { label: 'Project settings…', icon: <Settings2 />, onSelect: () => set({ dialog: 'project' }) },
-          {
-            label: 'Keyboard shortcuts',
-            icon: <Keyboard />,
-            keys: 'shift+slash',
-            onSelect: () => set({ dialog: 'shortcuts' }),
-          },
-          {
-            label: 'Command palette',
-            icon: <Search />,
-            keys: 'mod+k',
-            onSelect: () => set({ dialog: 'palette' }),
-          },
-          'separator',
-          { label: 'Back to projects', icon: <LogOut />, onSelect: () => navigate(null) },
-        ]}
-      >
-        <Menu />
-      </MenuButton>
-      <input
-        className="topbar__name"
-        value={name}
-        aria-label="Project name"
-        spellCheck={false}
-        readOnly={!session.canEdit}
-        onMouseDown={(e) => {
-          // The press that enters the field selects the whole name, as Tab does; presses after it
-          // place the caret.
-          if (document.activeElement === e.currentTarget) return;
-          e.preventDefault();
-          e.currentTarget.focus();
-          e.currentTarget.select();
-        }}
-        onChange={(e) => setName(e.target.value)}
-        onBlur={() => {
-          const next = name.trim();
-          if (!abandonName.current && next && next !== settings.name) cmd.renameProject(next);
-          else setName(settings.name);
-          abandonName.current = false;
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') abandonName.current = true;
-          if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur();
-          e.stopPropagation();
-        }}
-      />
-      <button
-        className="topbar__meta mono"
-        onClick={() => set({ dialog: 'project' })}
-        {...tip('Project settings')}
-      >
-        {describeSettings(settings)}
-        {settings.colorMode !== 'sdr' && (
-          <span className="badge badge--amber" style={{ marginLeft: 6 }}>
-            HDR
-          </span>
-        )}
-      </button>
-      <div className="topbar__sep" />
-      <IconButton
-        label="Undo"
-        keys="mod+z"
-        disabled={!canUndo || !session.canEdit}
-        onClick={() => cmd.undo()}
-      >
-        <Undo2 />
-      </IconButton>
-      <IconButton
-        label="Redo"
-        keys="mod+shift+z"
-        disabled={!canRedo || !session.canEdit}
-        onClick={() => cmd.redo()}
-      >
-        <Redo2 />
-      </IconButton>
+      <div className="topbar__left">
+        <button
+          className="topbar__home"
+          onClick={() => navigate(null)}
+          {...tip('All projects')}
+          aria-label="All projects"
+        >
+          <Logo size={22} />
+        </button>
+        <MenuButton
+          className="icon-btn"
+          label="Menu"
+          items={[
+            { heading: 'File' },
+            {
+              label: 'Import media…',
+              icon: <FolderInput />,
+              keys: 'mod+i',
+              onSelect: () => void cmd.importMedia(),
+            },
+            {
+              label: 'Export…',
+              icon: <Download />,
+              keys: 'mod+e',
+              onSelect: () => set({ dialog: 'export' }),
+            },
+            {
+              label: 'Export frame as PNG',
+              icon: <Camera />,
+              keys: 'mod+shift+e',
+              onSelect: () => void cmd.captureStill(),
+            },
+            { label: 'Export captions (.srt)', icon: <Subtitles />, onSelect: () => cmd.exportSubtitles() },
+            { label: 'Export edit list (.edl)', icon: <ListOrdered />, onSelect: () => cmd.exportEdl() },
+            'separator',
+            {
+              label: 'Save project file',
+              icon: <FileDown />,
+              keys: 'mod+s',
+              onSelect: () => cmd.saveProjectFile(),
+            },
+            {
+              label: 'Open project file…',
+              icon: <FileUp />,
+              keys: 'mod+o',
+              onSelect: () => void cmd.openProjectFile(),
+            },
+            {
+              label: 'Replace with project file…',
+              icon: <Replace />,
+              disabled: !session.canEdit,
+              onSelect: () => void cmd.replaceWithProjectFile(),
+            },
+            { label: 'Version history…', icon: <History />, onSelect: () => set({ dialog: 'versions' }) },
+            'separator',
+            { label: 'Project settings…', icon: <Settings2 />, onSelect: () => set({ dialog: 'project' }) },
+            {
+              label: 'Keyboard shortcuts',
+              icon: <Keyboard />,
+              keys: 'shift+slash',
+              onSelect: () => set({ dialog: 'shortcuts' }),
+            },
+            {
+              label: 'Command palette',
+              icon: <Search />,
+              keys: 'mod+k',
+              onSelect: () => set({ dialog: 'palette' }),
+            },
+            'separator',
+            { label: 'Back to projects', icon: <LogOut />, onSelect: () => navigate(null) },
+          ]}
+        >
+          <Menu />
+        </MenuButton>
+        <input
+          className="topbar__name"
+          value={name}
+          aria-label="Project name"
+          spellCheck={false}
+          readOnly={!session.canEdit}
+          onMouseDown={(e) => {
+            // The press that enters the field selects the whole name, as Tab does; presses after it
+            // place the caret.
+            if (document.activeElement === e.currentTarget) return;
+            e.preventDefault();
+            e.currentTarget.focus();
+            e.currentTarget.select();
+          }}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => {
+            const next = name.trim();
+            if (!abandonName.current && next && next !== settings.name) cmd.renameProject(next);
+            else setName(settings.name);
+            abandonName.current = false;
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') abandonName.current = true;
+            if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur();
+            e.stopPropagation();
+          }}
+        />
+        <button
+          className="topbar__meta mono"
+          onClick={() => set({ dialog: 'project' })}
+          {...tip('Project settings')}
+        >
+          {describeSettings(settings)}
+          {settings.colorMode !== 'sdr' && (
+            <span className="badge badge--amber" style={{ marginLeft: 6 }}>
+              HDR
+            </span>
+          )}
+        </button>
+        <div className="topbar__sep" />
+        <IconButton
+          label="Undo"
+          keys="mod+z"
+          disabled={!canUndo || !session.canEdit}
+          onClick={() => cmd.undo()}
+        >
+          <Undo2 />
+        </IconButton>
+        <IconButton
+          label="Redo"
+          keys="mod+shift+z"
+          disabled={!canRedo || !session.canEdit}
+          onClick={() => cmd.redo()}
+        >
+          <Redo2 />
+        </IconButton>
+      </div>
 
       <div className="topbar__center">
         <Segmented

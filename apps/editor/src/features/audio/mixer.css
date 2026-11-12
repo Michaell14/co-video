@@ -1,6 +1,7 @@
 .mixer {
   display: flex;
   flex-direction: column;
+  animation: fade-in var(--dur-2) ease;
 }
 .mixer[data-readonly='true'] {
   pointer-events: none;
@@ -55,14 +56,15 @@
   align-items: center;
   gap: 4px;
   min-height: 20px;
-  font-size: 9.5px;
-  color: var(--fg-3);
+  font-size: var(--text-2xs);
+  color: var(--fg-3-raised);
 }
 .strip__pan .slider {
   height: 20px;
 }
+/* Room for the widest reading, L100. */
 .strip__pan .mono {
-  flex: 0 0 22px;
+  flex: 0 0 26px;
   text-align: right;
 }
 .strip__main {
@@ -75,7 +77,7 @@
 }
 .strip__hint {
   color: var(--fg-3);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   line-height: 1.4;
 }
 .meter {
@@ -97,7 +99,7 @@
   inset: 0;
   transform-origin: 50% 100%;
   transform: scaleY(0);
-  background: linear-gradient(0deg, #3ddc84 0%, #3ddc84 62%, #ffd43b 80%, #ff5d5d 96%);
+  background: linear-gradient(0deg, var(--green) 0%, var(--green) 62%, var(--amber) 80%, var(--red) 96%);
 }
 .meter__bar[data-clip='true'] {
   background: var(--red);
@@ -132,7 +134,7 @@
   width: 21px;
   height: 16px;
   border-radius: 4px;
-  background: linear-gradient(180deg, #e9e9ee, #a9a9b6);
+  background: linear-gradient(180deg, var(--fg-1), var(--fg-2));
   box-shadow:
     0 2px 5px rgba(0, 0, 0, 0.6),
     inset 0 -1px 0 rgba(0, 0, 0, 0.3);
@@ -145,7 +147,7 @@
   right: 3px;
   top: 7px;
   height: 2px;
-  background: #33333c;
+  background: var(--bg-6);
 }
 .fader:hover .fader__cap,
 .fader[data-active='true'] .fader__cap {
@@ -158,8 +160,8 @@
   position: absolute;
   left: 24px;
   transform: translateY(50%);
-  color: var(--fg-3);
-  font-size: 9.5px;
+  color: var(--fg-3-raised);
+  font-size: var(--text-2xs);
   font-family: var(--font-mono);
 }
 .fader__scale span[data-zero='true'] {
@@ -175,7 +177,7 @@
   border-radius: var(--r-sm);
   background: var(--bg-5);
   color: var(--fg-2);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: 800;
   transition:
     background var(--dur-1) ease,
@@ -189,20 +191,37 @@
 .strip__btn:active {
   transform: scale(0.94);
 }
-.strip__btn--mute {
+/*
+ * What a button is switched to shows under the pointer too: the press that mutes a track must be
+ * seen to have worked while the pointer is still on the button.
+ */
+.strip__btn--mute,
+.strip__btn--mute:hover {
   background: var(--red);
-  color: #fff;
+  color: var(--bg-0);
 }
-.strip__btn--solo {
+.strip__btn--solo,
+.strip__btn--solo:hover {
   background: var(--amber);
-  color: #1a1203;
+  color: var(--bg-0);
 }
-.strip__btn--fx {
+.strip__btn--mute:hover,
+.strip__btn--solo:hover {
+  filter: brightness(1.1);
+}
+.strip__btn--fx,
+.strip__btn--fx:hover {
   color: var(--accent);
 }
-.strip__btn--open {
+.strip__btn--open,
+.strip__btn--open:hover {
   background: var(--bg-6);
   box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.strip__btn--open:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px var(--accent-line),
+    var(--ring);
 }
 .mixer__fx {
   flex: none;
@@ -211,7 +230,7 @@
   border-radius: var(--r-md);
   background: var(--bg-3);
   box-shadow: inset 0 0 0 1px var(--line-1);
-  animation: slide-up var(--dur-3) var(--ease-out);
+  animation: slide-up var(--dur-2) var(--ease-out);
 }
 .mixer__fxhead {
   display: flex;
@@ -242,7 +261,7 @@
   justify-content: space-between;
   margin-top: 4px;
   color: var(--fg-2);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -252,8 +271,8 @@
   grid-template-columns: 1fr auto;
   align-items: center;
   column-gap: 4px;
-  font-size: 9.5px;
-  color: var(--fg-3);
+  font-size: var(--text-2xs);
+  color: var(--fg-3-raised);
 }
 .strip__knob .slider {
   grid-column: 1 / -1;
@@ -262,4 +281,10 @@
 .strip__knob em {
   font-style: normal;
   color: var(--fg-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mixer__fx {
+    animation-name: fade-in;
+  }
 }

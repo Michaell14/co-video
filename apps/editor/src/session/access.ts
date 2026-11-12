@@ -57,3 +57,23 @@ export function chooseAccess(
   if (kept && !outranks(offered.role, kept.role)) return { granted: kept, offered: 'surplus' };
   return { granted: offered, offered: 'adopted' };
 }
+
+/** What this device holds of a project, as far as it could be read. */
+export interface LocalCopy {
+  /** The stored document was read. Until it is, an empty document says nothing about the device. */
+  loaded: boolean;
+  empty: boolean;
+}
+
+/**
+ * What becomes of a project's entry in the project list once the server has answered about the
+ * token stored for it. Only a refusal changes anything: a server that could not be reached, or was
+ * busy, may accept the same token tomorrow. Refused with a copy on this device, the entry loses its
+ * link (`unlink`) and the copy stays, to be worked on as a local project. Refused with nothing on
+ * the device, the entry led nowhere but to the server, and goes (`forget`).
+ */
+export function entryFate(stored: Verdict | null, local: LocalCopy): 'keep' | 'unlink' | 'forget' {
+  if (stored !== 'refused') return 'keep';
+  if (!local.empty) return 'unlink';
+  return local.loaded ? 'forget' : 'keep';
+}

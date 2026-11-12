@@ -137,6 +137,7 @@ function CommentCard({ comment: c, current, tc }: { comment: Comment; current: b
         <b>{c.authorName}</b>
         <span className="comment__ago">{ago(c.createdAt)}</span>
         <span style={{ flex: 1 }} />
+        {c.resolved && <span className="badge">Resolved</span>}
         <button
           className="comment__tc mono"
           onClick={() => cmd.seek(c.frame)}

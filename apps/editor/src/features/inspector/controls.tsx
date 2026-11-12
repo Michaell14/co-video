@@ -157,6 +157,29 @@ export function KeyframeButton({
   );
 }
 
+/**
+ * Steps the playhead to the keyframe before and after it on an animated property; nothing where
+ * the property has no keyframes. It stands before the row's number, whose place it never changes.
+ */
+export function KeyframeNav({ clip, path }: { clip: Clip; path: string }) {
+  const keys = clip.keyframes[path];
+  if (!keys?.length) return null;
+  const go = (direction: -1 | 1) => {
+    const key = nearestKeyframe(keys, localFrameOf(clip), direction);
+    if (key) cmd.seek(clip.start + key.t);
+  };
+  return (
+    <span className="kfnav">
+      <button aria-label="Previous keyframe" onClick={() => go(-1)}>
+        <ChevronLeft />
+      </button>
+      <button aria-label="Next keyframe" onClick={() => go(1)}>
+        <ChevronRight />
+      </button>
+    </span>
+  );
+}
+
 /** What a timecode field stands for at one moment: the frame it shows and where an entry goes. */
 interface Shown {
   value: number;
@@ -282,9 +305,6 @@ export function NumericRow({
   const ids = clips.map((c) => c.id);
   const v = valueOf(first, path, defaultValue ?? 0);
   const mixed = clips.some((c) => Math.abs(valueOf(c, path, defaultValue ?? 0) - v) > 1e-6);
-  const kfs = first.keyframes[path];
-  const isAnimated = !!kfs && kfs.length > 0;
-  const lf = localFrameOf(first);
   const set = (val: number) => setClipValues(ids, { [path]: val });
   return (
     <div className="row">
@@ -306,6 +326,7 @@ export function NumericRow({
             origin={origin}
           />
         )}
+        <KeyframeNav clip={first} path={path} />
         <NumberField
           value={v}
           onChange={set}
@@ -320,28 +341,6 @@ export function NumericRow({
           mixed={mixed}
           ariaLabel={label}
         />
-        {isAnimated && (
-          <span className="kfnav">
-            <button
-              aria-label="Previous keyframe"
-              onClick={() => {
-                const k = nearestKeyframe(kfs, lf, -1);
-                if (k) cmd.seek(first.start + k.t);
-              }}
-            >
-              <ChevronLeft />
-            </button>
-            <button
-              aria-label="Next keyframe"
-              onClick={() => {
-                const k = nearestKeyframe(kfs, lf, 1);
-                if (k) cmd.seek(first.start + k.t);
-              }}
-            >
-              <ChevronRight />
-            </button>
-          </span>
-        )}
       </div>
     </div>
   );

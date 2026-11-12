@@ -264,3 +264,70 @@ export function placeTip(
     top: Math.max(edge, Math.min(viewport.height - size.height - edge, top)),
   };
 }
+
+/** Space between a popover and what it is anchored to, and between it and the window's edge. */
+const POPOVER_GAP = 6;
+const POPOVER_EDGE = 8;
+/** The least height worth scrolling a list in: about five entries. */
+const POPOVER_MIN_ROOM = 152;
+
+export interface PopoverPlace {
+  left: number;
+  top: number;
+  /** The corner the popover grows from, as a `transform-origin`. */
+  origin: string;
+  /** Set when the popover has to be shorter than its content, and scroll. */
+  maxHeight?: number;
+}
+
+/**
+ * Where a popover of `size` goes for `anchor`. Above or below, it takes the wanted side unless it
+ * only fits on the other one, or fits on neither and the other one has more room. A list longer
+ * than the room beside its `control` scrolls inside that room: slid back into the window it would
+ * lie over the control it belongs to. A menu at the pointer has no control to keep clear, and a
+ * sliver of a list is no use to anyone, so those are slid into the window instead.
+ */
+export function placePopover(
+  anchor: Box,
+  size: { width: number; height: number },
+  viewport: { width: number; height: number },
+  {
+    side,
+    align,
+    control,
+  }: { side: 'bottom' | 'top' | 'right'; align: 'start' | 'end' | 'center'; control: boolean },
+): PopoverPlace {
+  const right = anchor.left + anchor.width;
+  const bottom = anchor.top + anchor.height;
+  let { height } = size;
+  let left: number;
+  let top: number;
+  let up = false;
+  let maxHeight: number | undefined;
+  if (side === 'right') {
+    left = right + POPOVER_GAP;
+    top = anchor.top;
+    if (left + size.width > viewport.width - POPOVER_EDGE) left = anchor.left - size.width - POPOVER_GAP;
+  } else {
+    left =
+      align === 'end'
+        ? right - size.width
+        : align === 'center'
+          ? anchor.left + anchor.width / 2 - size.width / 2
+          : anchor.left;
+    const below = viewport.height - POPOVER_EDGE - bottom - POPOVER_GAP;
+    const above = anchor.top - POPOVER_GAP - POPOVER_EDGE;
+    const [wanted, other] = side === 'top' ? [above, below] : [below, above];
+    const stays = height <= wanted || other <= wanted;
+    up = side === 'top' ? stays : !stays;
+    const room = up ? above : below;
+    if (height > room && control && room >= POPOVER_MIN_ROOM) height = maxHeight = room;
+    top = up ? anchor.top - POPOVER_GAP - height : bottom + POPOVER_GAP;
+  }
+  return {
+    left: Math.min(viewport.width - size.width - POPOVER_EDGE, Math.max(POPOVER_EDGE, left)),
+    top: Math.min(viewport.height - height - POPOVER_EDGE, Math.max(POPOVER_EDGE, top)),
+    origin: `${up ? 'bottom' : 'top'} ${align === 'end' ? 'right' : 'left'}`,
+    maxHeight,
+  };
+}

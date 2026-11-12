@@ -20,15 +20,29 @@
   transition:
     background var(--dur-1) ease,
     box-shadow var(--dur-1) ease,
-    transform var(--dur-2) var(--ease-out);
+    transform var(--dur-hover) var(--ease-out);
 }
 .exp__preset:hover {
   background: var(--bg-4);
   transform: translateY(-1px);
 }
+.exp__preset:active {
+  transform: scale(0.98);
+}
 .exp__preset[aria-pressed='true'] {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+/* The preset's own outline must not take the place of the focus ring. */
+.exp__preset:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px var(--line-1),
+    var(--ring);
+}
+.exp__preset[aria-pressed='true']:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px var(--accent-line),
+    var(--ring);
 }
 .exp__preset b {
   font-size: var(--text-sm);
@@ -36,8 +50,12 @@
 }
 .exp__preset span {
   color: var(--fg-3);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   line-height: 1.3;
+}
+/* On the tint of the chosen preset the description needs the lighter grey to stay readable. */
+.exp__preset[aria-pressed='true'] span {
+  color: var(--fg-2);
 }
 .exp__cols {
   display: grid;
@@ -61,6 +79,8 @@
 .exp__pct {
   font-size: 44px;
   font-weight: 600;
+  /* The figure counts up: digits of one width keep it from twitching. */
+  font-variant-numeric: tabular-nums;
   letter-spacing: -0.04em;
   line-height: 1;
 }
@@ -119,8 +139,17 @@
   background: var(--bg-4);
   color: var(--fg-2);
   font: inherit;
+  transition:
+    background var(--dur-1) ease,
+    color var(--dur-1) ease;
 }
 button.exp__place:hover {
   background: var(--bg-5);
   color: var(--fg-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .exp__preset:hover {
+    transform: none;
+  }
 }

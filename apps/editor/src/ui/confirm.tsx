@@ -56,7 +56,7 @@ function ConfirmDialog({
       onClose={() => onAnswer(false)}
       footer={
         <>
-          <Button autoFocus={!!danger} onClick={() => onAnswer(false)}>
+          <Button variant="ghost" autoFocus={!!danger} onClick={() => onAnswer(false)}>
             {cancelLabel}
           </Button>
           <Button autoFocus={!danger} variant={danger ? 'danger' : 'primary'} onClick={() => onAnswer(true)}>

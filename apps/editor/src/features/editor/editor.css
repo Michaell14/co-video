@@ -1,3 +1,18 @@
+/*
+ * Local to the editor's panels, derived from the design tokens.
+ *
+ * --dur-hover: the time a control takes to move under the pointer (a tile rising, a button coming
+ * into view). Halfway between the two shortest steps of the motion scale, and nothing when those
+ * are zero for reduced motion.
+ *
+ * --fg-3-raised: secondary text on a surface a step above the panel (a tile, a mixer strip, a note),
+ * where --fg-3 itself falls just short of 4.5:1.
+ */
+:root {
+  --dur-hover: calc((var(--dur-1) + var(--dur-2)) / 2);
+  --fg-3-raised: color-mix(in srgb, var(--fg-3) 70%, var(--fg-2));
+}
+
 .app {
   position: relative;
   height: 100%;
@@ -166,12 +181,30 @@
 }
 
 /* ───────────────────────────────────────────────────────────── top bar ── */
+/*
+ * Three parts in a row. The two sides take equal shares of what the workspace switcher leaves, so
+ * it stands in the middle of the window; a side that needs more than its share (many people, a long
+ * status) takes it from the other, and the left one gives way by shortening the project name.
+ */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 12px;
   min-width: 0;
   padding: 0 4px;
+}
+.topbar__left,
+.topbar__right {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.topbar__left {
+  min-width: 0;
+}
+.topbar__left > * {
+  flex: none;
 }
 .topbar__home {
   display: grid;
@@ -181,13 +214,16 @@
   border-radius: var(--r-md);
   transition:
     background var(--dur-1) ease,
-    transform var(--dur-2) var(--ease-spring);
+    transform var(--dur-hover) var(--ease-spring);
 }
 .topbar__home:hover {
   background: var(--bg-4);
   transform: rotate(-6deg) scale(1.06);
 }
 .topbar__name {
+  /* The first to give way, and by so much more than the badge beside it that the badge is not
+     touched until the name is down to its least: a name is made to be cut short. */
+  flex: 0 100000 auto;
   min-width: 60px;
   max-width: 280px;
   height: 28px;
@@ -210,9 +246,19 @@
   box-shadow: inset 0 0 0 1px var(--accent-line);
 }
 .topbar__meta {
+  /* Shortened only once the name is down to its least. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: var(--r-sm);
   color: var(--fg-3);
   font-size: var(--text-xs);
   white-space: nowrap;
+  transition: color var(--dur-1) ease;
+}
+.topbar__meta:hover {
+  color: var(--fg-2);
 }
 .topbar__sep {
   width: 1px;
@@ -222,15 +268,10 @@
   flex: none;
 }
 .topbar__center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  flex: none;
 }
 .topbar__right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  justify-content: flex-end;
 }
 .conn {
   display: inline-flex;
@@ -283,9 +324,9 @@
   border: 2px solid var(--bg-0);
   font-size: 10px;
   font-weight: 700;
-  color: #0b0b0d;
+  color: var(--bg-1);
   transition:
-    transform var(--dur-2) var(--ease-spring),
+    transform var(--dur-hover) var(--ease-spring),
     margin var(--dur-2) var(--ease-out);
   animation: pop-in var(--dur-3) var(--ease-spring);
 }
@@ -322,7 +363,7 @@
   z-index: 700;
   display: grid;
   place-items: center;
-  background: rgba(7, 7, 8, 0.72);
+  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
   backdrop-filter: blur(4px);
   pointer-events: none;
   animation: fade-in var(--dur-2) ease;
@@ -393,9 +434,14 @@
   letter-spacing: 0.02em;
   color: var(--fg-2);
   text-align: left;
+  transition: color var(--dur-1) ease;
 }
 .section__head:hover {
   color: var(--fg-1);
+}
+/* Drawn inside the head: the panel clips anything that reaches past its edges. */
+.section__head:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent-line);
 }
 .section__chev {
   width: 12px;
@@ -414,6 +460,13 @@
   flex-direction: column;
   gap: 6px;
   padding: 2px 10px 12px;
+  animation: section-open var(--dur-2) var(--ease-out);
+}
+@keyframes section-open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
 }
 .row {
   display: grid;
@@ -453,6 +506,14 @@
 .row__ctrl > .num:first-child:nth-last-child(2) ~ .num {
   flex: 1;
 }
+/* A number that stands alone but for its keyframe arrows fills the column up to them. */
+.row__ctrl > .kfnav:first-child + .num:last-child {
+  flex: 1;
+}
+/* A number a switch turns on stands in the column of the numbers above and below it. */
+.row__ctrl > .switch + .num {
+  margin-left: auto;
+}
 /* The diamond's own box already sets it off from the label text. */
 .row__label:has(> .kf) {
   gap: 0;
@@ -479,7 +540,7 @@
   color: var(--fg-4);
   transition:
     color var(--dur-1) ease,
-    transform var(--dur-2) var(--ease-spring);
+    transform var(--dur-hover) var(--ease-spring);
 }
 .kf:hover {
   color: var(--fg-1);
@@ -507,4 +568,17 @@
   line-height: 14px;
   text-align: center;
   animation: pop-in var(--dur-3) var(--ease-spring);
+}
+
+/* Movement under the pointer is feedback, not information: without it the colours still answer. */
+@media (prefers-reduced-motion: reduce) {
+  .topbar__home:hover,
+  .avatar:hover,
+  .kf:hover {
+    transform: none;
+  }
+  .section__body,
+  .panel--enter {
+    animation-name: fade-in;
+  }
 }

@@ -3,6 +3,10 @@
  * markers; everything else that counts in frames has to follow by the same ratio, or it ends up
  * pointing at a different moment: review comments (their own document), the marked in/out range,
  * the playhead and the timeline zoom. Undoing or redoing the change takes all of them back with it.
+ *
+ * Comments are shared, so whoever changes the rate re-times them for everyone. Range, playhead and
+ * zoom are each person's own: the session re-times them wherever the change arrives from someone
+ * else (`retimeView`).
  */
 import { changeFrameRate, fpsOf } from '@tandem/core';
 import type { Session } from '../../session/session';
@@ -19,12 +23,11 @@ interface Retime {
 const META = 'tandem.retime';
 const watched = new WeakSet<object>();
 
-/** Re-time what lives outside the project document. `frame` is the playhead before the change. */
-function follow(session: Session, k: number, frame: number | null, back: Moved = {}): Moved {
-  const moved = retimeComments(session.review.get(), k, back);
-  session.reviewDoc.transact(() => {
-    for (const [id, [, to]] of Object.entries(moved)) session.review.update(id, { frame: to });
-  });
+/**
+ * Re-time what this device alone counts in frames, after the rate changed by the factor `k`: the
+ * marked range, the playhead and the timeline zoom. `frame` is the playhead before the change.
+ */
+export function retimeView(session: Session, k: number, frame: number | null): void {
   const player = session.player;
   if (player) {
     const range = player.getState().range;
@@ -37,6 +40,15 @@ function follow(session: Session, k: number, frame: number | null, back: Moved =
   // The same stretch of time stays in view.
   const ui = useUI.getState();
   ui.set({ ppf: clampPpf(ui.ppf / k) });
+}
+
+/** Re-time what lives outside the project document. `frame` is the playhead before the change. */
+function follow(session: Session, k: number, frame: number | null, back: Moved = {}): Moved {
+  const moved = retimeComments(session.review.get(), k, back);
+  session.reviewDoc.transact(() => {
+    for (const [id, [, to]] of Object.entries(moved)) session.review.update(id, { frame: to });
+  });
+  retimeView(session, k, frame);
   return moved;
 }
 

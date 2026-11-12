@@ -24,7 +24,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 8px 6px;
+  padding: 8px;
   flex: none;
 }
 .lib__search {
@@ -54,7 +54,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 0 8px 8px;
+  padding: 0 8px 4px;
   flex: none;
 }
 .chip {
@@ -83,8 +83,17 @@
   box-shadow: inset 0 0 0 1px var(--line-3);
 }
 .chip span {
-  opacity: 0.6;
-  font-size: 10px;
+  opacity: 0.75;
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+.chip:focus-visible {
+  box-shadow: var(--ring);
+}
+.chip[aria-pressed='true']:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px var(--line-3),
+    var(--ring);
 }
 
 /* Media pool */
@@ -92,7 +101,8 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
   gap: 8px;
-  padding: 2px 8px 12px;
+  /* The focus ring of a tile in the first row or column needs these four pixels. */
+  padding: 4px 8px 12px;
   overflow: auto;
   align-content: start;
   flex: 1;
@@ -111,17 +121,31 @@
   border-radius: var(--r-md);
   background: var(--bg-4);
   color: var(--fg-4);
-  box-shadow: inset 0 0 0 1px var(--line-1);
+  /* An outline is drawn over the picture, where an inset shadow would lie under it. */
+  outline: 1px solid var(--line-2);
+  outline-offset: -1px;
   transition:
+    outline-color var(--dur-1) ease,
     box-shadow var(--dur-1) ease,
-    transform var(--dur-2) var(--ease-out);
+    transform var(--dur-hover) var(--ease-out);
 }
 .asset:hover .asset__thumb {
-  box-shadow: inset 0 0 0 1px var(--line-3);
+  outline-color: var(--line-3);
   transform: translateY(-1px);
 }
+/* The card has the keyboard: its picture shows it, and offers what a hover would. */
+.asset:focus-visible {
+  box-shadow: none;
+}
+.asset:focus-visible .asset__thumb {
+  box-shadow: var(--ring);
+}
 .asset[data-kind='audio'] .asset__thumb {
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.24), rgba(16, 185, 129, 0.08));
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--clip-audio) 24%, transparent),
+    color-mix(in srgb, var(--clip-audio) 8%, transparent)
+  );
   color: var(--clip-audio);
 }
 .asset[data-kind='lut'] .asset__thumb {
@@ -135,9 +159,9 @@
 @keyframes asset-reveal {
   0%,
   55% {
-    box-shadow:
-      inset 0 0 0 2px var(--accent),
-      0 0 0 3px var(--accent-soft);
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    box-shadow: 0 0 0 3px var(--accent-soft);
   }
 }
 .asset[data-offline='true'] .asset__thumb img {
@@ -223,8 +247,8 @@
   opacity: 0;
   transform: scale(0.7);
   transition:
-    opacity var(--dur-2) ease,
-    transform var(--dur-2) var(--ease-spring);
+    opacity var(--dur-hover) ease,
+    transform var(--dur-hover) var(--ease-spring);
 }
 .asset__add svg {
   width: 14px;
@@ -232,12 +256,13 @@
   stroke-width: 2.5;
 }
 .asset:hover .asset__add,
+.asset:focus-visible .asset__add,
 .asset__add:focus-visible {
   opacity: 1;
   transform: scale(1);
 }
-.asset__add:hover {
-  transform: scale(1.12) !important;
+.asset .asset__add:hover {
+  transform: scale(1.12);
 }
 .asset__used {
   position: absolute;
@@ -273,28 +298,51 @@
   grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
   gap: 8px;
 }
+/*
+ * Tiles that are their own picture (title presets, shapes, generators) share one surface: a step
+ * above the panel with a hairline. Under the pointer they rise by a pixel and the hairline
+ * brightens; pressed, they give a little.
+ */
+.preset,
+.shape,
+.gen {
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px var(--line-1);
+  cursor: grab;
+  transition:
+    background var(--dur-1) ease,
+    color var(--dur-1) ease,
+    box-shadow var(--dur-1) ease,
+    transform var(--dur-hover) var(--ease-out);
+}
+.preset:hover,
+.shape:hover,
+.gen:hover {
+  background: var(--bg-4);
+  box-shadow: inset 0 0 0 1px var(--line-3);
+  transform: translateY(-1px);
+}
+.preset:active,
+.shape:active {
+  transform: scale(0.97);
+}
+.gen:active {
+  transform: scale(0.99);
+}
+.preset:focus-visible,
+.shape:focus-visible,
+.gen:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px var(--line-1),
+    var(--ring);
+}
 .preset {
   height: 62px;
   display: grid;
   place-items: center;
   padding: 0 6px;
-  border-radius: var(--r-md);
-  background: var(--bg-3);
-  box-shadow: inset 0 0 0 1px var(--line-1);
   overflow: hidden;
-  cursor: grab;
-  transition:
-    background var(--dur-1) ease,
-    transform var(--dur-2) var(--ease-out),
-    box-shadow var(--dur-1) ease;
-}
-.preset:hover {
-  background: var(--bg-4);
-  transform: translateY(-2px);
-  box-shadow: inset 0 0 0 1px var(--line-3);
-}
-.preset:active {
-  transform: scale(0.97);
 }
 .preset span {
   white-space: nowrap;
@@ -308,19 +356,10 @@
   aspect-ratio: 1;
   display: grid;
   place-items: center;
-  border-radius: var(--r-md);
-  background: var(--bg-3);
   color: var(--fg-2);
-  cursor: grab;
-  transition:
-    background var(--dur-1) ease,
-    color var(--dur-1) ease,
-    transform var(--dur-2) var(--ease-spring);
 }
 .shape:hover {
-  background: var(--bg-5);
-  color: var(--accent);
-  transform: scale(1.08);
+  color: var(--fg-1);
 }
 .shape svg {
   width: 20px;
@@ -335,15 +374,8 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 10px;
-  border-radius: var(--r-md);
-  background: var(--bg-3);
+  padding: 8px 10px;
   text-align: left;
-  cursor: grab;
-  transition: background var(--dur-1) ease;
-}
-.gen:hover {
-  background: var(--bg-4);
 }
 .gen svg {
   width: 18px;
@@ -357,7 +389,7 @@
   font-weight: 600;
 }
 .gen span {
-  color: var(--fg-3);
+  color: var(--fg-3-raised);
   font-size: var(--text-xs);
 }
 
@@ -366,7 +398,7 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
   gap: 8px;
-  padding: 2px 8px 12px;
+  padding: 4px 8px 12px;
   overflow: auto;
   align-content: start;
   flex: 1;
@@ -384,29 +416,42 @@
   aspect-ratio: 16 / 9;
   border-radius: var(--r-md);
   background: var(--bg-4);
-  box-shadow: inset 0 0 0 1px var(--line-1);
+  outline: 1px solid var(--line-2);
+  outline-offset: -1px;
   transition:
-    transform var(--dur-2) var(--ease-out),
-    box-shadow var(--dur-1) ease;
+    outline-color var(--dur-1) ease,
+    box-shadow var(--dur-1) ease,
+    transform var(--dur-hover) var(--ease-out);
 }
 .fx:hover .fx__thumb {
-  transform: translateY(-2px) scale(1.02);
-  box-shadow:
-    0 0 0 1px var(--accent-line),
-    0 8px 20px rgba(0, 0, 0, 0.4);
+  outline-color: var(--line-3);
+  transform: translateY(-1px);
 }
 .fx:active .fx__thumb {
   transform: scale(0.97);
 }
+/* The picture carries the focus ring: around the whole tile it would run into the names beside it. */
+.fx:focus-visible {
+  box-shadow: none;
+}
+.fx:focus-visible .fx__thumb {
+  box-shadow: var(--ring);
+}
+/* A name too long for its column takes a second line before it is cut. */
 .fx span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   font-size: var(--text-xs);
   font-weight: 500;
+  line-height: 14px;
   color: var(--fg-2);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  transition: color var(--dur-1) ease;
 }
-.fx:hover span {
+.fx:hover span,
+.fx:focus-visible span {
   color: var(--fg-1);
 }
 
@@ -414,25 +459,31 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-top: 14px;
+  margin-top: 12px;
   padding: 6px 10px;
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--violet-soft);
-  color: #c9c2ff;
+  color: color-mix(in srgb, var(--violet) 55%, var(--fg-1));
   font-size: var(--text-xs);
   font-weight: 500;
   transition:
     background var(--dur-1) ease,
-    transform var(--dur-2) var(--ease-out);
+    transform var(--dur-hover) var(--ease-out);
 }
 .lib__sample:hover {
-  background: rgba(139, 124, 255, 0.28);
+  background: color-mix(in srgb, var(--violet) 28%, transparent);
   transform: translateY(-1px);
 }
+.lib__sample:active {
+  transform: scale(0.97);
+}
+.lib__sample:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
 .lib__sample svg {
-  width: 13px !important;
-  height: 13px !important;
-  color: currentColor !important;
+  width: 13px;
+  height: 13px;
 }
 .asset__proxy {
   position: absolute;
@@ -441,4 +492,19 @@
 }
 .asset__proxy[data-off='true'] {
   opacity: 0.5;
+}
+
+/* Movement under the pointer is feedback, not information: without it the hairline still answers. */
+@media (prefers-reduced-motion: reduce) {
+  .asset:hover .asset__thumb,
+  .preset:hover,
+  .shape:hover,
+  .gen:hover,
+  .fx:hover .fx__thumb,
+  .lib__sample:hover {
+    transform: none;
+  }
+  .asset {
+    animation-name: fade-in;
+  }
 }

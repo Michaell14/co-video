@@ -20,11 +20,13 @@ import {
   isTextEntry,
   isTopLayer,
   layerOpen,
+  placePopover,
   placeTip,
   trapTab,
   typeAhead,
   useLayer,
   usingKeyboard,
+  type PopoverPlace,
 } from './layers';
 import { isDoublePress, isDrag, type Press } from './press';
 
@@ -121,9 +123,43 @@ export function TooltipLayer() {
   );
 }
 
+let unwatchTip = () => {};
+
+/**
+ * Follow the element a tooltip belongs to for as long as its tip is waiting or showing. The
+ * pointer leaving is not the only way a tip stops being true, and the others send no
+ * pointerleave: the element is taken out of the page under a pointer that stays where it is (a
+ * tab switched from the keyboard), it scrolls away, or the person turns to the keyboard or to
+ * another window.
+ */
+function watchTip(anchor: Element): void {
+  unwatchTip();
+  const removed = new MutationObserver(() => {
+    if (!anchor.isConnected) hideTip();
+  });
+  removed.observe(document.body, { childList: true, subtree: true });
+  const onScroll = (e: Event) => {
+    if ((e.target as Node).contains(anchor)) hideTip();
+  };
+  window.addEventListener('scroll', onScroll, true);
+  // The timeline moves its content under the wheel without scrolling anything.
+  window.addEventListener('wheel', hideTip, { capture: true, passive: true });
+  window.addEventListener('keydown', hideTip, true);
+  window.addEventListener('blur', hideTip);
+  unwatchTip = () => {
+    removed.disconnect();
+    window.removeEventListener('scroll', onScroll, true);
+    window.removeEventListener('wheel', hideTip, true);
+    window.removeEventListener('keydown', hideTip, true);
+    window.removeEventListener('blur', hideTip);
+    unwatchTip = () => {};
+  };
+}
+
 /** Hide any visible tooltip (call from your own pointer-down handler when it replaces the tip's). */
 export function hideTip(): void {
   clearTimeout(tipTimer);
+  unwatchTip();
   showTip(null);
 }
 
@@ -134,19 +170,16 @@ export function tip(text: ReactNode, keys?: string, place: 'top' | 'bottom' = 'b
       if (e.pointerType === 'touch') return;
       const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
       clearTimeout(tipTimer);
+      watchTip(e.currentTarget);
       // After the first tooltip, neighbours appear instantly — scanning a toolbar should feel fluid.
       const delay = performance.now() - lastTipAt < 400 ? 0 : 450;
       tipTimer = setTimeout(() => showTip({ text, keys, anchor: r, place }), delay);
     },
     onPointerLeave: () => {
-      clearTimeout(tipTimer);
-      showTip(null);
+      hideTip();
       lastTipAt = performance.now();
     },
-    onPointerDown: () => {
-      clearTimeout(tipTimer);
-      showTip(null);
-    },
+    onPointerDown: hideTip,
   };
 }
 
@@ -337,6 +370,38 @@ export function Slider({
   );
 }
 
+// ───────────────────────────────────────────────────── typed entries ──
+
+/**
+ * Text typed into a field that applies it when the field is left. An entry is kept together with
+ * `target`, what the field stood for when the typing began: the press that takes focus away can
+ * change what the field shows (it selects another clip) before the field loses focus, and the
+ * entry is still meant for what it was typed for. For the same reason an entry still in the field
+ * when the field itself goes away is applied rather than lost.
+ */
+function useEntry<T>(target: T, apply: (text: string, to: T) => void) {
+  const [text, setText] = useState<string | null>(null);
+  // Readable in the same tick it changes: Enter and Escape blur the field from inside their own
+  // handler, and that blur must see what they just decided.
+  const entry = useRef<{ text: string; to: T } | null>(null);
+  const edit = (next: string | null) => {
+    entry.current = next === null ? null : { text: next, to: entry.current?.to ?? target };
+    setText(next);
+  };
+  const commit = () => {
+    const typed = entry.current;
+    if (!typed) return;
+    edit(null);
+    apply(typed.text, typed.to);
+  };
+  const latest = useRef(commit);
+  useLayoutEffect(() => {
+    latest.current = commit;
+  });
+  useEffect(() => () => latest.current(), []);
+  return { text, edit, commit };
+}
+
 // ─────────────────────────────────────────────────────── number field ──
 
 interface NumberFieldProps extends GestureProps {
@@ -377,31 +442,18 @@ export function NumberField({
   mixed,
   ariaLabel,
 }: NumberFieldProps) {
-  const [editing, setEditing] = useState<string | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const drag = useRef<{ x: number; v: number; moved: boolean } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  // The text being typed, readable in the same tick it changes: Enter and Escape blur the field
-  // from inside their own handler, and that blur must see what they just decided.
-  const typed = useRef<string | null>(null);
-  const edit = (text: string | null) => {
-    typed.current = text;
-    setEditing(text);
-  };
   const clampV = (v: number) => Math.min(max, Math.max(min, v));
   const shown = mixed ? '—' : (value * scale).toFixed(precision);
-
-  const commitText = () => {
-    const text = typed.current;
-    if (text === null) return;
-    edit(null);
+  const entry = useEntry({ onStart, onChange, onEnd, min, max, scale }, (text, to) => {
     const n = parseFloat(text.replace(',', '.'));
-    if (Number.isFinite(n)) {
-      onStart?.();
-      onChange(clampV(n / scale));
-      onEnd?.();
-    }
-  };
+    if (!Number.isFinite(n)) return;
+    to.onStart?.();
+    to.onChange(Math.min(to.max, Math.max(to.min, n / to.scale)));
+    to.onEnd?.();
+  });
 
   return (
     <div
@@ -413,24 +465,24 @@ export function NumberField({
       <input
         ref={inputRef}
         aria-label={ariaLabel}
-        value={editing ?? shown}
-        data-dirty={editing !== null ? '' : undefined}
+        value={entry.text ?? shown}
+        data-dirty={entry.text !== null ? '' : undefined}
         inputMode="decimal"
         spellCheck={false}
-        onChange={(e) => edit(e.target.value)}
-        onBlur={commitText}
+        onChange={(e) => entry.edit(e.target.value)}
+        onBlur={entry.commit}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
-            commitText();
+            entry.commit();
             inputRef.current?.blur();
           } else if (e.key === 'Escape') {
-            edit(null);
+            entry.edit(null);
             inputRef.current?.blur();
           } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             e.preventDefault();
             const mult = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
             const dir = e.key === 'ArrowUp' ? 1 : -1;
-            edit(null);
+            entry.edit(null);
             onStart?.();
             onChange(clampV(value + dir * step * mult));
             onEnd?.();
@@ -598,40 +650,21 @@ function PopoverPanel({
   trigger,
 }: PopoverProps & { anchor: DOMRect | { x: number; y: number } }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; top: number; origin: string } | null>(null);
+  const [pos, setPos] = useState<PopoverPlace | null>(null);
   const typed = useRef({ text: '', at: 0 });
 
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const w = el.offsetWidth;
-    const h = el.offsetHeight;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const rect = 'width' in anchor ? anchor : new DOMRect(anchor.x, anchor.y, 0, 0);
-    let left: number;
-    let top: number;
-    let originY = 'top';
-    if (side === 'right') {
-      left = rect.right + 6;
-      top = rect.top;
-      if (left + w > vw - 8) left = rect.left - w - 6;
-    } else {
-      left =
-        align === 'end'
-          ? rect.right - w
-          : align === 'center'
-            ? rect.left + rect.width / 2 - w / 2
-            : rect.left;
-      top = side === 'top' ? rect.top - h - 6 : rect.bottom + 6;
-      if (side === 'bottom' && top + h > vh - 8 && rect.top - h - 6 > 8) {
-        top = rect.top - h - 6;
-        originY = 'bottom';
-      } else if (side === 'top') originY = 'bottom';
-    }
-    left = Math.min(vw - w - 8, Math.max(8, left));
-    top = Math.min(vh - h - 8, Math.max(8, top));
-    setPos({ left, top, origin: `${originY} ${align === 'end' ? 'right' : 'left'}` });
+    const control = 'width' in anchor;
+    setPos(
+      placePopover(
+        control ? anchor : { left: anchor.x, top: anchor.y, width: 0, height: 0 },
+        { width: el.offsetWidth, height: el.offsetHeight },
+        { width: window.innerWidth, height: window.innerHeight },
+        { side, align, control },
+      ),
+    );
   }, [anchor, align, side]);
 
   // While it is open a popover owns the keyboard: nothing reaches the page's shortcuts behind it.
@@ -642,6 +675,8 @@ function PopoverPanel({
       const el = ref.current;
       if (!el) return;
       if (e.key === 'Escape') {
+        // A field holding an edit that is not applied yet takes Escape first, to drop that edit.
+        if (el.contains(e.target as Node) && (e.target as Element).matches('[data-dirty]')) return;
         e.stopPropagation();
         onClose();
         return;
@@ -733,6 +768,7 @@ function PopoverPanel({
         visibility: pos ? 'visible' : 'hidden',
         ['--origin' as string]: pos?.origin,
         minWidth: width,
+        maxHeight: pos?.maxHeight,
         ...style,
       }}
       onContextMenu={(e) => e.preventDefault()}
@@ -776,6 +812,8 @@ export type MenuEntry =
 
 export function MenuList({ items, onClose }: { items: MenuEntry[]; onClose: () => void }) {
   const hasCheck = items.some((i) => i && typeof i === 'object' && 'label' in i && i.checked !== undefined);
+  // One entry with an icon gives every entry the column, so that the labels line up.
+  const hasIcon = items.some((i) => i && typeof i === 'object' && 'label' in i && i.icon);
   return (
     <div role="menu">
       {items.map((item, i) => {
@@ -825,7 +863,7 @@ export function MenuList({ items, onClose }: { items: MenuEntry[]; onClose: () =
             }}
           >
             {hasCheck && <span className="menu-item__check">{item.checked && <Check />}</span>}
-            {item.icon}
+            {item.icon || (hasIcon && <span className="menu-item__icon" />)}
             <span className="menu-item__label">{item.label}</span>
             {item.keys && <Kbd keys={item.keys} />}
           </button>
@@ -1105,13 +1143,15 @@ export function ColorField({
   onStart,
   onEnd,
 }: { value: string; onChange: (v: string) => void } & GestureProps) {
-  const [text, setText] = useState<string | null>(null);
-  // Mirrors `text` for the blur that Enter and Escape cause from inside their own handler.
-  const typed = useRef<string | null>(null);
-  const edit = (hex: string | null) => {
-    typed.current = hex;
-    setText(hex);
-  };
+  const entry = useEntry({ onStart, onChange, onEnd }, (hex, to) => {
+    let v = hex.trim();
+    if (!v.startsWith('#')) v = `#${v}`;
+    if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) return;
+    if (v.length === 4) v = `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`;
+    to.onStart?.();
+    to.onChange(v.toLowerCase());
+    to.onEnd?.();
+  });
   const picker = useRef<HTMLInputElement>(null);
   const started = useRef(false);
   const live = useRef(onEnd);
@@ -1157,28 +1197,16 @@ export function ColorField({
         <input
           className="mono"
           aria-label="Hex colour"
-          value={text ?? value.toUpperCase()}
-          data-dirty={text !== null ? '' : undefined}
+          value={entry.text ?? value.toUpperCase()}
+          data-dirty={entry.text !== null ? '' : undefined}
           spellCheck={false}
-          onChange={(e) => edit(e.target.value)}
+          onChange={(e) => entry.edit(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Escape') edit(null);
+            if (e.key === 'Escape') entry.edit(null);
             if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLElement).blur();
             e.stopPropagation();
           }}
-          onBlur={() => {
-            const hex = typed.current;
-            if (hex === null) return;
-            edit(null);
-            let v = hex.trim();
-            if (!v.startsWith('#')) v = `#${v}`;
-            if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) {
-              if (v.length === 4) v = `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`;
-              onStart?.();
-              onChange(v.toLowerCase());
-              onEnd?.();
-            }
-          }}
+          onBlur={entry.commit}
         />
       </div>
     </div>
@@ -1270,7 +1298,7 @@ export function Dialog({
         tabIndex={-1}
       >
         <div className="dialog__head">
-          {icon}
+          {icon && <span className="dialog__icon">{icon}</span>}
           <div className="dialog__title" id={titleId}>
             {title}
           </div>
@@ -1310,21 +1338,28 @@ export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast
   pushToast({ id: ++toastId, kind, text, action });
 }
 
+/** Time a toast is given to fade out before it is taken away (`toast-out` in ui.css is shorter). */
+const TOAST_EXIT_MS = 120;
+
 export function ToastLayer() {
-  const [list, setList] = useState<Toast[]>([]);
+  const [list, setList] = useState<(Toast & { leaving?: boolean })[]>([]);
+  const dismiss = useCallback((id: number) => {
+    setList((l) => l.map((t) => (t.id === id ? { ...t, leaving: true } : t)));
+    setTimeout(() => setList((l) => l.filter((t) => t.id !== id)), TOAST_EXIT_MS);
+  }, []);
   useEffect(() => {
     pushToast = (t) => {
       setList((l) => [...l.slice(-3), t]);
-      setTimeout(() => setList((l) => l.filter((x) => x.id !== t.id)), t.kind === 'error' ? 7000 : 4000);
+      setTimeout(() => dismiss(t.id), t.kind === 'error' ? 7000 : 4000);
     };
     return () => {
       pushToast = () => {};
     };
-  }, []);
+  }, [dismiss]);
   return createPortal(
     <div className="toasts" aria-live="polite">
       {list.map((t) => (
-        <div key={t.id} className="toast" data-kind={t.kind}>
+        <div key={t.id} className="toast" data-kind={t.kind} data-leaving={t.leaving ? '' : undefined}>
           <svg
             viewBox="0 0 24 24"
             fill="none"
@@ -1347,7 +1382,7 @@ export function ToastLayer() {
               className="toast__action"
               onClick={() => {
                 t.action!.run();
-                setList((l) => l.filter((x) => x.id !== t.id));
+                dismiss(t.id);
               }}
             >
               {t.action.label}

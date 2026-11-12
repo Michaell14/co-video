@@ -62,28 +62,72 @@ export interface UIState {
   set: (patch: Partial<UIState>) => void;
 }
 
-const persisted = (() => {
+/** What is kept from one visit to the next. */
+export type Prefs = Pick<
+  UIState,
+  'snapping' | 'linkedSelection' | 'leftWidth' | 'rightWidth' | 'timelineHeight' | 'scopes'
+>;
+
+/** A size a splitter can have left behind, in pixels: the layout fits it to the window later. */
+const PANEL_SIZE = { min: 1, max: 10_000 };
+
+/**
+ * The stored preferences, as far as they can be trusted. The entry outlives the version that
+ * wrote it and can be edited or damaged, so each field is taken only with the right type and a
+ * finite, plausible value, and is otherwise the one a first visit starts from. One bad field
+ * does not cost the others.
+ */
+export function readPrefs(stored: string | null): Prefs {
+  let raw: Record<string, unknown> = {};
   try {
-    return JSON.parse(localStorage.getItem('tandem.ui.v1') ?? '{}') as Partial<UIState>;
+    const parsed: unknown = JSON.parse(stored ?? '{}');
+    if (parsed && typeof parsed === 'object') raw = parsed as Record<string, unknown>;
   } catch {
-    return {};
+    /* not JSON: a first visit */
   }
-})();
+  const flag = (value: unknown, initial: boolean): boolean => (typeof value === 'boolean' ? value : initial);
+  const size = (value: unknown, initial: number): number =>
+    typeof value === 'number' && value >= PANEL_SIZE.min && value <= PANEL_SIZE.max ? value : initial;
+  const scopes = (raw.scopes && typeof raw.scopes === 'object' ? raw.scopes : {}) as Record<string, unknown>;
+  return {
+    snapping: flag(raw.snapping, true),
+    linkedSelection: flag(raw.linkedSelection, true),
+    leftWidth: size(raw.leftWidth, 320),
+    rightWidth: size(raw.rightWidth, 316),
+    timelineHeight: size(raw.timelineHeight, 320),
+    scopes: {
+      waveform: flag(scopes.waveform, true),
+      parade: flag(scopes.parade, true),
+      vectorscope: flag(scopes.vectorscope, true),
+      histogram: flag(scopes.histogram, false),
+    },
+  };
+}
+
+const persisted = readPrefs(
+  (() => {
+    try {
+      return localStorage.getItem('tandem.ui.v1');
+    } catch {
+      return null;
+    }
+  })(),
+);
 
 export const useUI = create<UIState>((set, get) => ({
   selection: [],
   selectedTransition: null,
   tool: 'select',
-  snapping: persisted.snapping ?? true,
+  snapping: persisted.snapping,
   rippleMode: false,
-  linkedSelection: persisted.linkedSelection ?? true,
+  linkedSelection: persisted.linkedSelection,
   ppf: 4,
   scrollX: 0,
   workspace: 'edit',
   libraryTab: 'media',
-  leftWidth: persisted.leftWidth ?? 320,
-  rightWidth: persisted.rightWidth ?? 316,
-  timelineHeight: persisted.timelineHeight ?? 320,
+  leftWidth: persisted.leftWidth,
+  rightWidth: persisted.rightWidth,
+  timelineHeight: persisted.timelineHeight,
   commentsOpen: false,
   preview: null,
   snapLine: null,
@@ -99,7 +143,7 @@ export const useUI = create<UIState>((set, get) => ({
   sourceCue: null,
   revealAsset: null,
   recording: null,
-  scopes: persisted.scopes ?? { waveform: true, parade: true, vectorscope: true, histogram: false },
+  scopes: persisted.scopes,
 
   select: (ids, additive) =>
     set((s) => ({
