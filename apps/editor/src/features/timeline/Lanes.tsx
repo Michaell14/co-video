@@ -12,7 +12,7 @@ import {
   Square,
   Type,
 } from 'lucide-react';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   addAssetToTimeline,
   addGenerator,
@@ -28,6 +28,8 @@ import {
   maxTransitionDuration,
   placeClips,
   pasteClips,
+  rippleCloseGap,
+  rippleTrim,
   rollEdit,
   slipClips,
   snapPoints,
@@ -42,16 +44,19 @@ import {
   type Edge,
   type Edit,
   type ID,
+  type OpResult,
   type Project,
 } from '@tandem/core';
 import { usePeers, useProject, useSession } from '../../session/hooks';
 import { cmd, effectiveSelection } from '../../state/commands';
+import { transitionTarget } from '../../state/edits';
 import { commit } from '../../state/props';
 import { useUI } from '../../state/ui';
-import { openContextMenu, type MenuEntry } from '../../ui/core';
+import { openContextMenu, toast, type MenuEntry } from '../../ui/core';
 import { insideRect, onDrop, useDrag, type DragPayload } from '../../ui/dnd';
+import { EdgeScroller, scrollLimit } from './edgeScroll';
 import { drawLane } from './laneCanvas';
-import { LANE_GAP, laneAt, type Lane } from './layout';
+import { LANE_GAP, laneAt, layoutLanes, type Lane } from './layout';
 
 const ICONS: Record<ClipType, typeof Film> = {
   video: Film,
@@ -73,7 +78,10 @@ type Drag =
       y0: number;
       moved: boolean;
       reselect: boolean;
-      /** A track created by dragging past the outermost lane; kept for the rest of the drag. */
+      /**
+       * The track that dragging past the outermost lane opens. It is made once so its lane keeps
+       * its identity, and is part of the plan only while the pointer is out there.
+       */
       newTrack?: { edits: Edit[]; trackId: ID };
     }
   | {
@@ -84,8 +92,12 @@ type Drag =
       restore: number;
       roll: [ID, ID] | null;
       ripple: boolean;
+      /** Frames the edge is moved by as of the last pointer position, after limits and snapping. */
+      delta: number;
+      /** What the pointer alone asked for. */
+      wanted: number;
     }
-  | { kind: 'slip'; ids: ID[]; x0: number; restore: number }
+  | { kind: 'slip'; ids: ID[]; x0: number; restore: number; delta: number }
   | { kind: 'fade'; id: ID; side: 'in' | 'out'; f0: number; base: number }
   | { kind: 'trans'; id: ID; side: 'in' | 'out'; f0: number; base: number }
   | { kind: 'marquee'; x0: number; y0: number; keep: ID[]; moved: boolean; frame: number }
@@ -98,6 +110,33 @@ interface Props {
   live: Project;
 }
 
+/** What a drag reads from a pointer event, kept so the drag can be run again without one. */
+interface Pointer {
+  clientX: number;
+  clientY: number;
+  altKey: boolean;
+  shiftKey: boolean;
+}
+
+type DropHint = { clipId: ID; side: 'in' | 'out' | 'all' };
+
+type AddTrack = Extract<Edit, { op: 'addTrack' }>;
+
+/** Where something dragged in from the library would land. */
+interface DropPlan {
+  /** Every track this drag has opened so far, whether or not the plan still uses it. */
+  tracks: AddTrack[];
+  /** What to show and to commit: the clips and only the tracks they sit on. */
+  edits: Edit[];
+  select?: ID[];
+  hint?: DropHint;
+  line?: number | null;
+  /** A track opened by this drag that holds all it would add, and so is worth scrolling to. */
+  opened?: ID;
+}
+
+const isAddTrack = (e: Edit): e is AddTrack => e.op === 'addTrack';
+
 export function Lanes({ lanes, height, width, live }: Props) {
   const session = useSession();
   const ppf = useUI((s) => s.ppf);
@@ -109,8 +148,18 @@ export function Lanes({ lanes, height, width, live }: Props) {
   const peers = usePeers();
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
+  /** Where the pointer last was during the drag in progress. */
+  const pointer = useRef<Pointer | null>(null);
+  /** Set while something from the library is dragged over the lanes: the tracks it has opened. */
+  const drop = useRef<{ tracks: AddTrack[] } | null>(null);
+  /** A track the drag in progress has opened and that should be in view. */
+  const [opened, setOpened] = useState<ID | null>(null);
+  /** Where the body was scrolled to before it was scrolled to show that track. */
+  const reveal = useRef<number | null>(null);
+  /** Runs the drag in progress again where the pointer last was. */
+  const rerun = useRef<() => void>(() => {});
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-  const [dropHint, setDropHint] = useState<{ clipId: ID; side: 'in' | 'out' | 'all' } | null>(null);
+  const [dropHint, setDropHint] = useState<DropHint | null>(null);
   const selectedSet = useMemo(() => new Set(selection), [selection]);
 
   const ui = () => useUI.getState();
@@ -122,6 +171,65 @@ export function Lanes({ lanes, height, width, live }: Props) {
     return (clientX - r.left + ui().scrollX) / ui().ppf;
   };
   const toY = (clientY: number): number => clientY - ref.current!.getBoundingClientRect().top;
+  /**
+   * The pointer's height in the lanes as they lie when no drag has scrolled them. Bringing a
+   * track that a drag opened into view moves every lane, and what the pointer is over must not
+   * change because of that.
+   */
+  const laneY = (clientY: number): number => {
+    const body = ref.current!.closest('.tl__body');
+    const scrolled = body && reveal.current !== null ? body.scrollTop - reveal.current : 0;
+    return toY(clientY) - scrolled;
+  };
+
+  /** The part of the lanes that is on screen: the body they scroll in cuts them off above and below. */
+  const viewRect = (): DOMRect | null => {
+    const el = ref.current;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const body = el.closest('.tl__body')?.getBoundingClientRect();
+    if (!body) return r;
+    const top = Math.max(r.top, body.top);
+    return new DOMRect(r.left, top, r.width, Math.max(0, Math.min(r.bottom, body.bottom) - top));
+  };
+
+  const scroller = useMemo(
+    () =>
+      new EdgeScroller({
+        bounds: () => ref.current?.getBoundingClientRect() ?? null,
+        limit: () =>
+          scrollLimit(
+            useUI.getState().preview ?? session.store.get(),
+            useUI.getState().ppf,
+            ref.current?.clientWidth ?? 0,
+          ),
+        onScroll: () => rerun.current(),
+      }),
+    [session],
+  );
+  useEffect(() => () => scroller.stop(), [scroller]);
+
+  // A track opened by the drag in progress can lie outside the scrolled view (a new audio lane is
+  // added below the last one): bring it into view once it has been laid out. When the drag gives
+  // the track up again, the lanes go back to where they were.
+  useLayoutEffect(() => {
+    const body = ref.current?.closest('.tl__body');
+    if (!body) return;
+    if (!opened) {
+      if (reveal.current !== null) body.scrollTop = reveal.current;
+      reveal.current = null;
+      return;
+    }
+    const lane = lanes.find((l) => l.track.id === opened);
+    if (!lane) return;
+    let to = body.scrollTop;
+    if (lane.top - LANE_GAP < to) to = Math.max(0, lane.top - LANE_GAP);
+    else if (lane.top + lane.height + LANE_GAP > to + body.clientHeight)
+      to = lane.top + lane.height + LANE_GAP - body.clientHeight;
+    if (to === body.scrollTop) return;
+    reveal.current ??= body.scrollTop;
+    body.scrollTop = to;
+  }, [lanes, opened]);
 
   /** Snap `edges` (already offset by the raw delta) to nearby cut points. Returns the correction. */
   const snap = (
@@ -161,6 +269,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
         project: base,
         line: null as number | null,
         placements: [],
+        opened: null as ID | null,
       };
     let delta = Math.round(toFrame(e.clientX) - d.f0);
     const minStart = Math.min(...clips.map((c) => c.start));
@@ -169,29 +278,33 @@ export function Lanes({ lanes, height, width, live }: Props) {
     const s = snap(base, moving, edges, e.shiftKey);
     delta = Math.max(Math.round(delta + s.adjust), -minStart);
 
-    // Vertical: move clips of the grabbed clip's kind by the same number of lanes.
+    // Vertical: move clips of the grabbed clip's kind by the same number of lanes. The pointer is
+    // read against the lanes of the project as committed, not as previewed: a track this drag
+    // opens pushes the lanes of the preview along, and they must not slide under the pointer.
     const anchor = base.clips[d.anchor];
     const kind = anchor ? trackKindFor(anchor.type) : 'video';
-    const kindLanes = lanes.filter((l) => l.track.kind === kind);
-    const y = toY(e.clientY);
+    const baseLanes = layoutLanes(base).lanes;
+    const kindLanes = baseLanes.filter((l) => l.track.kind === kind);
+    const y = laneY(e.clientY);
     const first = kindLanes[0];
     const last = kindLanes[kindLanes.length - 1];
     // Picture stacks upwards and sound downwards, so "past the edge" is above the top video lane
-    // or below the bottom audio lane. Dragging there makes a new track.
+    // or below the bottom audio lane. Dragging there makes a new track, for as long as the
+    // pointer stays out there.
     const beyond =
       kind === 'video'
         ? !!first && y < first.top - LANE_GAP
         : !!last && y > last.top + last.height + LANE_GAP;
     if (beyond && !d.newTrack) d.newTrack = addTrack(base, kind);
-    const p = d.newTrack ? applyEdits(base, d.newTrack.edits) : base;
+    const extra = beyond ? d.newTrack : undefined;
+    const p = extra ? applyEdits(base, extra.edits) : base;
     let tracks = kindLanes.map((l) => l.track);
-    if (d.newTrack && !tracks.some((t) => t.id === d.newTrack!.trackId)) {
-      // The preview has not been laid out with the new lane yet.
-      const t = p.tracks[d.newTrack.trackId];
+    if (extra) {
+      const t = p.tracks[extra.trackId];
       tracks = kind === 'video' ? [t, ...tracks] : [...tracks, t];
     }
     const fromIdx = tracks.findIndex((t) => t.id === anchor?.trackId);
-    const over = laneAt(lanes, y);
+    const over = laneAt(baseLanes, y);
     let toIdx = fromIdx;
     if (beyond) toIdx = kind === 'video' ? 0 : tracks.length - 1;
     else if (over && over.track.kind === kind) toIdx = tracks.findIndex((t) => t.id === over.track.id);
@@ -212,21 +325,17 @@ export function Lanes({ lanes, height, width, live }: Props) {
       }
       return { id: c.id, start: c.start + delta, trackId };
     });
-    const usesNew = !!d.newTrack && placements.some((m) => m.trackId === d.newTrack!.trackId);
+    const used = extra && placements.some((m) => m.trackId === extra.trackId) ? extra : null;
     const placed = placeClips(p, placements);
     return {
-      // The preview keeps the new lane for as long as the drag lasts, so the layout under the
-      // pointer never jumps; the commit only creates it if something actually landed there.
-      edits: d.newTrack ? [...d.newTrack.edits, ...placed] : placed,
-      commit: usesNew
-        ? [...d.newTrack!.edits, ...placed]
-        : d.newTrack
-          ? placeClips(base, placements)
-          : placed,
-      project: usesNew ? p : base,
-      prefix: usesNew ? d.newTrack!.edits : [],
+      edits: extra ? [...extra.edits, ...placed] : placed,
+      // The track is only created if something actually landed on it.
+      commit: used ? [...used.edits, ...placed] : extra ? placeClips(base, placements) : placed,
+      project: used ? p : base,
+      prefix: used ? used.edits : [],
       line: s.line,
       placements,
+      opened: used ? used.trackId : null,
     };
   };
 
@@ -263,7 +372,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
         if (!editable) return;
         ui().select(group);
         session.store.beginGesture();
-        drag.current = { kind: 'slip', ids: group, x0: e.clientX, restore: playhead() };
+        drag.current = { kind: 'slip', ids: group, x0: e.clientX, restore: playhead(), delta: 0 };
         return;
       }
       const handle = target.closest<HTMLElement>('[data-handle]')?.dataset.handle;
@@ -308,6 +417,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
           restore: playhead(),
           roll,
           ripple: ui().rippleMode !== e.altKey,
+          delta: 0,
+          wanted: 0,
         };
         return;
       }
@@ -347,25 +458,25 @@ export function Lanes({ lanes, height, width, live }: Props) {
     };
   };
 
-  const onPointerMove = (e: React.PointerEvent) => {
-    const r = ref.current!.getBoundingClientRect();
-    if (e.clientY >= r.top && e.clientY <= r.bottom) {
-      const lane = laneAt(lanes, toY(e.clientY));
-      session.setPresence({ cursor: { area: 'timeline', x: toFrame(e.clientX), y: lane?.track.id ?? '' } });
-    }
+  /**
+   * Carry the drag in progress to where the pointer is. Returns true for the drags that follow
+   * the pointer along the time axis, which are the ones the view scrolls with at its edges.
+   */
+  const dragTo = (e: Pointer): boolean => {
     const d = drag.current;
-    if (!d) return;
+    if (!d) return false;
     const p = store();
     switch (d.kind) {
       case 'pan':
         ui().set({ scrollX: Math.max(0, d.scroll0 - (e.clientX - d.x0)) });
-        break;
+        return false;
       case 'move': {
         if (!d.moved) {
-          if (Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;
+          if (Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return false;
           d.moved = true;
         }
         const plan = planMove(d, e);
+        setOpened(plan.opened);
         setPreview(plan.edits, plan.line);
         session.setPresence({
           dragging: plan.placements.map((m) => ({
@@ -375,56 +486,56 @@ export function Lanes({ lanes, height, width, live }: Props) {
             trackId: m.trackId,
           })),
         });
-        break;
+        return true;
       }
       case 'trim': {
-        let delta = Math.round(toFrame(e.clientX) - d.f0);
+        d.wanted = Math.round(toFrame(e.clientX) - d.f0);
         if (d.roll) {
           const cut = p.clips[d.roll[1]]?.start ?? 0;
-          const s = snap(p, new Set(d.roll), [cut + delta], e.shiftKey);
-          delta += s.adjust;
-          setPreview(rollEdit(p, d.roll[0], d.roll[1], delta), s.line);
+          const s = snap(p, new Set(d.roll), [cut + d.wanted], e.shiftKey);
+          d.delta = d.wanted + s.adjust;
+          setPreview(rollEdit(p, d.roll[0], d.roll[1], d.delta), s.line);
           const pv = ui().preview;
           if (pv?.clips[d.roll[1]]) session.player?.seek(pv.clips[d.roll[1]].start);
-          break;
+          return true;
         }
         const first = p.clips[d.ids[0]];
-        if (!first) break;
+        if (!first) return true;
         const edgeFrame = d.edge === 'start' ? first.start : clipEnd(first);
         const range = trimRange(p, d.ids, d.edge, d.ripple);
-        delta = clamp(delta, range.min, range.max);
+        const delta = clamp(d.wanted, range.min, range.max);
         const s = snap(p, new Set(d.ids), [edgeFrame + delta], e.shiftKey || d.ripple);
-        delta = clamp(Math.round(delta + s.adjust), range.min, range.max);
-        const edits = trimClips(p, d.ids, d.edge, delta, d.ripple);
+        d.delta = clamp(Math.round(delta + s.adjust), range.min, range.max);
+        const edits = trimClips(p, d.ids, d.edge, d.delta, d.ripple);
         setPreview(edits, s.line);
         // Show the frame being cut to, like a trim monitor.
         const pv = ui().preview ?? p;
         const c = pv.clips[d.ids[0]];
         if (c) session.player?.seek(d.edge === 'start' ? c.start : clipEnd(c) - 1);
-        break;
+        return true;
       }
       case 'slip': {
-        const delta = Math.round((d.x0 - e.clientX) / ui().ppf);
-        setPreview(slipClips(p, d.ids, delta));
+        d.delta = Math.round((d.x0 - e.clientX) / ui().ppf);
+        setPreview(slipClips(p, d.ids, d.delta));
         const c = p.clips[d.ids[0]];
         if (c) session.player?.seek(c.start);
-        break;
+        return false;
       }
       case 'fade': {
         const c = p.clips[d.id];
-        if (!c) break;
+        if (!c) return true;
         const df = Math.round(toFrame(e.clientX) - d.f0);
         const v = clamp(d.side === 'in' ? d.base + df : d.base - df, 0, c.duration);
         commit(
           [{ op: 'updateClip', id: d.id, patch: d.side === 'in' ? { fadeIn: v } : { fadeOut: v } }],
           true,
         );
-        break;
+        return true;
       }
       case 'trans': {
         const c = p.clips[d.id];
         const t = c && (d.side === 'in' ? c.transIn : c.transOut);
-        if (!c || !t) break;
+        if (!c || !t) return true;
         const df = Math.round(toFrame(e.clientX) - d.f0);
         const twoSided = d.side === 'in' && !!adjacentPrev(p, c);
         const raw = d.side === 'in' ? d.base + df * (twoSided ? 2 : 1) : d.base - df;
@@ -439,12 +550,12 @@ export function Lanes({ lanes, height, width, live }: Props) {
           ],
           true,
         );
-        break;
+        return true;
       }
       case 'marquee': {
         const x = toFrame(e.clientX) * ui().ppf;
         const y = toY(e.clientY);
-        if (!d.moved && Math.hypot(x - d.x0, y - d.y0) < 4) return;
+        if (!d.moved && Math.hypot(x - d.x0, y - d.y0) < 4) return false;
         d.moved = true;
         const box = {
           x: Math.min(x, d.x0),
@@ -461,17 +572,30 @@ export function Lanes({ lanes, height, width, live }: Props) {
           }
         }
         ui().select(Array.from(new Set([...d.keep, ...(ui().linkedSelection ? withLinked(p, hit) : hit)])));
-        break;
+        return true;
       }
     }
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const r = ref.current!.getBoundingClientRect();
+    if (e.clientY >= r.top && e.clientY <= r.bottom) {
+      const lane = laneAt(lanes, toY(e.clientY));
+      session.setPresence({ cursor: { area: 'timeline', x: toFrame(e.clientX), y: lane?.track.id ?? '' } });
+    }
+    if (!drag.current) return;
+    pointer.current = { clientX: e.clientX, clientY: e.clientY, altKey: e.altKey, shiftKey: e.shiftKey };
+    if (dragTo(pointer.current)) scroller.track(e.clientX);
   };
 
   const finish = (e: React.PointerEvent | null, cancelled: boolean) => {
     const d = drag.current;
     drag.current = null;
     if (!d) return;
+    pointer.current = null;
+    scroller.stop();
+    setOpened(null);
     if (e) (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
-    const preview = ui().preview;
     const p = store();
     switch (d.kind) {
       case 'move':
@@ -481,6 +605,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
             ui().select(ui().linkedSelection ? withLinked(p, [d.anchor]) : [d.anchor]);
         } else if (!cancelled && e) {
           const plan = planMove(d, e);
+          // A track that was scrolled to and is now kept stays in view.
+          if (plan.opened) reveal.current = null;
           if (e.altKey) {
             // Alt-drop duplicates instead of moving.
             const copies = plan.placements.map((m) => ({
@@ -496,26 +622,23 @@ export function Lanes({ lanes, height, width, live }: Props) {
         session.setPresence({ dragging: null });
         break;
       case 'trim':
-        if (!cancelled && preview) {
-          // Re-derive the edits from the previewed result so the commit matches what was shown.
-          const edits: Edit[] = [];
-          for (const [id, c] of Object.entries(preview.clips)) {
-            const before = p.clips[id];
-            if (!before) edits.push({ op: 'addClip', clip: c });
-            else if (before !== c) edits.push({ op: 'updateClip', id, patch: c });
-          }
-          commit(edits);
+        // The preview dates from the last pointer move and knows nothing of what has been
+        // committed since, by a collaborator for one. So the edit is planned again, from the
+        // distance the edge was dragged, on the project as it is now.
+        if (!cancelled && d.roll) commit(rollEdit(p, d.roll[0], d.roll[1], d.delta));
+        else if (!cancelled) {
+          const range = trimRange(p, d.ids, d.edge, d.ripple);
+          const delta = clamp(d.delta, range.min, range.max);
+          commit(trimClips(p, d.ids, d.edge, delta, d.ripple));
+          // A ripple that could not move at all looks like a stuck handle: say what holds it.
+          const held = d.ripple && delta === 0 && d.wanted !== 0;
+          const refused = held ? rippleTrim(p, d.ids, d.edge, d.wanted).refused : null;
+          if (refused) toast(refused);
         }
         session.player?.seek(d.restore);
         break;
       case 'slip':
-        if (!cancelled && preview) {
-          const edits: Edit[] = [];
-          for (const id of d.ids)
-            if (preview.clips[id])
-              edits.push({ op: 'updateClip', id, patch: { sourceIn: preview.clips[id].sourceIn } });
-          commit(edits);
-        }
+        if (!cancelled) commit(slipClips(p, d.ids, d.delta));
         session.player?.seek(d.restore);
         break;
       case 'marquee':
@@ -543,34 +666,53 @@ export function Lanes({ lanes, height, width, live }: Props) {
   });
 
   // ─────────────────────────────────────────────── drops from the library ──
-  const dropPlan = (
-    payload: DragPayload,
-    x: number,
-    y: number,
-  ): { edits: Edit[]; select?: ID[]; hint?: typeof dropHint; line?: number | null } | null => {
-    const el = ref.current;
-    if (!el || !insideRect(el.getBoundingClientRect(), x, y)) return null;
+  const dropPlan = (payload: DragPayload, x: number, y: number, pinned: AddTrack[]): DropPlan | null => {
+    const view = viewRect();
+    if (!view || !insideRect(view, x, y)) return null;
+    const none: DropPlan = { tracks: pinned, edits: [] };
     const p = store();
-    const lane = laneAt(lanes, toY(y));
+    // As in a move, the pointer is read against the lanes of the project as committed. A track
+    // the plan opens moves the lanes of the preview, and a plan that followed them would change
+    // under a pointer that has not moved: an overwrite of whichever lane slid there.
+    const lane = laneAt(layoutLanes(p).lanes, laneY(y));
     const clipEl = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-clip]');
     const over = clipEl ? p.clips[clipEl.dataset.clip!] : null;
     if (payload.kind === 'effect') {
-      if (!over || over.type === 'audio') return { edits: [] };
-      return { edits: [], hint: { clipId: over.id, side: 'all' } };
+      if (!over || over.type === 'audio') return none;
+      return { ...none, hint: { clipId: over.id, side: 'all' } };
     }
     if (payload.kind === 'transition') {
-      if (!over || over.type === 'audio') return { edits: [] };
-      const mid =
-        (over.start + over.duration / 2) * ui().ppf - ui().scrollX + el.getBoundingClientRect().left;
-      return { edits: [], hint: { clipId: over.id, side: x < mid ? 'in' : 'out' } };
+      if (!over || over.type === 'audio') return none;
+      const mid = (over.start + over.duration / 2) * ui().ppf - ui().scrollX + view.left;
+      return { ...none, hint: transitionTarget(p, over.id, x < mid ? 'in' : 'out') };
     }
+    const placed = (place: (on: Project) => OpResult, line: number | null): DropPlan => {
+      // Where the plan needs a new track it takes the one this drag opened before. Making a fresh
+      // one at every pointer position would show a lane that is replaced with each move.
+      let r = place(p);
+      if (pinned.length && r.edits.some(isAddTrack)) r = place(applyEdits(p, pinned));
+      const tracks = [...pinned, ...r.edits.filter(isAddTrack)];
+      const rest = r.edits.filter((e) => !isAddTrack(e));
+      const landed = rest.flatMap((e) =>
+        e.op === 'addClip' && r.created.includes(e.clip.id) ? [e.clip.trackId] : [],
+      );
+      const used = tracks.filter((e) => landed.includes(e.track.id));
+      // Scrolling to a new track takes the lane under the pointer out from under it, which is
+      // only right when nothing lands there: when all that is added sits on new tracks.
+      const apart = landed.every((id) => used.some((e) => e.track.id === id));
+      return {
+        tracks,
+        edits: [...used, ...rest],
+        select: r.created,
+        line,
+        opened: apart ? (used.find((e) => e.track.kind === 'video') ?? used[0])?.track.id : undefined,
+      };
+    };
     let frame = Math.max(0, Math.round(toFrame(x)));
     if (payload.kind === 'asset') {
       const asset = p.assets[payload.assetId];
       if (!asset || asset.kind === 'lut') {
-        return over && over.type !== 'audio'
-          ? { edits: [], hint: { clipId: over.id, side: 'all' } }
-          : { edits: [] };
+        return over && over.type !== 'audio' ? { ...none, hint: { clipId: over.id, side: 'all' } } : none;
       }
       const len =
         asset.kind === 'image'
@@ -579,79 +721,98 @@ export function Lanes({ lanes, height, width, live }: Props) {
       const s = snap(p, new Set(), [frame, frame + len], false);
       frame = Math.max(0, Math.round(frame + s.adjust));
       const visual = asset.kind !== 'audio';
-      const r = addAssetToTimeline(p, asset, {
+      const target = {
         frame,
         videoTrackId:
           visual && lane?.track.kind === 'video' && !lane.track.locked ? lane.track.id : undefined,
         audioTrackId: lane?.track.kind === 'audio' && !lane.track.locked ? lane.track.id : undefined,
-      });
-      return { edits: r.edits, select: r.created, line: s.line };
+      };
+      return placed((on) => addAssetToTimeline(on, asset, target), s.line);
     }
     const s = snap(p, new Set(), [frame], false);
     frame = Math.max(0, Math.round(frame + s.adjust));
     const trackId = lane?.track.kind === 'video' && !lane.track.locked ? lane.track.id : undefined;
-    const r =
-      payload.kind === 'text'
-        ? addGenerator(p, 'text', { frame, trackId, text: payload.text })
-        : payload.kind === 'shape'
-          ? addGenerator(p, 'shape', { frame, trackId, shape: payload.shape })
-          : addGenerator(p, payload.type, { frame, trackId });
-    return { edits: r.edits, select: r.created, line: s.line };
+    return placed(
+      (on) =>
+        payload.kind === 'text'
+          ? addGenerator(on, 'text', { frame, trackId, text: payload.text })
+          : payload.kind === 'shape'
+            ? addGenerator(on, 'shape', { frame, trackId, shape: payload.shape })
+            : addGenerator(on, payload.type, { frame, trackId }),
+      s.line,
+    );
+  };
+
+  /** The library drag has left the lanes or is over: take its preview and its tracks away. */
+  const endDrop = () => {
+    drop.current = null;
+    scroller.stop();
+    setOpened(null);
+    setDropHint(null);
+    setPreview(null);
+  };
+
+  /** Show where the thing being dragged in from the library would land right now. */
+  const hover = (): boolean => {
+    const s = useDrag.getState();
+    const plan =
+      s.payload && session.canEdit ? dropPlan(s.payload, s.x, s.y, drop.current?.tracks ?? []) : null;
+    if (!plan) {
+      if (drop.current) endDrop();
+      return false;
+    }
+    drop.current = { tracks: plan.tracks };
+    setOpened(plan.opened ?? null);
+    setDropHint(plan.hint ?? null);
+    setPreview(plan.edits, plan.line ?? null);
+    return true;
+  };
+
+  const dropped = (payload: DragPayload, x: number, y: number): boolean => {
+    if (!session.canEdit) return false;
+    const plan = dropPlan(payload, x, y, drop.current?.tracks ?? []);
+    if (!plan) return false;
+    // A track that was scrolled to and is now kept stays in view.
+    if (plan.opened) reveal.current = null;
+    endDrop();
+    if (plan.hint) {
+      if (payload.kind === 'effect') cmd.applyEffect(payload.type, [plan.hint.clipId]);
+      else if (payload.kind === 'transition')
+        cmd.applyTransition(payload.type, plan.hint.clipId, plan.hint.side === 'out' ? 'out' : 'in');
+      else if (payload.kind === 'asset') {
+        ui().select([plan.hint.clipId]);
+        cmd.applyLut(payload.assetId);
+      }
+      return true;
+    }
+    if (plan.edits.length) {
+      commit(plan.edits);
+      if (payload.kind === 'text' && plan.select?.length) cmd.editText(plan.select[0]);
+      else if (plan.select) ui().select(plan.select);
+    }
+    return true;
+  };
+
+  // The subscriptions outlive a render, so they reach the handlers of the latest one through a
+  // ref: subscribing afresh whenever the lanes change would drop the state of a drag in progress.
+  const library = useRef({ hover, dropped, endDrop });
+  library.current = { hover, dropped, endDrop };
+  rerun.current = () => {
+    if (drag.current && pointer.current) dragTo(pointer.current);
+    else if (drop.current) hover();
   };
 
   useEffect(() => {
-    let wasInside = false;
     const unsub = useDrag.subscribe((s) => {
-      if (!s.payload) {
-        if (wasInside) {
-          wasInside = false;
-          setPreview(null);
-          setDropHint(null);
-        }
-        return;
-      }
-      if (!session.canEdit) return;
-      const plan = dropPlan(s.payload, s.x, s.y);
-      if (!plan) {
-        if (wasInside) {
-          wasInside = false;
-          setPreview(null);
-          setDropHint(null);
-        }
-        return;
-      }
-      wasInside = true;
-      setDropHint(plan.hint ?? null);
-      setPreview(plan.edits.length ? plan.edits : null, plan.line ?? null);
+      if (library.current.hover()) scroller.track(s.x);
     });
-    const undrop = onDrop((payload, x, y) => {
-      if (!session.canEdit) return false;
-      const plan = dropPlan(payload, x, y);
-      if (!plan) return false;
-      setPreview(null);
-      setDropHint(null);
-      if (plan.hint) {
-        if (payload.kind === 'effect') cmd.applyEffect(payload.type, [plan.hint.clipId]);
-        else if (payload.kind === 'transition')
-          cmd.applyTransition(payload.type, plan.hint.clipId, plan.hint.side === 'out' ? 'out' : 'in');
-        else if (payload.kind === 'asset') {
-          ui().select([plan.hint.clipId]);
-          cmd.applyLut(payload.assetId);
-        }
-        return true;
-      }
-      if (plan.edits.length) {
-        commit(plan.edits);
-        if (plan.select) ui().select(plan.select);
-      }
-      return true;
-    });
+    const undrop = onDrop((payload, x, y) => library.current.dropped(payload, x, y));
     return () => {
       unsub();
       undrop();
+      if (drop.current) library.current.endDrop();
     };
-    // The handlers read live state through refs / stores; re-subscribing on layout changes keeps `lanes` fresh.
-  }, [lanes, session]);
+  }, [scroller]);
 
   // ───────────────────────────────────────────────────────────── render ──
   const peerSel = useMemo(() => {
@@ -678,11 +839,21 @@ export function Lanes({ lanes, height, width, live }: Props) {
       onPointerUp={(e) => finish(e, false)}
       onPointerCancel={(e) => finish(e, true)}
       onPointerLeave={() => session.setPresence({ cursor: null })}
+      onDoubleClick={(e) => {
+        // The lanes hold the pointer from the press on, so the event is aimed at them, not at the
+        // clip: look up what lies under it.
+        const hit = document.elementFromPoint(e.clientX, e.clientY);
+        const id = hit?.closest<HTMLElement>('[data-clip]')?.dataset.clip;
+        if (tool !== 'select' || !id || hit?.closest('[data-handle]')) return;
+        if (store().clips[id]?.type === 'text') cmd.editText(id);
+      }}
       onContextMenu={(e) => {
         const clipEl = (e.target as HTMLElement).closest<HTMLElement>('[data-clip]');
         const id = clipEl?.dataset.clip;
         if (id && !selectedSet.has(id)) ui().select(ui().linkedSelection ? withLinked(store(), [id]) : [id]);
-        openContextMenu(e, id ? clipMenu(store(), id) : laneMenu());
+        const lane = laneAt(lanes, toY(e.clientY));
+        const at = Math.max(0, Math.floor(toFrame(e.clientX)));
+        openContextMenu(e, id ? clipMenu(store(), id) : laneMenu(store(), lane, at));
       }}
     >
       {lanes.map((lane) => {
@@ -829,6 +1000,10 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
     { label: 'Delete', keys: 'delete', onSelect: () => cmd.delete(false) },
     { label: 'Ripple delete', keys: 'shift+delete', onSelect: () => cmd.delete(true) },
     'separator',
+    c.type === 'text' ? { label: 'Edit text', onSelect: () => cmd.editText(c.id) } : null,
+    c.assetId && p.assets[c.assetId]
+      ? { label: 'Match frame', keys: 'f', onSelect: () => cmd.matchFrame(c.id) }
+      : null,
     { label: c.enabled ? 'Disable' : 'Enable', keys: 'd', onSelect: cmd.toggleEnabled },
     c.linkId
       ? { label: 'Unlink', icon: <Link2 />, keys: 'mod+shift+g', onSelect: cmd.unlink }
@@ -869,13 +1044,20 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
   ];
 }
 
-function laneMenu(): MenuEntry[] {
+/** Menu for empty lane space: `lane` and `at` are the track and the frame under the pointer. */
+function laneMenu(p: Project, lane: Lane | null, at: number): MenuEntry[] {
   const ui = useUI.getState();
+  const gap = lane && !lane.track.locked ? rippleCloseGap(p, lane.track.id, at) : null;
   return [
     { label: 'Paste', keys: 'mod+v', onSelect: cmd.paste, disabled: !ui.clipboard.length },
-    { label: 'Close gap here', keys: 'shift+g', onSelect: cmd.closeGapAtPlayhead },
+    {
+      label: 'Close gap here',
+      // A gap that cannot be closed stays on offer: choosing it says why.
+      disabled: !lane || !gap || (!gap.edits.length && !gap.refused),
+      onSelect: () => lane && cmd.closeGap(lane.track.id, at),
+    },
     'separator',
-    { label: 'Add text', keys: 't', onSelect: () => cmd.addText() },
+    { label: 'Add text', keys: 't', onSelect: () => cmd.addTitle() },
     { label: 'Add adjustment layer', onSelect: cmd.addAdjustment },
     'separator',
     { label: 'Add video track', onSelect: () => cmd.addTrack('video') },
@@ -885,21 +1067,41 @@ function laneMenu(): MenuEntry[] {
 
 // ─────────────────────────────────────────────────────────────── canvas ──
 
-function LaneCanvas({
-  project,
-  clips,
-  width,
-  height,
-  scrollX,
-  ppf,
-}: {
+interface LaneCanvasProps {
   project: Project;
   clips: readonly Clip[];
   width: number;
   height: number;
   scrollX: number;
   ppf: number;
-}) {
+}
+
+/**
+ * Whether two renders of a lane would paint the same picture. Every commit and every tick of a
+ * drag preview makes a new project and a new clip list for every lane, but the store keeps what
+ * did not change identical, and the painting reads only the clips, the assets and the frame rate.
+ */
+function sameLanePicture(a: LaneCanvasProps, b: LaneCanvasProps): boolean {
+  return (
+    a.width === b.width &&
+    a.height === b.height &&
+    a.scrollX === b.scrollX &&
+    a.ppf === b.ppf &&
+    a.project.assets === b.project.assets &&
+    a.project.settings === b.project.settings &&
+    a.clips.length === b.clips.length &&
+    a.clips.every((c, i) => c === b.clips[i])
+  );
+}
+
+const LaneCanvas = memo(function LaneCanvas({
+  project,
+  clips,
+  width,
+  height,
+  scrollX,
+  ppf,
+}: LaneCanvasProps) {
   const session = useSession();
   const ref = useRef<HTMLCanvasElement>(null);
   const [bump, setBump] = useState(0);
@@ -928,7 +1130,7 @@ function LaneCanvas({
 
   if (!hasMedia) return null;
   return <canvas ref={ref} className="lane__canvas" style={{ width, height }} />;
-}
+}, sameLanePicture);
 
 // ───────────────────────────────────────────────────────────────── clip ──
 
@@ -964,6 +1166,9 @@ const ClipView = memo(function ClipView({
   const Icon = ICONS[clip.type];
   const color = clip.label ?? CLIP_TYPE_COLORS[clip.type];
   const roomy = w > 44;
+  // The least a transition is drawn at, so it can be grabbed. On a short clip that would leave
+  // nothing of the clip itself to take hold of, so there it gives way.
+  const grip = Math.min(6, w * 0.3);
   const fx = clip.effects.length > 0;
   const graded = !!clip.grade && clip.grade.enabled;
   const keyTimes = useMemo(() => {
@@ -986,6 +1191,7 @@ const ClipView = memo(function ClipView({
       data-hint={hint ?? undefined}
       data-missing={missing}
       data-compact={height < 40}
+      data-narrow={w < 16}
       style={{
         left: clip.start * ppf,
         width: w,
@@ -1026,7 +1232,7 @@ const ClipView = memo(function ClipView({
           className="clip__trans clip__trans--in"
           data-handle="trans-in"
           data-selected={transSel === 'in'}
-          style={{ left: -transBefore * ppf, width: Math.max(6, transLen * ppf) }}
+          style={{ left: -transBefore * ppf, width: Math.max(grip, transLen * ppf) }}
         >
           <i data-trans-edge />
         </div>
@@ -1036,7 +1242,7 @@ const ClipView = memo(function ClipView({
           className="clip__trans clip__trans--out"
           data-handle="trans-out"
           data-selected={transSel === 'out'}
-          style={{ width: Math.max(6, Math.min(clip.transOut.duration, clip.duration) * ppf) }}
+          style={{ width: Math.max(grip, Math.min(clip.transOut.duration, clip.duration) * ppf) }}
         >
           <i data-trans-edge />
         </div>

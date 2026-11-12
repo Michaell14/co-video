@@ -4,13 +4,19 @@
  * can be tested without a browser.
  */
 import {
+  adjacentNext,
   applyEdits,
+  clamp,
   clipEnd,
+  deleteRange,
   displayTracks,
   isRegionFree,
   openGap,
   pasteClips,
   rippleCloseGap,
+  sourceTimeAt,
+  trackLabel,
+  tracksOf,
   type Clip,
   type Edit,
   type ID,
@@ -69,6 +75,71 @@ export function closeGapsAt(p: Project, frame: number): RippleResult {
     working = applyEdits(working, r.edits);
   }
   return { edits, refused: edits.length ? null : refused };
+}
+
+/**
+ * Take the frames `start`…`end` out of every unlocked track and close the time they occupied. A
+ * locked track stays as it is, so the edit is refused when that would leave half of a linked pair
+ * behind: its partner is about to be cut into or moved.
+ */
+export function rippleDeleteRange(p: Project, start: number, end: number): RippleResult {
+  if (end <= start) return { edits: [], refused: null };
+  const moving = new Set<ID>();
+  for (const c of Object.values(p.clips)) {
+    if (c.linkId && clipEnd(c) > start && !p.tracks[c.trackId]?.locked) moving.add(c.linkId);
+  }
+  for (const c of Object.values(p.clips)) {
+    const track = p.tracks[c.trackId];
+    if (c.linkId && track?.locked && moving.has(c.linkId)) {
+      const name = track.name || trackLabel(p, track);
+      return { edits: [], refused: `Unlock ${name} to ripple: a linked clip on it has to move too.` };
+    }
+  }
+  return { edits: deleteRange(p, unlockedTracks(p), start, end, true), refused: null };
+}
+
+/**
+ * Where a transition dropped on one side of a clip belongs. A clip's own `out` transition fades it
+ * to nothing, so on a cut, where the next clip follows without a gap, the transition is the next
+ * clip's `in`: the form that mixes the two.
+ */
+export function transitionTarget(
+  p: Project,
+  clipId: ID,
+  side: 'in' | 'out',
+): { clipId: ID; side: 'in' | 'out' } {
+  const clip = p.clips[clipId];
+  const next = clip && side === 'out' ? adjacentNext(p, clip) : null;
+  return next && next.type !== 'audio' ? { clipId: next.id, side: 'in' } : { clipId, side };
+}
+
+/**
+ * The clip a match frame at `frame` is about and the source time it shows there: the first of
+ * `preferred` that has media under the frame, else the top-most picture, else the first sound.
+ */
+export function matchFrameAt(
+  p: Project,
+  frame: number,
+  preferred: ID[] = [],
+): { clip: Clip; time: number } | null {
+  const under = (c: Clip | undefined): c is Clip =>
+    !!c && !!c.assetId && !!p.assets[c.assetId] && c.start <= frame && frame < clipEnd(c);
+  const { video, audio } = tracksOf(p);
+  const order = new Map(
+    [...video]
+      .reverse()
+      .concat(audio)
+      .map((t, i) => [t.id, i]),
+  );
+  // Left to itself it goes by what is on screen: a disabled clip or a hidden track is not.
+  const candidates = Object.values(p.clips)
+    .filter((c) => under(c) && c.enabled && order.has(c.trackId) && !p.tracks[c.trackId].hidden)
+    .sort((a, b) => order.get(a.trackId)! - order.get(b.trackId)!);
+  const clip = preferred.map((id) => p.clips[id]).find(under) ?? candidates[0];
+  if (!clip) return null;
+  const length = p.assets[clip.assetId!].duration;
+  const time = sourceTimeAt(clip, frame - clip.start, p);
+  return { clip, time: length > 0 ? clamp(time, 0, length) : 0 };
 }
 
 /**

@@ -48,6 +48,8 @@ export interface UIState {
   attributes: AttributeClipboard | null;
   /** Asset shown in the source monitor, or null for the programme. */
   sourceAsset: ID | null;
+  /** Match frame: the source monitor holds this asset at `time` seconds instead of playing it. */
+  sourceCue: { assetId: ID; time: number } | null;
   scopes: { waveform: boolean; parade: boolean; vectorscope: boolean; histogram: boolean };
   /** A voiceover is being recorded: where on the timeline it began, and when. */
   recording: { startFrame: number; startedAt: number } | null;
@@ -92,6 +94,7 @@ export const useUI = create<UIState>((set, get) => ({
   clipboard: [],
   attributes: null,
   sourceAsset: null,
+  sourceCue: null,
   recording: null,
   scopes: persisted.scopes ?? { waveform: true, parade: true, vectorscope: true, histogram: false },
 

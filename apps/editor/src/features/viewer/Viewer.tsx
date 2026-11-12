@@ -19,11 +19,20 @@ import {
   CornerDownRight,
   ArrowDownToLine,
 } from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import {
   animated,
   clamp,
   formatTimecode,
+  hasKeyframes,
   parseTimecode,
   resolveFrame,
   sequenceEnd,
@@ -31,7 +40,15 @@ import {
   type ClipLayer,
   type Project,
 } from '@tandem/core';
-import { layerCorners, layoutLayer, measureClip, type LayerBox } from '@tandem/engine';
+import {
+  fontEpoch,
+  layerCorners,
+  layoutLayer,
+  measureClip,
+  onFontsLoaded,
+  type LayerBox,
+  type Player,
+} from '@tandem/engine';
 import {
   useFrame,
   useLiveProject,
@@ -44,10 +61,22 @@ import {
   useThrottledFrame,
 } from '../../session/hooks';
 import { cmd } from '../../state/commands';
+import { eventKeys } from '../../state/keys';
 import { beginGesture, setClipValues } from '../../state/props';
+import { isTyping } from '../../state/shortcuts';
 import { useUI } from '../../state/ui';
 import { IconButton, MenuButton, Slider, tip, cx, Button } from '../../ui/core';
+import { angleStep, pointInQuad, quadCovers, wrapDegrees } from './geometry';
+import { SourceTransport } from './sourceTransport';
 import './viewer.css';
+
+/** How far the rotation handle stands off the edge of the box, in CSS pixels. */
+const ROTATE_STEM = 22;
+/** Space kept free around the frame when it is fitted to the panel. */
+const FIT_PAD_X = 20;
+const FIT_PAD_Y = ROTATE_STEM + 12;
+/** How far a press may travel, in CSS pixels, and still be a click where a click means something else. */
+const CLICK_SLOP = 3;
 
 export function Viewer() {
   const session = useSession();
@@ -72,9 +101,9 @@ export function Viewer() {
   useLayoutEffect(() => {
     const stage = stageRef.current!;
     const fit = () => {
-      const pad = 20;
-      const aw = Math.max(40, stage.clientWidth - pad * 2);
-      const ah = Math.max(40, stage.clientHeight - pad * 2);
+      // Above and below there has to be room for the rotation handle, which stands clear of the frame.
+      const aw = Math.max(40, stage.clientWidth - FIT_PAD_X * 2);
+      const ah = Math.max(40, stage.clientHeight - FIT_PAD_Y * 2);
       const scale = zoom === 'fit' ? Math.min(aw / settings.width, ah / settings.height) : zoom;
       setSize({ w: settings.width * scale, h: settings.height * scale, scale });
     };
@@ -135,8 +164,9 @@ export function Viewer() {
           <PeerCursors />
         </div>
         {showStats && <Stats />}
+        {player && <ContextLost player={player} />}
         <FollowSync />
-        {sourceAsset && <SourceMonitor assetId={sourceAsset} />}
+        {sourceAsset && <SourceMonitor key={sourceAsset} assetId={sourceAsset} />}
       </div>
       <Transport />
     </div>
@@ -169,20 +199,6 @@ function boxFor(project: Project, layer: ClipLayer): LayerBox | null {
   return layoutLayer(layer, m.w, m.h, project.settings.width, project.settings.height, 1);
 }
 
-function pointInQuad(q: [number, number][], x: number, y: number): boolean {
-  let sign = 0;
-  for (let i = 0; i < 4; i++) {
-    const [ax, ay] = q[i];
-    const [bx, by] = q[(i + 1) % 4];
-    const c = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
-    if (c !== 0) {
-      if (sign === 0) sign = Math.sign(c);
-      else if (Math.sign(c) !== sign) return false;
-    }
-  }
-  return true;
-}
-
 type DragMode = 'move' | 'rotate' | 'scale' | 'scale-x' | 'scale-y';
 
 function Gizmo({ scale }: { scale: number }) {
@@ -192,7 +208,10 @@ function Gizmo({ scale }: { scale: number }) {
   const project = useLiveProject((p) => p);
   const selection = useUI((s) => s.selection);
   const tool = useUI((s) => s.tool);
+  const workspace = useUI((s) => s.workspace);
   const frame = useThrottledFrame(12);
+  // A title is measured with the fonts that have arrived so far: measure again when one lands.
+  const fonts = useSyncExternalStore(onFontsLoaded, fontEpoch);
   const svgRef = useRef<SVGSVGElement>(null);
   const [guides, setGuides] = useState<{ v: boolean; h: boolean }>({ v: false, h: false });
   const drag = useRef<{
@@ -204,12 +223,15 @@ function Gizmo({ scale }: { scale: number }) {
     y: number;
     sx: number;
     sy: number;
+    /** Rotation so far in degrees. Never wrapped: a drag past half a turn goes on counting. */
     rot: number;
     px: number;
     py: number;
     dist: number;
+    /** Angle of the pointer around the pivot when it was last read, in radians. */
     angle: number;
-    boxRot: number;
+    /** The layer to select instead if the press turns out to be a click: it never moves. */
+    click: string | null;
   } | null>(null);
   const { width: W, height: H } = project.settings;
 
@@ -224,7 +246,7 @@ function Gizmo({ scale }: { scale: number }) {
       if (box) return { clip, layer, box };
     }
     return null;
-  }, [project, selection, frame]);
+  }, [project, selection, frame, fonts]);
 
   const toFrame = useCallback(
     (e: { clientX: number; clientY: number }): [number, number] => {
@@ -234,12 +256,34 @@ function Gizmo({ scale }: { scale: number }) {
     [W, H],
   );
 
-  const start = (e: React.PointerEvent, mode: DragMode) => {
-    if (!target || !session.canEdit || e.button !== 0) return;
+  /** The top-most visible layer under the pointer. */
+  const layerAt = (e: { clientX: number; clientY: number }): Target | null => {
+    const [x, y] = toFrame(e);
+    const f = Math.floor(player?.getFrame() ?? frame);
+    const layers = resolveFrame(project, f).layers;
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const l = layers[i];
+      const candidates = l.kind === 'clip' ? [l.layer] : [l.b, l.a];
+      for (const c of candidates) {
+        if (!c || c.clip.type === 'adjustment' || project.tracks[c.clip.trackId]?.locked) continue;
+        const box = boxFor(project, c);
+        if (box && pointInQuad(layerCorners(box), x, y)) return { clip: c.clip, layer: c, box };
+      }
+    }
+    return null;
+  };
+
+  const start = (
+    e: React.PointerEvent,
+    mode: DragMode,
+    on: Target | null = target,
+    click: string | null = null,
+  ) => {
+    if (!on || !session.canEdit || e.button !== 0) return;
     e.stopPropagation();
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     const [x, y] = toFrame(e);
-    const { clip, layer, box } = target;
+    const { clip, layer, box } = on;
     beginGesture();
     drag.current = {
       mode,
@@ -255,14 +299,38 @@ function Gizmo({ scale }: { scale: number }) {
       py: box.py,
       dist: Math.hypot(x - box.px, y - box.py) || 1,
       angle: Math.atan2(y - box.py, x - box.px),
-      boxRot: box.rotation,
+      click,
     };
+  };
+
+  /**
+   * A press inside the selected layer's box. The box takes the press wherever it reaches, also
+   * where another layer lies on top of it, so what is actually under the pointer is looked up
+   * first. A layer on top that leaves some of the selected one free is the one being pressed: it
+   * is selected and dragged in its place. One that covers all of the selected layer would leave
+   * no spot to move that layer by, so there the drag stays with the selection and only a click
+   * goes to the layer on top.
+   */
+  const pressBody = (e: React.PointerEvent) => {
+    const hit = tool === 'select' && e.button === 0 ? layerAt(e) : null;
+    if (!target || !hit || hit.clip.id === target.clip.id) return start(e, 'move');
+    // With Shift the press only changes the selection, which `pick` does as it travels on.
+    if (e.shiftKey) return;
+    if (quadCovers(layerCorners(hit.box), layerCorners(target.box))) {
+      return start(e, 'move', target, hit.clip.id);
+    }
+    useUI.getState().select([hit.clip.id]);
+    start(e, 'move', hit);
   };
 
   const move = (e: React.PointerEvent) => {
     const d = drag.current;
     if (!d) return;
     const [x, y] = toFrame(e);
+    if (d.click) {
+      if (Math.hypot(x - d.startX, y - d.startY) * scale < CLICK_SLOP) return;
+      d.click = null;
+    }
     if (d.mode === 'move') {
       let nx = d.x + (x - d.startX) / W;
       let ny = d.y + (y - d.startY) / H;
@@ -280,8 +348,14 @@ function Gizmo({ scale }: { scale: number }) {
       setGuides({ v: snapV, h: snapH });
       setClipValues([d.id], { x: nx, y: ny });
     } else if (d.mode === 'rotate') {
-      let deg = d.rot + ((Math.atan2(y - d.py, x - d.px) - d.angle) * 180) / Math.PI;
-      if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+      const angle = Math.atan2(y - d.py, x - d.px);
+      d.rot += (angleStep(d.angle, angle) * 180) / Math.PI;
+      d.angle = angle;
+      const turned = e.shiftKey ? Math.round(d.rot / 15) * 15 : d.rot;
+      // Between keyframes the number of turns is part of the animation. A rotation that stands
+      // still looks the same however it is counted, so it keeps to the range the inspector offers.
+      const clip = project.clips[d.id];
+      const deg = clip && hasKeyframes(clip, 'rotation') ? turned : wrapDegrees(turned);
       setClipValues([d.id], { rotation: Math.round(deg * 10) / 10 });
     } else {
       const k = Math.max(0.01, Math.hypot(x - d.px, y - d.py) / d.dist);
@@ -297,38 +371,35 @@ function Gizmo({ scale }: { scale: number }) {
   };
 
   const end = (e: React.PointerEvent) => {
-    if (!drag.current) return;
+    const d = drag.current;
+    if (!d) return;
     (e.currentTarget as Element).releasePointerCapture(e.pointerId);
     drag.current = null;
     setGuides({ v: false, h: false });
+    if (d.click) useUI.getState().select([d.click]);
   };
 
   /** Click-to-select: the top-most visible layer under the pointer. */
   const pick = (e: React.PointerEvent) => {
     if (e.button !== 0 || tool !== 'select') return;
-    const [x, y] = toFrame(e);
-    const f = Math.floor(player?.getFrame() ?? frame);
-    const layers = resolveFrame(project, f).layers;
-    for (let i = layers.length - 1; i >= 0; i--) {
-      const l = layers[i];
-      const candidates = l.kind === 'clip' ? [l.layer] : [l.b, l.a];
-      for (const c of candidates) {
-        if (!c || c.clip.type === 'adjustment' || project.tracks[c.clip.trackId]?.locked) continue;
-        const box = boxFor(project, c);
-        if (box && pointInQuad(layerCorners(box), x, y)) {
-          if (e.shiftKey) useUI.getState().toggleSelect(c.clip.id);
-          else useUI.getState().select([c.clip.id]);
-          return;
-        }
-      }
-    }
-    useUI.getState().clearSelection();
+    const hit = layerAt(e);
+    if (!hit) useUI.getState().clearSelection();
+    else if (e.shiftKey) useUI.getState().toggleSelect(hit.clip.id);
+    else useUI.getState().select([hit.clip.id]);
+  };
+
+  /** Double-clicking a title goes to its text. */
+  const editText = (e: React.MouseEvent) => {
+    const hit = tool === 'select' ? layerAt(e) : null;
+    if (hit?.clip.type === 'text') cmd.editText(hit.clip.id);
   };
 
   const hs = 5 / scale;
   const sw = 1.25 / scale;
   let shape: React.ReactNode = null;
-  if (target && !playing) {
+  // The handles belong to laying a picture out. Where it is graded or mixed they would sit on
+  // the very image being judged, so only the Edit workspace draws them.
+  if (target && !playing && workspace === 'edit') {
     const q = layerCorners(target.box);
     const mid = (a: [number, number], b: [number, number]): [number, number] => [
       (a[0] + b[0]) / 2,
@@ -341,7 +412,8 @@ function Gizmo({ scale }: { scale: number }) {
     // Rotation handle floats above the top edge, along the box's own "up" direction.
     const up = [Math.sin(target.box.rotation), -Math.cos(target.box.rotation)];
     const flip = target.box.sy < 0 ? -1 : 1;
-    const rh: [number, number] = [top[0] + up[0] * (22 / scale) * flip, top[1] + up[1] * (22 / scale) * flip];
+    const stem = (ROTATE_STEM / scale) * flip;
+    const rh: [number, number] = [top[0] + up[0] * stem, top[1] + up[1] * stem];
     const handle = (p: [number, number], mode: DragMode, cursor: string, key: string) => (
       <rect
         key={key}
@@ -364,7 +436,7 @@ function Gizmo({ scale }: { scale: number }) {
           className="gizmo__body"
           points={q.map((p) => p.join(',')).join(' ')}
           strokeWidth={sw}
-          onPointerDown={(e) => start(e, 'move')}
+          onPointerDown={pressBody}
           onPointerMove={move}
           onPointerUp={end}
         />
@@ -392,7 +464,13 @@ function Gizmo({ scale }: { scale: number }) {
   }
 
   return (
-    <svg ref={svgRef} className="gizmo" viewBox={`0 0 ${W} ${H}`} onPointerDown={pick}>
+    <svg
+      ref={svgRef}
+      className="gizmo"
+      viewBox={`0 0 ${W} ${H}`}
+      onPointerDown={pick}
+      onDoubleClick={editText}
+    >
       {guides.v && <line className="gizmo__guide" x1={W / 2} y1={0} x2={W / 2} y2={H} strokeWidth={sw} />}
       {guides.h && <line className="gizmo__guide" x1={0} y1={H / 2} x2={W} y2={H / 2} strokeWidth={sw} />}
       {shape}
@@ -480,6 +558,40 @@ function Stats() {
         {s.renderMs.toFixed(1)} ms · {s.passes} passes
       </div>
       <div>dropped {s.dropped}</div>
+    </div>
+  );
+}
+
+/** How long the graphics context may stay lost before the banner offers a way out. */
+const CONTEXT_PATIENCE_MS = 10_000;
+
+/**
+ * Says so while the browser has taken the graphics context away. The canvas keeps its last frame
+ * meanwhile, so without this the viewer would simply look frozen.
+ */
+function ContextLost({ player }: { player: Player }) {
+  const lost = useSyncExternalStore(player.subscribe, () => player.contextLost);
+  const [stuck, setStuck] = useState(false);
+  useEffect(() => {
+    if (!lost) return;
+    const timer = setTimeout(() => setStuck(true), CONTEXT_PATIENCE_MS);
+    return () => {
+      clearTimeout(timer);
+      setStuck(false);
+    };
+  }, [lost]);
+  if (!lost) return null;
+  return (
+    <div className="viewer__lost" role="status">
+      <span className="spinner" />
+      {stuck
+        ? 'The graphics context was lost and has not come back yet.'
+        : 'The graphics context was lost. Waiting for the browser to restore it…'}
+      {stuck && (
+        <Button size="sm" onClick={() => location.reload()}>
+          Reload
+        </Button>
+      )}
     </div>
   );
 }
@@ -690,19 +802,31 @@ function Transport() {
 
 // ──────────────────────────────────────────────────────── source monitor ──
 
+const closeSourceMonitor = () => useUI.getState().set({ sourceAsset: null, sourceCue: null });
+
+/** The source monitor for one asset. A different asset gets a monitor of its own (it is keyed). */
 function SourceMonitor({ assetId }: { assetId: string }) {
   const session = useSession();
+  const player = usePlayer();
   const asset = useProject((p) => p.assets[assetId]);
+  const fps = useProject((p) => p.settings.fpsNum / p.settings.fpsDen);
+  const cue = useUI((s) => (s.sourceCue?.assetId === assetId ? s.sourceCue : null));
   const [url, setUrl] = useState<string | null>(null);
   const [marks, setMarks] = useState<{ in: number; out: number | null }>({ in: 0, out: null });
-  const media = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
-  const close = () => useUI.getState().set({ sourceAsset: null });
+  const [transport] = useState(() => new SourceTransport());
+  // One function for the life of the monitor: React detaches and re-attaches a ref that changes.
+  const attach = useCallback((el: HTMLMediaElement | null) => transport.attach(el), [transport]);
+
+  // The asset can leave the project while it is on show, removed here or by someone else. There
+  // is then nothing to show, and a monitor left open unseen would go on taking the transport keys.
+  const gone = !asset;
+  useEffect(() => {
+    if (gone) closeSourceMonitor();
+  }, [gone]);
 
   useEffect(() => {
     let revoke: string | null = null;
     let cancelled = false;
-    setUrl(null);
-    setMarks({ in: 0, out: null });
     void session.media
       .resolver((id) => !!session.store.get().assets[id]?.uploaded)(assetId)
       .then((loc) => {
@@ -718,20 +842,100 @@ function SourceMonitor({ assetId }: { assetId: string }) {
     };
   }, [assetId, session]);
 
+  useEffect(() => () => transport.dispose(), [transport]);
+
+  // The programme is hidden behind the monitor: it must not go on playing there, unseen.
+  useEffect(() => player?.pause(), [player]);
+
+  // Match frame: hold the source at the frame that was asked for instead of playing it. The
+  // request is used up by that, so opening the same file from the pool later plays it as usual.
+  useEffect(() => {
+    if (!cue || !url) return;
+    const el = transport.element;
+    if (!el) return;
+    const hold = () => {
+      transport.seek(cue.time);
+      useUI.getState().set({ sourceCue: null });
+    };
+    if (el.readyState >= HTMLMediaElement.HAVE_METADATA) hold();
+    else el.addEventListener('loadedmetadata', hold, { once: true });
+    return () => el.removeEventListener('loadedmetadata', hold);
+  }, [cue, url, transport]);
+
+  const length = asset?.duration ?? 0;
+  const markIn = () => {
+    const t = clamp(transport.time, 0, length);
+    // An out point at or before the new in point no longer marks anything.
+    setMarks((m) => ({ in: t, out: m.out !== null && m.out <= t ? null : m.out }));
+  };
+  const markOut = () => {
+    const t = clamp(transport.time, 0, length);
+    setMarks((m) => ({ in: m.in < t ? m.in : 0, out: t }));
+  };
+
+  // While the monitor is open the transport and marking keys are its own; the programme keeps
+  // every other shortcut. Listening on the document puts this after menus and drags in progress,
+  // which take Escape on the window, and before the programme's shortcuts.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close();
+      if (isTyping(e.target) || useUI.getState().dialog) return;
+      const keys = eventKeys(e);
+      const held = e.repeat && !keys.includes('arrow');
+      switch (keys) {
+        case 'space':
+          if (!held) transport.toggle();
+          break;
+        case 'k':
+          transport.pause();
+          break;
+        case 'l':
+          if (!held) transport.shuttle(1);
+          break;
+        case 'j':
+          if (!held) transport.shuttle(-1);
+          break;
+        case 'i':
+          if (!held) markIn();
+          break;
+        case 'o':
+          if (!held) markOut();
+          break;
+        case 'arrowleft':
+          transport.step(-1 / fps);
+          break;
+        case 'arrowright':
+          transport.step(1 / fps);
+          break;
+        case 'shift+arrowleft':
+          transport.step(-1);
+          break;
+        case 'shift+arrowright':
+          transport.step(1);
+          break;
+        case 'home':
+          transport.seek(0);
+          break;
+        case 'end':
+          transport.seek(Infinity);
+          break;
+        case 'escape':
+          closeSourceMonitor();
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  });
 
   if (!asset) return null;
-  const time = () => media.current?.currentTime ?? 0;
   const add = (insert: boolean) => {
     const out = marks.out ?? asset.duration;
     cmd.addAsset(asset, { sourceIn: marks.in, sourceOut: out > marks.in ? out : asset.duration, insert });
-    close();
+    closeSourceMonitor();
   };
   const fmt = (t: number) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, '0')}`;
 
@@ -742,7 +946,7 @@ function SourceMonitor({ assetId }: { assetId: string }) {
         <span className="source__name">{asset.name}</span>
         <span className="badge">Source</span>
         <span style={{ flex: 1 }} />
-        <IconButton label="Close source monitor" keys="escape" small onClick={close}>
+        <IconButton label="Close source monitor" keys="escape" small onClick={closeSourceMonitor}>
           <X />
         </IconButton>
       </div>
@@ -752,24 +956,18 @@ function SourceMonitor({ assetId }: { assetId: string }) {
         ) : asset.kind === 'image' ? (
           <img src={url} alt={asset.name} draggable={false} />
         ) : asset.kind === 'audio' ? (
-          <audio ref={(el) => void (media.current = el)} src={url} controls autoPlay />
+          <audio ref={attach} src={url} controls autoPlay={!cue} />
         ) : (
-          <video ref={(el) => void (media.current = el)} src={url} controls autoPlay playsInline />
+          <video ref={attach} src={url} controls autoPlay={!cue} playsInline />
         )}
       </div>
       <div className="source__foot">
         {asset.kind !== 'image' && (
           <>
-            <Button
-              size="sm"
-              onClick={() => setMarks((m) => ({ ...m, in: clamp(time(), 0, asset.duration) }))}
-            >
+            <Button size="sm" onClick={markIn} {...tip('Mark in at the current frame', 'i')}>
               Mark in <span className="mono">{fmt(marks.in)}</span>
             </Button>
-            <Button
-              size="sm"
-              onClick={() => setMarks((m) => ({ ...m, out: clamp(time(), 0, asset.duration) }))}
-            >
+            <Button size="sm" onClick={markOut} {...tip('Mark out at the current frame', 'o')}>
               Mark out <span className="mono">{fmt(marks.out ?? asset.duration)}</span>
             </Button>
           </>

@@ -21,7 +21,26 @@ import {
   type Project,
   type Track,
 } from '@tandem/core';
-import type { MediaLibrary } from '../media/library';
+import type { MediaFault, MediaLibrary } from '../media/library';
+
+/** How long a voice waits before asking again for media that is not available yet. */
+const RETRY_MS = 2000;
+/** In samples: far more than the rounding noise of a time computed in seconds, far less than a sample. */
+const HALF_SAMPLE_BIAS = 1e-4;
+
+/** An audio clip that could not be mixed as asked. */
+export interface AudioProblem {
+  clipId: string;
+  assetId: string;
+  /**
+   * `missing`: the file is neither on this device nor on the server. `unreadable`: it is there but
+   * could not be opened. `undecodable`: this browser cannot decode its audio. `decode-error`:
+   * decoding stopped part-way through.
+   */
+  reason: MediaFault | 'undecodable' | 'decode-error';
+}
+
+type OpenAudio = { sink: AudioBufferSink; start: number };
 
 interface TrackNodes {
   input: GainNode;
@@ -55,6 +74,10 @@ interface Voice {
   scheduledUntil: number;
   feeding: boolean;
   done: boolean;
+  /** Do not try to open the voice's media again before this time (`performance.now()`). */
+  retryAt: number;
+  /** Fraction of an output sample the voice is moved by to sit on the sample grid; null until known. */
+  nudge: number | null;
 }
 
 /** Fields whose change requires re-scheduling a clip's buffers. */
@@ -66,7 +89,9 @@ export class AudioGraph {
   readonly masterAnalysers: [AnalyserNode, AnalyserNode] | null;
   private readonly tracks = new Map<string, TrackNodes>();
   private readonly voices = new Map<string, Voice>();
-  private readonly sinks = new Map<string, Promise<{ sink: AudioBufferSink; start: number } | null>>();
+  private readonly sinks = new Map<string, Promise<OpenAudio | AudioProblem['reason'] | null>>();
+  /** Told about each clip that stays silent, or falls silent, because of its media. */
+  onProblem: ((problem: AudioProblem) => void) | null = null;
   private project: Project | null = null;
   private session: Session | null = null;
   private fps = 30;
@@ -203,14 +228,22 @@ export class AudioGraph {
 
   // ─────────────────────────────────────────────────────────────── voices ──
 
-  private sinkFor(assetId: string): Promise<{ sink: AudioBufferSink; start: number } | null> {
+  /** The decoder for an asset's sound; null when it has none, or the reason it cannot be had. */
+  private sinkFor(assetId: string): Promise<OpenAudio | AudioProblem['reason'] | null> {
     let p = this.sinks.get(assetId);
     if (!p) {
-      p = this.library.get(assetId).then((m) => {
-        if (!m || !m.audio || !m.audioDecodable) return null;
+      const opening = this.library.open(assetId).then((m) => {
+        if (typeof m === 'string') {
+          // Nothing that lasts: a missing file may have arrived by the time the next voice asks,
+          // and one that did not open is tried again when playback next starts.
+          if (this.sinks.get(assetId) === opening) this.sinks.delete(assetId);
+          return m;
+        }
+        if (!m.audio) return null;
+        if (!m.audioDecodable) return 'undecodable';
         return { sink: new AudioBufferSink(m.audio), start: m.audioStart };
       });
-      this.sinks.set(assetId, p);
+      this.sinks.set(assetId, (p = opening));
     }
     return p;
   }
@@ -282,6 +315,8 @@ export class AudioGraph {
       scheduledUntil: 0,
       feeding: false,
       done: false,
+      retryAt: 0,
+      nudge: null,
     };
   }
 
@@ -341,9 +376,35 @@ export class AudioGraph {
     node.buffer = buffer;
     node.playbackRate.value = per * s.rate;
     node.connect(v.gain);
-    const when = this.ctxTime(tl);
-    const dur = b - a;
+    let when = this.ctxTime(tl);
+    let dur = b - a;
     const endAt = when + dur / (per * s.rate);
+    // Audio at the context's own rate and at normal speed can be played sample for sample, but
+    // only from a whole sample of the buffer at a whole sample of the output. Started in between
+    // (a clip on a 29.97 fps frame, an in-point between samples) every sample is interpolated
+    // from its neighbours instead and the treble goes. So the voice as a whole moves by the
+    // fraction of a sample that puts its first buffer on the grid (at most 10 µs at 48 kHz), and
+    // the buffers after it, which follow at whole-sample distances, land there as well.
+    const rate = this.ctx.sampleRate;
+    if (buffer.sampleRate === rate && Math.abs(per * s.rate - 1) < 1e-9) {
+      // A voice that lies exactly half-way between two samples (44.1 kHz at 24 fps does that on
+      // every other frame) has to fall the same way each time it is scheduled, or the chunks of an
+      // export would not join: rounding noise must not decide. So the edges of what plays round
+      // half up and the position rounds half down, each with room to spare.
+      const first = Math.floor(offset * rate + 0.5 + HALF_SAMPLE_BIAS);
+      const count = Math.floor((offset + dur) * rate + 0.5 + HALF_SAMPLE_BIAS) - first;
+      const at = (when + (first / rate - offset)) * rate;
+      v.nudge ??= Math.floor(at + 0.5 - HALF_SAMPLE_BIAS) - at;
+      const sample = at + v.nudge;
+      // A buffer whose timestamp is off that grid (containers that round) is left where it is.
+      if (count > 0 && Math.abs(sample - Math.round(sample)) < 1e-3) {
+        when = Math.round(sample) / rate;
+        offset = first / rate;
+        // Ends a quarter of a sample short, so that however the end is rounded it is `count`
+        // samples that play: neither one more nor one fewer.
+        dur = (count - 0.25) / rate;
+      }
+    }
     const now = this.ctx.currentTime;
     if (when >= now) node.start(when, offset, dur);
     else {
@@ -362,21 +423,35 @@ export class AudioGraph {
 
   /** Keep a voice's buffers scheduled up to `horizon` (context time). */
   private async feed(v: Voice, horizon: () => number): Promise<void> {
-    if (v.feeding || v.done || v.cancelled) return;
+    if (v.feeding || v.done || v.cancelled || performance.now() < v.retryAt) return;
     v.feeding = true;
     const clip = v.clip;
     const project = this.project!;
     const session = this.session!;
+    const assetId = clip.assetId;
     try {
-      const opened = clip.assetId ? await this.sinkFor(clip.assetId) : null;
-      if (!opened || v.cancelled) {
+      const opened = assetId ? await this.sinkFor(assetId) : null;
+      if (v.cancelled) return;
+      if (opened === 'missing' && this.realtime) {
+        // Keep the voice and let a later pump ask again: its file may arrive while this plays.
+        v.retryAt = performance.now() + RETRY_MS;
+        return;
+      }
+      if (!opened || typeof opened === 'string') {
+        if (opened && assetId) this.onProblem?.({ clipId: clip.id, assetId, reason: opened });
         v.done = true;
         return;
       }
       const per = sourcePerFrame(clip, project) * this.fps;
       const clipStartSec = framesToSeconds(clip.start, project.settings);
       const clipEndSec = framesToSeconds(clipEnd(clip), project.settings);
-      const fromTl = Math.max(session.startSec, clipStartSec);
+      // A voice can start long after the session was anchored: the mix was rebuilt for an edit, or
+      // its file has only just become available. Decoding from the anchor would then produce
+      // minutes of sound that is thrown away as already played before anything is heard.
+      const nowTl = this.realtime
+        ? session.startSec + (this.ctx.currentTime - session.t0) * session.rate
+        : session.startSec;
+      const fromTl = Math.max(session.startSec, clipStartSec, nowTl);
       const toTl = Math.min(session.endSec, clipEndSec);
       if (toTl <= fromTl) {
         v.done = true;
@@ -412,7 +487,10 @@ export class AudioGraph {
       }
       v.done = true;
     } catch (err) {
-      if (!v.cancelled) console.warn('[audio] decode error', err);
+      if (!v.cancelled) {
+        console.warn('[audio] decode error', err);
+        if (assetId) this.onProblem?.({ clipId: clip.id, assetId, reason: 'decode-error' });
+      }
       v.done = true;
     } finally {
       v.feeding = false;
@@ -549,7 +627,12 @@ function reversed(ctx: BaseAudioContext, src: AudioBuffer): AudioBuffer {
 
 /**
  * Render a stretch of the project's audio offline. A short pre-roll is rendered and discarded so
- * filters and compressors have settled by the first returned sample.
+ * filters and compressors have settled by the first returned sample. `onProblem` hears about every
+ * clip in the stretch whose sound is missing from the result.
+ *
+ * The result holds `durationSec` rounded to whole samples, the first of them at `startSec`. Chunks
+ * rendered one after the other at whole-sample distances (an export) therefore share one sample
+ * grid and join without a sample missing or added, wherever the first of them starts.
  */
 export async function renderAudioChunk(
   project: Project,
@@ -558,18 +641,21 @@ export async function renderAudioChunk(
   durationSec: number,
   sampleRate: number,
   preRollSec = 0.5,
+  onProblem?: (problem: AudioProblem) => void,
 ): Promise<AudioBuffer> {
-  const pre = Math.min(preRollSec, startSec);
-  const total = Math.max(1, Math.ceil((pre + durationSec) * sampleRate));
-  const ctx = new OfflineAudioContext(2, total, sampleRate);
+  // A whole number of samples of pre-roll, so that sample 0 of the result is the one at `startSec`
+  // even when there is less than `preRollSec` of timeline before it.
+  const skip = Math.floor(Math.min(preRollSec, startSec) * sampleRate);
+  const pre = skip / sampleRate;
+  const length = Math.max(1, Math.round(durationSec * sampleRate));
+  const ctx = new OfflineAudioContext(2, skip + length, sampleRate);
   const graph = new AudioGraph(ctx, library, false);
+  graph.onProblem = onProblem ?? null;
   graph.start(project, { startSec: startSec - pre, t0: 0, rate: 1, endSec: startSec + durationSec });
   await graph.pump();
   const rendered = await ctx.startRendering();
   graph.dispose();
-  const skip = Math.round(pre * sampleRate);
   if (skip === 0) return rendered;
-  const length = Math.max(1, rendered.length - skip);
   const out = new AudioBuffer({ numberOfChannels: 2, length, sampleRate });
   for (let c = 0; c < 2; c++) {
     out.copyToChannel(rendered.getChannelData(c).subarray(skip), c);

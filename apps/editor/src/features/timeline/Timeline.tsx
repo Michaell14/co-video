@@ -63,6 +63,7 @@ import {
   cx,
   hideTip,
 } from '../../ui/core';
+import { EdgeScroller, scrollLimit } from './edgeScroll';
 import { Lanes } from './Lanes';
 import { HEADER_W, layoutLanes, RULER_H, tickInterval, type Lane } from './layout';
 import './timeline.css';
@@ -167,7 +168,9 @@ export function Timeline() {
           <div className="tl__hint">
             <Film />
             <b>Your timeline is empty</b>
-            Import media, then drag it here — or press <kbd className="kbd">T</kbd> to start with a title.
+            <span>
+              Import media, then drag it here — or press <kbd className="kbd">T</kbd> to start with a title.
+            </span>
           </div>
         )}
       </div>
@@ -282,7 +285,7 @@ function Toolbar() {
       <IconButton label="Add marker" keys="m" tipPlace="top" onClick={() => cmd.addMarker()}>
         <Flag />
       </IconButton>
-      <IconButton label="Add text" keys="t" tipPlace="top" onClick={() => cmd.addText()}>
+      <IconButton label="Add text" keys="t" tipPlace="top" onClick={() => cmd.addTitle()}>
         <Type />
       </IconButton>
       <VoiceoverButton />
@@ -343,16 +346,38 @@ function Ruler({ width, project }: { width: number; project: Project }) {
   const ppf = useUI((s) => s.ppf);
   const scrollX = useUI((s) => s.scrollX);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rulerRef = useRef<HTMLDivElement>(null);
   const comments = useComments();
   const [editing, setEditing] = useState<{ marker: Marker; rect: DOMRect } | null>(null);
   const scrub = useRef<
     | { kind: 'seek' }
-    | { kind: 'marker'; id: string; moved: boolean }
+    | { kind: 'marker'; id: string; x0: number; moved: boolean }
     | { kind: 'range'; edge: 'in' | 'out' }
     | null
   >(null);
+  /** Where the pointer last was during the scrub in progress. */
+  const pointer = useRef<{ clientX: number; shiftKey: boolean } | null>(null);
+  /**
+   * The marker under the last press. The ruler holds the pointer from the press on, so the click
+   * and double-click that follow are aimed at the ruler itself and no longer say which marker.
+   */
+  const pressed = useRef<string | null>(null);
+  /** Runs the scrub in progress again where the pointer last was. */
+  const rerun = useRef<() => void>(() => {});
   const settings = project.settings;
   const fps = settings.fpsNum / settings.fpsDen;
+
+  const scroller = useMemo(
+    () =>
+      new EdgeScroller({
+        bounds: () => rulerRef.current?.getBoundingClientRect() ?? null,
+        limit: () =>
+          scrollLimit(session.store.get(), useUI.getState().ppf, rulerRef.current?.clientWidth ?? 0),
+        onScroll: () => rerun.current(),
+      }),
+    [session],
+  );
+  useEffect(() => () => scroller.stop(), [scroller]);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
@@ -399,9 +424,57 @@ function Ruler({ width, project }: { width: number; project: Project }) {
     return f;
   };
 
+  /** Carry the scrub in progress to where the pointer is. */
+  const scrubTo = (at: { clientX: number; shiftKey: boolean }) => {
+    const s = scrub.current;
+    if (!s) return;
+    if (s.kind === 'seek') cmd.seek(frameAt(at.clientX, !at.shiftKey), false);
+    else if (s.kind === 'marker' && session.canEdit) {
+      // A press that barely moves is a click (or half a double-click), not a drag.
+      if (!s.moved && Math.abs(at.clientX - s.x0) < 3) return;
+      const m = session.store.get().markers[s.id];
+      const f = frameAt(at.clientX, false);
+      if (m && m.frame !== f) {
+        if (!s.moved) session.store.beginGesture();
+        s.moved = true;
+        commit([{ op: 'setMarker', marker: { ...m, frame: f } }], true);
+      }
+    } else if (s.kind === 'range' && player) {
+      const now = player.getState().range;
+      if (!now) return;
+      const f = frameAt(at.clientX, true);
+      player.setRange(
+        s.edge === 'in'
+          ? { in: Math.min(f, now.out - 1), out: now.out }
+          : { in: now.in, out: Math.max(f, now.in + 1) },
+      );
+    }
+  };
+  rerun.current = () => {
+    if (pointer.current) scrubTo(pointer.current);
+  };
+  const endScrub = (e: React.PointerEvent) => {
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    scrub.current = null;
+    pointer.current = null;
+    scroller.stop();
+  };
+
+  const editMarker = (id: string) => {
+    const marker = session.store.get().markers[id];
+    const el = Array.from(rulerRef.current?.querySelectorAll<HTMLElement>('[data-marker]') ?? []).find(
+      (m) => m.dataset.marker === id,
+    );
+    if (!marker || !el || !session.canEdit) return;
+    // The marker's tooltip would name it as it was before the edit, right over the editor.
+    hideTip();
+    setEditing({ marker, rect: el.getBoundingClientRect() });
+  };
+
   const markers = Object.values(project.markers);
   return (
     <div
+      ref={rulerRef}
       className="ruler"
       style={{ height: RULER_H }}
       onPointerDown={(e) => {
@@ -410,8 +483,9 @@ function Ruler({ width, project }: { width: number; project: Project }) {
         e.currentTarget.setPointerCapture(e.pointerId);
         const mk = el.closest<HTMLElement>('[data-marker]')?.dataset.marker;
         const edge = el.closest<HTMLElement>('[data-range]')?.dataset.range as 'in' | 'out' | undefined;
+        pressed.current = mk ?? null;
         if (mk) {
-          scrub.current = { kind: 'marker', id: mk, moved: false };
+          scrub.current = { kind: 'marker', id: mk, x0: e.clientX, moved: false };
           cmd.seek(project.markers[mk].frame, false);
         } else if (edge) scrub.current = { kind: 'range', edge };
         else {
@@ -421,43 +495,37 @@ function Ruler({ width, project }: { width: number; project: Project }) {
         }
       }}
       onPointerMove={(e) => {
-        const s = scrub.current;
-        if (!s) return;
-        if (s.kind === 'seek') cmd.seek(frameAt(e.clientX, !e.shiftKey), false);
-        else if (s.kind === 'marker' && session.canEdit) {
-          const m = session.store.get().markers[s.id];
-          const f = frameAt(e.clientX, false);
-          if (m && m.frame !== f) {
-            if (!s.moved) session.store.beginGesture();
-            s.moved = true;
-            commit([{ op: 'setMarker', marker: { ...m, frame: f } }], true);
-          }
-        } else if (s.kind === 'range' && range && player) {
-          const f = frameAt(e.clientX, true);
-          player.setRange(
-            s.edge === 'in'
-              ? { in: Math.min(f, range.out - 1), out: range.out }
-              : { in: range.in, out: Math.max(f, range.in + 1) },
-          );
-        }
+        if (!scrub.current) return;
+        pointer.current = { clientX: e.clientX, shiftKey: e.shiftKey };
+        scrubTo(pointer.current);
+        scroller.track(e.clientX);
       }}
-      onPointerUp={(e) => {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-        scrub.current = null;
+      onPointerUp={endScrub}
+      onPointerCancel={endScrub}
+      onDoubleClick={() => {
+        if (pressed.current) editMarker(pressed.current);
       }}
-      onDoubleClick={(e) => {
-        const mk = (e.target as HTMLElement).closest<HTMLElement>('[data-marker]');
-        if (mk && session.canEdit)
-          setEditing({ marker: project.markers[mk.dataset.marker!], rect: mk.getBoundingClientRect() });
-      }}
-      onContextMenu={(e) =>
+      onContextMenu={(e) => {
+        const id = (e.target as HTMLElement).closest<HTMLElement>('[data-marker]')?.dataset.marker;
+        const marker = id ? project.markers[id] : undefined;
+        // Snapped like a click on the ruler, unless that lands on a marker that is already there.
+        const snapped = frameAt(e.clientX, true);
+        const at = markers.some((m) => m.frame === snapped) ? frameAt(e.clientX, false) : snapped;
         openContextMenu(e, [
-          { label: 'Add marker here', keys: 'm', onSelect: () => cmd.addMarker() },
+          marker && session.canEdit ? { label: 'Edit marker…', onSelect: () => editMarker(marker.id) } : null,
+          marker
+            ? {
+                label: 'Delete marker',
+                danger: true,
+                onSelect: () => commit([{ op: 'removeMarker', id: marker.id }]),
+              }
+            : { label: 'Add marker here', onSelect: () => cmd.addMarker(at) },
+          'separator',
           { label: 'Mark in', keys: 'i', onSelect: () => cmd.markIn() },
           { label: 'Mark out', keys: 'o', onSelect: () => cmd.markOut() },
           { label: 'Clear in / out', keys: 'alt+x', onSelect: () => cmd.clearRange(), disabled: !range },
-        ])
-      }
+        ]);
+      }}
     >
       <canvas ref={canvasRef} style={{ width, height: RULER_H }} />
       {range && (
@@ -475,7 +543,9 @@ function Ruler({ width, project }: { width: number; project: Project }) {
           className="marker"
           data-marker={m.id}
           style={{ left: m.frame * ppf - scrollX, ['--c' as string]: m.color }}
-          {...tip(m.note ? `${m.name} — ${m.note}` : m.name, undefined, 'top')}
+          {...(editing?.marker.id === m.id
+            ? {}
+            : tip(m.note ? `${m.name} — ${m.note}` : m.name, undefined, 'top'))}
         >
           <svg viewBox="0 0 10 12" width="10" height="12">
             <path d="M1 1h8v7L5 11 1 8z" fill="var(--c)" stroke="rgba(0,0,0,0.5)" strokeWidth="1" />
@@ -510,8 +580,11 @@ function Ruler({ width, project }: { width: number; project: Project }) {
 function MarkerEditor({ marker, rect, onClose }: { marker: Marker; rect: DOMRect; onClose: () => void }) {
   const session = useSession();
   const m = useProject((p) => p.markers[marker.id]) ?? marker;
-  const update = (patch: Partial<Marker>) =>
-    commit([{ op: 'setMarker', marker: { ...session.store.get().markers[marker.id], ...patch } }]);
+  const update = (patch: Partial<Marker>) => {
+    // Someone else may have deleted the marker while this was open: there is nothing left to edit.
+    const current = session.store.get().markers[marker.id];
+    if (current) commit([{ op: 'setMarker', marker: { ...current, ...patch } }]);
+  };
   return (
     <Popover anchor={rect} onClose={onClose} style={{ width: 240, padding: 10 }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -628,6 +701,8 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
   const player = usePlayer();
   const t = lane.track;
   const [renaming, setRenaming] = useState<string | null>(null);
+  /** Escape was pressed in the rename field: the blur that follows must not store what was typed. */
+  const discard = useRef(false);
   const meter = useRef<HTMLDivElement>(null);
   const update = (patch: Partial<Track>) => commit([{ op: 'updateTrack', id: t.id, patch }]);
   const label = trackLabel(project, t);
@@ -692,15 +767,19 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
           <input
             className="th__rename"
             autoFocus
+            aria-label="Track name"
             value={renaming}
+            onFocus={(e) => e.target.select()}
             onChange={(e) => setRenaming(e.target.value)}
             onBlur={() => {
-              if (renaming !== (t.name || label))
+              if (!discard.current && renaming !== (t.name || label))
                 update({ name: renaming.trim() === label ? '' : renaming.trim() });
+              discard.current = false;
               setRenaming(null);
             }}
             onKeyDown={(e) => {
               e.stopPropagation();
+              if (e.key === 'Escape') discard.current = true;
               if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLElement).blur();
             }}
           />

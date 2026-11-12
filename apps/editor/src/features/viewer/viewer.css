@@ -55,6 +55,26 @@
   line-height: 1.5;
   pointer-events: none;
 }
+.viewer__lost {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  margin: 0 auto;
+  padding: 6px 10px;
+  border-radius: var(--r-md);
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(6px);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  color: var(--fg-2);
+  font-size: var(--text-xs);
+  animation: fade-in var(--dur-3) ease;
+}
 
 /* Transform handles */
 .gizmo {
@@ -189,6 +209,17 @@
     display: none;
   }
 }
+/* Narrower than the buttons and a timecode side by side: the buttons get the row to themselves. */
+@container (max-width: 360px) {
+  .transport {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+  }
+  .transport__left,
+  .transport__right {
+    display: none;
+  }
+}
 .tc {
   width: 118px;
   height: 26px;
@@ -298,7 +329,10 @@
   flex: 1;
   min-height: 0;
   display: grid;
+  /* A fixed track, not an auto one: the picture is fitted into the body instead of sizing it. */
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
+  overflow: hidden;
   background: #000;
 }
 .source__body video,

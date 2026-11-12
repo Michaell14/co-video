@@ -37,7 +37,13 @@ export interface OpenMedia {
   videoDecodable: boolean;
   audioDecodable: boolean;
   rotation: 0 | 90 | 180 | 270;
-  /** Presentation timestamp of the first video / audio sample (some files do not start at zero). */
+  /**
+   * Where the asset's time zero lies in the timestamps of `video` and `audio`. A file has a single
+   * origin, its first video frame (its first audio sample when it has no picture), so sound that
+   * begins before or after the picture keeps its place against it. Many files do not start at zero;
+   * transport streams start wherever the broadcast clock happened to be. The two values differ only
+   * when `video` is a proxy, which has a time base of its own.
+   */
   videoStart: number;
   audioStart: number;
   local: boolean;
@@ -58,33 +64,88 @@ export function inputFor(loc: MediaLocation): Input {
   return new Input({ source, formats: ALL_FORMATS });
 }
 
+/** A file's time zero in its own timestamps: see `OpenMedia.videoStart`. */
+async function originOf(video: InputVideoTrack | null, audio: InputAudioTrack | null): Promise<number> {
+  const track = video ?? audio;
+  return track ? track.getFirstTimestamp().catch(() => 0) : 0;
+}
+
+/** After a failed request, how long the failure stands in for a new attempt. */
+const FAILURE_HOLD_MS = 2000;
+
+/**
+ * Why an asset's file could not be had. `missing`: there is nothing to open, on this device or on
+ * the server, or nobody could say where; it may yet arrive. `unreadable`: there is a file, but it
+ * could not be opened: it is damaged or not media at all, or the server would not hand it over.
+ */
+export type MediaFault = 'missing' | 'unreadable';
+
+const found = <T extends object>(answer: T | MediaFault): T | null =>
+  typeof answer === 'string' ? null : answer;
+
 export class MediaLibrary {
-  private readonly open = new Map<string, Promise<OpenMedia | null>>();
-  private readonly blobs = new Map<string, Promise<Blob | null>>();
+  private readonly opened = new Map<string, Promise<OpenMedia | MediaFault>>();
+  private readonly blobs = new Map<string, Promise<Blob | MediaFault>>();
   private disposed = false;
 
   constructor(private readonly resolver: MediaResolver) {}
 
-  /** Open (or reuse) the demuxer for a timed-media asset. Resolves null when it is not available. */
-  get(assetId: string): Promise<OpenMedia | null> {
-    let p = this.open.get(assetId);
+  /**
+   * Share one request per asset between callers, and keep its answer only while it is worth
+   * keeping. "Missing" describes this moment, not the asset: the file may be on its way from a
+   * collaborator, so the next call asks the resolver again. A request that failed is held for a
+   * moment so that a struggling server, or a file that will not open, is not tried on every frame.
+   */
+  private shared<T extends object>(
+    cache: Map<string, Promise<T | MediaFault>>,
+    assetId: string,
+    read: (loc: MediaLocation) => Promise<T | null>,
+    what: string,
+  ): Promise<T | MediaFault> {
+    let p = cache.get(assetId);
     if (!p) {
-      p = this.load(assetId).catch((err) => {
-        console.warn(`[media] could not open ${assetId}`, err);
-        // Let a later call retry (the file may still be uploading on a peer).
-        setTimeout(() => this.open.delete(assetId), 2000);
-        return null;
-      });
-      this.open.set(assetId, p);
+      const forget = () => {
+        if (cache.get(assetId) === request) cache.delete(assetId);
+      };
+      const nothing = (): MediaFault => {
+        forget();
+        return 'missing';
+      };
+      const failed = (fault: MediaFault, doing: string) => (err: unknown) => {
+        console.warn(`[media] could not ${doing} ${assetId}`, err);
+        setTimeout(forget, FAILURE_HOLD_MS);
+        return fault;
+      };
+      // `async`, so that a resolver that throws outright fails like one whose promise rejects.
+      const locate = async () => this.resolver(assetId);
+      const request: Promise<T | MediaFault> = locate().then(
+        (loc) =>
+          loc ? read(loc).then((value) => value ?? nothing(), failed('unreadable', what)) : nothing(),
+        failed('missing', 'locate'),
+      );
+      cache.set(assetId, (p = request));
     }
     return p;
   }
 
-  private async load(assetId: string): Promise<OpenMedia | null> {
-    const loc = await this.resolver(assetId);
-    if (!loc || this.disposed) return null;
+  /**
+   * Open (or reuse) the demuxer for a timed-media asset, or say why there is none: see
+   * `MediaFault`. Ask again later, at intervals, for media that is missing and may yet turn up.
+   */
+  open(assetId: string): Promise<OpenMedia | MediaFault> {
+    return this.shared(this.opened, assetId, (loc) => this.load(assetId, loc), 'open');
+  }
+
+  /** As `open`, for callers to whom every reason is the same: null when there is no media to be had. */
+  get(assetId: string): Promise<OpenMedia | null> {
+    return this.open(assetId).then(found);
+  }
+
+  private async load(assetId: string, loc: MediaLocation): Promise<OpenMedia | null> {
+    if (this.disposed) return null;
     const input = inputFor(loc);
-    let video = await input.getPrimaryVideoTrack();
+    const original = await input.getPrimaryVideoTrack();
+    let video = original;
     const audio = await input.getPrimaryAudioTrack();
     let [videoDecodable, audioDecodable] = await Promise.all([
       video ? video.canDecode().catch(() => false) : false,
@@ -109,8 +170,8 @@ export class MediaLibrary {
       if (!proxyInput) candidate.dispose();
     }
     const rotation = video ? await video.getRotation().catch(() => 0 as const) : 0;
-    const videoStart = video ? await video.getFirstTimestamp().catch(() => 0) : 0;
-    const audioStart = audio ? await audio.getFirstTimestamp().catch(() => 0) : 0;
+    const audioStart = await originOf(original, audio);
+    const videoStart = video === original ? audioStart : await originOf(video, null);
     return {
       assetId,
       input,
@@ -127,39 +188,38 @@ export class MediaLibrary {
     };
   }
 
-  /** Whole-file bytes for small assets (images, LUTs). */
-  blob(assetId: string): Promise<Blob | null> {
-    let p = this.blobs.get(assetId);
-    if (!p) {
-      p = (async () => {
-        const loc = await this.resolver(assetId);
-        if (!loc) return null;
+  /** Whole-file bytes for small assets (images, LUTs), or why they cannot be had, as for `open`. */
+  read(assetId: string): Promise<Blob | MediaFault> {
+    return this.shared(
+      this.blobs,
+      assetId,
+      async (loc) => {
         if (loc.blob) return loc.blob;
         const res = await fetch(loc.url!, { headers: loc.headers });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return await res.blob();
-      })().catch((err) => {
-        console.warn(`[media] could not fetch ${assetId}`, err);
-        setTimeout(() => this.blobs.delete(assetId), 2000);
-        return null;
-      });
-      this.blobs.set(assetId, p);
-    }
-    return p;
+      },
+      'fetch',
+    );
+  }
+
+  /** As `read`, with null for bytes that cannot be had, whatever the reason. */
+  blob(assetId: string): Promise<Blob | null> {
+    return this.read(assetId).then(found);
   }
 
   /** Forget a cached handle, e.g. after the asset finished downloading and a local copy exists. */
   invalidate(assetId: string): void {
-    const p = this.open.get(assetId);
-    this.open.delete(assetId);
+    const p = this.opened.get(assetId);
+    this.opened.delete(assetId);
     this.blobs.delete(assetId);
-    p?.then(disposeMedia).catch(() => {});
+    p?.then((m) => disposeMedia(found(m))).catch(() => {});
   }
 
   dispose(): void {
     this.disposed = true;
-    for (const p of this.open.values()) p.then(disposeMedia).catch(() => {});
-    this.open.clear();
+    for (const p of this.opened.values()) p.then((m) => disposeMedia(found(m))).catch(() => {});
+    this.opened.clear();
     this.blobs.clear();
   }
 }
@@ -235,7 +295,9 @@ export async function probeFile(file: File): Promise<ProbeResult> {
     const video = await input.getPrimaryVideoTrack();
     const audio = await input.getPrimaryAudioTrack();
     if (!video && !audio) throw new Error(`“${file.name}” has no video or audio tracks.`);
-    const duration = await input.computeDuration();
+    // `computeDuration` is the timestamp at which the last track ends; the asset starts at the
+    // file's origin, which is rarely zero for transport streams and camera recordings.
+    const duration = Math.max(0, (await input.computeDuration()) - (await originOf(video, audio)));
     const asset: ProbeResult['asset'] = {
       ...base,
       kind: video ? 'video' : 'audio',

@@ -24,6 +24,8 @@ const lab = {
   library: null as engine.MediaLibrary | null,
 
   init(width = 640, height = 360) {
+    this.sources?.dispose();
+    this.library?.dispose();
     this.compositor?.dispose();
     this.compositor = new engine.Compositor(canvas);
     this.compositor.setSize(width, height);
@@ -52,7 +54,7 @@ const lab = {
     if (!this.compositor) this.init();
     const c = this.compositor!;
     const desc = core.resolveFrame(project, frame);
-    await this.sources!.prepare(project, desc, true);
+    await this.sources!.prepare(project, desc, true, c.width, c.height);
     const stats = c.render(project, desc, this.sources!, opts);
     return { stats, pixels: c.readPixels(), width: c.width, height: c.height };
   },
@@ -87,8 +89,10 @@ Object.assign(lab, {
   /** Export a project and return the encoded file as a base64 string (tests only: small files). */
   async exportBase64(project: core.Project, settings: engine.ExportSettings) {
     const progress: engine.ExportProgress[] = [];
+    const reported: engine.ExportWarning[] = [];
     const result = await engine.exportProject(project, resolver, settings, {
       onProgress: (p) => progress.push({ ...p }),
+      onWarning: (w) => reported.push(w),
     });
     const buf = new Uint8Array(await result.blob!.arrayBuffer());
     let bin = '';
@@ -100,6 +104,8 @@ Object.assign(lab, {
       frames: result.frames,
       seconds: result.seconds,
       phases: Array.from(new Set(progress.map((p) => p.phase))),
+      warnings: result.warnings,
+      reported,
     };
   },
 });

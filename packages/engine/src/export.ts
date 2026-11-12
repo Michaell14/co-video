@@ -4,6 +4,10 @@
  * Nothing here is real-time. Every frame waits for exactly the right decoded pictures, so an export
  * is identical whether the machine is fast or slow. Audio is rendered offline through the same mixer
  * graph the preview uses and interleaved with the picture in short chunks to keep memory flat.
+ *
+ * Media that is missing or will not decode does not stop an export, but it never passes in silence:
+ * every clip affected is named in the result's `warnings`, and `checkExportMedia` finds the missing
+ * ones before any frame is rendered.
  */
 import {
   AudioBufferSource,
@@ -24,11 +28,19 @@ import {
   type OutputFormat,
   type VideoCodec,
 } from 'mediabunny';
-import { isHdrMode, resolveFrame, sequenceEnd, type Project } from '@tandem/core';
+import {
+  audibleTracks,
+  clipEnd,
+  isHdrMode,
+  resolveFrame,
+  sequenceEnd,
+  type Clip,
+  type Project,
+} from '@tandem/core';
 import { hasAudibleAudio, renderAudioChunk } from './audio/graph';
 import { Compositor } from './gl/compositor';
 import { MediaLibrary, type MediaResolver } from './media/library';
-import { SourceManager } from './media/sources';
+import { SourceManager, type SourceFault } from './media/sources';
 
 export type ExportContainer = 'mp4' | 'mov' | 'webm' | 'mkv' | 'wav';
 export type ExportDynamicRange = 'sdr' | 'pq' | 'hlg';
@@ -63,6 +75,29 @@ export interface ExportProgress {
   elapsedSeconds: number;
 }
 
+/**
+ * A clip whose media could not be rendered as it should be. An export does not stop for it: the
+ * clip is left out (or shown with the nearest frame there is) and the caller is told.
+ */
+export interface ExportWarning {
+  clipId: string;
+  /** The asset at fault: the clip's media, or the LUT of its grade. */
+  assetId: string;
+  /** What the clip needed from the asset. */
+  part: 'video' | 'image' | 'audio' | 'lut';
+  /**
+   * `missing`: the file is neither on this device nor on the server. `unreadable`: it is there but
+   * could not be opened (damaged, not media, refused by the server). `undecodable`: it opens, and
+   * this browser cannot decode what is in it. `timeout`: a frame did not arrive in time and a
+   * neighbouring one was used. `decode-error`: decoding stopped part-way through the file.
+   */
+  reason: SourceFault;
+  /** Project frame at which the problem starts (for a pre-flight check, where the clip enters the range). */
+  frame: number;
+  /** One sentence for the person exporting, naming the file. */
+  message: string;
+}
+
 export interface ExportResult {
   blob: Blob | null;
   mimeType: string;
@@ -71,6 +106,8 @@ export interface ExportResult {
   seconds: number;
   /** Where the time went, in seconds: waiting for decoded frames, compositing, encoding, audio. */
   timings: { decode: number; render: number; encode: number; audio: number };
+  /** Every clip whose media was missing or failed, once per clip and kind of problem. Empty for a clean export. */
+  warnings: ExportWarning[];
 }
 
 export class ExportCancelled extends Error {
@@ -261,9 +298,132 @@ export interface ExportHandle {
   writable?: FileSystemWritableFileStream;
   signal?: AbortSignal;
   onProgress?: (p: ExportProgress) => void;
+  /** Called as soon as a problem is met, with the same objects that end up in `ExportResult.warnings`. */
+  onWarning?: (w: ExportWarning) => void;
 }
 
 const AUDIO_CHUNK_SECONDS = 4;
+
+type Problem = Pick<ExportWarning, 'clipId' | 'assetId' | 'part' | 'reason'>;
+
+function describeProblem(project: Project, p: Problem): string {
+  const asset = project.assets[p.assetId];
+  const name = asset ? `“${asset.name}”` : 'A file that is no longer in the project';
+  const lost = p.part === 'lut' ? 'its look is missing from the export' : 'it is missing from the export';
+  switch (p.reason) {
+    case 'missing':
+      return `${name} is not on this device or the server, so ${lost}.`;
+    case 'unreadable':
+      return `${name} could not be opened, so ${lost}.`;
+    case 'undecodable':
+      if (p.part === 'lut') return `${name} cannot be read as a LUT, so ${lost}.`;
+      if (p.part === 'image') return `${name} cannot be read as an image, so ${lost}.`;
+      return `This browser cannot decode the ${p.part} in ${name}, so ${lost}.`;
+    case 'timeout':
+      return `${name} took too long to deliver a frame, so the export shows a neighbouring frame there.`;
+    default:
+      return p.part === 'audio'
+        ? `The audio in ${name} stopped decoding part-way through, so the export is silent from there.`
+        : `${name} stopped decoding part-way through, so the export holds its last good frame from there.`;
+  }
+}
+
+/** Collects problems into warnings: one per clip and kind of problem, reported the moment it is first seen. */
+function warningLog(project: Project, onWarning?: (w: ExportWarning) => void) {
+  const warnings: ExportWarning[] = [];
+  const seen = new Set<string>();
+  const add = (p: Problem, frame: number): void => {
+    const key = `${p.clipId}|${p.part}|${p.reason}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const w: ExportWarning = {
+      clipId: p.clipId,
+      assetId: p.assetId,
+      part: p.part,
+      reason: p.reason,
+      frame,
+      message: describeProblem(project, p),
+    };
+    warnings.push(w);
+    onWarning?.(w);
+  };
+  return { warnings, add };
+}
+
+/** The frames an export covers (`out` exclusive) and which of picture and sound it carries. */
+function exportScope(project: Project, settings: ExportSettings) {
+  const startFrame = Math.max(0, settings.range?.in ?? 0);
+  const endFrame = Math.max(
+    startFrame,
+    Math.min(settings.range?.out ?? sequenceEnd(project), sequenceEnd(project)),
+  );
+  const audioOnly = settings.container === 'wav' || !settings.includeVideo;
+  const wantAudio = settings.includeAudio && (audioOnly || hasAudibleAudio(project));
+  return { startFrame, endFrame, audioOnly, wantAudio };
+}
+
+/**
+ * Pre-flight for an export: the clips in its range whose media `resolver` cannot supply, cannot be
+ * opened or cannot be decoded by this browser, without rendering anything. An empty list means
+ * every file is there and every video and audio file opens; a non-empty one is what
+ * `exportProject` would report as `missing` / `unreadable` / `undecodable` warnings, with the same
+ * reasons, so the person can be asked before a long render rather than after it. Video and audio
+ * files are opened (their headers read), not decoded; stills and LUTs are only located.
+ */
+export async function checkExportMedia(
+  project: Project,
+  resolver: MediaResolver,
+  settings: ExportSettings,
+): Promise<ExportWarning[]> {
+  const { startFrame, endFrame, audioOnly, wantAudio } = exportScope(project, settings);
+  const audible = audibleTracks(project);
+  const uses: { clip: Clip; assetId: string; part: ExportWarning['part'] }[] = [];
+  for (const clip of Object.values(project.clips)) {
+    if (!clip.enabled || clip.start >= endFrame || clipEnd(clip) <= startFrame) continue;
+    const track = project.tracks[clip.trackId];
+    if (!track) continue;
+    if (clip.type === 'audio') {
+      if (wantAudio && clip.assetId && !clip.audioMuted && audible.has(track.id))
+        uses.push({ clip, assetId: clip.assetId, part: 'audio' });
+      continue;
+    }
+    if (audioOnly || track.hidden) continue;
+    if ((clip.type === 'video' || clip.type === 'image') && clip.assetId)
+      uses.push({ clip, assetId: clip.assetId, part: clip.type });
+    if (clip.grade?.lutId) uses.push({ clip, assetId: clip.grade.lutId, part: 'lut' });
+  }
+
+  const library = new MediaLibrary(resolver);
+  const verdicts = new Map<string, Promise<ExportWarning['reason'] | null>>();
+  const judge = (assetId: string, part: ExportWarning['part']) => {
+    const key = `${part}|${assetId}`;
+    let v = verdicts.get(key);
+    if (!v) {
+      v = (async () => {
+        if (part === 'image' || part === 'lut')
+          return (await resolver(assetId).catch(() => null)) ? null : 'missing';
+        // The verdict of the library the export itself opens files with.
+        const media = await library.open(assetId);
+        if (typeof media === 'string') return media;
+        if (part === 'video') return media.video && media.videoDecodable ? null : 'undecodable';
+        return media.audio && !media.audioDecodable ? 'undecodable' : null;
+      })();
+      verdicts.set(key, v);
+    }
+    return v;
+  };
+  try {
+    const log = warningLog(project);
+    uses.sort((a, b) => a.clip.start - b.clip.start);
+    for (const { clip, assetId, part } of uses) {
+      const reason = await judge(assetId, part);
+      if (reason) log.add({ clipId: clip.id, assetId, part, reason }, Math.max(clip.start, startFrame));
+    }
+    return log.warnings;
+  } finally {
+    library.dispose();
+  }
+}
 
 export async function exportProject(
   project: Project,
@@ -278,18 +438,12 @@ export async function exportProject(
 
   const projFps = project.settings.fpsNum / project.settings.fpsDen;
   const outFps = settings.fpsNum / settings.fpsDen;
-  const startFrame = Math.max(0, settings.range?.in ?? 0);
-  const endFrame = Math.max(
-    startFrame,
-    Math.min(settings.range?.out ?? sequenceEnd(project), sequenceEnd(project)),
-  );
+  const { startFrame, endFrame, audioOnly, wantAudio } = exportScope(project, settings);
   const startSec = startFrame / projFps;
   const durationSec = (endFrame - startFrame) / projFps;
   if (durationSec <= 0) throw new Error('Nothing to export: the timeline is empty.');
   const totalFrames = Math.max(1, Math.round(durationSec * outFps));
 
-  const audioOnly = settings.container === 'wav' || !settings.includeVideo;
-  const wantAudio = settings.includeAudio && (audioOnly || hasAudibleAudio(project));
   if (audioOnly && !wantAudio) throw new Error('Nothing to export: enable video or audio.');
   const hdr = settings.dynamicRange !== 'sdr' && isHdrMode(project.settings.colorMode) && !audioOnly;
 
@@ -318,6 +472,7 @@ export async function exportProject(
     compositor = new Compositor(canvas);
     compositor.setSize(settings.width, settings.height);
     sources = new SourceManager(compositor.glx, library);
+    sources.sequential = true;
     const common = {
       codec: settings.videoCodec,
       bitrate: settings.videoBitrate,
@@ -370,6 +525,7 @@ export async function exportProject(
   };
 
   const timings = { decode: 0, render: 0, encode: 0, audio: 0 };
+  const log = warningLog(project, handle.onWarning);
   let audioRenderedTo = 0;
   const pumpAudio = async (upToSec: number, flush: boolean) => {
     if (!audioSource) return;
@@ -385,12 +541,15 @@ export async function exportProject(
     while (audioRenderedTo < durationSec && (flush || audioRenderedTo + AUDIO_CHUNK_SECONDS <= upToSec)) {
       check();
       const len = Math.min(AUDIO_CHUNK_SECONDS, durationSec - audioRenderedTo);
+      const chunkFrame = startFrame + Math.round(audioRenderedTo * projFps);
       const buf = await renderAudioChunk(
         project,
         library,
         startSec + audioRenderedTo,
         len,
         project.settings.sampleRate,
+        undefined,
+        (p) => log.add({ ...p, part: 'audio' }, Math.max(chunkFrame, project.clips[p.clipId]?.start ?? 0)),
       );
       await audioSource.add(buf);
       audioRenderedTo += len;
@@ -411,7 +570,8 @@ export async function exportProject(
         const frame = startFrame + Math.min(endFrame - startFrame - 1, Math.floor(t * projFps + 1e-6));
         const desc = resolveFrame(project, frame);
         const p0 = performance.now();
-        await sources.prepare(project, desc, true);
+        const problems = await sources.prepare(project, desc, true, settings.width, settings.height);
+        for (const problem of problems) log.add(problem, frame);
         const p1 = performance.now();
         compositor.render(project, desc, sources, {
           output: hdr ? (settings.dynamicRange as 'pq' | 'hlg') : 'display',
@@ -442,7 +602,10 @@ export async function exportProject(
         }
         assertContext(compositor);
         timings.encode += (performance.now() - p2) / 1000;
-        sources.collect(60_000);
+        // Export time only moves forward: a decoder is finished with as soon as its clip has left
+        // the picture.
+        sources.releaseUnused();
+        sources.collect();
         await pumpAudio(t, false);
         if (i % 4 === 0) report('rendering', i + 1);
         // Yield so the UI stays responsive and cancellation is seen promptly.
@@ -465,6 +628,7 @@ export async function exportProject(
       frames: audioOnly ? 0 : totalFrames,
       seconds: (performance.now() - t0) / 1000,
       timings,
+      warnings: log.warnings,
     };
   } catch (err) {
     await output.cancel().catch(() => {});
@@ -477,17 +641,27 @@ export async function exportProject(
   }
 }
 
-/** Render a single frame at full project resolution and return it as a PNG. */
-export async function renderStill(project: Project, resolver: MediaResolver, frame: number): Promise<Blob> {
+/**
+ * Render a single frame at full project resolution and return it as a PNG. `onWarning` hears about
+ * every clip in the frame whose media was missing or failed, as an export would report it.
+ */
+export async function renderStill(
+  project: Project,
+  resolver: MediaResolver,
+  frame: number,
+  onWarning?: (w: ExportWarning) => void,
+): Promise<Blob> {
   const { width, height } = project.settings;
   const canvas = new OffscreenCanvas(width, height);
   const compositor = new Compositor(canvas);
   compositor.setSize(width, height);
   const library = new MediaLibrary(resolver);
   const sources = new SourceManager(compositor.glx, library);
+  sources.sequential = true;
   try {
     const desc = resolveFrame(project, frame);
-    await sources.prepare(project, desc, true);
+    const log = warningLog(project, onWarning);
+    for (const problem of await sources.prepare(project, desc, true)) log.add(problem, frame);
     compositor.render(project, desc, sources, { skipPresent: true });
     const pixels = compositor.readPixels();
     assertContext(compositor);

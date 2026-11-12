@@ -15,7 +15,10 @@ import {
   closeGapsAt,
   duplicateClips,
   markerBeside,
+  matchFrameAt,
   pasteable,
+  rippleDeleteRange,
+  transitionTarget,
   unlocked,
 } from '../src/state/edits';
 
@@ -252,5 +255,144 @@ describe('pasteable', () => {
     expect(missing).toBe(0);
     expect(clips[0].grade).toMatchObject({ lutId: null, enabled: true });
     expect(graded.grade.lutId).toBe('lut-x');
+  });
+});
+
+describe('rippleDeleteRange', () => {
+  it('takes the range out of every unlocked track and closes it', () => {
+    const f = fixture();
+    const a = add(f.p, f.v1, 0, 100);
+    const b = add(a.p, f.v1, 100, 50);
+    const s = add(b.p, f.a1, 20, 100);
+    const r = rippleDeleteRange(s.p, 30, 60);
+    expect(r.refused).toBeNull();
+    const p = applyEdits(s.p, r.edits);
+    expect(layout(p, f.v1)).toEqual(['0-30', '30-70', '70-120']);
+    expect(layout(p, f.a1)).toEqual(['20-30', '30-90']);
+    expect(overlaps(p)).toBe(0);
+  });
+
+  it('is refused when a linked clip on a locked track would be left behind', () => {
+    const f = fixture();
+    const v = add(f.p, f.v1, 0, 100, { linkId: 'L' });
+    const s = add(v.p, f.a1, 0, 100, { linkId: 'L' });
+    const p = lock(s.p, f.a1);
+    const r = rippleDeleteRange(p, 30, 60);
+    expect(r.edits).toEqual([]);
+    expect(r.refused).toBe('Unlock A1 to ripple: a linked clip on it has to move too.');
+  });
+
+  it('names the track as the user named it', () => {
+    const f = fixture();
+    const v = add(f.p, f.v1, 200, 50, { linkId: 'L' });
+    const s = add(v.p, f.a1, 200, 50, { linkId: 'L' });
+    const named = applyEdits(s.p, [
+      { op: 'updateTrack', id: f.a1.id, patch: { name: 'Dialogue', locked: true } },
+    ]);
+    // The pair lies after the range: it would be moved, not cut, and still be parted.
+    expect(rippleDeleteRange(named, 30, 60).refused).toBe(
+      'Unlock Dialogue to ripple: a linked clip on it has to move too.',
+    );
+  });
+
+  it('leaves a locked track alone when nothing linked to it moves', () => {
+    const f = fixture();
+    const before = add(f.p, f.v1, 0, 20, { linkId: 'L' });
+    const partner = add(before.p, f.a1, 0, 20, { linkId: 'L' });
+    const later = add(partner.p, f.v1, 50, 50);
+    const loose = add(later.p, f.a1, 40, 40);
+    const p0 = lock(loose.p, f.a1);
+    const r = rippleDeleteRange(p0, 30, 60);
+    expect(r.refused).toBeNull();
+    const p = applyEdits(p0, r.edits);
+    expect(layout(p, f.v1)).toEqual(['0-20', '30-70']);
+    expect(layout(p, f.a1)).toEqual(['0-20', '40-80']);
+  });
+
+  it('does nothing for an empty range', () => {
+    const f = fixture();
+    const a = add(f.p, f.v1, 0, 100);
+    expect(rippleDeleteRange(a.p, 60, 60)).toEqual({ edits: [], refused: null });
+  });
+});
+
+describe('transitionTarget', () => {
+  it('turns the out side of a cut into the in side of the clip that follows', () => {
+    const f = fixture();
+    const a = add(f.p, f.v1, 0, 60);
+    const b = add(a.p, f.v1, 60, 60);
+    expect(transitionTarget(b.p, a.clip.id, 'out')).toEqual({ clipId: b.clip.id, side: 'in' });
+  });
+
+  it('keeps the out side where nothing follows directly', () => {
+    const f = fixture();
+    const a = add(f.p, f.v1, 0, 60);
+    const gap = add(a.p, f.v1, 61, 60);
+    expect(transitionTarget(gap.p, a.clip.id, 'out')).toEqual({ clipId: a.clip.id, side: 'out' });
+    expect(transitionTarget(gap.p, gap.clip.id, 'out')).toEqual({ clipId: gap.clip.id, side: 'out' });
+  });
+
+  it('leaves the in side and unknown clips as they are', () => {
+    const f = fixture();
+    const a = add(f.p, f.v1, 0, 60);
+    const b = add(a.p, f.v1, 60, 60);
+    expect(transitionTarget(b.p, b.clip.id, 'in')).toEqual({ clipId: b.clip.id, side: 'in' });
+    expect(transitionTarget(b.p, 'nope', 'out')).toEqual({ clipId: 'nope', side: 'out' });
+  });
+});
+
+describe('matchFrameAt', () => {
+  const withLength = (p: Project): Project =>
+    applyEdits(p, [{ op: 'updateAsset', id: 'asset1', patch: { duration: 10 } }]);
+
+  it('gives the source time the timeline shows at the frame', () => {
+    const f = fixture();
+    const a = add(withLength(f.p), f.v1, 100, 60, { sourceIn: 2 });
+    const fps = a.p.settings.fpsNum / a.p.settings.fpsDen;
+    const m = matchFrameAt(a.p, 130);
+    expect(m?.clip.id).toBe(a.clip.id);
+    expect(m?.time).toBeCloseTo(2 + 30 / fps);
+  });
+
+  it('follows speed and reverse', () => {
+    const f = fixture();
+    const fast = add(withLength(f.p), f.v1, 0, 60, { sourceIn: 1, speed: 2 });
+    const fps = fast.p.settings.fpsNum / fast.p.settings.fpsDen;
+    expect(matchFrameAt(fast.p, 15)?.time).toBeCloseTo(1 + (15 * 2) / fps);
+    const back = add(withLength(f.p), f.v1, 0, 60, { sourceIn: 1, reverse: true });
+    expect(matchFrameAt(back.p, 0)?.time).toBeCloseTo(1 + 59 / fps);
+    expect(matchFrameAt(back.p, 59)?.time).toBeCloseTo(1);
+  });
+
+  it('prefers the top-most picture, then sound, and a selected clip over both', () => {
+    const f = fixture();
+    const low = add(withLength(f.p), f.v1, 0, 60);
+    const high = add(low.p, f.v2, 0, 60);
+    const sound = add(high.p, f.a1, 0, 90);
+    expect(matchFrameAt(sound.p, 10)?.clip.id).toBe(high.clip.id);
+    expect(matchFrameAt(sound.p, 70)?.clip.id).toBe(sound.clip.id);
+    expect(matchFrameAt(sound.p, 10, [sound.clip.id])?.clip.id).toBe(sound.clip.id);
+    // A selected clip that is not under the frame does not count.
+    expect(matchFrameAt(sound.p, 70, [low.clip.id])?.clip.id).toBe(sound.clip.id);
+  });
+
+  it('looks past what is not on screen', () => {
+    const f = fixture();
+    const low = add(withLength(f.p), f.v1, 0, 60);
+    const off = add(low.p, f.v2, 0, 60, { enabled: false });
+    expect(matchFrameAt(off.p, 10)?.clip.id).toBe(low.clip.id);
+    const hidden = applyEdits(add(low.p, f.v2, 0, 60).p, [
+      { op: 'updateTrack', id: f.v2.id, patch: { hidden: true } },
+    ]);
+    expect(matchFrameAt(hidden, 10)?.clip.id).toBe(low.clip.id);
+  });
+
+  it('has nothing to match on empty time or on clips without media', () => {
+    const f = fixture();
+    const a = add(withLength(f.p), f.v1, 0, 60);
+    expect(matchFrameAt(a.p, 60)).toBeNull();
+    const title = makeClip('text', f.v2.id, { start: 100, duration: 30 });
+    const p = applyEdits(a.p, [{ op: 'addClip', clip: title }]);
+    expect(matchFrameAt(p, 110)).toBeNull();
   });
 });

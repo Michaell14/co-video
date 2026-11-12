@@ -28,6 +28,7 @@ import {
   pasteClips,
   placeClips,
   removeTrack,
+  rippleCloseGap,
   rippleDelete,
   rippleTrimTo,
   secondsToFrame,
@@ -65,7 +66,16 @@ import { copyProjectMedia } from '../session/mediaStore';
 import { createProject } from '../session/projects';
 import type { Session } from '../session/session';
 import { toast } from '../ui/core';
-import { clipsBeside, closeGapsAt, duplicateClips, markerBeside, pasteable, unlocked } from './edits';
+import {
+  clipsBeside,
+  closeGapsAt,
+  duplicateClips,
+  markerBeside,
+  matchFrameAt,
+  pasteable,
+  rippleDeleteRange,
+  unlocked,
+} from './edits';
 import { useUI, type Tool } from './ui';
 import { fitView, zoomView } from './view';
 
@@ -199,6 +209,29 @@ async function measureClip(s: Session, clip: Clip, p: Project): Promise<Loudness
   return meter ? meter.result() : null;
 }
 
+/**
+ * Focus the inspector's text field for `clipId` and select what is in it. The inspector draws the
+ * field after the selection has changed (and only in an open section), so this looks again over
+ * the next few frames and gives up if the selection has moved on by then.
+ */
+function focusTextField(clipId: ID, tries = 12): void {
+  requestAnimationFrame(() => {
+    const sel = ui().selection;
+    if (sel.length !== 1 || sel[0] !== clipId) return;
+    const panel = document.querySelector('[aria-label="Inspector"]');
+    const field = panel?.querySelector<HTMLTextAreaElement>('textarea[aria-label="Text content"]');
+    if (field) {
+      field.focus();
+      field.select();
+      return;
+    }
+    for (const head of panel?.querySelectorAll<HTMLElement>('.section__head[aria-expanded="false"]') ?? []) {
+      if (head.textContent?.trim() === 'Text') head.click();
+    }
+    if (tries > 0) focusTextField(clipId, tries - 1);
+  });
+}
+
 let recorder: VoiceRecorder | null = null;
 let recorderBusy = false;
 
@@ -276,6 +309,28 @@ export const cmd = {
   clearRange(): void {
     session()?.player?.setRange(null);
   },
+  /**
+   * Match frame: open the source monitor on the media under the playhead, at the frame the
+   * timeline is showing. A clip named by a menu that is not under the playhead opens at its start.
+   */
+  matchFrame(clipId?: ID): void {
+    const s = session();
+    if (!s) return;
+    const p = s.store.get();
+    const named = clipId ? p.clips[clipId] : undefined;
+    const f = frame();
+    const at = named && (f < named.start || f >= clipEnd(named)) ? named.start : f;
+    const m = matchFrameAt(p, at, clipId ? [clipId] : ui().selection);
+    if (!m || (clipId && m.clip.id !== clipId)) {
+      toast(
+        clipId ? 'That clip has no media to match.' : 'Put the playhead on a clip to match its frame.',
+        'info',
+      );
+      return;
+    }
+    const assetId = m.clip.assetId!;
+    ui().set({ sourceAsset: assetId, sourceCue: { assetId, time: m.time } });
+  },
 
   // ─────────────────────────────────────────────────────────── selection ──
   selectAll(): void {
@@ -347,12 +402,19 @@ export const cmd = {
       if (!ids.length) {
         // No selection: delete the marked range, if any.
         const range = s.player?.getState().range;
-        if (range) {
+        if (range && ripple) {
+          const r = rippleDeleteRange(p, range.in, range.out);
+          if (r.refused) {
+            toast(r.refused);
+            return;
+          }
+          s.store.commit(r.edits);
+          s.player?.setRange(null);
+        } else if (range) {
           const tracks = Object.values(p.tracks)
             .filter((t) => !t.locked)
             .map((t) => t.id);
-          s.store.commit(deleteRange(p, tracks, range.in, range.out, ripple));
-          if (ripple) s.player?.setRange(null);
+          s.store.commit(deleteRange(p, tracks, range.in, range.out, false));
         }
         return;
       }
@@ -478,6 +540,18 @@ export const cmd = {
       else if (r.edits.length) s.store.commit(r.edits);
     });
   },
+  /** Close the gap under `at` on one track; the other tracks follow where they can. */
+  closeGap(trackId: ID, at: number): void {
+    editing((s, p) => {
+      if (p.tracks[trackId]?.locked) {
+        toast(LOCKED_TRACK, 'info');
+        return;
+      }
+      const r = rippleCloseGap(p, trackId, at);
+      if (r.refused) toast(r.refused);
+      else if (r.edits.length) s.store.commit(r.edits);
+    });
+  },
   setSpeed(speed: number, reverse?: boolean): void {
     editing((s, p) => s.store.commit(setSpeed(p, effectiveSelection(p), speed, reverse)));
   },
@@ -538,6 +612,33 @@ export const cmd = {
       ui().select(r.created);
     });
   },
+  /**
+   * Add a title and go straight to typing it. This is what asking for a title by hand does (the T
+   * key, the toolbar, the menus); `addText` only places the clip.
+   */
+  addTitle(text: Partial<TextProps> = {}, init: Partial<Clip> = {}): void {
+    editing((s, p) => {
+      const r = addGenerator(p, 'text', { frame: frame(), text, init });
+      s.store.commit(r.edits);
+      cmd.editText(r.created[0]);
+    });
+  },
+  /**
+   * Select a title and put the keyboard in its text field, with the text selected so that typing
+   * replaces it.
+   */
+  editText(clipId: ID): void {
+    editing((_s, p) => {
+      const clip = p.clips[clipId];
+      if (!clip || clip.type !== 'text') return;
+      if (p.tracks[clip.trackId]?.locked) {
+        toast(LOCKED_TRACK, 'info');
+        return;
+      }
+      ui().set({ selection: [clip.id], selectedTransition: null, workspace: 'edit' });
+      focusTextField(clip.id);
+    });
+  },
   addShape(shape: Partial<ShapeProps> = {}): void {
     editing((s, p) => {
       const r = addGenerator(p, 'shape', { frame: frame(), shape });
@@ -565,12 +666,14 @@ export const cmd = {
   removeTrack(id: ID): void {
     editing((s, p) => s.store.commit(removeTrack(p, id)));
   },
-  addMarker(): void {
+  /** Toggle a marker at the playhead, or add one at `at` (a place picked with the pointer). */
+  addMarker(at?: number): void {
     editing((s, p) => {
-      const f = frame();
+      const f = at ?? frame();
       const existing = Object.values(p.markers).find((m) => m.frame === f);
       if (existing) {
-        s.store.commit([{ op: 'removeMarker', id: existing.id }]);
+        // Only the playhead form toggles: pointing at a place never takes a marker away.
+        if (at === undefined) s.store.commit([{ op: 'removeMarker', id: existing.id }]);
         return;
       }
       const n = Object.keys(p.markers).length;

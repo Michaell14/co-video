@@ -170,8 +170,8 @@ export class Player {
       console.warn('[player] could not rebuild the graphics context', err);
       return;
     }
-    stage.sources.direction = this.stage.sources.direction;
     this.stage = stage;
+    this.syncTransport();
     this.lost = false;
     this.applySize();
     this.dirty = true;
@@ -204,6 +204,16 @@ export class Player {
 
   private notify(): void {
     for (const fn of Array.from(this.stateListeners)) fn();
+  }
+
+  /**
+   * Tell the decoders how the playhead is moving: backwards while shuttling in reverse, and strictly
+   * frame after frame while playing. Paused, it may go either way, so they keep a little behind it.
+   */
+  private syncTransport(): void {
+    const { playing, rate } = this.state;
+    this.sources.direction = playing && rate < 0 ? -1 : 1;
+    this.sources.sequential = playing;
   }
 
   private emitFrame(): void {
@@ -255,7 +265,11 @@ export class Player {
     }, 40);
   }
 
-  /** The media behind an asset changed location (e.g. finished downloading). */
+  /**
+   * The media behind an asset changed location or became available (finished uploading on a peer,
+   * finished downloading). Everything that was concluded from the old answer is dropped, picture and
+   * sound, so the next frame asks afresh.
+   */
   refreshAsset(assetId: string): void {
     this.sources.resetAsset(assetId);
     this.graph?.forget(assetId);
@@ -343,10 +357,10 @@ export class Player {
     const { start, end } = this.bounds();
     if (rate > 0 && this.frame >= end) this.frame = start;
     if (rate < 0 && this.frame <= start) this.frame = end;
-    this.sources.direction = rate < 0 ? -1 : 1;
     this.ensureAudio();
     void this.audioCtx?.resume().catch(() => {});
     this.setState({ playing: true, rate });
+    this.syncTransport();
     this.adaptSince = performance.now();
     this.lastDrawn = -1;
     this.reanchor();
@@ -356,9 +370,9 @@ export class Player {
   pause(): void {
     if (!this.state.playing) return;
     this.syncFrameToClock();
-    this.sources.direction = 1;
     this.graph?.stop();
     this.setState({ playing: false, rate: 1 });
+    this.syncTransport();
     this.frame = Math.round(this.frame);
     this.dirty = true;
     this.emitFrame();
@@ -378,8 +392,8 @@ export class Player {
     else next = cur >= 0 ? -1 : Math.max(-8, cur * 2);
     if (this.state.playing) {
       this.syncFrameToClock();
-      this.sources.direction = next < 0 ? -1 : 1;
       this.setState({ rate: next });
+      this.syncTransport();
       this.reanchor();
       this.restartAudio();
     } else this.play(next);
@@ -537,8 +551,8 @@ export class Player {
         } else {
           this.frame = forward ? end : start;
           this.graph?.stop();
-          this.sources.direction = 1;
           this.setState({ playing: false, rate: 1 });
+          this.syncTransport();
           this.dirty = true;
         }
       }

@@ -91,6 +91,13 @@ export const COMMANDS: Command[] = [
     keys: ['mod+l'],
     run: () => cmd.toggleLoop(),
   },
+  {
+    id: 'match-frame',
+    title: 'Match frame (open the source at the playhead)',
+    group: 'Playback',
+    keys: ['f'],
+    run: () => cmd.matchFrame(),
+  },
 
   // Edit
   { id: 'undo', title: 'Undo', group: 'Edit', keys: ['mod+z'], run: () => cmd.undo(), repeat: true },
@@ -428,7 +435,7 @@ export const COMMANDS: Command[] = [
   },
 
   // Insert
-  { id: 'add-text', title: 'Add text', group: 'Insert', keys: ['t'], run: () => cmd.addText() },
+  { id: 'add-text', title: 'Add text', group: 'Insert', keys: ['t'], run: () => cmd.addTitle() },
   { id: 'add-shape', title: 'Add rectangle', group: 'Insert', run: () => cmd.addShape({ kind: 'rect' }) },
   { id: 'add-solid', title: 'Add solid colour', group: 'Insert', run: () => cmd.addSolid() },
   { id: 'add-adjustment', title: 'Add adjustment layer', group: 'Insert', run: () => cmd.addAdjustment() },

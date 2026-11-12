@@ -82,7 +82,6 @@
   position: relative;
   flex: 1;
   min-width: 0;
-  overflow: hidden;
 }
 .tl__hint {
   position: absolute;
@@ -107,6 +106,9 @@
 }
 .tl__hint b {
   color: var(--fg-2);
+}
+.tl__hint .kbd {
+  margin: 0 3px;
 }
 .tl__scroll {
   display: flex;
@@ -361,6 +363,10 @@
 .lanes {
   position: relative;
   min-height: 100%;
+  /* Clips reach out of view sideways and are cut off here, not at the box around the lanes: that
+     one is as tall as the body it scrolls in, and would cut off the lanes scrolled into view from
+     below as well, which then neither show nor take the pointer. */
+  overflow: clip;
   touch-action: none;
 }
 .lane {
@@ -417,7 +423,17 @@
 .clip[data-type='audio'] {
   background: transparent;
 }
+/*
+ * A lift on hover. Deliberately not a filter on the clip: that makes the clip a stacking context of
+ * its own, and its trim handles then drop beneath the transition of the clip next to it.
+ */
 .clip:hover {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.06));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--c) 70%, #fff),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.clip:hover .clip__label {
   filter: brightness(1.12);
 }
 .clip[data-selected='true'] {
@@ -549,7 +565,8 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 7px;
+  /* Never more than a quarter of the clip each, so a short clip keeps a middle to drag it by. */
+  width: min(7px, 25%);
   z-index: 3;
   cursor: ew-resize;
 }
@@ -562,7 +579,11 @@
   border-radius: 1px;
   background: #fff;
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--dur-1) ease;
+}
+.clip[data-narrow='true'] .clip__trim::after {
+  display: none;
 }
 .clip__trim--l {
   left: 0;
@@ -589,7 +610,9 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  z-index: 2;
+  /* Over the labels, under a selected clip (which sits at 2): where a transition reaches back
+     across the cut, the selected clip before it keeps its end handle. */
+  z-index: 1;
   background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.34));
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
   border-radius: 4px;
@@ -608,7 +631,8 @@
   top: 0;
   bottom: 0;
   right: 0;
-  width: 6px;
+  /* Stays inside its transition: on a short clip it would otherwise lie over the clip's middle. */
+  width: min(6px, 50%);
   cursor: ew-resize;
 }
 .clip__trans--out i {
