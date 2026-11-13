@@ -7,10 +7,11 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import type { Comment, PresenceState, Project } from '@tandem/core';
+import type { Comment, Project } from '@tandem/core';
 import type { Player, PlayerState } from '@tandem/engine';
 import { useUI } from '../state/ui';
 import type { MediaStatus } from './mediaStore';
+import type { RemotePeer } from './presence';
 import type { Session, SessionMeta } from './session';
 
 export const SessionContext = createContext<Session | null>(null);
@@ -114,36 +115,12 @@ export function useThrottledFrame(hz = 8): number {
   return frame;
 }
 
-export interface RemotePeer extends PresenceState {
-  clientId: number;
-}
+export type { RemotePeer } from './presence';
 
-function readPeers(s: Session): RemotePeer[] {
-  const out: RemotePeer[] = [];
-  s.awareness.getStates().forEach((state, clientId) => {
-    if (clientId === s.doc.clientID) return;
-    const st = state as PresenceState;
-    if (st && st.user) out.push({ ...st, clientId });
-  });
-  return out.sort((a, b) => a.clientId - b.clientId);
-}
-
+/** The other people in the project, as `readPresence` made sense of what they announce. */
 export function usePeers(): RemotePeer[] {
   const s = useSession();
-  const cache = useRef<RemotePeer[] | null>(null);
-  // `subscribe` must keep its identity between renders or React re-subscribes every time.
-  const subscribe = useCallback(
-    (fn: () => void) => {
-      const handler = () => {
-        cache.current = readPeers(s);
-        fn();
-      };
-      s.awareness.on('change', handler);
-      return () => s.awareness.off('change', handler);
-    },
-    [s],
-  );
-  return useSyncExternalStore(subscribe, () => (cache.current ??= readPeers(s)));
+  return useSyncExternalStore(s.peers.subscribe, s.peers.get);
 }
 
 export function useComments(): Comment[] {

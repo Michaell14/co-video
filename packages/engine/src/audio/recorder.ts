@@ -7,9 +7,17 @@
 import { BufferTarget, MediaStreamAudioTrackSource, Output, WavOutputFormat } from 'mediabunny';
 
 export class VoiceRecorder {
-  private readonly startedAt = performance.now();
+  /**
+   * Called when the capture fails while a take is being recorded: the microphone was unplugged or
+   * taken away, or its sound could no longer be written. At most once, and not for a take that has
+   * been stopped or thrown away. The take is lost: `stop` rejects with the same error.
+   */
+  onError: ((err: Error) => void) | null = null;
+
+  private startedAt = performance.now();
   private readonly meter = new Float32Array(1024);
   private done = false;
+  private failure: Error | null = null;
 
   private constructor(
     private readonly stream: MediaStream,
@@ -28,6 +36,7 @@ export class VoiceRecorder {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
     });
+    let ctx: AudioContext | null = null;
     try {
       const [track] = stream.getAudioTracks();
       if (!track) throw new Error('No microphone was found.');
@@ -39,9 +48,7 @@ export class VoiceRecorder {
         { timestampBase: 'zero' },
       );
       output.addAudioTrack(source);
-      await output.start();
 
-      let ctx: AudioContext | null = null;
       let analyser: AnalyserNode | null = null;
       try {
         ctx = new AudioContext();
@@ -52,7 +59,7 @@ export class VoiceRecorder {
         // No meter is not a reason to refuse to record.
       }
       const latency = Number((track.getSettings() as { latency?: number }).latency ?? 0);
-      return new VoiceRecorder(
+      const recorder = new VoiceRecorder(
         stream,
         output,
         target,
@@ -60,8 +67,22 @@ export class VoiceRecorder {
         analyser,
         Number.isFinite(latency) ? Math.min(Math.max(latency, 0), 0.5) : 0,
       );
+      // Neither of these stops the take by itself. Left alone, a source that has failed drops
+      // everything it is given from then on, and a track that has ended delivers nothing more: the
+      // recording would simply come out short, or empty, without a word.
+      source.errorPromise.catch((cause: unknown) =>
+        recorder.fail(new Error('The recording failed part-way, so the take was lost.', { cause })),
+      );
+      track.addEventListener('ended', () =>
+        recorder.fail(new Error('The microphone was disconnected, so the take was lost.')),
+      );
+      await output.start();
+      if (recorder.failure) throw recorder.failure;
+      recorder.startedAt = performance.now();
+      return recorder;
     } catch (err) {
       for (const t of stream.getTracks()) t.stop();
+      void ctx?.close().catch(() => {});
       throw err;
     }
   }
@@ -86,9 +107,21 @@ export class VoiceRecorder {
     void this.ctx?.close().catch(() => {});
   }
 
-  /** Stop and return the finished WAV. */
+  /** The capture broke while the take was running: give the microphone back and say so, once. */
+  private fail(err: Error): void {
+    if (this.done) return;
+    this.failure = err;
+    this.release();
+    void this.output.cancel().catch(() => {});
+    this.onError?.(err);
+  }
+
+  /** Stop and return the finished WAV. Rejects with the error `onError` was given if the take failed. */
   async stop(): Promise<Blob> {
+    if (this.failure) throw this.failure;
     if (this.done) throw new Error('The recording has already ended.');
+    // From here on the take is being written out: what was captured is kept, whatever comes next.
+    this.done = true;
     try {
       await this.output.finalize();
     } finally {

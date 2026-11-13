@@ -8,12 +8,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
+import { afterAll, afterEach } from 'vitest';
 import WebSocket from 'ws';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as syncProtocol from 'y-protocols/sync';
 import * as Y from 'yjs';
 import { WS_MSG_AWARENESS, WS_MSG_CONTROL, WS_MSG_SYNC } from '@tandem/core';
 import type { ControlMessage, DocKind, Role } from '@tandem/core';
+import { createTandemServer } from '../src/server';
+import type { TandemServer, TandemServerOptions } from '../src/server';
 
 const tempDirs: string[] = [];
 
@@ -49,6 +52,49 @@ export function content(doc: Y.Doc): Record<string, unknown> {
 }
 
 export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Servers and clients for the tests of one file. Clients are closed after each test and servers
+ * after the last one, so a test only has to start what it needs.
+ */
+export function useServers(): {
+  clients: TestClient[];
+  start(options?: Partial<TandemServerOptions>): Promise<{ server: TandemServer; api: Api; dataDir: string }>;
+  connect(api: Api, project: Project, doc: string, token?: string): TestClient;
+} {
+  const servers: TandemServer[] = [];
+  const clients: TestClient[] = [];
+
+  afterEach(async () => {
+    await Promise.all(clients.splice(0).map((client) => client.close()));
+  });
+  afterAll(async () => {
+    await Promise.all(servers.splice(0).map((server) => server.close()));
+    await removeTempDirs();
+  });
+
+  return {
+    clients,
+    async start(options = {}) {
+      const dataDir = options.dataDir ?? (await tempDir());
+      // Point the static mounts at nothing unless a test asks for them, whatever happens to be built.
+      const missing = join(dataDir, 'no-such-dist');
+      const server = await createTandemServer({
+        editorDist: missing,
+        siteDist: missing,
+        ...options,
+        dataDir,
+      });
+      servers.push(server);
+      return { server, api: new Api(server.url), dataDir };
+    },
+    connect(api, project, doc, token = project.token) {
+      const client = new TestClient(api.wsUrl(project.id, doc, token));
+      clients.push(client);
+      return client;
+    },
+  };
+}
 
 export interface Project {
   id: string;
@@ -124,7 +170,14 @@ export class TestClient {
   readonly controls: ControlMessage[] = [];
   /** True once the server answered our sync step 1, i.e. we hold the server's state. */
   synced = false;
+  /** How many times the server sent its state in answer to a sync step 1. */
+  answers = 0;
+  /** How many presence messages the server sent, and how many of them ahead of its state. */
+  presenceMessages = 0;
+  presenceBeforeSync = 0;
   closed = false;
+  /** The code the connection was closed with, once it is. */
+  closeCode: number | null = null;
   private readonly ws: WebSocket;
   private readonly ready: Promise<void>;
 
@@ -143,8 +196,9 @@ export class TestClient {
       syncProtocol.writeSyncStep1(encoder, this.doc);
       this.ws.send(encoding.toUint8Array(encoder));
     });
-    this.ws.on('close', () => {
+    this.ws.on('close', (code) => {
       this.closed = true;
+      this.closeCode = code;
     });
     this.ws.on('message', (data: Buffer) => this.onMessage(new Uint8Array(data)));
 
@@ -181,10 +235,15 @@ export class TestClient {
         encoding.writeVarUint(encoder, WS_MSG_SYNC);
         const type = syncProtocol.readSyncMessage(decoder, encoder, this.doc, this);
         if (encoding.length(encoder) > 1) this.send(encoding.toUint8Array(encoder));
-        if (type === syncProtocol.messageYjsSyncStep2) this.synced = true;
+        if (type === syncProtocol.messageYjsSyncStep2) {
+          this.synced = true;
+          this.answers++;
+        }
         break;
       }
       case WS_MSG_AWARENESS:
+        this.presenceMessages++;
+        if (!this.synced) this.presenceBeforeSync++;
         awarenessProtocol.applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(decoder), this);
         break;
       case WS_MSG_CONTROL:
@@ -197,6 +256,33 @@ export class TestClient {
 
   send(frame: Uint8Array | string): void {
     if (this.ws.readyState === WebSocket.OPEN) this.ws.send(frame);
+  }
+
+  /** Ask for the document once more, as the handshake does when the connection opens. */
+  requestSync(): void {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, WS_MSG_SYNC);
+    syncProtocol.writeSyncStep1(encoder, this.doc);
+    this.send(encoding.toUint8Array(encoder));
+  }
+
+  /** Stop taking anything off the socket, like a client whose link has stalled. */
+  stall(): void {
+    this.ws.pause();
+  }
+
+  resume(): void {
+    this.ws.resume();
+  }
+
+  /** Cut the connection without a closing handshake. */
+  drop(): void {
+    this.ws.terminate();
+  }
+
+  /** Resolves when connected, whether or not the server has sent its state yet. */
+  whenOpen(): Promise<void> {
+    return this.ready;
   }
 
   /** Resolves when connected and in sync with the server. */

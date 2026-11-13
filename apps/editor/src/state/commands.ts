@@ -15,6 +15,7 @@ import {
   deleteRange,
   displayTracks,
   editPoints,
+  fpsOf,
   getEffectDef,
   getTransitionDef,
   linkClips,
@@ -22,24 +23,20 @@ import {
   makeTransition,
   MARKER_COLORS,
   newId,
-  openGap,
   parseProjectFile,
   parseSubtitles,
   pasteClips,
   placeClips,
   removeTrack,
-  rippleCloseGap,
-  rippleDelete,
-  rippleTrimTo,
   secondsToFrame,
   sequenceEnd,
   serializeProject,
-  setSpeed,
   setTransition,
   splitClips,
   freezeFrame,
   toSrt,
   toEdl,
+  trackLabel,
   tracksOf,
   unlinkClips,
   withLinked,
@@ -68,18 +65,48 @@ import { createProject } from '../session/projects';
 import type { Session } from '../session/session';
 import { confirm } from '../ui/confirm';
 import { toast } from '../ui/core';
+import { refuseEdit } from './access';
 import {
+  attributePatch,
+  CAPTION_TRACK,
+  captionClips,
+  clipBeside,
+  clipExtent,
   clipsBeside,
-  closeGapsAt,
+  closeGapAt,
+  closeGapOn,
+  copiedAttributes,
   duplicateClips,
   markerBeside,
+  markerEdits,
   matchFrameAt,
+  nearestEdge,
+  openGapAt,
   pasteable,
+  rippleDeleteClips,
   rippleDeleteRange,
+  rippleTrimToFrame,
+  selectionAtFrame,
+  trackNudge,
+  transitionEdits,
+  transitionTargets,
+  trimEdge,
+  trimReference,
   unlocked,
+  type AttributeMode,
+  type RippleSpan,
 } from './edits';
-import { durationEdits, moveEdits, reverseEdits } from './timing';
-import { useUI, type Tool } from './ui';
+import {
+  durationEdits,
+  makeRoomEdits,
+  moveEdits,
+  reverseEdits,
+  speedCutShort,
+  speedEach,
+  speedRippleEdits,
+  type CutShort,
+} from './timing';
+import { FIRST_TRANSITION, useUI, type Tool } from './ui';
 import { fitView, zoomView } from './view';
 
 const ui = () => useUI.getState();
@@ -93,7 +120,7 @@ function editing(fn: (s: Session, p: Project) => void): void {
   const s = session();
   if (!s) return;
   if (!canEdit(s.getMeta().role)) {
-    toast('You have view-only access to this project.', 'info');
+    refuseEdit(s.getMeta().role);
     return;
   }
   fn(s, s.store.get());
@@ -114,6 +141,14 @@ function selectedClips(p: Project): Clip[] {
 export function effectiveSelection(p: Project, ids: ID[] = ui().selection): ID[] {
   const valid = ids.filter((id) => p.clips[id]);
   return unlocked(p, ui().linkedSelection ? withLinked(p, valid) : valid);
+}
+
+/**
+ * The edits of a ripple together with those that take the markers along (see `markerEdits`), to
+ * be committed as one step. Just the ripple's while `Markers follow ripple edits` is switched off.
+ */
+export function withMarkers(p: Project, r: { edits: Edit[]; spans: RippleSpan[] }): Edit[] {
+  return ui().markersFollow ? [...r.edits, ...markerEdits(p, r.edits, r.spans)] : r.edits;
 }
 
 /** Timeline viewport width in CSS pixels; set by the Timeline component. */
@@ -169,6 +204,75 @@ const safeName = (s: string): string => s.replace(/[\\/:*?"<>|]+/g, ' ').trim() 
 const LOCKED_TRACK = 'That track is locked. Unlock it to change its clips.';
 
 const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
+/** What each way of pasting attributes says it pasted. */
+const PASTED: Record<AttributeMode, string> = {
+  all: 'Attributes',
+  grade: 'Grade',
+  effects: 'Effects',
+  transform: 'Transform and crop',
+  sound: 'Volume, pan and fades',
+};
+
+/**
+ * Move the edge of the selection that is nearest the playhead, by `delta` frames or to the
+ * playhead. It is the edge of one clip and of what is trimmed with it (its linked partners). Under
+ * ripple editing everything after follows; otherwise a cut is rolled and a free edge trimmed, so
+ * that fine-tuning a cut by the keyboard neither opens a hole nor moves the rest of the sequence.
+ */
+function moveEdge(delta: number | 'playhead'): void {
+  editing((s, p) => {
+    const f = frame();
+    const hit = nearestEdge(p, effectiveSelection(p), f);
+    if (!hit) {
+      toast('Select a clip to trim its nearest edge.', 'info');
+      return;
+    }
+    const { clip, edge } = hit;
+    const by = delta === 'playhead' ? f - (edge === 'start' ? clip.start : clipEnd(clip)) : delta;
+    if (by === 0) return;
+    const r = trimEdge(p, effectiveSelection(p, [clip.id]), edge, by, ui().rippleMode);
+    if (r.refused) toast(r.refused);
+    else if (!r.moved) toast('That edge cannot move any further that way.', 'info');
+    if (!r.edits.length) return;
+    s.store.commit(withMarkers(p, r));
+    if (delta === 'playhead') return;
+    // Show the frame being cut to, as a trim by dragging does.
+    const trimmed = s.store.get().clips[clip.id];
+    if (trimmed) cmd.seek(edge === 'start' ? trimmed.start : clipEnd(trimmed) - 1);
+  });
+}
+
+/**
+ * Say that the clip after it cut a change of speed short, and offer to move that clip out of the
+ * way. Without ripple editing nothing moves by itself, but a clip that silently plays only part of
+ * what it played before is not what was asked for either.
+ */
+function offerRoom(s: Session, short: CutShort[]): void {
+  const left = s.store.get();
+  const seconds = (frames: number): number => Number(framesToSeconds(frames, left.settings).toFixed(1));
+  const [first] = short;
+  const alike = short.every((c) => c.duration === first.duration && c.natural === first.natural);
+  const text = alike
+    ? `The next clip is in the way, so the clip now plays only the first ${seconds(first.duration)} of its ${seconds(first.natural)} seconds.`
+    : `The next clip is in the way, so ${short.length} clips are cut short at their new speed.`;
+  toast(text, 'info', {
+    label: 'Make room',
+    run: () =>
+      editing((s, p) => {
+        // The offer was about the clips as the change of speed left them.
+        const wants: Record<ID, number> = {};
+        for (const c of short) {
+          const now = p.clips[c.id];
+          const then = left.clips[c.id];
+          if (now && then && now.speed === then.speed && now.duration === c.duration) wants[c.id] = c.natural;
+        }
+        const r = makeRoomEdits(p, wants);
+        if (r.refused) toast(r.refused);
+        else if (r.edits.length) s.store.commit(withMarkers(p, r));
+      }),
+  });
+}
 
 /** Let the user pick a `.tandem` file and read it. Says so when it is not a project file. */
 async function pickProjectFile(): Promise<Project | null> {
@@ -320,6 +424,20 @@ export const cmd = {
   clearRange(): void {
     session()?.player?.setRange(null);
   },
+  /** Mark the extent of the selected clips, else of the clip seen under the playhead, as the range. */
+  markClip(): void {
+    const s = session();
+    if (!s?.player) return;
+    const extent = clipExtent(s.store.get(), frame(), ui().selection);
+    if (extent) s.player.setRange(extent);
+    else toast('Select a clip, or put the playhead on one, to mark it.', 'info');
+  },
+  /** Move the playhead to the in point, or to the last frame of the marked range. */
+  goToRange(end: 'in' | 'out'): void {
+    const range = session()?.player?.getState().range;
+    if (range) cmd.seek(end === 'in' ? range.in : range.out - 1);
+    else toast('There is no range yet. Press I and O to mark one, or X to mark a clip.', 'info');
+  },
   /**
    * Match frame: open the source monitor on the media under the playhead, at the frame the
    * timeline is showing. A clip named by a menu that is not under the playhead opens at its start.
@@ -380,6 +498,40 @@ export const cmd = {
     const s = session();
     if (s) ui().select(clipsBeside(s.store.get(), frame(), side));
   },
+  /**
+   * Select the clip under the playhead on the top-most unlocked track. Asked again, it goes down
+   * the tracks one clip at a time, so every clip there can be reached without the pointer.
+   */
+  selectUnderPlayhead(): void {
+    const s = session();
+    if (!s) return;
+    const p = s.store.get();
+    const ids = selectionAtFrame(p, frame(), ui().selection, (id) => effectiveSelection(p, [id]));
+    if (ids) ui().select(ids);
+    else toast('There is no clip under the playhead to select.', 'info');
+  },
+  /**
+   * Select the clip after (`1`) or before (`-1`) the selected one on its track; `extend` keeps
+   * what is selected. With nothing selected it starts from the clip at the playhead.
+   */
+  selectClip(dir: 1 | -1, extend = false): void {
+    const s = session();
+    if (!s) return;
+    const p = s.store.get();
+    const selected = unlocked(p, ui().selection);
+    const to = clipBeside(p, selected, frame(), dir);
+    if (!to) {
+      toast(
+        selected.length
+          ? `That is the ${dir === 1 ? 'last' : 'first'} clip on its track.`
+          : 'There is no clip to select.',
+        'info',
+      );
+      return;
+    }
+    ui().select(effectiveSelection(p, [to.id]), extend);
+    revealFrame(to.start);
+  },
   deselect(): void {
     ui().clearSelection();
   },
@@ -406,10 +558,10 @@ export const cmd = {
         toast('Put the playhead on a video clip to freeze a frame.');
         return;
       }
-      const fps = p.settings.fpsNum / p.settings.fpsDen;
-      const r = freezeFrame(p, pick, f, Math.round(fps * 2));
+      const hold = Math.max(1, Math.round(fpsOf(p.settings) * 2));
+      const r = freezeFrame(p, pick, f, hold);
       if (!r.edits.length) return;
-      s.store.commit(r.edits);
+      s.store.commit(withMarkers(p, { edits: r.edits, spans: [{ from: f, by: hold }] }));
       ui().select(r.created);
     });
   },
@@ -446,7 +598,7 @@ export const cmd = {
             toast(r.refused);
             return;
           }
-          s.store.commit(r.edits);
+          s.store.commit(withMarkers(p, r));
           s.player?.setRange(null);
         } else if (range) {
           const tracks = Object.values(p.tracks)
@@ -457,12 +609,12 @@ export const cmd = {
         return;
       }
       if (ripple || ui().rippleMode) {
-        const r = rippleDelete(p, ids);
+        const r = rippleDeleteClips(p, ids);
         if (r.refused) {
           toast(r.refused);
           return;
         }
-        s.store.commit(r.edits);
+        s.store.commit(withMarkers(p, r));
       } else s.store.commit(deleteClips(p, ids));
       ui().clearSelection();
     });
@@ -473,7 +625,7 @@ export const cmd = {
     const p = s.store.get();
     const clips = effectiveSelection(p).map((id) => p.clips[id]);
     if (clips.length) {
-      ui().set({ clipboard: clips });
+      ui().set({ clipboard: clips, clipboardFps: fpsOf(p.settings) });
       toast(`Copied ${clips.length} clip${clips.length > 1 ? 's' : ''}`, 'info');
     }
   },
@@ -484,7 +636,7 @@ export const cmd = {
   paste(): void {
     editing((s, p) => {
       if (!ui().clipboard.length) return;
-      const { clips, missing } = pasteable(p, ui().clipboard);
+      const { clips, missing } = pasteable(p, ui().clipboard, ui().clipboardFps);
       if (missing) {
         const what = missing === 1 ? 'One clip was' : `${missing} clips were`;
         toast(
@@ -501,7 +653,7 @@ export const cmd = {
     editing((s, p) => {
       const r = duplicateClips(p, effectiveSelection(p));
       if (!r.edits.length) return;
-      s.store.commit(r.edits);
+      s.store.commit(withMarkers(p, r));
       ui().select(r.created);
     });
   },
@@ -520,23 +672,15 @@ export const cmd = {
       );
     });
   },
-  /** Move the selection one track up (+1) or down (-1) in stacking order. */
+  /**
+   * Move the selection one track up (+1) or down (-1) in the timeline. Of a sync clip selected
+   * with its sound the picture moves and the sound stays on its track (see `trackNudge`).
+   */
   nudgeTrack(dir: 1 | -1): void {
     editing((s, p) => {
-      const ids = unlocked(p, ui().selection);
-      if (!ids.length) return;
-      const { video, audio } = tracksOf(p);
-      const placements = [];
-      for (const id of ids) {
-        const c = p.clips[id];
-        const list = p.tracks[c.trackId]?.kind === 'audio' ? audio : video;
-        const i = list.findIndex((t) => t.id === c.trackId);
-        // Audio is listed top-down, so "up" means a lower index there.
-        const j = p.tracks[c.trackId]?.kind === 'audio' ? i - dir : i + dir;
-        if (j < 0 || j >= list.length || list[j].locked) return;
-        placements.push({ id, start: c.start, trackId: list[j].id });
-      }
-      s.store.commit(placeClips(p, placements));
+      const r = trackNudge(p, ui().selection, dir);
+      if (r.refused) toast(r.refused, 'info');
+      else if (r.edits.length) s.store.commit(r.edits);
     });
   },
   toggleEnabled(): void {
@@ -553,29 +697,42 @@ export const cmd = {
   unlink(): void {
     editing((s, p) => s.store.commit(unlinkClips(p, effectiveSelection(p))));
   },
-  /** Ripple-trim the head (Q) or tail (W) of the clips under the playhead to the playhead. */
+  /**
+   * Ripple-trim the head (Q) or tail (W) to the playhead: of the selected clips that lie under it,
+   * else of the one clip the cut there is about and its linked partners (see `trimReference`).
+   */
   trimToPlayhead(edge: 'start' | 'end'): void {
     editing((s, p) => {
       const f = frame();
-      let ids = effectiveSelection(p).filter((id) => p.clips[id].start < f && f < clipEnd(p.clips[id]));
-      if (!ids.length) ids = unlocked(p, withLinked(p, clipsUnderFrame(p, f)));
-      if (!ids.length) return;
+      const under = (id: ID): boolean => p.clips[id].start < f && f < clipEnd(p.clips[id]);
+      let ids = effectiveSelection(p).filter(under);
+      if (!ids.length) {
+        const ref = trimReference(p, f);
+        if (!ref) {
+          toast('Put the playhead inside a clip to trim it.', 'info');
+          return;
+        }
+        ids = unlocked(p, withLinked(p, [ref.id]));
+      }
       // One plan for all of them: the time they give up in common closes once, on every track.
-      const r = rippleTrimTo(p, ids, edge, f);
+      const r = rippleTrimToFrame(p, ids, edge, f);
       if (r.refused) {
         toast(r.refused);
         return;
       }
       if (!r.edits.length) return;
-      s.store.commit(r.edits);
-      if (edge === 'start') cmd.seek(Math.min(...ids.map((id) => p.clips[id].start)));
+      s.store.commit(withMarkers(p, r));
+      // The cut the trim was made at: where the trimmed clips begin now.
+      const after = s.store.get();
+      if (edge === 'start') cmd.seek(Math.min(...ids.filter(under).map((id) => after.clips[id].start)));
     });
   },
   closeGapAtPlayhead(): void {
     editing((s, p) => {
-      const r = closeGapsAt(p, frame());
+      const r = closeGapAt(p, frame());
       if (r.refused) toast(r.refused);
-      else if (r.edits.length) s.store.commit(r.edits);
+      else if (r.edits.length) s.store.commit(withMarkers(p, r));
+      else toast('There is no gap under the playhead to close.', 'info');
     });
   },
   /** Close the gap under `at` on one track; the other tracks follow where they can. */
@@ -585,13 +742,47 @@ export const cmd = {
         toast(LOCKED_TRACK, 'info');
         return;
       }
-      const r = rippleCloseGap(p, trackId, at);
+      const r = closeGapOn(p, trackId, at);
       if (r.refused) toast(r.refused);
-      else if (r.edits.length) s.store.commit(r.edits);
+      else if (r.edits.length) s.store.commit(withMarkers(p, r));
     });
   },
+  /** Move the edge of the selection nearest the playhead by `delta` frames (see `moveEdge`). */
+  trimEdge(delta: number): void {
+    moveEdge(delta);
+  },
+  /** Take the edge of the selection nearest the playhead to the playhead. */
+  extendEdit(): void {
+    moveEdge('playhead');
+  },
+  /**
+   * Set the speed of the selected clips. With ripple editing on, what follows moves by as much as
+   * they grow or shrink; without, a clip stops at the next one, and when that cuts it short the
+   * toast offers to make room.
+   */
   setSpeed(speed: number, reverse?: boolean): void {
-    editing((s, p) => s.store.commit(setSpeed(p, effectiveSelection(p), speed, reverse)));
+    editing((s, p) => {
+      const ids = effectiveSelection(p);
+      if (ui().rippleMode) {
+        const r = speedRippleEdits(p, ids, speed, reverse);
+        if (r.edits.length) s.store.commit(withMarkers(p, r));
+        if (r.refused) toast(r.refused);
+        return;
+      }
+      const edits = speedEach(p, ids, speed, reverse);
+      if (!edits.length) return;
+      const short = speedCutShort(p, ids, speed, reverse);
+      s.store.commit(edits);
+      if (short.length) offerRoom(s, short);
+    });
+  },
+  /**
+   * Offer to make room for clips that a change of speed left cut short. For a control that sets
+   * the speed in steps of its own and knows, when its gesture ends, what that left short.
+   */
+  offerSpeedRoom(short: CutShort[]): void {
+    const s = session();
+    if (s && short.length) offerRoom(s, short);
   },
   /** Play the selected clips backwards or forwards, each at the speed it already has. */
   setReverse(reverse: boolean): void {
@@ -608,7 +799,7 @@ export const cmd = {
         ...effectiveSelection(p, [id]).filter((other) => other !== id),
       ]);
       const r = durationEdits(p, groups, frames, ui().rippleMode);
-      if (r.edits.length) s.store.commit(r.edits);
+      if (r.edits.length) s.store.commit(withMarkers(p, r));
       if (r.refused) toast(r.refused);
       else if (r.limited) toast('Stopped at the end of the media or at the next clip.', 'info');
     });
@@ -659,10 +850,8 @@ export const cmd = {
           asset.kind === 'image'
             ? secondsToFrame(5, p.settings)
             : secondsToFrame((opts.sourceOut ?? asset.duration) - (opts.sourceIn ?? 0), p.settings);
-        const tracks = Object.values(p.tracks)
-          .filter((t) => !t.locked)
-          .map((t) => t.id);
-        pre.push(...openGap(p, tracks, at, Math.max(1, len)));
+        const room = openGapAt(p, at, Math.max(1, len));
+        pre.push(...withMarkers(p, room));
         // Compute placement against the timeline as it will look once the gap is open.
         working = applyPreview(p, pre);
       }
@@ -771,6 +960,14 @@ export const cmd = {
     else if (!Object.keys(p.markers).length) toast('There are no markers yet. Press M to add one.', 'info');
   },
 
+  /** Switch whether markers move with the shots they stand on when a ripple edit moves those. */
+  toggleMarkersFollow(): void {
+    const follow = !ui().markersFollow;
+    ui().set({ markersFollow: follow });
+    // Run from the palette there is no switch to look at, so the command says which way it now is.
+    toast(follow ? 'Markers follow ripple edits.' : 'Markers stay where they are through ripple edits.');
+  },
+
   // ─────────────────────────────────────────────── effects & transitions ──
   applyEffect(type: string, clipIds?: ID[]): void {
     editing((s, p) => {
@@ -795,37 +992,38 @@ export const cmd = {
       if (!clipIds) toast(`${def.name} added`, 'success');
     });
   },
+  /**
+   * Put a transition on one side of `clipId`. Without a clip it goes on the cuts of the selection,
+   * else on the cut nearest the playhead (see `transitionTargets`), and becomes the transition
+   * `Add default transition` applies from then on.
+   */
   applyTransition(type: string, clipId?: ID, side: 'in' | 'out' = 'in'): void {
     editing((s, p) => {
       const def = getTransitionDef(type);
       if (!def) return;
-      const dur = secondsToFrame(0.6, p.settings);
-      let target = clipId;
-      if (target && !unlocked(p, [target]).length) {
+      if (clipId && !unlocked(p, [clipId]).length) {
         toast(LOCKED_TRACK, 'info');
         return;
       }
-      if (!target) {
-        const sel = unlocked(p, ui().selection).filter((id) => p.clips[id].type !== 'audio');
-        if (sel.length) target = sel[0];
-        else {
-          // Nearest cut to the playhead on a video track.
-          const f = frame();
-          let best: Clip | null = null;
-          for (const c of Object.values(p.clips)) {
-            if (c.type === 'audio' || p.tracks[c.trackId]?.locked) continue;
-            if (!best || Math.abs(c.start - f) < Math.abs(best.start - f)) best = c;
-          }
-          target = best?.id;
-        }
-      }
-      if (!target) {
+      const targets = clipId ? [clipId] : transitionTargets(p, ui().selection, frame());
+      if (!targets.length) {
         toast('Add a clip first, then drop a transition on a cut.', 'info');
         return;
       }
-      s.store.commit(setTransition(p, target, side, makeTransition(type, dur)));
-      ui().set({ selectedTransition: { clipId: target, side }, selection: [] });
+      const at = clipId ? side : 'in';
+      const dur = secondsToFrame(0.6, p.settings);
+      s.store.commit(transitionEdits(p, targets, at, makeTransition(type, dur)));
+      // One transition is selected, ready to be adjusted. Several leave their clips selected.
+      if (targets.length === 1) {
+        ui().set({ selectedTransition: { clipId: targets[0], side: at }, selection: [] });
+      } else toast(`${def.name} added to ${count(targets.length, 'clip')}`, 'success');
+      ui().set({ defaultTransition: type });
     });
+  },
+  /** Put the transition last chosen (a cross dissolve to begin with) on the selected cuts. */
+  addDefaultTransition(): void {
+    const last = ui().defaultTransition;
+    cmd.applyTransition(getTransitionDef(last) ? last : FIRST_TRANSITION);
   },
   applyLut(assetId: ID): void {
     editing((s, p) => {
@@ -846,56 +1044,52 @@ export const cmd = {
       );
     });
   },
-  /** Copy the look of the first selected clip, or of `clipId` when a panel shows a clip of its own. */
+  /**
+   * Copy the attributes of the selection: the look of its first picture clip and the sound
+   * settings of its first audio clip. `clipId` copies from that clip alone, for a panel that shows
+   * a clip of its own.
+   */
   copyAttributes(clipId?: ID): void {
     const s = session();
     if (!s) return;
     const p = s.store.get();
-    const c = clipId ? p.clips[clipId] : selectedClips(p)[0];
-    if (!c) return;
-    ui().set({
-      attributes: {
-        effects: c.effects,
-        grade: c.grade,
-        transform: {
-          x: c.x,
-          y: c.y,
-          scaleX: c.scaleX,
-          scaleY: c.scaleY,
-          rotation: c.rotation,
-          opacity: c.opacity,
-          blend: c.blend,
-          cropL: c.cropL,
-          cropT: c.cropT,
-          cropR: c.cropR,
-          cropB: c.cropB,
-        },
-      },
-    });
+    const from = clipId ? [p.clips[clipId]].filter(Boolean) : selectedClips(p);
+    const attributes = copiedAttributes(from, fpsOf(p.settings));
+    if (!attributes) {
+      toast('Select a clip to copy its attributes.', 'info');
+      return;
+    }
+    ui().set({ attributes });
     toast('Attributes copied', 'info');
   },
-  /** Paste copied attributes onto the selected clips, or onto `clipIds`. */
-  pasteAttributes(what: 'all' | 'grade' | 'effects' = 'all', clipIds?: ID[]): void {
+  /**
+   * Paste copied attributes onto the selected clips, or onto `clipIds`: all of them, or only the
+   * grade, the effects, the transform and crop, or the sound settings (see `attributePatch`).
+   */
+  pasteAttributes(what: AttributeMode = 'all', clipIds?: ID[]): void {
     editing((s, p) => {
       const a = ui().attributes;
-      if (!a) return;
-      const wanted = (clipIds ?? ui().selection).filter((id) => p.clips[id] && p.clips[id].type !== 'audio');
-      const clips = unlocked(p, wanted).map((id) => p.clips[id]);
-      if (!clips.length) {
-        if (wanted.length) toast(LOCKED_TRACK, 'info');
+      if (!a) {
+        toast('Copy the attributes of a clip first.', 'info');
         return;
       }
-      // Attributes can be carried between projects; a LUT that is not in this one stays behind.
-      const grade = a.grade?.lutId && !p.assets[a.grade.lutId] ? { ...a.grade, lutId: null } : a.grade;
-      s.store.commit(
-        clips.map((c) => {
-          const patch: Partial<Clip> = {};
-          if (what !== 'effects') patch.grade = grade;
-          if (what !== 'grade') patch.effects = a.effects.map((e) => ({ ...e, id: newId(8) }));
-          if (what === 'all') Object.assign(patch, a.transform);
-          return { op: 'updateClip', id: c.id, patch } as Edit;
-        }),
-      );
+      const wanted = (clipIds ?? ui().selection).filter((id) => p.clips[id]);
+      const clips = unlocked(p, wanted).map((id) => p.clips[id]);
+      if (!clips.length) {
+        toast(wanted.length ? LOCKED_TRACK : 'Select the clips to paste the attributes onto.', 'info');
+        return;
+      }
+      const edits: Edit[] = [];
+      for (const c of clips) {
+        const patch = attributePatch(p, c, a, what);
+        if (patch) edits.push({ op: 'updateClip', id: c.id, patch });
+      }
+      if (!edits.length) {
+        toast('Nothing was pasted: what was copied does not go onto this kind of clip.', 'info');
+        return;
+      }
+      s.store.commit(edits);
+      toast(`${PASTED[what]} pasted onto ${count(edits.length, 'clip')}`, 'info');
     });
   },
 
@@ -936,12 +1130,22 @@ export const cmd = {
     if (!s || recorderBusy) return;
     if (!recorder) {
       if (!s.canEdit) {
-        toast('You have view-only access to this project.', 'error');
+        refuseEdit(s.getMeta().role, 'error');
         return;
       }
       recorderBusy = true;
       try {
-        recorder = await VoiceRecorder.start();
+        const rec = await VoiceRecorder.start();
+        // A capture that breaks ends the take there and then. Left recording, the take would only
+        // turn out to be lost when it is stopped, however long the person went on talking.
+        rec.onError = (err) => {
+          if (recorder !== rec) return;
+          recorder = null;
+          ui().set({ recording: null });
+          s.getMeta().player?.pause();
+          toast(`The recording stopped. ${err.message}`, 'error');
+        };
+        recorder = rec;
       } catch (err) {
         const name = (err as Error)?.name;
         toast(
@@ -1012,7 +1216,7 @@ export const cmd = {
     const s = session();
     if (!s) return;
     if (!s.canEdit) {
-      toast('You have view-only access to this project.', 'error');
+      refuseEdit(s.getMeta().role, 'error');
       return;
     }
     const p = s.store.get();
@@ -1123,7 +1327,7 @@ export const cmd = {
     const s = session();
     if (!s) return;
     if (!canEdit(s.getMeta().role)) {
-      toast('You have view-only access to this project.', 'info');
+      refuseEdit(s.getMeta().role);
       return;
     }
     const names = ['dusk.mp4', 'fractal.mp4', 'aurora.mp4', 'pulse.ogg'];
@@ -1233,7 +1437,10 @@ export const cmd = {
       }
       // Captions get a track of their own on top.
       const t = addTrack(p, 'video');
-      const edits: Edit[] = [...t.edits, { op: 'updateTrack', id: t.trackId, patch: { name: 'Captions' } }];
+      const edits: Edit[] = [
+        ...t.edits,
+        { op: 'updateTrack', id: t.trackId, patch: { name: CAPTION_TRACK } },
+      ];
       let working = applyPreview(p, edits);
       for (const cue of cues) {
         const start = secondsToFrame(cue.start, p.settings);
@@ -1272,25 +1479,44 @@ export const cmd = {
     toast('EDL exported: cuts, source ranges and speed changes. Effects and titles are not part of an EDL.');
   },
 
-  exportSubtitles(): void {
+  /**
+   * Write captions as an .srt file: the selected text clips, else what is on the caption tracks,
+   * so that titles and lower thirds do not come out as subtitles (see `captionClips`). `trackId`
+   * exports one track, whatever it is called.
+   */
+  exportSubtitles(trackId?: ID): void {
     const s = session();
     if (!s) return;
     const p = s.store.get();
-    const cues = Object.values(p.clips)
-      .filter((c) => c.type === 'text' && c.text && c.enabled)
-      .sort((a, b) => a.start - b.start)
-      .map((c) => ({
-        start: framesToSeconds(c.start, p.settings),
-        end: framesToSeconds(clipEnd(c), p.settings),
-        text: c.text!.content,
-      }));
-    if (!cues.length) {
-      toast('There are no text clips to export.', 'info');
+    const { clips, from, tracks } = captionClips(p, ui().selection, trackId);
+    const where =
+      tracks.length === 1 ? tracks[0].name || trackLabel(p, tracks[0]) : `${tracks.length} caption tracks`;
+    if (!clips.length) {
+      toast(
+        from === 'everything'
+          ? 'There are no text clips to export.'
+          : `There is no text on ${where} to export.`,
+        'info',
+      );
       return;
     }
+    const cues = clips.map((c) => ({
+      start: framesToSeconds(c.start, p.settings),
+      end: framesToSeconds(clipEnd(c), p.settings),
+      text: c.text!.content,
+    }));
     downloadBlob(
       new Blob([toSrt(cues)], { type: 'application/x-subrip' }),
       `${safeName(p.settings.name)}.srt`,
+    );
+    const several = tracks.length > 1 ? ' Hide a caption track to leave it out.' : '';
+    toast(
+      from === 'selection'
+        ? `Exported ${count(cues.length, 'selected caption')}.`
+        : from === 'everything'
+          ? `Exported all ${count(cues.length, 'text clip')}, titles included. To leave titles out, select the captions or keep them on a track named “${CAPTION_TRACK}”.`
+          : `Exported ${count(cues.length, 'caption')} from ${where}.${several}`,
+      from === 'everything' ? 'info' : 'success',
     );
   },
   saveProjectFile(): void {
@@ -1342,7 +1568,7 @@ export const cmd = {
     const s = session();
     if (!s) return;
     if (!s.canEdit) {
-      toast('You have view-only access to this project.', 'info');
+      refuseEdit(s.getMeta().role);
       return;
     }
     const parsed = await pickProjectFile();
@@ -1365,9 +1591,10 @@ export const cmd = {
     });
     // The question was about the project that was open when it was asked.
     if (!go || session() !== s) return;
-    editing((s, p) => {
-      // The server holds what was uploaded to this project, whatever the file remembers.
-      s.store.replaceAll(withUploads(parsed, (a) => !!p.assets[a.id]?.uploaded));
+    editing((s) => {
+      // What the file says about uploads was true of the project it was saved from. The session
+      // keeps what the server holds of this one.
+      s.replaceProject(withUploads(parsed, () => false));
       ui().clearSelection();
       toast(
         `Replaced with “${parsed.settings.name}”. Media that is not on this device or the server shows as offline.`,

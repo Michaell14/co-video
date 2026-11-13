@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyEdits, ASSET_DEFAULTS, emptyProject, makeClip, makeTrack, type Asset } from '@tandem/core';
 import type { TransferResult } from '../src/session/mediaStore';
-import { byUrgency, TransferQueue, TRANSFER_SLOTS, type Transfer } from '../src/session/transfers';
+import {
+  byUrgency,
+  keepUploads,
+  TransferQueue,
+  TRANSFER_SLOTS,
+  type Transfer,
+} from '../src/session/transfers';
 
 /** A runner whose transfers finish when the test says so. */
 function runner() {
@@ -101,12 +107,35 @@ describe('TransferQueue', () => {
 
   it('a waiting transfer does not hold up the ones behind it', async () => {
     const r = runner();
-    const q = new TransferQueue(r.run, { upload: 1, download: 1 });
+    const q = new TransferQueue(r.run, { upload: 1, download: 1, check: 1 });
     q.want(downloads(3));
     await r.finish('download:d0', 'retry');
     expect(r.started).toEqual(['download:d0', 'download:d1']);
     await r.finish('download:d1', 'done');
     expect(r.started).toEqual(['download:d0', 'download:d1', 'download:d2']);
+    q.stop();
+  });
+
+  it('asks the server about one file at a time, beside the transfers and not behind them', async () => {
+    const r = runner();
+    const q = new TransferQueue(r.run);
+    const checks: Transfer[] = ['c0', 'c1', 'c2'].map((assetId) => ({ kind: 'check', assetId }));
+    q.want([...downloads(3), ...checks]);
+    expect(r.started).toEqual(['download:d0', 'download:d1', 'check:c0']);
+
+    // No answer: asked again later, and the next question does not wait for that.
+    await r.finish('check:c0', 'retry');
+    expect(r.started.at(-1)).toBe('check:c1');
+    await r.finish('check:c1', 'done');
+    expect(r.started.at(-1)).toBe('check:c2');
+    await r.finish('check:c2', 'done');
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(r.started.filter((key) => key.startsWith('check:'))).toEqual([
+      'check:c0',
+      'check:c1',
+      'check:c2',
+      'check:c0',
+    ]);
     q.stop();
   });
 
@@ -203,5 +232,41 @@ describe('byUrgency', () => {
   it('follows the playhead', () => {
     expect(order(905)).toEqual(['far', 'near', 'under', 'pool-old', 'pool-new']);
     expect(order(0)).toEqual(['far', 'under', 'near', 'pool-old', 'pool-new']);
+  });
+});
+
+describe('keepUploads', () => {
+  const asset = (id: string, uploaded: boolean): Asset => ({ ...ASSET_DEFAULTS, id, name: id, uploaded });
+  const project = (...assets: Asset[]) =>
+    applyEdits(
+      emptyProject(),
+      assets.map((a) => ({ op: 'addAsset' as const, asset: a })),
+    );
+  const flags = (p: ReturnType<typeof project>): Record<string, boolean> =>
+    Object.fromEntries(Object.values(p.assets).map((a) => [a.id, a.uploaded]));
+
+  it('does not take back an upload that finished after the snapshot was taken', () => {
+    const open = project(asset('finished-since', true), asset('still-local', false));
+    const version = project(asset('finished-since', false), asset('still-local', false));
+    expect(flags(keepUploads(version, open))).toEqual({ 'finished-since': true, 'still-local': false });
+  });
+
+  it('believes a snapshot that knows of an upload, also for an asset the open project has lost', () => {
+    const open = project(asset('kept', false));
+    const version = project(asset('kept', true), asset('removed-since', true), asset('never-up', false));
+    expect(flags(keepUploads(version, open))).toEqual({
+      kept: true,
+      'removed-since': true,
+      'never-up': false,
+    });
+  });
+
+  it('changes nothing else and neither of its arguments', () => {
+    const open = project(asset('a', true));
+    const version = project(asset('a', false));
+    const next = keepUploads(version, open);
+    expect(version.assets.a.uploaded).toBe(false);
+    expect({ ...next, assets: null }).toEqual({ ...version, assets: null });
+    expect(next.assets.a).toEqual({ ...version.assets.a, uploaded: true });
   });
 });

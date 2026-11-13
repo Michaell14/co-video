@@ -47,6 +47,177 @@ export interface AudioProblem {
 type OpenAudio = { sink: AudioBufferSink; start: number; rate: number };
 
 /**
+ * The buffers of one decode, each placed where the one before it ends. A decoder's buffers follow
+ * one another to the sample, but each carries a time of its own that was rounded to a whole sample
+ * by itself. Where the decode began between two samples (a container that keeps packet times in
+ * milliseconds, sound at 44.1 kHz) the rounding falls now one way and now the other, and a buffer
+ * taken at its word leaves a hole of one sample, or lands on the last sample of the one before
+ * it: a click either way. So a buffer that claims to start one sample off is moved back by that
+ * sample. A real gap in a file is longer, and stays.
+ */
+async function* inSequence(
+  buffers: AsyncGenerator<WrappedAudioBuffer, void, unknown>,
+): AsyncGenerator<WrappedAudioBuffer, void, unknown> {
+  // Where the buffer that comes next begins: `counted` samples at `rate` after `start`.
+  let start = 0;
+  let counted = 0;
+  let rate = 0;
+  for await (const wb of buffers) {
+    const { length, sampleRate } = wb.buffer;
+    const off = sampleRate === rate ? (wb.timestamp - start) * rate - counted : NaN;
+    if (Math.abs(off) < 1.5) {
+      counted += length;
+      const samples = Math.round(off);
+      yield samples === 0 ? wb : { ...wb, timestamp: wb.timestamp - samples / rate };
+    } else {
+      [start, counted, rate] = [wb.timestamp, length, sampleRate];
+      yield wb;
+    }
+  }
+}
+
+/**
+ * The longest stretch of a file (seconds) that is decoded and kept in one piece for a clip that
+ * plays backwards in a render made in chunks: about 115 MB of stereo sound at 48 kHz.
+ */
+const HELD_BACKWARDS = 300;
+
+/** One clip's sound on its way through a render made in chunks: see `AudioRuns`. */
+class Run {
+  /** Decoded and still to be asked for, in order. */
+  private held: WrappedAudioBuffer[] = [];
+  private source: AsyncGenerator<WrappedAudioBuffer, void, unknown> | null = null;
+  /**
+   * For a clip that plays backwards: the time in its file up to which `held` has what is left for
+   * it to play, decoded in one pass. Nothing is held that way while this is `-Infinity`.
+   */
+  private top = -Infinity;
+
+  /**
+   * The buffers `sink.buffers(from, to)` would give, out of one decode of `[low, high)`, the
+   * stretch of the file the render plays for the clip. Forwards, the reads follow one another, and
+   * each carries on where the one before stopped; one that does not lie in what that one decoded
+   * seeks anew. `again` is where the read after this one may begin: what lies before it is not kept.
+   * Backwards, the stretches asked for come in descending order, which no decoder can follow. So
+   * the first read decodes everything from `low` up to its own end, beyond which no later one
+   * asks, and that is handed out from its end and let go once a read has reached `low`. More than
+   * `HELD_BACKWARDS` is too much to keep: reads seek for themselves until what is left to play is
+   * no longer than that.
+   */
+  async *read(
+    sink: AudioBufferSink,
+    from: number,
+    to: number,
+    again: number,
+    low: number,
+    high: number,
+    backwards: boolean,
+  ): AsyncGenerator<WrappedAudioBuffer, void, unknown> {
+    if (backwards) {
+      if (to > this.top) {
+        await this.end();
+        if (to - low > HELD_BACKWARDS) {
+          yield* inSequence(sink.buffers(from, to));
+          return;
+        }
+        const all: WrappedAudioBuffer[] = [];
+        for await (const wb of inSequence(sink.buffers(low, to))) all.push(wb);
+        this.held = all;
+      }
+      // The reads come in descending order: what lies after this one is not asked for again.
+      this.top = to;
+      let i = Math.max(
+        0,
+        this.held.findLastIndex((wb) => wb.timestamp <= from),
+      );
+      for (; i < this.held.length && this.held[i].timestamp < to; i++) yield this.held[i];
+      this.held.length = i;
+      if (from <= low) await this.end();
+      return;
+    }
+    const first = this.held.findLastIndex((wb) => wb.timestamp <= from);
+    if (!this.source || first < 0) {
+      await this.end();
+      this.source = inSequence(sink.buffers(from, high));
+    } else this.held.splice(0, first);
+    for (let i = 0; ; i++) {
+      if (i === this.held.length) {
+        let next: IteratorResult<WrappedAudioBuffer, void>;
+        try {
+          next = await this.source.next();
+        } catch (err) {
+          // Nothing more comes from this decoder; a later read starts another.
+          this.source = null;
+          this.held = [];
+          throw err;
+        }
+        if (next.done) break;
+        this.held.push(next.value);
+      }
+      // A buffer that starts where this read ends stays for the read that follows.
+      if (this.held[i].timestamp >= to) break;
+      yield this.held[i];
+      // Behind this buffer, only what the read that follows can ask for is of any use.
+      while (i > 0 && this.held[1].timestamp <= again) {
+        this.held.shift();
+        i--;
+      }
+    }
+    if (to >= high) await this.end();
+  }
+
+  /** Close the decoder and let go of what it gave. */
+  async end(): Promise<void> {
+    const source = this.source;
+    this.source = null;
+    this.held = [];
+    this.top = -Infinity;
+    await source?.return().catch(() => {});
+  }
+}
+
+/**
+ * What a render made in chunks carries from one chunk to the next: for every clip, the decoder
+ * part-way through its sound, or the sound itself when the clip plays backwards. Each clip is
+ * then decoded once, from where it starts to where it ends, as it is when the same stretch is
+ * rendered in one go.
+ *
+ * Without it every chunk seeks to its own start, and what a decoder gives after a seek is not
+ * always placed where the decode before it placed the same sound. WebM and Matroska round packet
+ * times to milliseconds, so two decodes begun at different packets can be a millisecond apart, and
+ * a Vorbis decoder returns nothing for the first packet it is given while its output is timed from
+ * that packet. Where two stretches placed differently meet, there is a click.
+ */
+export class AudioRuns {
+  /**
+   * Seconds of timeline that the chunk after the one being rendered renders again before its own
+   * start (its pre-roll). Sound decoded for an earlier time than that is not carried over.
+   */
+  lookBack = 0;
+  private readonly runs = new Map<string, Run>();
+
+  /**
+   * `endSec` is the timeline time (seconds) at which the last chunk ends, when that is known
+   * beforehand. Of a clip that goes on after it, only what the render plays is then decoded. That
+   * matters most for a clip that plays backwards, whose sound is decoded all at once.
+   */
+  constructor(readonly endSec = Infinity) {}
+
+  /** The decode of `clip` that is under way, for the mixer that renders the next chunk. */
+  of(clip: Clip): Run {
+    const key = `${clip.id}|${clip.assetId}`;
+    let run = this.runs.get(key);
+    if (!run) this.runs.set(key, (run = new Run()));
+    return run;
+  }
+
+  dispose(): void {
+    for (const run of this.runs.values()) void run.end();
+    this.runs.clear();
+  }
+}
+
+/**
  * A run of buffers that follow one another, on its way through rate conversion. `next` is where
  * the buffer after the last one given has to begin to belong to the run: seconds of source from
  * the point of the file at which the clip starts to play.
@@ -120,6 +291,8 @@ export class AudioGraph {
     readonly ctx: BaseAudioContext,
     private readonly library: MediaLibrary,
     private readonly realtime: boolean,
+    /** Decoders carried over from the chunk rendered before this one, and on to the next. */
+    private readonly runs: AudioRuns | null = null,
   ) {
     this.master = ctx.createGain();
     if (realtime) {
@@ -401,8 +574,11 @@ export class AudioGraph {
     const node = this.ctx.createBufferSource();
     node.buffer = buffer;
     node.connect(v.gain);
-    // On a whole sample, at the context's rate and at normal speed: played as computed.
-    node.start((out.first + late) / rate);
+    // On a whole sample, at the context's rate and at normal speed: played as computed. The end
+    // is given as well, a quarter of a sample short. Left to work it out from the buffer's length
+    // in seconds, the browser plays the last sample twice for the lengths that come back from
+    // that a hair too long (about one in sixteen), on top of the first sample of what follows.
+    node.start((out.first + late) / rate, 0, (length - 0.25) / rate);
     this.adopt(v, node);
   }
 
@@ -632,7 +808,22 @@ export class AudioGraph {
         this.passes(opened.rate, speed) || !this.converting(step)
           ? 0
           : (resampleReach(step) + 1) / opened.rate;
-      const buffers = opened.sink.buffers(srcFrom - around + opened.start, srcTo + around + opened.start);
+      const from = srcFrom - around + opened.start;
+      const to = srcTo + around + opened.start;
+      // In a render made in chunks the clip's sound comes out of one decode of all that the render
+      // plays of it, `[low, high)`. The chunk after this one starts its pre-roll before this one
+      // ends, and asks again for what is played from there on (taken a little earlier here, so that
+      // rounding in where a chunk begins never has it ask for more than was kept).
+      const next = Math.max(session.endSec - (this.runs?.lookBack ?? 0) - 0.1, clipStartSec);
+      const again = clip.sourceIn + (next - clipStartSec) * per - around + opened.start;
+      // The render may end before the clip does. It goes at least as far as this chunk.
+      const lastTl = Math.min(Math.max(this.runs?.endSec ?? Infinity, session.endSec), clipEndSec);
+      const played = (lastTl - clipStartSec) * per;
+      const low = (clip.reverse ? srcB - played : clip.sourceIn) - around + opened.start;
+      const high = (clip.reverse ? srcB : clip.sourceIn + played) + around + opened.start;
+      const buffers = this.runs
+        ? this.runs.of(clip).read(opened.sink, from, to, again, low, high, clip.reverse)
+        : inSequence(opened.sink.buffers(from, to));
 
       if (clip.reverse) {
         // Reverse playback needs the buffers in descending order: collect, then schedule backwards.
@@ -803,7 +994,10 @@ function reversed(ctx: BaseAudioContext, src: AudioBuffer): AudioBuffer {
  *
  * The result holds `durationSec` rounded to whole samples, the first of them at `startSec`. Chunks
  * rendered one after the other at whole-sample distances (an export) therefore share one sample
- * grid and join without a sample missing or added, wherever the first of them starts.
+ * grid and join without a sample missing or added, wherever the first of them starts. Give such
+ * chunks, in order, the same `runs`, made for the time at which the last of them ends: every clip
+ * is then decoded in one pass over all of them, and sound from a lossy codec joins at the seams as
+ * well (see `AudioRuns`). Dispose of it at the end.
  */
 export async function renderAudioChunk(
   project: Project,
@@ -813,6 +1007,7 @@ export async function renderAudioChunk(
   sampleRate: number,
   preRollSec = 0.5,
   onProblem?: (problem: AudioProblem) => void,
+  runs?: AudioRuns,
 ): Promise<AudioBuffer> {
   // A whole number of samples of pre-roll, so that sample 0 of the result is the one at `startSec`
   // even when there is less than `preRollSec` of timeline before it.
@@ -820,7 +1015,8 @@ export async function renderAudioChunk(
   const pre = skip / sampleRate;
   const length = Math.max(1, Math.round(durationSec * sampleRate));
   const ctx = new OfflineAudioContext(2, skip + length, sampleRate);
-  const graph = new AudioGraph(ctx, library, false);
+  if (runs) runs.lookBack = preRollSec;
+  const graph = new AudioGraph(ctx, library, false, runs);
   graph.onProblem = onProblem ?? null;
   graph.start(project, { startSec: startSec - pre, t0: 0, rate: 1, endSec: startSec + durationSec });
   await graph.pump();

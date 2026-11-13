@@ -1,8 +1,8 @@
 /** Project directories and their `meta.json`. */
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { newProjectId } from '@tandem/core';
-import { assertValidId, atomicWrite, errorCode, KeyedQueue, readFileIfExists } from './util';
+import { assertValidId, atomicWrite, errorCode, isValidId, KeyedQueue, readFileIfExists } from './util';
 
 export interface ProjectMeta {
   /** Milliseconds since the epoch. */
@@ -35,6 +35,11 @@ export class ProjectStore {
 
   private metaPath(id: string): string {
     return join(this.dir(id), 'meta.json');
+  }
+
+  /** The ids of all projects there are. */
+  async list(): Promise<string[]> {
+    return (await readdir(this.root)).filter(isValidId);
   }
 
   async create(name: string): Promise<{ id: string; meta: ProjectMeta }> {

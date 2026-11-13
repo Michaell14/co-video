@@ -28,13 +28,14 @@ import { useUI } from '../state/ui';
 import { toast } from '../ui/core';
 import { chooseAccess, claimedRole, entryFate, type Verdict } from './access';
 import { api, ApiError, isRefusal, serverAvailable, wsBase } from './api';
-import { retimeView } from '../features/inspector/frameRate';
+import { retimeView, withFrameRate } from '../features/inspector/frameRate';
 import { TimelineMedia } from '../features/timeline/mediaCache';
-import { MediaStore, moveProjectMedia } from './mediaStore';
+import { MediaStore, moveProjectMedia, type TransferResult } from './mediaStore';
+import { displayName, PeerList, published } from './presence';
 import { idbName, whenSynced } from './projects';
-import { getUser, registry, setUser } from './registry';
+import { getUser, isPoster, registry, setUser } from './registry';
 import { SyncProvider, type SyncStatus } from './sync';
-import { byUrgency, TransferQueue, type Transfer } from './transfers';
+import { byUrgency, keepUploads, TransferQueue, type Transfer } from './transfers';
 
 type Listener = () => void;
 
@@ -52,6 +53,12 @@ export interface SessionMeta {
   denied: boolean;
   /** The project was taken off the project list: its link was refused and nothing of it is here. */
   unlisted: boolean;
+  /**
+   * The server refused this project's link and it is kept aside: the project runs as a local one
+   * until the person has the link tried again (`retryLink`) or lets go of it (`forgetLink`). Holds
+   * the access that link gave; null when no link is waiting.
+   */
+  refusedLink: Role | null;
   /** The server accepts our link but has no place for us right now; we keep trying. */
   busy: boolean;
   /** Preview from proxy media where it exists (a per-device preference). */
@@ -86,6 +93,8 @@ export class Session {
   readonly store: ProjectStore;
   readonly review: ReviewStore;
   readonly awareness: Awareness;
+  /** The other people in the project. */
+  readonly peers: PeerList;
   readonly media: MediaStore;
   /** Filmstrip and waveform caches for the timeline. */
   readonly thumbs: TimelineMedia;
@@ -106,6 +115,11 @@ export class Session {
   private registryTimer: ReturnType<typeof setTimeout> | null = null;
   private presenceTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingPresence: Partial<PresenceState> = {};
+  /**
+   * What this client announces of itself. Every announcement is made from this copy and never from
+   * what the room holds for us, which anyone in it can have written over.
+   */
+  private presence: PresenceState;
   private mediaTimer: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
   /** Aborted when the session closes, so no request outlives it. */
@@ -117,21 +131,31 @@ export class Session {
   private reloading = false;
   /** The server rejected this link (bad token, deleted project): retrying will not help. */
   private refused = false;
+  /** The person asked for the link that is kept aside to be tried again. */
+  private retrying = false;
   private readonly transfers: TransferQueue;
   /** Assets the server is known to hold, to notice the moment it holds one more. */
   private readonly uploaded = new Set<string>();
+  /**
+   * Assets the server said it does not hold when it was asked itself, the project not knowing them
+   * to be uploaded. Such an answer stands only while the project agrees with it; see `noteUploads`.
+   */
+  private readonly notHeld = new Set<string>();
   private assetsSeen: Project['assets'] | null = null;
 
   private constructor(readonly id: string) {
     this.store = new ProjectStore(this.doc);
     this.review = new ReviewStore(this.reviewDoc);
     this.awareness = new Awareness(this.doc);
+    this.peers = new PeerList(this.awareness);
     this.media = new MediaStore(id);
     this.thumbs = new TimelineMedia(this.previewResolver());
     this.transfers = new TransferQueue((t) =>
       t.kind === 'upload'
         ? this.media.upload(t.assetId, this.store.get().assets[t.assetId]?.mime ?? '')
-        : this.media.download(t.assetId),
+        : t.kind === 'download'
+          ? this.media.download(t.assetId)
+          : this.confirmUpload(t.assetId),
     );
     this.meta = {
       role: 'owner',
@@ -143,8 +167,19 @@ export class Session {
       user: getUser(),
       denied: false,
       unlisted: false,
+      refusedLink: null,
       busy: false,
       proxies: readProxyPref(),
+    };
+    this.presence = {
+      user: this.meta.user,
+      role: this.meta.role,
+      playhead: 0,
+      playing: false,
+      selection: [],
+      cursor: null,
+      dragging: null,
+      page: 'edit',
     };
   }
 
@@ -210,15 +245,24 @@ export class Session {
   }
 
   /**
-   * When the server comes to hold an asset this device has no copy of (a collaborator's upload
-   * finished), the engine has to ask for it again: all it was ever told is that it is unavailable.
+   * Follow what the project says about uploads. When the server comes to hold an asset this device
+   * has no copy of (a collaborator's upload finished), the engine has to ask for it again: all it
+   * was ever told is that it is unavailable. And what the server said of an asset when asked
+   * directly stops counting once the project has moved on from that moment.
    */
   private noteUploads(): void {
     const assets = this.store.get().assets;
     if (assets === this.assetsSeen) return;
     const first = this.assetsSeen === null;
     this.assetsSeen = assets;
+    // The server's "no" is as old as the moment it was given. An asset that has been flagged since,
+    // or has left the project, may come back unflagged (a restored version, an undo) with the file
+    // long on the server, so that answer is not kept for it: the server is asked again then.
+    for (const id of this.notHeld) if (assets[id]?.uploaded !== false) this.notHeld.delete(id);
     for (const a of Object.values(assets)) {
+      // A flag can go back (an undo, a restored version). The engine is told "unavailable" in the
+      // meantime, so the next time the flag is set counts as news again.
+      if (!a.uploaded) this.uploaded.delete(a.id);
       if (!a.uploaded || this.uploaded.has(a.id)) continue;
       this.uploaded.add(a.id);
       if (!first && !this.media.get(a.id).local) this.refreshMedia(a.id);
@@ -307,6 +351,7 @@ export class Session {
       // least: a viewer who opens a cached project offline must not get an editor's tools.
       role: stored ? (entry?.role ?? claimedRole(stored) ?? 'viewer') : this.token ? 'viewer' : 'owner',
       shared: this.token !== null,
+      refusedLink: stored ? null : (registry.linkAside(this.id)?.role ?? null),
     };
 
     // Only a document we know (loaded from this device, with content) may decide what is orphaned.
@@ -325,16 +370,8 @@ export class Session {
     };
     this.noteUploads();
 
-    this.awareness.setLocalState({
-      user: this.meta.user,
-      role: this.meta.role,
-      playhead: 0,
-      playing: false,
-      selection: [],
-      cursor: null,
-      dragging: null,
-      page: 'edit',
-    } satisfies PresenceState);
+    this.presence = { ...this.presence, role: this.meta.role };
+    this.announce();
 
     this.followFrameRate();
     this.unsubs.push(
@@ -359,21 +396,21 @@ export class Session {
     const online = await serverAvailable();
     if (this.destroyed) return;
     this.setMeta({ online });
-    if (online && (this.token || this.offered)) await this.connect();
+    if (online && this.hasLink) await this.connect();
     else if (!entry && !this.token) {
       // Unknown project, no way to fetch it.
       if (this.store.isEmpty()) this.setMeta({ denied: true });
     }
     if (this.destroyed) return;
     // Opened with no network (or a server that was down): keep knocking.
-    if (this.token && !online && this.store.isEmpty()) this.setMeta({ denied: true });
+    if ((this.token || this.linkToRetry()) && !online && this.store.isEmpty()) this.setMeta({ denied: true });
     this.scheduleReconnect();
     const onNetwork = (): void => {
       this.reconnectDelay = 0;
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
       this.transfers.retryNow();
-      if (this.token || this.offered) this.scheduleReconnect();
+      if (this.hasLink) this.scheduleReconnect();
       else
         void serverAvailable(true).then(
           (up) => !this.destroyed && up !== this.meta.online && this.setMeta({ online: up }),
@@ -391,7 +428,7 @@ export class Session {
    */
   private scheduleReconnect(): void {
     if (this.destroyed || this.reconnectTimer || this.providers.length || this.refused) return;
-    if (!this.token && !this.offered) return;
+    if (!this.hasLink) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void (async () => {
@@ -405,14 +442,33 @@ export class Session {
     }, this.reconnectDelay);
   }
 
-  private async connect(): Promise<void> {
+  /**
+   * The link kept aside for this project, when this is a moment to ask the server about it again:
+   * the person said so, another link to the project is being judged anyway, or nothing of the
+   * project is on this device and asking is all there is left to do.
+   */
+  private linkToRetry(): string | null {
+    if (registry.get(this.id)?.token) return null;
+    const aside = registry.linkAside(this.id);
+    return aside && (this.retrying || this.offered || this.store.isEmpty()) ? aside.token : null;
+  }
+
+  /** There is a link to ask the server about. */
+  private get hasLink(): boolean {
+    return !!(this.token || this.offered || this.linkToRetry());
+  }
+
+  private async connect(): Promise<'accepted' | 'refused' | 'unreachable'> {
+    if (this.providers.length) return 'accepted';
     // One attempt at a time: the network coming back must not start a second one beside it.
-    if (this.connecting || this.providers.length || this.destroyed || this.reloading) return;
+    if (this.connecting || this.destroyed || this.reloading) return 'unreachable';
     this.connecting = true;
     try {
       const access = await this.settleAccess();
       // The project may have been closed while the server was thinking.
-      if (access && !this.destroyed) this.openRooms(access.token);
+      if (typeof access === 'string' || this.destroyed) return access === 'refused' ? access : 'unreachable';
+      this.openRooms(access.token);
+      return 'accepted';
     } finally {
       this.connecting = false;
     }
@@ -425,8 +481,9 @@ export class Session {
       const info = await api.projectInfo(this.id, token, signal);
       return { token, role: info.role };
     } catch (err) {
-      // Only a real refusal is final; a network failure or a busy server is asked again later.
-      if (err instanceof ApiError && isRefusal(err.status)) return 'refused';
+      // Only a real refusal is final; a network failure or a busy server is asked again later. And
+      // only the server itself can refuse: whatever stands in front of it knows nothing of links.
+      if (err instanceof ApiError && err.answered && isRefusal(err.status)) return 'refused';
       if (!this.destroyed) console.warn('[session] project not reachable on server', err);
       return 'unreachable';
     }
@@ -437,17 +494,20 @@ export class Session {
    * Only a token it accepted is ever stored, so a mistyped or lesser link cannot replace the access
    * this device already has, and a refused link leaves no trace in the project list.
    */
-  private async settleAccess(): Promise<{ token: string; role: Role } | null> {
-    const stored = registry.get(this.id)?.token ?? null;
+  private async settleAccess(): Promise<{ token: string; role: Role } | 'refused' | 'unreachable'> {
+    // A link kept aside is asked about in the stored one's place. Offered again as a link, it is
+    // judged as one, so that its answer is said the way any link's is.
+    const aside = this.linkToRetry();
+    const stored = registry.get(this.id)?.token ?? (aside === this.offered ? null : aside);
     const [kept, link] = await Promise.all([
       stored ? this.ask(stored) : null,
       this.offered ? this.ask(this.offered) : null,
     ]);
-    if (this.destroyed) return null;
+    if (this.destroyed) return 'unreachable';
     if (kept === 'unreachable' || link === 'unreachable') {
       // Nothing local to show either; a later attempt clears this.
       if (this.store.isEmpty()) this.setMeta({ denied: true });
-      return null;
+      return 'unreachable';
     }
     const { granted, offered } = chooseAccess(kept, link);
     if (this.offered) {
@@ -468,11 +528,19 @@ export class Session {
     }
     if (!granted) {
       this.loseAccess(kept);
-      return null;
+      return 'refused';
     }
     this.token = granted.token;
+    this.refused = false;
     registry.upsert({ id: this.id, token: granted.token, role: granted.role });
-    this.setMeta({ shared: true, denied: false });
+    // The server takes the link it refused before: it is in use again, or one that allows more is.
+    // The copy kept aside is looked up afresh, not taken from what this round offered: it is also
+    // still there from a visit that had the link accepted but could not save the list.
+    const waiting = registry.linkAside(this.id)?.token;
+    if (waiting && [kept, link].some((v) => v && v !== 'refused' && v.token === waiting)) {
+      registry.releaseLinkAside(this.id);
+    }
+    this.setMeta({ shared: true, denied: false, refusedLink: null });
     this.applyRole(granted.role);
     return granted;
   }
@@ -485,27 +553,64 @@ export class Session {
   private loseAccess(stored: Verdict | null): void {
     this.refused = true;
     this.token = null;
-    // A refusal is final, so the link goes from the project list: kept there, every later visit
-    // would offer it to the server again and end in this same message.
-    const fate = entryFate(stored, { loaded: this.idb[0]?.synced === true, empty: this.store.isEmpty() });
+    const entry = registry.get(this.id);
+    // Kept in the list, the link would be offered to the server again on every later visit, to end
+    // in this same message. So it leaves the list, but not the device: it is put aside first, and
+    // where that fails the entry stays as it is.
+    let fate = entry?.token
+      ? entryFate(
+          stored,
+          { loaded: this.idb[0]?.synced === true, empty: this.store.isEmpty() },
+          (entry.role ?? claimedRole(entry.token)) === 'owner',
+        )
+      : 'keep';
+    if (fate !== 'keep' && !registry.setLinkAside(this.id)) fate = 'keep';
+    const aside = registry.linkAside(this.id);
     if (this.store.isEmpty()) {
       // With nothing here to open either, the whole entry goes.
       if (fate === 'forget') registry.remove(this.id);
       this.setMeta({ denied: true, unlisted: fate === 'forget' });
     } else if (this.meta.shared) {
-      if (fate === 'unlink') registry.upsert({ id: this.id, token: null, role: undefined });
-      this.setMeta({ shared: false });
+      this.setMeta({ shared: false, refusedLink: aside?.role ?? null });
       this.applyRole('owner');
       toast(
-        'The collaboration server no longer accepts your link to this project. Your copy stays on this device and does not sync.',
+        'The collaboration server no longer accepts your link to this project. Your copy stays on this device and does not sync.' +
+          (aside ? ' The link is kept, and you can try it again under Share.' : ''),
         'error',
       );
     }
   }
 
+  /**
+   * Offer the link the server refused once more, because the person asked. Accepted, the project
+   * is shared again and this copy joins what the others have.
+   */
+  async retryLink(): Promise<'accepted' | 'refused' | 'unreachable'> {
+    if (this.destroyed || this.retrying) return 'unreachable';
+    const online = await serverAvailable(true);
+    if (this.destroyed) return 'unreachable';
+    if (online !== this.meta.online) this.setMeta({ online });
+    if (!online) return 'unreachable';
+    this.retrying = true;
+    try {
+      return await this.connect();
+    } finally {
+      this.retrying = false;
+    }
+  }
+
+  /** Let go of the link the server refused. This copy is a project of its own from now on. */
+  forgetLink(): void {
+    registry.dropLinkAside(this.id);
+    this.setMeta({ refusedLink: null });
+  }
+
   private applyRole(role: Role): void {
     if (role !== this.meta.role) this.setMeta({ role });
-    this.awareness.setLocalStateField('role', role);
+    if (role !== this.presence.role) {
+      this.presence = { ...this.presence, role };
+      this.announce();
+    }
     if (!this.token) return;
     if (registry.get(this.id)?.role !== role) registry.upsert({ id: this.id, role });
     if (this.media.connected) {
@@ -676,6 +781,7 @@ export class Session {
     this.flushRegistry();
     this.meta.player?.dispose();
     for (const p of this.providers) p.destroy();
+    this.peers.destroy();
     this.awareness.destroy();
     for (const i of this.idb) void i.destroy();
     this.media.destroy();
@@ -724,12 +830,26 @@ export class Session {
   renameUser(name: string, color?: string): void {
     const user = {
       ...this.meta.user,
-      name: name.trim() || this.meta.user.name,
+      // Cut to what everyone else would make of it anyway.
+      name: name.trim() ? displayName(name) : this.meta.user.name,
       color: color ?? this.meta.user.color,
     };
     setUser(user);
     this.setMeta({ user });
-    this.awareness.setLocalStateField('user', user);
+    this.presence = { ...this.presence, user };
+    this.announce();
+  }
+
+  /**
+   * Put another project in the place of the open one: a version brought back, a project file
+   * loaded over it. Every such replacement goes through here, because more than the document has
+   * to come out right. It is one undo step; where the frame rate changes with it, comments and
+   * this device's view follow, as they do for a rate set in the project settings; and media the
+   * server already holds stays known as uploaded, whatever the incoming project remembers.
+   */
+  replaceProject(next: Project): void {
+    const project = keepUploads(next, this.store.get());
+    withFrameRate(this, () => this.store.replaceAll(project));
   }
 
   // ────────────────────────────────────────────────────────────── player ──
@@ -772,12 +892,14 @@ export class Session {
     if (this.presenceTimer || this.destroyed) return;
     this.presenceTimer = setTimeout(() => {
       this.presenceTimer = null;
-      const cur = this.awareness.getLocalState() as PresenceState | null;
-      if (!cur) return;
-      const next = { ...cur, ...this.pendingPresence };
+      this.presence = { ...this.presence, ...this.pendingPresence };
       this.pendingPresence = {};
-      this.awareness.setLocalState(next);
+      this.announce();
     }, 80);
+  }
+
+  private announce(): void {
+    if (!this.destroyed) this.awareness.setLocalState(published(this.presence));
   }
 
   // ─────────────────────────────────────────────────────────────── media ──
@@ -900,9 +1022,33 @@ export class Session {
       } else if (!st.local && a.uploaded && a.size < 4 * 1024 ** 3) {
         // Stills and LUTs are fetched whole by the engine anyway; cache timed media up to 4 GB.
         wanted.push({ kind: 'download', assetId: a.id });
+      } else if (!st.local && !a.uploaded && this.canEdit && !this.notHeld.has(a.id)) {
+        wanted.push({ kind: 'check', assetId: a.id });
       }
     }
     this.transfers.want(wanted);
+  }
+
+  /**
+   * Ask the server about a file that neither this device nor the project knows it to hold. The
+   * project can be behind the server: a version from before an upload finished brings the asset
+   * back as "not uploaded", and so does undoing its removal, and the person who has the file, whose
+   * client would notice, may not be around. Nobody downloads what is not flagged, so without this
+   * the media would stay out of reach for everyone. Only someone who may edit can set the flag.
+   * A "no" is not asked for twice while the project stays as it is: when the server gets the file
+   * later, its uploader says so, and from then on the answer no longer counts (`noteUploads`).
+   */
+  private async confirmUpload(assetId: string): Promise<TransferResult> {
+    const held = await this.media.held(assetId, this.closing.signal);
+    if (held === null || this.destroyed) return 'retry';
+    const asset = this.store.get().assets[assetId];
+    // Flagged or removed while the server was answering: the answer is about an earlier project.
+    if (!asset || asset.uploaded) return 'done';
+    if (!held) this.notHeld.add(assetId);
+    else if (this.canEdit) {
+      this.store.commit([{ op: 'updateAsset', id: assetId, patch: { uploaded: true } }], { undoable: false });
+    }
+    return 'done';
   }
 
   /** Try an asset's failed upload or download again now instead of when its turn comes round. */
@@ -927,7 +1073,7 @@ export class Session {
     // A project reached through a link is listed once the server has accepted the link, not before.
     if (this.token && !registry.get(this.id)) return;
     const s = p.settings;
-    const firstThumb = Object.values(p.assets).find((a) => a.thumb)?.thumb ?? null;
+    const firstThumb = Object.values(p.assets).find((a) => isPoster(a.thumb))?.thumb ?? null;
     registry.upsert({
       id: this.id,
       name: s.name,

@@ -9,7 +9,7 @@
  * the atomic commit of an upload. (Asset ids cannot contain dots, so the three names never clash.)
  */
 import { createWriteStream } from 'node:fs';
-import { mkdir, open, rename, stat, truncate, unlink } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, stat, truncate, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
@@ -19,7 +19,15 @@ import { canEdit } from '@tandem/core';
 import type { Role } from '@tandem/core';
 import { HttpError, parseIntHeader, sendEmpty, streamFile } from './http';
 import type { ProjectStore } from './projects';
-import { assertValidId, atomicWrite, errorCode, isNotFound, readFileIfExists } from './util';
+import {
+  assertValidId,
+  atomicWrite,
+  errorCode,
+  fileSize,
+  isNotFound,
+  isValidId,
+  readFileIfExists,
+} from './util';
 
 /** Asset ids are never reused for different bytes, so a finished asset can be cached forever. */
 const ASSET_CACHE_CONTROL = 'private, max-age=31536000, immutable';
@@ -27,6 +35,12 @@ const FALLBACK_TYPE = 'application/octet-stream';
 const BODY_TOO_LARGE = 'request body is larger than the rest of the declared Upload-Length';
 /** `type/subtype` plus simple parameters, e.g. `video/mp4; codecs="avc1.640028, mp4a.40.2"`. */
 const CONTENT_TYPE_RE = /^[\w.+-]+\/[\w.+-]+(?:\s*;\s*[\w-]+=(?:"[\w .,+-]*"|[\w.+-]+))*$/;
+/**
+ * The types an asset is served as: what a browser plays or paints and nothing else. Anything it
+ * would lay out as a document (HTML, SVG, PDF, plain text) could pose as a page of this server
+ * under its own address, script or no script.
+ */
+const MEDIA_TYPE_RE = /^(?:video\/[\w.+-]+|audio\/[\w.+-]+|image\/(?:png|jpeg|webp|avif|gif))(?:\s*;|$)/i;
 
 interface AssetPaths {
   dir: string;
@@ -40,6 +54,17 @@ export function sanitizeContentType(value: unknown): string {
   return typeof value === 'string' && value.length <= 255 && CONTENT_TYPE_RE.test(value)
     ? value
     : FALLBACK_TYPE;
+}
+
+/**
+ * How a stored asset is labelled for whoever fetches it. Media keeps its type. Everything else
+ * (the editor reads a LUT or an SVG from the bytes, whatever they are called) becomes an opaque
+ * download, so that opening its URL in a tab saves a file instead of showing one.
+ */
+export function assetHeaders(storedType: string): Record<string, string> {
+  return MEDIA_TYPE_RE.test(storedType)
+    ? { 'Content-Type': storedType }
+    : { 'Content-Type': FALLBACK_TYPE, 'Content-Disposition': 'attachment' };
 }
 
 /**
@@ -66,17 +91,6 @@ export function parseRange(
   if (end < start) return null;
   if (start >= size) return 'unsatisfiable';
   return { start, end: Math.min(end, size - 1) };
-}
-
-/** Size of a regular file, or `null` if it does not exist. */
-async function fileSize(path: string): Promise<number | null> {
-  try {
-    const info = await stat(path);
-    return info.isFile() ? info.size : null;
-  } catch (err) {
-    if (isNotFound(err)) return null;
-    throw err;
-  }
 }
 
 interface ActiveUpload {
@@ -122,6 +136,42 @@ export class MediaStore {
   /** Resolves once no request is touching the media files any more (used on shutdown). */
   async drain(): Promise<void> {
     while (this.inFlight.size > 0) await Promise.all(this.inFlight);
+  }
+
+  /**
+   * Delete what is left of uploads nobody came back to: the `.part` files of a project that have
+   * not been written to since `before`. Returns how many were deleted. Finished assets are never
+   * touched, whether or not anything still refers to them, and neither is an upload in progress.
+   * A client that does come back finds nothing stored and starts over, as it does for a new asset.
+   */
+  async sweepAbandonedUploads(projectId: string, before: number): Promise<number> {
+    const dir = join(this.projects.dir(projectId), 'media');
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch (err) {
+      if (isNotFound(err)) return 0;
+      throw err;
+    }
+    let removed = 0;
+    for (const name of names) {
+      const assetId = name.endsWith('.part') ? name.slice(0, -'.part'.length) : '';
+      const key = `${projectId}/${assetId}`;
+      if (!isValidId(assetId) || this.active.has(key)) continue;
+      // Held like an upload would hold it, so a request for the asset waits until we are done.
+      const release = await this.lock(key, () => undefined);
+      try {
+        const part = join(dir, name);
+        const info = await stat(part).catch(() => null);
+        if (info?.isFile() && info.mtimeMs < before) {
+          await unlink(part);
+          removed++;
+        }
+      } finally {
+        release();
+      }
+    }
+    return removed;
   }
 
   private async dispatch(
@@ -170,7 +220,7 @@ export class MediaStore {
         'Upload-Offset': size,
         'Upload-Complete': '1',
         'Content-Length': size,
-        'Content-Type': await this.storedType(paths),
+        ...assetHeaders(await this.storedType(paths)),
         'Accept-Ranges': 'bytes',
         'Cache-Control': 'no-store',
       });
@@ -210,13 +260,13 @@ export class MediaStore {
       const end = range ? range.end : size - 1;
       const length = end - start + 1;
       res.writeHead(range ? 206 : 200, {
-        'Content-Type': type,
+        ...assetHeaders(type),
         'Content-Length': length,
         ...(range ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}),
         'Accept-Ranges': 'bytes',
         'Cache-Control': ASSET_CACHE_CONTROL,
-        // Uploads are user content. If someone opens an asset URL directly, the browser must treat
-        // it as an opaque, script-less document rather than as a page of this origin.
+        // Uploads are user content. If someone opens an asset URL directly, whatever the browser
+        // does show (a player, a picture) must not count as a page of this origin.
         'Content-Security-Policy': 'sandbox',
       });
       if (length === 0) {

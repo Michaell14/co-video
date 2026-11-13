@@ -7,8 +7,12 @@
  * Comments are shared, so whoever changes the rate re-times them for everyone. Range, playhead and
  * zoom are each person's own: the session re-times them wherever the change arrives from someone
  * else (`retimeView`).
+ *
+ * The rate changes in two ways: it is set in the project settings (`changeProjectFrameRate`), or
+ * the whole project is replaced by one that has another (`Session.replaceProject`). Both go
+ * through `withFrameRate`.
  */
-import { changeFrameRate, fpsOf } from '@tandem/core';
+import { changeFrameRate, fpsOf, sameRate } from '@tandem/core';
 import type { Session } from '../../session/session';
 import { commit } from '../../state/props';
 import { retimeComments, type Moved } from '../../state/timing';
@@ -79,17 +83,26 @@ function watch(session: Session): void {
   });
 }
 
-/** Switch the open project to another frame rate, keeping every moment where it was in real time. */
-export function changeProjectFrameRate(session: Session, fpsNum: number, fpsDen: number): void {
-  const p = session.store.get();
-  const k = fpsNum / fpsDen / fpsOf(p.settings);
+/**
+ * Make a change to the project that may leave it at another frame rate, and have everything
+ * outside the document follow. `change` is one commit, so one undo step: the journey is noted on
+ * that step, and undoing or redoing it takes comments and view along.
+ */
+export function withFrameRate(session: Session, change: () => void): void {
+  const before = fpsOf(session.store.get().settings);
   const frame = session.player?.getFrame() ?? null;
   const { undoStack } = session.store.undoManager;
   const last = undoStack[undoStack.length - 1]?.meta.get(META) as Retime | undefined;
-  commit(changeFrameRate(p, fpsNum, fpsDen));
-  if (!session.canEdit || Math.abs(k - 1) < 1e-9) return;
+  change();
+  const k = fpsOf(session.store.get().settings) / before;
+  if (!session.canEdit || sameRate(k)) return;
   watch(session);
-  // Choosing the rate that was just left is the same journey as undoing the change.
-  const moved = follow(session, k, frame, last && Math.abs(last.k * k - 1) < 1e-9 ? last.moved : {});
+  // Going to the rate that was just left is the same journey as undoing the change.
+  const moved = follow(session, k, frame, last && sameRate(last.k * k) ? last.moved : {});
   undoStack[undoStack.length - 1]?.meta.set(META, { k, moved } satisfies Retime);
+}
+
+/** Switch the open project to another frame rate, keeping every moment where it was in real time. */
+export function changeProjectFrameRate(session: Session, fpsNum: number, fpsDen: number): void {
+  withFrameRate(session, () => commit(changeFrameRate(session.store.get(), fpsNum, fpsDen)));
 }

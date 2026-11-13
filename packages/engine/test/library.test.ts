@@ -103,6 +103,47 @@ describe('MediaLibrary', () => {
     expect(await lost.read('a')).toBe('missing');
   });
 
+  it('says once why an asset cannot be had, however often it is asked for again', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let requests = 0;
+    vi.stubGlobal('fetch', async () => {
+      requests++;
+      return new Response('gone', { status: 500 });
+    });
+    const refused = new MediaLibrary(async () => ({ url: 'https://example.test/media/a' }));
+    // Whatever shows the asset asks again every few seconds.
+    for (let i = 0; i < 4; i++) {
+      expect(await refused.read('a')).toBe('unreadable');
+      await vi.advanceTimersByTimeAsync(3000);
+    }
+    expect(requests).toBe(4);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toBe('[media] could not fetch a');
+    // The session says the file changed: what happens to the next request is news again.
+    refused.invalidate('a');
+    expect(await refused.read('a')).toBe('unreadable');
+    expect(warn).toHaveBeenCalledTimes(2);
+
+    warn.mockClear();
+    let reachable = false;
+    const lost = new MediaLibrary(async () => {
+      if (!reachable) throw new Error('storage unavailable');
+      return null;
+    });
+    for (let i = 0; i < 3; i++) {
+      expect(await lost.open('b')).toBe('missing');
+      await vi.advanceTimersByTimeAsync(3000);
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+    // A resolver that answered and then fails again has a new problem.
+    reachable = true;
+    expect(await lost.open('b')).toBe('missing');
+    reachable = false;
+    expect(await lost.open('b')).toBe('missing');
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
   it('does not let an old failure displace the answer that replaced it', async () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'warn').mockImplementation(() => {});

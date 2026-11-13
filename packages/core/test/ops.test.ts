@@ -14,6 +14,7 @@ import {
   freezeFrame,
   handles,
   insertClips,
+  linkedIds,
   sourceTimeAt,
   makeClip,
   makeTrack,
@@ -311,6 +312,122 @@ describe('split & delete', () => {
       [100, 150],
     ]);
     expect(list[1].sourceIn).toBeCloseTo(5);
+  });
+
+  /** A sync clip: picture on V1 and sound on A1 over the same frames, linked. */
+  const syncPair = (f: ReturnType<typeof fixture>, start: number, duration: number, linkId: string) => {
+    const video = makeClip('video', f.v1.id, { assetId: 'asset1', start, duration, linkId });
+    const audio = makeClip('audio', f.a1.id, { assetId: 'asset1', start, duration, linkId });
+    const p = applyEdits(f.p, [
+      { op: 'addClip', clip: video },
+      { op: 'addClip', clip: audio },
+    ]);
+    return { p, video, audio };
+  };
+  const spans = (p: Project, trackId: string) => clipsOnTrack(p, trackId).map((c) => [c.start, clipEnd(c)]);
+
+  it('keeps picture and sound linked on both sides of a range cut out of a sync clip', () => {
+    const f = fixture();
+    const { p, video, audio } = syncPair(f, 0, 90, 'take');
+    for (const ripple of [true, false]) {
+      const q = applyEdits(p, deleteRange(p, [f.v1.id, f.a1.id], 30, 60, ripple));
+      const after = ripple ? [30, 60] : [60, 90];
+      for (const track of [f.v1, f.a1]) expect(spans(q, track.id)).toEqual([[0, 30], after]);
+      const [v1, v2] = clipsOnTrack(q, f.v1.id);
+      const [a1, a2] = clipsOnTrack(q, f.a1.id);
+      // What comes before the cut is the clip that was there, link and all.
+      expect([v1.id, a1.id]).toEqual([video.id, audio.id]);
+      expect([v1.linkId, a1.linkId]).toEqual(['take', 'take']);
+      // What comes after it is a pair of its own, as after a split at the same frame.
+      expect(v2.linkId).toBeTruthy();
+      expect(v2.linkId).not.toBe('take');
+      expect(a2.linkId).toBe(v2.linkId);
+      expect(linkedIds(q, v2.id).sort()).toEqual([v2.id, a2.id].sort());
+      expect(v2.sourceIn).toBeCloseTo(2);
+      expect(a2.sourceIn).toBeCloseTo(2);
+    }
+  });
+
+  it('leaves the piece after a cut unlinked when only one track of a sync clip was cut', () => {
+    const f = fixture();
+    const { p, video, audio } = syncPair(f, 0, 90, 'take');
+    const q = applyEdits(p, deleteRange(p, [f.v1.id], 30, 60, false));
+    const [head, tail] = clipsOnTrack(q, f.v1.id);
+    expect(head.linkId).toBe('take');
+    expect(tail.linkId).toBeNull();
+    expect(linkedIds(q, audio.id).sort()).toEqual([video.id, audio.id].sort());
+  });
+
+  it('links the pieces that begin at the same cut, also when the clips are cut differently', () => {
+    const f = fixture();
+    // The sound runs on after the picture, and the picture begins inside the first cut.
+    const video = makeClip('video', f.v1.id, { assetId: 'asset1', start: 25, duration: 65, linkId: 'take' });
+    const audio = makeClip('audio', f.a1.id, { assetId: 'asset1', start: 0, duration: 120, linkId: 'take' });
+    const p = applyEdits(f.p, [
+      { op: 'addClip', clip: video },
+      { op: 'addClip', clip: audio },
+    ]);
+    const dropped = [20, 50, 100].flatMap((start) => [
+      makeClip('solid', f.v1.id, { start, duration: 10 }),
+      makeClip('audio', f.a1.id, { start, duration: 10 }),
+    ]);
+    const r = insertClips(p, dropped);
+    const q = applyEdits(p, r.edits);
+    expect(overlaps(q)).toEqual([]);
+    const pieces = (trackId: string) => clipsOnTrack(q, trackId).filter((c) => !r.created.includes(c.id));
+    const [v1, v2] = pieces(f.v1.id);
+    const [a1, a2, a3, a4] = pieces(f.a1.id);
+    expect([v1, v2].map((c) => [c.start, clipEnd(c)])).toEqual([
+      [30, 50],
+      [60, 90],
+    ]);
+    expect([a1, a2, a3, a4].map((c) => [c.start, clipEnd(c)])).toEqual([
+      [0, 20],
+      [30, 50],
+      [60, 100],
+      [110, 120],
+    ]);
+    // The first piece of each clip is the clip itself.
+    expect([v1.id, a1.id]).toEqual([video.id, audio.id]);
+    expect([v1.linkId, a1.linkId]).toEqual(['take', 'take']);
+    // Picture and sound that begin at frame 60 belong together.
+    expect(v2.linkId).toBeTruthy();
+    expect(a3.linkId).toBe(v2.linkId);
+    // Nothing else begins where these two do.
+    expect([a2.linkId, a4.linkId]).toEqual([null, null]);
+  });
+
+  it('keeps a sync clip linked on both sides of a clip dropped into its middle', () => {
+    const f = fixture();
+    const { p } = syncPair(f, 0, 90, 'take');
+    const drop = [
+      makeClip('video', f.v1.id, { assetId: 'asset1', start: 30, duration: 30, linkId: 'new' }),
+      makeClip('audio', f.a1.id, { assetId: 'asset1', start: 30, duration: 30, linkId: 'new' }),
+    ];
+    const q = applyEdits(p, insertClips(p, drop).edits);
+    expect(overlaps(q)).toEqual([]);
+    const v = clipsOnTrack(q, f.v1.id);
+    const a = clipsOnTrack(q, f.a1.id);
+    expect(v.map((c) => c.linkId === a[v.indexOf(c)].linkId)).toEqual([true, true, true]);
+    expect(new Set(v.map((c) => c.linkId)).size).toBe(3);
+    expect(v[2].linkId).toBeTruthy();
+
+    // Dragging a sync clip onto another one does the same to the one underneath.
+    const second = syncPair({ ...f, p }, 200, 30, 'moved');
+    const moved = applyEdits(
+      second.p,
+      placeClips(second.p, [
+        { id: second.video.id, start: 30, trackId: f.v1.id },
+        { id: second.audio.id, start: 30, trackId: f.a1.id },
+      ]),
+    );
+    const tails = [f.v1.id, f.a1.id].map((id) => clipsOnTrack(moved, id)[2]);
+    expect(tails.map((c) => [c.start, clipEnd(c)])).toEqual([
+      [60, 90],
+      [60, 90],
+    ]);
+    expect(tails[0].linkId).toBeTruthy();
+    expect(tails[0].linkId).toBe(tails[1].linkId);
   });
 
   /** Opacity the title animation applies at each frame (1 where no title is showing). */

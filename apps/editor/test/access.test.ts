@@ -74,30 +74,41 @@ describe('entryFate', () => {
   const content = { loaded: true, empty: false };
   const unread = { loaded: false, empty: true };
 
-  it('forgets a project whose link is refused and of which nothing is on the device', () => {
-    expect(entryFate('refused', nothing)).toBe('forget');
+  it('forgets a project reached through a link that is refused, of which nothing is on the device', () => {
+    expect(entryFate('refused', nothing, false)).toBe('forget');
   });
 
-  it('keeps the copy on the device and drops only the refused link', () => {
-    expect(entryFate('refused', content)).toBe('unlink');
-    // Content that arrived before the stored copy was read is content all the same.
-    expect(entryFate('refused', { loaded: false, empty: false })).toBe('unlink');
+  it('never takes the card of a project made here: its link is the only owner link there is', () => {
+    expect(entryFate('refused', nothing, true)).toBe('keep');
+    expect(entryFate('refused', unread, true)).toBe('keep');
+  });
+
+  it('keeps the copy on the device and takes only the refused link out of the entry', () => {
+    for (const own of [true, false]) {
+      expect(entryFate('refused', content, own)).toBe('unlink');
+      // Content that arrived before the stored copy was read is content all the same.
+      expect(entryFate('refused', { loaded: false, empty: false }, own)).toBe('unlink');
+    }
   });
 
   it('never touches the entry when the server could not be asked', () => {
-    expect(entryFate('unreachable', nothing)).toBe('keep');
-    expect(entryFate('unreachable', content)).toBe('keep');
-    expect(entryFate('unreachable', unread)).toBe('keep');
+    for (const own of [true, false]) {
+      expect(entryFate('unreachable', nothing, own)).toBe('keep');
+      expect(entryFate('unreachable', content, own)).toBe('keep');
+      expect(entryFate('unreachable', unread, own)).toBe('keep');
+    }
   });
 
   it('leaves an accepted link, and an entry without one, alone', () => {
-    expect(entryFate(editor, nothing)).toBe('keep');
-    expect(entryFate(editor, content)).toBe('keep');
-    expect(entryFate(null, nothing)).toBe('keep');
-    expect(entryFate(null, content)).toBe('keep');
+    for (const own of [true, false]) {
+      expect(entryFate(editor, nothing, own)).toBe('keep');
+      expect(entryFate(editor, content, own)).toBe('keep');
+      expect(entryFate(null, nothing, own)).toBe('keep');
+      expect(entryFate(null, content, own)).toBe('keep');
+    }
   });
 
   it('does not take an unread device for an empty one', () => {
-    expect(entryFate('refused', unread)).toBe('keep');
+    expect(entryFate('refused', unread, false)).toBe('keep');
   });
 });

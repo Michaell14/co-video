@@ -1,7 +1,7 @@
 import { CloudOff, Copy, History, Link2, RotateCcw, ShieldCheck, UploadCloud, UserRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import * as Y from 'yjs';
-import { initials, ProjectStore, USER_COLORS, type Role, type VersionInfo } from '@tandem/core';
+import { canEdit, initials, ProjectStore, USER_COLORS, type Role, type VersionInfo } from '@tandem/core';
 import { navigate } from '../../App';
 import { api } from '../../session/api';
 import { usePeers, useSession, useSessionMeta } from '../../session/hooks';
@@ -65,8 +65,59 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const retry = async () => {
+    setBusy(true);
+    const answer = await session.retryLink();
+    setBusy(false);
+    if (answer === 'accepted') toast('The server accepted the link: this project is shared again', 'success');
+    else if (answer === 'refused') toast('The server still does not accept the link.', 'error');
+    else toast('The collaboration server cannot be reached right now.', 'error');
+  };
+
+  const forget = async () => {
+    const sure = await confirm({
+      title: 'Forget the link to the shared project?',
+      message:
+        'This copy stays on this device as a project of its own. ' +
+        (meta.refusedLink === 'owner'
+          ? 'The link is the owner link of the shared project, and no other can be made: without it nobody is its owner any more.'
+          : 'To join the shared project again you will need a new link from someone in it.'),
+      confirmLabel: 'Forget link',
+      danger: true,
+    });
+    if (sure) session.forgetLink();
+  };
+
   let body: React.ReactNode;
-  if (!meta.online && !meta.shared) {
+  if (!meta.shared && meta.refusedLink) {
+    body = (
+      <div className="share__state">
+        <CloudOff />
+        <b>The server did not accept this project’s link</b>
+        <p>
+          Your copy stays on this device and does not sync. The link is kept, because a server can be wrong
+          for a while: after a restart, or when it has moved.{' '}
+          {canEdit(meta.refusedLink)
+            ? 'If it is accepted now, this copy joins the shared project again, with the changes made here since.'
+            : 'If it is accepted now, the shared project takes the place of this copy: changes made here since are not kept.'}
+        </p>
+        <div className="hstack">
+          <Button
+            variant="primary"
+            size="lg"
+            icon={<RotateCcw />}
+            disabled={busy}
+            onClick={() => void retry()}
+          >
+            {busy ? 'Asking the server…' : 'Try again'}
+          </Button>
+          <Button variant="ghost" size="lg" disabled={busy} onClick={() => void forget()}>
+            Forget the link
+          </Button>
+        </div>
+      </div>
+    );
+  } else if (!meta.online && !meta.shared) {
     body = (
       <div className="share__state">
         <CloudOff />
@@ -229,7 +280,7 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
       const doc = new Y.Doc();
       Y.applyUpdate(doc, data);
       const snapshot = new ProjectStore(doc).get();
-      session.store.replaceAll(snapshot);
+      session.replaceProject(snapshot);
       toast(`Restored “${v.name}”`, 'success');
       onClose();
     } catch (err) {

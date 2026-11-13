@@ -1201,4 +1201,34 @@ test.describe('shared project', () => {
     await expect(toast(page, 'Restored “Rough cut”')).toBeVisible();
     await expect(versions).toHaveCount(0);
   });
+
+  test('someone who may not edit is told which access they do have', async ({ page, browser }) => {
+    await sharedProject(page);
+    await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Shared' }));
+    await expect(page.locator('.conn')).toContainText('All changes synced');
+    for (const role of ['commenter', 'viewer']) {
+      const link: string = await page.evaluate(
+        (role) => (window as any).tandem.session.inviteLink(role),
+        role,
+      );
+      const context = await browser.newContext();
+      const guest = await context.newPage();
+      await guest.goto(link);
+      await guest.waitForFunction(
+        () => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 1,
+      );
+      expect(await tandem(guest, (t) => t.session.getMeta().role)).toBe(role);
+      await watchToasts(guest);
+      // A key, and two commands that check the access for themselves.
+      await guest.keyboard.press('t');
+      await guest.evaluate(() => void (window as any).tandem.cmd.loadSample());
+      await guest.evaluate(() => void (window as any).tandem.cmd.normalizeLoudness());
+      const access = role === 'commenter' ? 'comment-only' : 'view-only';
+      await expect.poll(() => toastsWith(guest, `You have ${access} access to this project.`)).toBe(3);
+      // Nobody on a comment link is told they can only view, and nothing was edited.
+      expect(await toastsWith(guest, ' access to this project.')).toBe(3);
+      expect(await clipTypes(guest)).toEqual(['text']);
+      await context.close();
+    }
+  });
 });

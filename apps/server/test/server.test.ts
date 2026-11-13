@@ -1,12 +1,11 @@
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { connect as netConnect } from 'node:net';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import type { ProjectInfo, VersionInfo } from '@tandem/core';
-import { createTandemServer } from '../src/server';
-import type { TandemServer, TandemServerOptions } from '../src/server';
 import {
   Api,
   SilentPeer,
@@ -14,42 +13,15 @@ import {
   awarenessFrame,
   content,
   rawGet,
-  removeTempDirs,
   sleep,
   tempDir,
   upgradeStatus,
+  useServers,
   waitFor,
 } from './helpers';
 import type { Project } from './helpers';
 
-const servers: TandemServer[] = [];
-const clients: TestClient[] = [];
-
-async function start(
-  options: Partial<TandemServerOptions> = {},
-): Promise<{ server: TandemServer; api: Api; dataDir: string }> {
-  const dataDir = options.dataDir ?? (await tempDir());
-  // Point the static mounts at nothing unless a test asks for them, whatever happens to be built.
-  const missing = join(dataDir, 'no-such-dist');
-  const server = await createTandemServer({ editorDist: missing, siteDist: missing, ...options, dataDir });
-  servers.push(server);
-  return { server, api: new Api(server.url), dataDir };
-}
-
-function connect(api: Api, project: Project, doc: string, token = project.token): TestClient {
-  const client = new TestClient(api.wsUrl(project.id, doc, token));
-  clients.push(client);
-  return client;
-}
-
-afterEach(async () => {
-  await Promise.all(clients.splice(0).map((client) => client.close()));
-});
-
-afterAll(async () => {
-  await Promise.all(servers.splice(0).map((server) => server.close()));
-  await removeTempDirs();
-});
+const { clients, start, connect } = useServers();
 
 describe('tandem server', () => {
   // One server per group: keeps the groups independent (and far below the creation rate limit).
@@ -414,7 +386,12 @@ describe('tandem server', () => {
 
       a.awareness.setLocalState({ user: { name: 'Ada' }, playhead: 12 });
       await waitFor(() => b.awareness.getStates().has(a.doc.clientID), 'a visible to b');
-      expect(b.awareness.getStates().get(a.doc.clientID)).toEqual({ user: { name: 'Ada' }, playhead: 12 });
+      // The role is the one of the token, added by the server.
+      expect(b.awareness.getStates().get(a.doc.clientID)).toEqual({
+        user: { name: 'Ada' },
+        playhead: 12,
+        role: 'owner',
+      });
 
       a.awareness.setLocalStateField('playhead', 48);
       await waitFor(() => b.awareness.getStates().get(a.doc.clientID)?.playhead === 48, 'awareness update');
@@ -423,10 +400,14 @@ describe('tandem server', () => {
       const viewer = await connect(api, project, 'project', viewerToken).whenSynced();
       await waitFor(() => viewer.awareness.getStates().has(a.doc.clientID), 'a visible to late joiner');
 
-      // Read-only users still show up in presence.
-      viewer.awareness.setLocalState({ user: { name: 'Vera' } });
+      // Read-only users still show up in presence, as what they are whatever they claim to be.
+      viewer.awareness.setLocalState({ user: { name: 'Vera' }, role: 'owner' });
       await waitFor(() => a.awareness.getStates().has(viewer.doc.clientID), 'viewer visible to a');
       await waitFor(() => b.awareness.getStates().has(viewer.doc.clientID), 'viewer visible to b');
+      expect(a.awareness.getStates().get(viewer.doc.clientID)).toEqual({
+        user: { name: 'Vera' },
+        role: 'viewer',
+      });
 
       // A socket that just disappears takes its presence with it.
       await a.close();
@@ -487,15 +468,26 @@ describe('tandem server', () => {
       const state = { user: { name: '\\"[{'.repeat(50) }, selection: [[{ ranges: [[1, 2]] }]] };
       viewer.awareness.setLocalState(state);
       await waitFor(() => owner.awareness.getStates().has(viewer.doc.clientID), 'viewer visible to owner');
-      expect(owner.awareness.getStates().get(viewer.doc.clientID)).toEqual(state);
+      expect(owner.awareness.getStates().get(viewer.doc.clientID)).toEqual({ ...state, role: 'viewer' });
 
       // The limit itself: 32 levels pass, one more does not.
-      const nested = (depth: number): string => '['.repeat(depth) + ']'.repeat(depth);
-      viewer.send(awarenessFrame([{ clientId: 4246, clock: 1, state: nested(32) }]));
-      await waitFor(() => owner.awareness.getStates().has(4246), '32 levels relayed');
-      viewer.send(awarenessFrame([{ clientId: 4247, clock: 1, state: nested(33) }]));
+      const id = viewer.doc.clientID;
+      const nested = (depth: number): string => `{"deep":${'['.repeat(depth - 1)}${']'.repeat(depth - 1)}}`;
+      const depthSeen = (): number =>
+        JSON.stringify(owner.awareness.getStates().get(id)?.deep ?? '').length / 2;
+      viewer.send(awarenessFrame([{ clientId: id, clock: 100, state: nested(32) }]));
+      await waitFor(() => depthSeen() === 31, '32 levels relayed');
+      viewer.send(awarenessFrame([{ clientId: id, clock: 101, state: nested(33) }]));
       await waitFor(() => viewer.closed, 'sender of 33 levels closed');
-      expect(owner.awareness.getStates().has(4247)).toBe(false);
+      await waitFor(() => !owner.awareness.getStates().has(id), 'its presence left with it');
+
+      // A state is an object. Anything else has no place for a name or a role.
+      for (const odd of ['[]', '7', '"text"', 'true']) {
+        const sender = await connect(api, project, 'project', viewerToken).whenSynced();
+        sender.send(awarenessFrame([{ clientId: sender.doc.clientID, clock: 5, state: odd }]));
+        await waitFor(() => sender.closed, `sender of the state ${odd} closed`);
+      }
+      expect(present(owner)).toEqual([owner.doc.clientID]);
     });
   });
 
@@ -835,6 +827,64 @@ describe('tandem server', () => {
         416,
       );
     });
+
+    it('serves media as what it is and everything else as a file to save', async () => {
+      const project = await api.createProject();
+      const viewer = await api.invite(project, 'viewer');
+      const page = Buffer.from(
+        '<!doctype html><title>Sign in</title><a href="https://example.com">Sign in</a>',
+      );
+      const served = async (id: string, type: string, method = 'GET') => {
+        const path = `/api/projects/${project.id}/media/${id}`;
+        expect((await put(path, project.token, page, 0, page.length, type)).status).toBe(204);
+        // By the query token, as a link opened in a browser tab would carry it.
+        const res = await api.fetch(`${path}?t=${viewer}`, { method });
+        expect(res.status).toBe(200);
+        return res;
+      };
+
+      // What a browser plays or paints keeps its type, parameters and all.
+      for (const type of [
+        'video/mp4',
+        'video/webm; codecs="vp9, opus"',
+        'audio/ogg',
+        'image/png',
+        'image/jpeg',
+        'image/webp',
+        'image/avif',
+        'image/gif',
+      ]) {
+        const res = await served(`media_${type.replace(/\W/g, '_')}`, type);
+        expect(res.headers.get('content-type'), type).toBe(type);
+        expect(res.headers.get('content-disposition'), type).toBeNull();
+      }
+
+      // What it would lay out as a document is a download, whatever the uploader called it.
+      for (const type of [
+        'text/html',
+        'text/html; charset=utf-8',
+        'application/xhtml+xml',
+        'image/svg+xml',
+        'application/pdf',
+        'text/plain',
+        'text/xml',
+        'application/octet-stream',
+        'image/pngx',
+        'videox/mp4',
+      ]) {
+        for (const method of ['GET', 'HEAD']) {
+          const res = await served(`other_${type.replace(/\W/g, '_')}`, type, method);
+          expect(res.headers.get('content-type'), type).toBe('application/octet-stream');
+          expect(res.headers.get('content-disposition'), type).toBe('attachment');
+          expect(res.headers.get('x-content-type-options'), type).toBe('nosniff');
+          if (method === 'GET') {
+            expect(res.headers.get('content-security-policy'), type).toBe('sandbox');
+            // The bytes are what was uploaded: the editor reads LUTs and the like from them.
+            expect(Buffer.from(await res.arrayBuffer()).equals(page)).toBe(true);
+          }
+        }
+      }
+    });
   });
 
   describe('versions', () => {
@@ -1115,6 +1165,66 @@ describe('persistence', () => {
   });
 });
 
+describe('abandoned uploads', () => {
+  it('deletes what is left of an upload nobody came back to, and nothing else', async () => {
+    const first = await start();
+    const project = await first.api.createProject();
+    const base = `/api/projects/${project.id}/media`;
+    const put = (id: string, body: Uint8Array, offset: number, total: number) =>
+      first.api.fetch(`${base}/${id}`, {
+        method: 'PUT',
+        token: project.token,
+        headers: { 'Upload-Offset': String(offset), 'Upload-Length': String(total) },
+        body,
+      });
+    const bytes = Buffer.alloc(1000, 7);
+    expect((await put('finished_asset', bytes, 0, 1000)).status).toBe(204);
+    expect((await put('abandoned_upload', bytes.subarray(0, 400), 0, 1000)).status).toBe(204);
+    expect((await put('recent_upload', bytes.subarray(0, 400), 0, 1000)).status).toBe(204);
+    await first.server.close();
+
+    const mediaDir = join(first.dataDir, 'projects', project.id, 'media');
+    const longAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    // Old as well, and none of the sweep's business: a finished asset and a file of another kind.
+    await writeFile(join(mediaDir, 'notes.part.txt'), 'kept');
+    for (const name of ['abandoned_upload.part', 'finished_asset', 'finished_asset.json', 'notes.part.txt']) {
+      await utimes(join(mediaDir, name), longAgo, longAgo);
+    }
+    const files = async (): Promise<string[]> => (await readdir(mediaDir)).sort();
+    expect(await files()).toContain('abandoned_upload.part');
+
+    // Uploads are kept for a week by default. With the sweep turned off they are kept for good.
+    const keeping = await start({ dataDir: first.dataDir, uploadExpiryDays: 0 });
+    await sleep(200);
+    expect(await files()).toContain('abandoned_upload.part');
+    await keeping.server.close();
+
+    const { api } = await start({ dataDir: first.dataDir });
+    await waitFor(() => !existsSync(join(mediaDir, 'abandoned_upload.part')), 'abandoned upload deleted');
+    expect(await files()).toEqual([
+      'finished_asset',
+      'finished_asset.json',
+      'notes.part.txt',
+      'recent_upload.part',
+    ]);
+
+    // The asset is as if it had never been started, and can be uploaded from the beginning.
+    const probe = await api.fetch(`${base}/abandoned_upload?probe`, { method: 'HEAD', token: project.token });
+    expect(probe.headers.get('upload-offset')).toBe('0');
+    const resumed = await api.fetch(`${base}/recent_upload?probe`, { method: 'HEAD', token: project.token });
+    expect(resumed.headers.get('upload-offset')).toBe('400');
+    const again = await api.fetch(`${base}/abandoned_upload`, {
+      method: 'PUT',
+      token: project.token,
+      headers: { 'Upload-Offset': '0', 'Upload-Length': '1000' },
+      body: bytes,
+    });
+    expect(again.headers.get('upload-complete')).toBe('1');
+    const kept = await api.fetch(`${base}/finished_asset`, { token: project.token });
+    expect(Buffer.from(await kept.arrayBuffer()).equals(bytes)).toBe(true);
+  });
+});
+
 describe('shutdown', () => {
   it('closes promptly and cleanly with clients connected and an upload in flight', async () => {
     const { api, server, dataDir } = await start({ autoSnapshotMs: 0 });
@@ -1302,10 +1412,11 @@ describe('connection limits', () => {
     expect(await upgradeStatus(api.wsUrl(project.id, 'project', viewerToken))).toBe(503);
   });
 
-  it('does not let read-only connections keep people who can edit out of a full room', async () => {
+  it('does not let connections of a lesser role keep anyone out of a full room', async () => {
     const { api } = await start({ maxConnectionsPerRoom: 2 });
     const project = await api.createProject();
     const editorToken = await api.invite(project, 'editor');
+    const commenterToken = await api.invite(project, 'commenter');
     const viewerToken = await api.invite(project, 'viewer');
 
     const early = await connect(api, project, 'project', viewerToken).whenSynced();
@@ -1313,31 +1424,59 @@ describe('connection limits', () => {
     late.awareness.setLocalState({ user: { name: 'Vera' } });
     await waitFor(() => early.awareness.getStates().has(late.doc.clientID), 'late viewer visible');
 
-    // The most recent read-only connection makes way, and its presence goes with it.
-    const owner = await connect(api, project, 'project').whenSynced();
+    // The most recent connection of the lowest role makes way, and its presence goes with it.
+    const editor = await connect(api, project, 'project', editorToken).whenSynced();
     await waitFor(() => late.closed, 'late viewer displaced');
+    expect(late.closeCode).toBe(1013);
     await waitFor(() => !early.awareness.getStates().has(late.doc.clientID), 'displaced presence removed');
     expect(early.closed).toBe(false);
     expect(await upgradeStatus(api.wsUrl(project.id, 'project', viewerToken))).toBe(503);
 
-    const editor = await connect(api, project, 'project', editorToken).whenSynced();
+    const second = await connect(api, project, 'project', editorToken).whenSynced();
     await waitFor(() => early.closed, 'early viewer displaced');
-    owner.map.set('title', 'Still editable');
-    await waitFor(() => editor.map.get('title') === 'Still editable', 'owner → editor');
+    editor.map.set('title', 'Still editable');
+    await waitFor(() => second.map.get('title') === 'Still editable', 'editor → editor');
 
-    // Among those who can edit nobody is displaced: a full room is full.
+    // Equals do not displace each other, and nobody displaces someone above them.
     expect(await upgradeStatus(api.wsUrl(project.id, 'project', editorToken))).toBe(503);
-    expect(await upgradeStatus(api.wsUrl(project.id, 'project', project.token))).toBe(503);
-    expect(owner.closed).toBe(false);
-    expect(editor.closed).toBe(false);
-
-    // Commenters only read the project document, but they write the review document.
-    const commenterToken = await api.invite(project, 'commenter');
     expect(await upgradeStatus(api.wsUrl(project.id, 'project', commenterToken))).toBe(503);
-    const reviewViewer = await connect(api, project, 'review', viewerToken).whenSynced();
-    await connect(api, project, 'review', viewerToken).whenSynced();
-    await connect(api, project, 'review', commenterToken).whenSynced();
-    expect(reviewViewer.closed).toBe(false);
+    expect(editor.closed).toBe(false);
+    expect(second.closed).toBe(false);
+
+    // The owner is above everyone: the project is theirs to get into.
+    await connect(api, project, 'project').whenSynced();
+    await waitFor(() => second.closed, 'the more recent editor displaced by the owner');
+    expect(editor.closed).toBe(false);
+  });
+
+  it('does not let a comment link keep the owner and the editors out of the review', async () => {
+    const { api } = await start({ maxConnectionsPerRoom: 3 });
+    const project = await api.createProject();
+    const editorToken = await api.invite(project, 'editor');
+    const commenterToken = await api.invite(project, 'commenter');
+    const viewerToken = await api.invite(project, 'viewer');
+
+    // Commenters write the review document, and still they rank below those who own the project.
+    const viewer = await connect(api, project, 'review', viewerToken).whenSynced();
+    const commenters = [
+      await connect(api, project, 'review', commenterToken).whenSynced(),
+      await connect(api, project, 'review', commenterToken).whenSynced(),
+    ];
+    // A commenter takes the place of a viewer before that of anyone else.
+    commenters.push(await connect(api, project, 'review', commenterToken).whenSynced());
+    await waitFor(() => viewer.closed, 'viewer displaced by a commenter');
+    expect(await upgradeStatus(api.wsUrl(project.id, 'review', commenterToken))).toBe(503);
+    expect(await upgradeStatus(api.wsUrl(project.id, 'review', viewerToken))).toBe(503);
+
+    const owner = await connect(api, project, 'review').whenSynced();
+    await waitFor(() => commenters[2].closed, 'most recent commenter displaced by the owner');
+    const editor = await connect(api, project, 'review', editorToken).whenSynced();
+    await waitFor(() => commenters[1].closed, 'next commenter displaced by an editor');
+    expect(commenters[0].closed).toBe(false);
+
+    commenters[0].map.set('comment', 'Still here');
+    await waitFor(() => owner.map.get('comment') === 'Still here', 'commenter → owner');
+    await waitFor(() => editor.map.get('comment') === 'Still here', 'commenter → editor');
   });
 
   it('displaces nobody for a connection that does not get as far as joining', async () => {

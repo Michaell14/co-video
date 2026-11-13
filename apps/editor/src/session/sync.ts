@@ -29,6 +29,43 @@ interface Options {
 /** "Try again later": sent to a read-only connection whose place a full room gives to an editor. */
 const CLOSE_TRY_AGAIN_LATER = 1013;
 
+/** What an awareness update said about one client: at which clock, and whether it said "gone". */
+export interface Claim {
+  clock: number;
+  gone: boolean;
+}
+
+/**
+ * Take what an awareness update says about the client `own` out of it. Returns the update for
+ * everyone else (`null` when nothing is left) and the claim made about `own`, if there was one.
+ */
+export function withoutOwn(
+  update: Uint8Array,
+  own: number,
+): { others: Uint8Array | null; claim: Claim | null } {
+  const dec = decoding.createDecoder(update);
+  const count = decoding.readVarUint(dec);
+  const kept: [id: number, clock: number, state: string][] = [];
+  let claim: Claim | null = null;
+  for (let i = 0; i < count; i++) {
+    const id = decoding.readVarUint(dec);
+    const clock = decoding.readVarUint(dec);
+    const state = decoding.readVarString(dec);
+    if (id !== own) kept.push([id, clock, state]);
+    else if (!claim || clock > claim.clock) claim = { clock, gone: state === 'null' };
+  }
+  if (!claim) return { others: update, claim };
+  if (kept.length === 0) return { others: null, claim };
+  const enc = encoding.createEncoder();
+  encoding.writeVarUint(enc, kept.length);
+  for (const [id, clock, state] of kept) {
+    encoding.writeVarUint(enc, id);
+    encoding.writeVarUint(enc, clock);
+    encoding.writeVarString(enc, state);
+  }
+  return { others: encoding.toUint8Array(enc), claim };
+}
+
 export class SyncProvider {
   status: SyncStatus = 'offline';
   synced = false;
@@ -87,7 +124,7 @@ export class SyncProvider {
         aw.setLocalState(aw.getLocalState());
         const e2 = encoding.createEncoder();
         encoding.writeVarUint(e2, WS_MSG_AWARENESS);
-        encoding.writeVarUint8Array(e2, awarenessProtocol.encodeAwarenessUpdate(aw, [this.doc.clientID]));
+        encoding.writeVarUint8Array(e2, awarenessProtocol.encodeAwarenessUpdate(aw, [aw.clientID]));
         ws.send(encoding.toUint8Array(e2));
       }
     };
@@ -107,7 +144,7 @@ export class SyncProvider {
       this.synced = false;
       const aw = this.opts.awareness;
       if (aw) {
-        const others = Array.from(aw.getStates().keys()).filter((id) => id !== this.doc.clientID);
+        const others = Array.from(aw.getStates().keys()).filter((id) => id !== aw.clientID);
         awarenessProtocol.removeAwarenessStates(aw, others, this);
       }
       this.setStatus('offline');
@@ -134,8 +171,13 @@ export class SyncProvider {
         this.opts.onSynced?.();
       }
     } else if (type === WS_MSG_AWARENESS) {
-      if (this.opts.awareness) {
-        awarenessProtocol.applyAwarenessUpdate(this.opts.awareness, decoding.readVarUint8Array(dec), this);
+      const aw = this.opts.awareness;
+      if (aw) {
+        // On the wire anyone can speak about any client. What this client shows of itself is its
+        // own to say: taken from the room, it would announce someone else's words from then on.
+        const { others, claim } = withoutOwn(decoding.readVarUint8Array(dec), aw.clientID);
+        if (others) awarenessProtocol.applyAwarenessUpdate(aw, others, this);
+        if (claim) this.answer(aw, claim);
       }
     } else if (type === WS_MSG_CONTROL) {
       try {
@@ -144,6 +186,23 @@ export class SyncProvider {
         /* ignore malformed control frames */
       }
     }
+  }
+
+  /**
+   * Someone else spoke for this client. Whoever heard them now shows what they said, at the clock
+   * they said it with, and would take nothing older from us: so our own state goes out again at a
+   * later clock. Only a clock we have not reached, or a "gone" at the one we are at, can be that. A
+   * state at a clock we have been at may be our own words coming back, and answering those would
+   * never end.
+   */
+  private answer(aw: awarenessProtocol.Awareness, claim: Claim): void {
+    const mine = aw.meta.get(aw.clientID);
+    const state = aw.getLocalState();
+    if (!mine) return;
+    const ahead = claim.clock > mine.clock;
+    if (!ahead && !(claim.clock === mine.clock && claim.gone && state !== null)) return;
+    if (ahead) aw.meta.set(aw.clientID, { ...mine, clock: claim.clock });
+    aw.setLocalState(state);
   }
 
   private schedule(): void {
@@ -166,7 +225,7 @@ export class SyncProvider {
 
   private onPageHide = (): void => {
     const aw = this.opts.awareness;
-    if (aw) awarenessProtocol.removeAwarenessStates(aw, [this.doc.clientID], 'unload');
+    if (aw) awarenessProtocol.removeAwarenessStates(aw, [aw.clientID], 'unload');
   };
 
   private onDocUpdate = (update: Uint8Array, origin: unknown): void => {

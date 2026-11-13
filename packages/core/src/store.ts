@@ -33,6 +33,7 @@ import {
 } from './defaults';
 import { getEffectDef, type ParamDef } from './effects';
 import { conformEasing } from './keyframes';
+import { overlappingPairs, separateClips } from './overlaps';
 import { clipAtRate, fpsOf, sameRate } from './time';
 import { getTransitionDef } from './transitions';
 import type {
@@ -123,10 +124,34 @@ function inOrder<T>(list: T[], key: (item: T) => number): T[] {
 }
 
 const strOrNull: Reader = (v) => (v === null || typeof v === 'string' ? v : undefined);
-const numOrNull: Reader = (v) => (v === null || isNum(v) ? v : undefined);
 const boolOrNull: Reader = (v) => (v === null || typeof v === 'boolean' ? v : undefined);
 /** Every colour in the model goes through `hexColor`, which says why. */
 const color: Reader = (v) => hexColor(v) ?? undefined;
+
+/**
+ * A number that an audio node, a canvas or a font has to accept. Past these ranges nothing sounds
+ * or looks any different, and some of them throw: a gain of 1e39 dB is not a finite number of
+ * anything, and a canvas cannot be 1e308 pixels wide.
+ */
+const within =
+  (lo: number, hi: number): Reader =>
+  (v) =>
+    isNum(v) ? clamp(v, lo, hi) : undefined;
+
+const decibels = within(-60, 24);
+const balance = within(-1, 1);
+const fraction = within(0, 1);
+/** Lengths of a title or a shape, in units of the type size or of the frame. */
+const extent = within(0, 100);
+
+/**
+ * A font family goes into a CSS font shorthand between double quotes. A name that could end the
+ * quotes early makes the whole shorthand something that is not a font.
+ */
+const fontFamily: Reader = (v) =>
+  typeof v === 'string' && v.length > 0 && v.length <= 100 && !/["'\\\u0000-\u001f\u007f]/.test(v)
+    ? v
+    : undefined;
 
 /** Reader for a closed set of strings, written as a record so the compiler keeps it exhaustive. */
 const oneOf =
@@ -250,11 +275,17 @@ const readTransition: Reader = (v) => {
   return t;
 };
 
-function readKeyframe(k: unknown): Keyframe | undefined {
+function readKeyframe(k: unknown, range?: Reader): Keyframe | undefined {
   if (!isObj(k) || !isNum(k.t) || !isNum(k.v)) return undefined;
   const e = conformEasing(k.e);
-  return e === k.e && Object.keys(k).length === 3 ? (k as unknown as Keyframe) : { t: k.t, v: k.v, e };
+  const v = range ? (range(k.v) as number) : k.v;
+  return e === k.e && v === k.v && Object.keys(k).length === 3
+    ? (k as unknown as Keyframe)
+    : { t: k.t, v, e };
 }
+
+/** An animated property keeps to the range of the property itself. */
+const KEYFRAME_RANGES: Record<string, Reader | undefined> = { volume: decibels, pan: balance };
 
 const readKeyframes: Reader = (v) => {
   if (!isObj(v)) return undefined;
@@ -265,8 +296,12 @@ const readKeyframes: Reader = (v) => {
       asIs = false;
       continue;
     }
+    const range = Object.hasOwn(KEYFRAME_RANGES, path) ? KEYFRAME_RANGES[path] : undefined;
     // Evaluation binary-searches the list, so it has to arrive in time order.
-    out[path] = inOrder(conformList(list, readKeyframe), (k) => k.t);
+    out[path] = inOrder(
+      conformList(list, (k) => readKeyframe(k, range)),
+      (k) => k.t,
+    );
     if (out[path] !== list) asIs = false;
   }
   return asIs ? v : out;
@@ -304,27 +339,45 @@ const CLIP_READERS: Readers<typeof CLIP_DEFAULTS> = {
       lutId: strOrNull,
     }),
   ),
+  volume: decibels,
+  pan: balance,
   mask: nullable(shaped(DEFAULT_MASK, { type: oneOf({ rect: true, ellipse: true }) })),
   keyframes: readKeyframes,
   transIn: readTransition,
   transOut: readTransition,
   text: nullable(
     shaped(DEFAULT_TEXT, {
+      font: fontFamily,
+      size: extent,
+      // CSS knows the weights 1 to 1000 and no others.
+      weight: (v) => (isNum(v) ? clamp(Math.round(v), 1, 1000) : undefined),
       color,
       align: oneOf({ left: true, center: true, right: true }),
-      boxWidth: numOrNull,
+      lineHeight: extent,
+      letterSpacing: within(-1, 100),
+      boxWidth: nullable(extent),
       gradient: shaped(DEFAULT_TEXT.gradient, { from: color, to: color }),
-      stroke: shaped(DEFAULT_TEXT.stroke, { color }),
-      shadow: shaped(DEFAULT_TEXT.shadow, { color }),
-      bg: shaped(DEFAULT_TEXT.bg, { color }),
+      stroke: shaped(DEFAULT_TEXT.stroke, { color, width: extent }),
+      shadow: shaped(DEFAULT_TEXT.shadow, {
+        color,
+        blur: extent,
+        x: within(-100, 100),
+        y: within(-100, 100),
+        opacity: fraction,
+      }),
+      bg: shaped(DEFAULT_TEXT.bg, { color, opacity: fraction, padX: extent, padY: extent, radius: extent }),
     }),
   ),
   shape: nullable(
     shaped(DEFAULT_SHAPE, {
       kind: oneOf(SHAPE_KINDS),
+      w: extent,
+      h: extent,
       fill: color,
       gradient: shaped(DEFAULT_SHAPE.gradient, { from: color, to: color }),
       stroke: color,
+      strokeWidth: extent,
+      radius: fraction,
       // The outline is drawn one vertex at a time.
       sides: (v) => (isNum(v) ? clamp(Math.round(v), 3, 64) : undefined),
     }),
@@ -346,9 +399,33 @@ function readClip(id: ID, json: unknown): Clip | null {
   return clip;
 }
 
+const hertz = within(20, 20000);
+const eqGain = within(-24, 24);
+
 const TRACK_READERS: Readers<Omit<Track, 'id' | 'kind'>> = {
-  eq: nullable(shaped(DEFAULT_EQ)),
-  compressor: nullable(shaped(DEFAULT_COMPRESSOR)),
+  volume: decibels,
+  pan: balance,
+  eq: nullable(
+    shaped(DEFAULT_EQ, {
+      low: eqGain,
+      mid: eqGain,
+      high: eqGain,
+      lowFreq: hertz,
+      midFreq: hertz,
+      highFreq: hertz,
+    }),
+  ),
+  // The ranges of a Web Audio compressor; its makeup gain is an ordinary gain.
+  compressor: nullable(
+    shaped(DEFAULT_COMPRESSOR, {
+      threshold: within(-100, 0),
+      ratio: within(1, 20),
+      attack: fraction,
+      release: fraction,
+      knee: within(0, 40),
+      makeup: eqGain,
+    }),
+  ),
 };
 
 function readTrack(id: ID, json: unknown): Track | null {
@@ -477,8 +554,68 @@ function clipsWithTrack(clips: Record<ID, Clip>, tracks: Readonly<Record<ID, Tra
 
 /** Where an undo step keeps the frame rate it was recorded at. */
 const STEP_RATE = 'tandem.fps';
+/**
+ * Where an undo step keeps the last value it wrote under each key of each map. The document does
+ * not keep a value once someone else has replaced it.
+ */
+const STEP_VALUES = 'tandem.values';
+/** Where an undo step keeps how far through this client's writes its values have been noted. */
+const STEP_NOTED = 'tandem.noted';
+/**
+ * Where an undo step keeps the place it left each clip in that it moved or trimmed: both where the
+ * clip starts and how long it is, though the step wrote only one of the two (see `atStepRate`).
+ */
+const STEP_PLACES = 'tandem.places';
+/**
+ * Where an undo step keeps which clips shared frames in the project as it was before the step, the
+ * project the step gives back when it is taken (see `makeRoom`).
+ */
+const STEP_SHARED = 'tandem.shared';
 
 type UndoStep = Y.UndoManager['undoStack'][number];
+/** A map that holds single values: the settings, the markers, the folders, or one asset, track or clip. */
+type ValueMap = Y.Map<unknown>;
+type StepValues = Map<ValueMap, Map<string, unknown>>;
+type Place = Pick<Clip, 'start' | 'duration'>;
+type StepPlaces = Map<ID, Place>;
+
+/** One name for two clips, whichever comes first. */
+const pairOf = (a: Clip, b: Clip): string => (a.id < b.id ? `${a.id} ${b.id}` : `${b.id} ${a.id}`);
+
+/** Every two clips of `p` that share frames on a track, by `pairOf`. */
+const sharedFrames = (p: Project): ReadonlySet<string> =>
+  new Set(overlappingPairs(p).map(([a, b]) => pairOf(a, b)));
+
+/**
+ * Calls `f` with every value under a key of a map that `set` names, one value at a time. Values
+ * that one client wrote under a key one after the other are kept as a single item once they are
+ * all deleted; such an item is taken apart here, for as long as the transaction lasts. One that
+ * has been restored stays whole: its copy is in as many parts, and the two are linked part by part.
+ */
+function eachValue(tr: Y.Transaction, set: UndoStep['insertions'], f: (item: Y.Item) => void): void {
+  Y.iterateDeletedStructs(tr, set, (item) => {
+    if (!(item instanceof Y.Item) || item.parentSub === null) return;
+    // What is split off comes next in the iteration.
+    if (item.deleted && item.redone === null && item.length > 1)
+      Y.getItemCleanStart(tr, Y.createID(item.id.client, item.id.clock + 1));
+    f(item);
+  });
+}
+
+/**
+ * Point `was` at `now`, the value that stands in for it, the way the undo manager links a value to
+ * the copy it restores it as. Like such a copy, `now` is then kept for as long as the document is
+ * open: once deleted it would otherwise be collected, and the link would lead nowhere.
+ */
+function standsFor(now: Y.Item, was: Y.Item): void {
+  was.redone = now.id;
+  for (let item: Y.Item | null = now; item !== null && !item.keep; item = (item.parent as ValueMap)._item) {
+    item.keep = true;
+  }
+}
+
+/** The fields that say where a clip is. A change of frame rate writes them whether they change or not. */
+const PLACEMENT: ReadonlySet<string> = new Set(['start', 'duration']);
 
 /** What an undo or redo wrote: the fields of each clip (`true` for a clip put there whole) and the markers. */
 interface StepWrites {
@@ -488,15 +625,53 @@ interface StepWrites {
 
 const noWrites = (): StepWrites => ({ clips: new Map(), markers: new Set() });
 
-/** The entries of `patch` under the keys that `keep` picks. */
-const only = (patch: Partial<Clip>, keep: (key: string) => boolean): Record<string, unknown> =>
-  Object.fromEntries(Object.entries(patch).filter(([key]) => keep(key)));
+/**
+ * The fields of `c` that `stale` picks, taken to a frame rate `k` times the one they are at. The
+ * rest of the clip is at that rate already. A length is worked out from both ends of a clip, which
+ * only holds while the start is at the same rate as the length; a length that is stale on its own
+ * is taken across by itself.
+ */
+function retimed(c: Clip, k: number, stale: (key: string) => boolean): Record<string, unknown> {
+  const patch = Object.fromEntries(Object.entries(clipAtRate(c, k)).filter(([key]) => stale(key)));
+  if ('duration' in patch && !('start' in patch)) patch.duration = Math.max(1, Math.round(c.duration * k));
+  return patch;
+}
+
+/**
+ * An undo has put back where `c` starts or how long it is, as the step found it at its own frame
+ * rate, and not the other of the two: that one stands at the present rate, `k` times the step's.
+ * Taken across each on its own, the two would be rounded apart, and the clip would come back a
+ * frame short of its neighbour or a frame into it.
+ *
+ * `left` is the place the step left the clip in, at the step's rate. While the half that was not
+ * put back is still what `left` comes to at the present rate, nobody has set it since, and at the
+ * step's rate it is what `left` says. The clip is returned with its whole place at that rate, so
+ * that both ends are taken across together, the way a change of rate takes them. Null when the
+ * other half is not known at the step's rate.
+ */
+function atStepRate(c: Clip, restored: ReadonlySet<string>, left: Place | undefined, k: number): Clip | null {
+  if (!left || restored.has('start') === restored.has('duration')) return null;
+  const other = restored.has('start') ? 'duration' : 'start';
+  return clipAtRate({ ...c, ...left }, k)[other] === c[other] ? { ...c, [other]: left[other] } : null;
+}
 
 export interface CommitOptions {
   /** Merge into the previous undo step (use for continuous gestures such as slider drags). */
   merge?: boolean;
   /** Set false for bookkeeping writes that should never appear in undo history. */
   undoable?: boolean;
+}
+
+/** What one call of `undo` or `redo` came to. */
+export interface StepOutcome {
+  /** Whether a step was taken back (or made again). */
+  changed: boolean;
+  /**
+   * How many steps were passed over on the way because nothing of them was left to take back:
+   * someone else has since changed or removed everything they had touched. They are gone from the
+   * history, and the step after them was taken instead.
+   */
+  dropped: number;
 }
 
 export class ProjectStore {
@@ -524,8 +699,18 @@ export class ProjectStore {
    * still the rate it began at, and that is the rate its undo step is stamped with.
    */
   private rate: number;
-  /** What the undo or redo in progress has written, noted as it happens for `retimeStep`. */
+  /** What the undo or redo in progress has written, noted as it happens for `settle`. */
   private written = noWrites();
+  /** The step the undo or redo in progress has been filed as, once it has changed something. */
+  private filed: UndoStep | null = null;
+  /** The project as the last edit, undo or redo of this session found it. */
+  private before: Project;
+  /** Whether the step the undo manager took last changed anything. */
+  private stepStood = false;
+  /** Set while `step` has the undo stacks rearranged: nobody is told of them in that state. */
+  private stepping = false;
+  /** Values that `prepare` has pointed at what stands in for them, for one step only. */
+  private readonly lent: Y.Item[] = [];
   private readonly ySettings: Y.Map<unknown>;
   private readonly yAssets: Y.Map<Y.Map<unknown>>;
   private readonly yTracks: Y.Map<Y.Map<unknown>>;
@@ -564,16 +749,20 @@ export class ProjectStore {
       [this.ySettings, this.yAssets, this.yTracks, this.yClips, this.yFolders, this.yMarkers],
       { trackedOrigins: new Set([this.origin]), captureTimeout: 1e12 },
     );
-    this.undoManager.on('stack-item-added', ({ stackItem }) => {
+    this.undoManager.on('stack-item-added', ({ stackItem, origin }) => {
       stackItem.meta.set(STEP_RATE, this.rate);
+      stackItem.meta.set(STEP_SHARED, sharedFrames(this.before));
+      this.noteValues(stackItem);
+      if (origin === this.undoManager) this.filed = stackItem;
       this.emitMeta();
     });
+    this.undoManager.on('stack-item-updated', ({ stackItem }) => this.noteValues(stackItem));
     this.undoManager.on('stack-item-popped', ({ stackItem, type }) => {
-      this.retimeStep(stackItem, type);
+      this.settle(stackItem, type);
       this.emitMeta();
     });
     this.undoManager.on('stack-cleared', this.emitMeta);
-    // What an undo or redo writes is noted field by field: `retimeStep` re-times that and no more.
+    // What an undo or redo writes is noted field by field: `settle` goes by that and no more.
     this.yClips.observeDeep((events, tr) => {
       if (tr.origin !== this.undoManager) return;
       const { clips } = this.written;
@@ -594,6 +783,8 @@ export class ProjectStore {
     });
     // Listeners run in the order they were added: the undo manager's has stamped the step by now.
     doc.on('afterTransaction', this.noteRate);
+    this.before = this.project;
+    doc.on('beforeTransaction', this.noteBefore);
   }
 
   // ───────────────────────────────────────────────────────────── reading ──
@@ -642,15 +833,16 @@ export class ProjectStore {
   commit(edits: Edit[], opts: CommitOptions = {}): void {
     if (!edits.length) return;
     const undoable = opts.undoable !== false;
-    // A step is recorded at one frame rate (see `retimeStep`). A gesture that is still going when
+    // A step is recorded at one frame rate (see `retime`). A gesture that is still going when
     // the rate changes under it goes on in a step of its own.
     const step = this.undoManager.undoStack.at(-1);
     const merge = opts.merge && step && sameRate(this.rate / step.meta.get(STEP_RATE));
     if (undoable && !merge) this.undoManager.stopCapturing();
     this.doc.transact(
       () => {
-        for (const e of edits) this.apply(e);
-        if (edits.some((e) => e.op === 'settings')) this.retimeHiddenClips();
+        const k = this.rateChange(edits);
+        for (const e of edits) this.apply(e, !sameRate(k));
+        if (!sameRate(k)) this.retimeHiddenClips(k);
       },
       undoable ? this.origin : this.systemOrigin,
     );
@@ -661,12 +853,46 @@ export class ProjectStore {
     this.undoManager.stopCapturing();
   }
 
-  undo(): void {
-    this.undoManager.undo();
+  /**
+   * Take back the last step that still has something to take back. Steps whose every change someone
+   * else has since replaced or removed are passed over, and the outcome says how many.
+   */
+  undo(): StepOutcome {
+    return this.step('undo');
   }
 
-  redo(): void {
-    this.undoManager.redo();
+  /** Make the last undone step again, passing over steps like `undo` does. */
+  redo(): StepOutcome {
+    return this.step('redo');
+  }
+
+  /**
+   * Edits never leave two clips on the same frames of a track, but two people can each put one
+   * there at the same moment, and both edits arrive. Of every two such clips the one with the
+   * greater id gives way and moves to a free track (see `separateClips`), outside the undo history.
+   *
+   * It is moved by one session and no other, or two would each add a track for it where a new
+   * track is needed: by one of those that last wrote where the clip is (its track, its start or
+   * its length), and of these the one with the greatest client id. Every session works that out
+   * alike, so each can call this when changes from others have come in and settled, and only that
+   * one moves the clip. A session that placed nothing, a viewer among them, never writes.
+   *
+   * `here` names the sessions that are in the project now and may edit, this one among them, by
+   * client id. A session that has left is then passed over, and the clip does not wait for it.
+   * Without `here` the clip stays where it is when the session it falls to is gone.
+   *
+   * Returns the number of clips this session moved.
+   */
+  resolveOverlaps(here?: Iterable<number>): number {
+    const present = here && new Set(here);
+    const mine = new Set<ID>();
+    for (const [a, b] of overlappingPairs(this.project)) {
+      const id = a.id > b.id ? a.id : b.id;
+      if (this.moverOf(id, present) === this.doc.clientID) mine.add(id);
+    }
+    const edits = separateClips(this.project, mine);
+    this.commit(edits, { undoable: false });
+    return edits.filter((e) => e.op === 'updateClip').length;
   }
 
   get canUndo(): boolean {
@@ -706,6 +932,7 @@ export class ProjectStore {
   destroy(): void {
     this.doc.off('afterTransaction', this.flush);
     this.doc.off('afterTransaction', this.noteRate);
+    this.doc.off('beforeTransaction', this.noteBefore);
     this.undoManager.destroy();
     this.listeners.clear();
     this.metaListeners.clear();
@@ -723,7 +950,12 @@ export class ProjectStore {
     this.rate = fpsOf(this.project.settings);
   };
 
+  private noteBefore = (tr: Y.Transaction): void => {
+    if (tr.origin === this.origin || tr.origin === this.undoManager) this.before = this.project;
+  };
+
   private emitMeta = (): void => {
+    if (this.stepping) return;
     this.undoVersion++;
     for (const fn of Array.from(this.metaListeners)) fn();
   };
@@ -833,16 +1065,365 @@ export class ProjectStore {
     if (clips) this.project = { ...this.project, clips };
   };
 
+  /** Take steps off the undo or the redo stack until one of them leaves something changed. */
+  private step(type: 'undo' | 'redo'): StepOutcome {
+    const um = this.undoManager;
+    const from = type === 'undo' ? um.undoStack : um.redoStack;
+    const to = type === 'undo' ? um.redoStack : um.undoStack;
+    let changed = false;
+    let dropped = 0;
+    this.stepping = true;
+    try {
+      while (!changed && from.length > 0) {
+        this.prepare(from[from.length - 1]);
+        // Left to itself the undo manager goes straight on to the next step when one comes to
+        // nothing, and that one has not been looked at yet. So it is given one step at a time. The
+        // others wait at the bottom of the other stack, where it still finds them when it asks
+        // which values its own steps have deleted.
+        const waiting = from.splice(0, from.length - 1);
+        to.splice(0, 0, ...waiting);
+        this.stepStood = false;
+        this.filed = null;
+        try {
+          if (type === 'undo') um.undo();
+          else um.redo();
+        } finally {
+          from.splice(0, 0, ...to.splice(0, waiting.length));
+          for (const item of this.lent.splice(0)) item.redone = null;
+        }
+        if (this.stepStood) changed = true;
+        else dropped++;
+      }
+    } finally {
+      this.stepping = false;
+    }
+    if (changed || dropped) this.emitMeta();
+    return { changed, dropped };
+  }
+
+  /**
+   * The last value the step has written under each key, read off the document while it still holds
+   * them all: a transaction's own values are intact until the transaction is wound up. A step grows
+   * with every commit of a gesture, and only what has been added since the last time is read. With
+   * a value that places a clip goes the whole place the clip is left in.
+   */
+  private noteValues(step: UndoStep): void {
+    let values = step.meta.get(STEP_VALUES) as StepValues | undefined;
+    if (!values) step.meta.set(STEP_VALUES, (values = new Map()));
+    let places = step.meta.get(STEP_PLACES) as StepPlaces | undefined;
+    if (!places) step.meta.set(STEP_PLACES, (places = new Map()));
+    const client = this.doc.clientID;
+    const structs = this.doc.store.clients.get(client);
+    if (!structs) return;
+    const noted = (step.meta.get(STEP_NOTED) as number | undefined) ?? 0;
+    step.meta.set(STEP_NOTED, Y.getState(this.doc.store, client));
+    for (const { clock, len } of step.insertions.clients.get(client) ?? []) {
+      const from = Math.max(clock, noted);
+      if (from >= clock + len) continue;
+      for (
+        let i = Y.findIndexSS(structs, from);
+        i < structs.length && structs[i].id.clock < clock + len;
+        i++
+      ) {
+        const item = structs[i];
+        if (!(item instanceof Y.Item) || item.parentSub === null) continue;
+        if (!(item.content instanceof Y.ContentAny)) continue;
+        const parent = item.parent as ValueMap;
+        let keys = values.get(parent);
+        if (!keys) values.set(parent, (keys = new Map()));
+        const last = Math.min(item.id.clock + item.length, clock + len) - item.id.clock - 1;
+        keys.set(item.parentSub, item.content.getContent()[last]);
+        if (!PLACEMENT.has(item.parentSub) || parent._item?.parent !== this.yClips) continue;
+        const clip = this.allClips.get(parent._item.parentSub as ID);
+        if (clip) places.set(clip.id, { start: clip.start, duration: clip.duration });
+      }
+    }
+  }
+
+  /**
+   * The undo manager takes a step back by looking at what stands under each key now, and three
+   * things mislead it. They are put right before it looks.
+   *
+   * - A value the step wrote may since have been written again by someone else without being
+   *   changed: a change of frame rate writes the place of every clip, moved or not, and what it
+   *   does alter is the same value at another rate. The undo manager would take any such write
+   *   for a change of mind and leave the step with nothing to take back. So the step's value is
+   *   pointed at the one that stands in for it, the way the undo manager links its own
+   *   restorations, and the step is taken back from there. (Not for a step that set the frame
+   *   rate itself: once someone else has set another, there is nothing of it to take back.)
+   *   Where the step's value has been taken back and made again since, it is the last copy of it
+   *   that is pointed there, and only until the step is done (`lent`): a copy may yet have to be
+   *   put back by the step that removed it, and a pointer on it says that this has been done.
+   * - An entry the step changed, a marker or a folder, may since have been deleted by someone
+   *   else. Finding nobody's value in the way, the undo manager would put the old entry back and
+   *   so undo that person's deletion. The old value is counted among those the step made and
+   *   removed itself, which are never put back.
+   * - It finds its way from a value, and from the clip or track the value belongs to, to the copy
+   *   it once restored that as, and on from there. A copy that was deleted again long ago may
+   *   have been collected, and the undo manager falls over what is left of it (`unlinkCollected`).
+   */
+  private prepare(step: UndoStep): void {
+    const values = step.meta.get(STEP_VALUES) as StepValues | undefined;
+    const setsRate = this.setsRate(step);
+    const k = fpsOf(this.project.settings) / step.meta.get(STEP_RATE);
+    /** The keys under which the step's value is gone and nothing has come in its place. */
+    const gone = new Map<ValueMap, Set<string>>();
+    const retired = Y.createDeleteSet();
+    this.doc.transact((tr) => {
+      eachValue(tr, step.insertions, (mine) => {
+        if (!mine.deleted || Y.isDeleted(step.deletions, mine.id)) return;
+        const map = mine.parent as ValueMap;
+        const key = mine.parentSub as string;
+        // Where the undo manager looks for the step's value: at the last copy it was restored as.
+        const last = this.latest(tr, mine);
+        if (!last?.deleted) return;
+        const own = values?.get(map);
+        const same = (is: unknown): boolean => this.sameValue(map, key, own?.get(key), is, k);
+        // On from there to the value that stands now, for as long as each one on the way reads as
+        // the step's own. There can be several: what stands in for a length is written again when
+        // an undo of this session puts the clip somewhere else (`atStepRate`).
+        let now = last;
+        while (now.deleted) {
+          const next = now.right;
+          if (!next) {
+            gone.set(map, (gone.get(map) ?? new Set()).add(key));
+            return;
+          }
+          if (setsRate || !own?.has(key) || !(next.content instanceof Y.ContentAny)) return;
+          if (!next.content.getContent().every(same)) return;
+          const copy = this.latest(tr, next);
+          if (!copy) return;
+          now = copy;
+        }
+        standsFor(now, last);
+        if (last !== mine) this.lent.push(last);
+      });
+      eachValue(tr, step.deletions, (was) => {
+        this.unlinkCollected(was);
+        if (!gone.get(was.parent as ValueMap)?.has(was.parentSub as string)) return;
+        if (!(was.content instanceof Y.ContentAny) || Y.isDeleted(step.insertions, was.id)) return;
+        const ranges = retired.clients.get(was.id.client) ?? [];
+        ranges.push({ clock: was.id.clock, len: 1 });
+        retired.clients.set(was.id.client, ranges);
+      });
+    });
+    if (retired.clients.size) step.insertions = Y.mergeDeleteSets([step.insertions, retired]);
+  }
+
+  /** Whether the step wrote the frame rate. */
+  private setsRate(step: UndoStep): boolean {
+    const values = step.meta.get(STEP_VALUES) as StepValues | undefined;
+    return values?.get(this.ySettings)?.has('fpsNum') ?? false;
+  }
+
+  /**
+   * Take off the links to restored copies that lead to nothing any more, wherever the undo manager
+   * would follow one to put `was` back: from the map `was` is a value of, and from the values that
+   * came after `was` under its key. What such a link started from has no copy then.
+   */
+  private unlinkCollected(was: Y.Item): void {
+    const copyOf = (item: Y.Item): Y.Item | Y.GC | null =>
+      item.redone === null ? null : Y.getItem(this.doc.store, item.redone);
+    for (let holder = (was.parent as ValueMap)._item; holder !== null && holder.redone !== null;) {
+      const copy = copyOf(holder);
+      if (copy instanceof Y.Item && copy.content instanceof Y.ContentType) holder = copy;
+      else holder.redone = null;
+    }
+    for (let at: Y.Item | null = was; at !== null;) {
+      const copy = copyOf(at);
+      if (copy instanceof Y.Item) at = copy;
+      else if (copy) at.redone = null;
+      else at = at.right;
+    }
+  }
+
+  /**
+   * Whether `is` is the value `was` under the same key, as `was` reads at a frame rate `k` times
+   * the one it was written at.
+   */
+  private sameValue(map: ValueMap, key: string, was: unknown, is: unknown, k: number): boolean {
+    if (deepEqual(was, is)) return true;
+    if (sameRate(k)) return false;
+    if (map === this.yMarkers) {
+      const marker = readMarker(key, was);
+      if (!marker) return false;
+      return deepEqual(
+        readMarker(key, { ...marker, frame: Math.round(marker.frame * k) }),
+        readMarker(key, is),
+      );
+    }
+    if (map._item?.parent !== this.yClips) return false;
+    const holding = (value: unknown): Clip | null =>
+      readClip('', { trackId: '', type: 'video', [key]: value });
+    const before = holding(was);
+    const after = holding(is);
+    if (!before || !after) return false;
+    // A length is re-timed from both ends of its clip, and comes out a frame either side of this.
+    if (key === 'duration') return Math.abs(after.duration - before.duration * k) <= 1;
+    const there: Partial<Clip> = clipAtRate(before, k);
+    return key in there && deepEqual(there[key as keyof Clip], after[key as keyof Clip]);
+  }
+
+  /**
+   * The session a clip that has to give way is moved by: the one with the greatest client id of
+   * those that last wrote one of the fields that place it, counting only those `present` names.
+   */
+  private moverOf(id: ID, present?: ReadonlySet<number>): number | null {
+    const fields = this.yClips.get(id)?._map;
+    let mover: number | null = null;
+    for (const key of ['trackId', 'start', 'duration']) {
+      const client = fields?.get(key)?.id.client;
+      if (client === undefined || (present && !present.has(client))) continue;
+      if (mover === null || client > mover) mover = client;
+    }
+    return mover;
+  }
+
+  /** The factor by which `edits` change the frame rate, all their settings taken together. */
+  private rateChange(edits: Edit[]): number {
+    let next: Json | null = null;
+    for (const e of edits) {
+      if (e.op !== 'settings') continue;
+      next ??= this.ySettings.toJSON();
+      for (const [k, v] of Object.entries(e.patch)) if (v !== undefined) next[k] = v;
+    }
+    return next ? fpsOf(readSettings(next)) / fpsOf(this.project.settings) : 1;
+  }
+
   /**
    * A new frame rate comes with the edits that re-time the sequence (`changeFrameRate`), and those
    * are made from the snapshot. The clips the snapshot leaves out are re-timed here, inside the
    * same transaction: by the same ratio, from what they were before it, and as part of the same
    * undo step. A clip that gets its track back is then where it was in real time.
    */
-  private retimeHiddenClips(): void {
-    const k = fpsOf(readSettings(this.ySettings.toJSON())) / fpsOf(this.project.settings);
-    if (sameRate(k)) return;
-    for (const c of this.hiddenClips()) this.patchEntity(this.yClips, c.id, clipAtRate(c, k), CLIP_DEFAULTS);
+  private retimeHiddenClips(k: number): void {
+    for (const c of this.hiddenClips()) {
+      this.patchEntity(this.yClips, c.id, clipAtRate(c, k), CLIP_DEFAULTS, PLACEMENT);
+    }
+  }
+
+  /**
+   * The undo manager has taken a step back, or made one again, and filed that as a step of its
+   * own. It works value by value and knows nothing of what the values mean, which leaves three
+   * things to do:
+   *
+   * - `mend`: put back what it took away without putting anything in its place;
+   * - `retime`: bring what the step wrote to the frame rate the document has by now;
+   * - `makeRoom`: move a clip that came back onto frames someone else's clip has taken since.
+   *
+   * All of it is written to the document like any edit, so everyone receives it, and made part of
+   * the filed step: one press of undo is one step, for whoever takes it back and for whoever keeps
+   * notes on it.
+   */
+  private settle(step: UndoStep, type: 'undo' | 'redo'): void {
+    const written = this.written;
+    this.written = noWrites();
+    // Stamped with the rate the undo or redo began at.
+    const filed = this.filed;
+    this.filed = null;
+    // The undo manager also reports a step whose every restoration fell into something that is
+    // deleted. Nothing changed then, and nothing was filed.
+    if (!filed) return;
+    this.stepStood = true;
+    const stack = type === 'undo' ? this.undoManager.redoStack : this.undoManager.undoStack;
+    this.mend(step, filed);
+    // To the present rate, which may be one of the values just mended: from the rate of what the
+    // step put back, and from that of all the rest.
+    const now = fpsOf(this.project.settings);
+    const back = now / step.meta.get(STEP_RATE);
+    const rest = now / filed.meta.get(STEP_RATE);
+    if (!sameRate(back) || !sameRate(rest)) this.retime(step, back, rest, written);
+    this.makeRoom(step, filed, written, !sameRate(back), !sameRate(rest));
+    for (const extra of stack.splice(stack.indexOf(filed) + 1)) {
+      // A value the step put back and one of the above then replaced is the same value in another
+      // form. The undo manager is told so, the way it notes its own restorations: an earlier step
+      // that has to take that value away again then finds the one that stands in for it.
+      this.doc.transact((tr) => {
+        Y.iterateDeletedStructs(tr, extra.deletions, (was) => {
+          if (!(was instanceof Y.Item) || !was.right || !Y.isDeleted(filed.insertions, was.id)) return;
+          // A copy of several values that had been kept as one item is itself one item. Only its
+          // last part was ever the value under the key; that part is split off and comes next.
+          if (was.length > 1) Y.getItemCleanStart(tr, was.lastId);
+          else standsFor(was.right, was);
+        });
+      });
+      filed.insertions = Y.mergeDeleteSets([filed.insertions, extra.insertions]);
+      filed.deletions = Y.mergeDeleteSets([filed.deletions, extra.deletions]);
+      this.noteValues(filed);
+    }
+  }
+
+  /** What stands for `item` now: undo and redo put a copy in the place of a value they restore. */
+  private latest(tr: Y.Transaction, item: Y.Item): Y.Item | null {
+    let at = item;
+    while (at.redone !== null) {
+      const next = Y.getItemCleanStart(tr, at.redone);
+      if (!(next instanceof Y.Item)) return null;
+      at = next;
+    }
+    return at;
+  }
+
+  /**
+   * The map `item` is a value of, as the document has it now: an asset, a track or a clip that was
+   * deleted and has come back is another map than it was. Null when it is not in the document.
+   */
+  private mapNow(tr: Y.Transaction, item: Y.Item): Y.Map<unknown> | null {
+    const map = item.parent as Y.Map<unknown>;
+    if (map._item === null) return map;
+    const holder = this.latest(tr, map._item);
+    if (!holder || holder.deleted || !(holder.content instanceof Y.ContentType)) return null;
+    return holder.content.type as Y.Map<unknown>;
+  }
+
+  /**
+   * A step replaced values, and taking it back means: where its own value still stood, the value
+   * from before stands again. The undo manager does not do that where someone wrote the same
+   * value (a setting, a marker, a folder, a field of an entity) at the same moment, without having
+   * seen the step, and lost to it. It takes the step's value away and, finding that other write in
+   * between, puts nothing in its place: a clip without a start, a project without a name. The
+   * value from before is put back here. (What the other person wrote is not kept anywhere.)
+   */
+  private mend(step: UndoStep, filed: UndoStep): void {
+    const putBack: { map: Y.Map<unknown>; key: string; value: unknown; was: Y.ID }[] = [];
+    this.doc.transact((tr) => {
+      /** The last value the step itself wrote under each key: what there was to take back. */
+      const own = new Map<ValueMap, Map<string, Y.Item>>();
+      eachValue(tr, step.insertions, (item) => {
+        if (Y.isDeleted(step.deletions, item.id)) return;
+        const parent = item.parent as ValueMap;
+        let keys = own.get(parent);
+        if (!keys) own.set(parent, (keys = new Map()));
+        keys.set(item.parentSub as string, item);
+      });
+      // The values the step replaced or removed.
+      eachValue(tr, step.deletions, (was) => {
+        if (was.redone !== null || !(was.content instanceof Y.ContentAny)) return;
+        if (Y.isDeleted(step.insertions, was.id)) return;
+        const map = this.mapNow(tr, was);
+        if (!map) return;
+        const key = was.parentSub as string;
+        const head = map._map.get(key);
+        if (head && !head.deleted) return;
+        const mine = own.get(was.parent as ValueMap)?.get(key);
+        const last = mine && this.latest(tr, mine);
+        // The step's value stood until just now, or the step had removed the entry with all it held.
+        const stood = mine ? !!last && Y.isDeleted(filed.deletions, last.id) : map !== was.parent;
+        if (stood) putBack.push({ map, key, value: was.content.getContent()[0], was: was.id });
+      });
+    });
+    if (!putBack.length) return;
+    this.doc.transact((tr) => {
+      for (const { map, key, value, was } of putBack) {
+        const head = map._map.get(key);
+        if (head && !head.deleted) continue;
+        map.set(key, value);
+        // As the undo manager notes its own restorations, so that an earlier step finds this one.
+        const replaced = Y.getItemCleanStart(tr, was);
+        if (replaced.length > 1) Y.getItemCleanStart(tr, Y.createID(was.client, was.clock + 1));
+        standsFor(map._map.get(key) as Y.Item, replaced);
+      }
+    }, this.origin);
   }
 
   /**
@@ -852,71 +1433,108 @@ export class ProjectStore {
    * - what it put back, when the rate is no longer the one the step was recorded at: a deleted
    *   track that returns with its clips after someone else changed the rate;
    * - what it left alone, when the step is itself a change of rate: the clip someone else has
-   *   added since, which was never part of it.
+   *   added or moved since, which was never part of it.
    *
-   * Both are re-timed here, in a transaction that is then made part of the step, so that taking
-   * the step the other way takes the re-timing with it.
+   * Both are re-timed here: the first by `back`, the second by `rest`. Where a clip is has two
+   * halves, and a step that put back only one of them takes the clip across by both wherever the
+   * other is known at the step's rate (`atStepRate`).
    */
-  private retimeStep(step: UndoStep, type: 'undo' | 'redo'): void {
-    const written = this.written;
-    this.written = noWrites();
-    // The undo or redo has just been filed as a step of its own, stamped with the rate it began at.
-    const stack = type === 'undo' ? this.undoManager.redoStack : this.undoManager.undoStack;
-    const filed = stack.at(-1);
-    if (!filed) return;
-    // To the present rate: from the rate of what the step put back, and from that of all the rest.
-    const now = fpsOf(this.project.settings);
-    const back = now / step.meta.get(STEP_RATE);
-    const rest = now / filed.meta.get(STEP_RATE);
-    if (sameRate(back) && sameRate(rest)) return;
+  private retime(step: UndoStep, back: number, rest: number, written: StepWrites): void {
     const { markers } = this.project;
-    const moveMarker = (m: Marker, k: number): void => {
-      const frame = Math.round(m.frame * k);
-      if (frame !== m.frame) this.yMarkers.set(m.id, { ...m, frame });
-    };
+    // A step that changed the rate left its clips at the rate it set, not at the one it began at.
+    const places = this.setsRate(step) ? undefined : (step.meta.get(STEP_PLACES) as StepPlaces | undefined);
     this.doc.transact(() => {
       if (!sameRate(back)) {
         for (const [id, fields] of written.clips) {
           const c = this.allClips.get(id);
           if (!c) continue;
-          const patch = only(clipAtRate(c, back), (key) => fields === true || fields.has(key));
-          this.patchEntity(this.yClips, id, patch, CLIP_DEFAULTS);
+          const placed = fields === true ? null : atStepRate(c, fields, places?.get(id), back);
+          const stale = (key: string): boolean =>
+            fields === true || fields.has(key) || (!!placed && PLACEMENT.has(key));
+          this.patchEntity(this.yClips, id, retimed(placed ?? c, back, stale), CLIP_DEFAULTS);
         }
-        for (const id of written.markers) if (Object.hasOwn(markers, id)) moveMarker(markers[id], back);
+        for (const id of written.markers) {
+          if (!Object.hasOwn(markers, id)) continue;
+          const frame = Math.round(markers[id].frame * back);
+          if (frame !== markers[id].frame) this.yMarkers.set(id, { ...markers[id], frame });
+        }
       }
       if (!sameRate(rest)) {
-        // A value that reads the same at both rates (taking it from this one to the one that was
-        // left would not alter it) is a value the change of rate never touched. The step had
-        // nothing to put back in its place, and it stays exactly as it is.
+        // A change of rate writes where every clip is and where every marker is, so a place the
+        // step did not put back is one that somebody has set since, at the rate that is being
+        // left. It is re-timed and written here in the same way, changed or not: taking the step
+        // the other way then puts back exactly what that person had set. For the other fields the
+        // step holds only what the change altered: one that reads the same at both rates (taking
+        // it from this rate to the other would not alter it) is one the change never touched, and
+        // it stays exactly as it is.
         for (const c of this.allClips.values()) {
           const fields = written.clips.get(c.id);
           if (fields === true) continue;
           const unmoved: Partial<Clip> = clipAtRate(c, 1 / rest);
-          const patch = only(
-            clipAtRate(c, rest),
-            (key) => !fields?.has(key) && !deepEqual(unmoved[key as keyof Clip], c[key as keyof Clip]),
+          const patch = retimed(
+            c,
+            rest,
+            (key) =>
+              !fields?.has(key) &&
+              (PLACEMENT.has(key) || !deepEqual(unmoved[key as keyof Clip], c[key as keyof Clip])),
           );
-          this.patchEntity(this.yClips, c.id, patch, CLIP_DEFAULTS);
+          this.patchEntity(this.yClips, c.id, patch, CLIP_DEFAULTS, PLACEMENT);
         }
         for (const m of Object.values(markers)) {
-          if (!written.markers.has(m.id) && Math.round(m.frame / rest) !== m.frame) moveMarker(m, rest);
+          if (!written.markers.has(m.id))
+            this.yMarkers.set(m.id, { ...m, frame: Math.round(m.frame * rest) });
         }
       }
     }, this.origin);
-    // One press of undo is one step, for whoever takes it back and for whoever keeps notes on it.
-    for (const extra of stack.splice(stack.indexOf(filed) + 1)) {
-      // A value the step put back and the re-timing then replaced is the same value at another
-      // rate. The undo manager is told so, the way it notes its own restorations: an earlier step
-      // that has to take that value away again then finds the one that stands in for it.
-      this.doc.transact((tr) => {
-        Y.iterateDeletedStructs(tr, extra.deletions, (was) => {
-          if (was instanceof Y.Item && was.right && Y.isDeleted(filed.insertions, was.id))
-            was.redone = was.right.id;
-        });
-      });
-      filed.insertions = Y.mergeDeleteSets([filed.insertions, extra.insertions]);
-      filed.deletions = Y.mergeDeleteSets([filed.deletions, extra.deletions]);
+  }
+
+  /**
+   * A clip the step placed may have come back to frames where someone else has put a clip since.
+   * It gives way and goes to a free track, as a clip pasted where there is no room does.
+   *
+   * Only where the step made two clips meet that were not together before. Two that shared frames
+   * in the project the step gives back are what it is there to give back: for someone who works
+   * alone those are the only clips an undo can bring together, and every undo returns exactly
+   * what there was. Two that shared frames just before the step are none of its business either.
+   *
+   * And two clips that both came back are another matter when they came back as they were: whole,
+   * or with a change of rate (`rateStep`). A change of rate can round two very short clips onto
+   * one frame, and taking the step the other way has to give exactly that again. The same rounding
+   * is at work when what the step put back had to be brought to another rate (`fromOtherRate`): a
+   * clip of one frame that begins where the next one does is how the change of rate itself would
+   * have left the two.
+   */
+  private makeRoom(
+    step: UndoStep,
+    filed: UndoStep,
+    written: StepWrites,
+    fromOtherRate: boolean,
+    rateStep: boolean,
+  ): void {
+    const placed = (id: ID): boolean => {
+      const fields = written.clips.get(id);
+      return fields === true || !!(fields?.has('start') || fields?.has('duration') || fields?.has('trackId'));
+    };
+    const whole = (id: ID): boolean => written.clips.get(id) === true;
+    const pairs = (written.clips.size ? overlappingPairs(this.project) : []).filter(
+      ([a, b]) =>
+        (placed(a.id) || placed(b.id)) &&
+        !(placed(a.id) && placed(b.id) && (rateStep || (whole(a.id) && whole(b.id)))) &&
+        !(fromOtherRate && a.start === b.start && Math.min(a.duration, b.duration) === 1),
+    );
+    if (!pairs.length) return;
+    const given = step.meta.get(STEP_SHARED) as ReadonlySet<string>;
+    const before = filed.meta.get(STEP_SHARED) as ReadonlySet<string>;
+    const moving: ID[] = [];
+    for (const [a, b] of pairs) {
+      const pair = pairOf(a, b);
+      if (!given.has(pair) && !before.has(pair)) moving.push(placed(b.id) ? b.id : a.id);
     }
+    const edits = separateClips(this.project, moving);
+    if (!edits.length) return;
+    this.doc.transact(() => {
+      for (const e of edits) this.apply(e, false);
+    }, this.origin);
   }
 
   private writeEntity(
@@ -933,11 +1551,13 @@ export class ProjectStore {
     map.set(entity.id as string, m);
   }
 
+  /** Write the fields of `patch` that differ from what the entity holds, and those in `always`. */
   private patchEntity(
     map: Y.Map<Y.Map<unknown>>,
     id: ID,
     patch: Record<string, unknown>,
     defaults?: Record<string, unknown>,
+    always?: ReadonlySet<string>,
   ): void {
     const m = map.get(id);
     if (!m) return;
@@ -946,17 +1566,34 @@ export class ProjectStore {
     for (const [k, v] of Object.entries(patch)) {
       if (k === 'id' || v === undefined) continue;
       const cur = m.has(k) ? m.get(k) : defaults?.[k];
-      if (!deepEqual(cur, v)) m.set(k, v);
+      if (always?.has(k) || !deepEqual(cur, v)) m.set(k, v);
     }
   }
 
-  private apply(e: Edit): void {
+  /**
+   * `retiming` says that the commit changes the frame rate. Where its clips are is then written
+   * whether the numbers change or not. Two people who change the rate at the same moment both
+   * write every clip, and one of them wins each clip whole; and the undo step holds the place of
+   * every clip, so taking the change back never has to guess which numbers it had left alone.
+   */
+  private apply(e: Edit, retiming: boolean): void {
     switch (e.op) {
-      case 'settings':
-        for (const [k, v] of Object.entries(e.patch)) {
+      case 'settings': {
+        const { fpsNum, fpsDen, ...rest } = e.patch;
+        for (const [k, v] of Object.entries(rest)) {
           if (v !== undefined && !deepEqual(this.ySettings.get(k), v)) this.ySettings.set(k, v);
         }
+        // The frame rate is one value under two keys. A change writes both, so that of two people
+        // who change it at the same moment one wins it whole.
+        const rate = {
+          fpsNum: fpsNum ?? this.ySettings.get('fpsNum'),
+          fpsDen: fpsDen ?? this.ySettings.get('fpsDen'),
+        };
+        if (Object.entries(rate).some(([k, v]) => v !== this.ySettings.get(k))) {
+          for (const [k, v] of Object.entries(rate)) if (v !== undefined) this.ySettings.set(k, v);
+        }
         break;
+      }
       case 'addAsset':
         this.writeEntity(this.yAssets, e.asset as unknown as Record<string, unknown>);
         break;
@@ -990,7 +1627,7 @@ export class ProjectStore {
         this.writeEntity(this.yClips, e.clip as unknown as Record<string, unknown>, CLIP_DEFAULTS);
         break;
       case 'updateClip':
-        this.patchEntity(this.yClips, e.id, e.patch, CLIP_DEFAULTS);
+        this.patchEntity(this.yClips, e.id, e.patch, CLIP_DEFAULTS, retiming ? PLACEMENT : undefined);
         break;
       case 'removeClip':
         this.yClips.delete(e.id);

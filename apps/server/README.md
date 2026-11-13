@@ -43,12 +43,18 @@ await server.close();
 | `EDITOR_DIST`              | `../editor/dist`       | Built editor, served at `/app/` (relative default is resolved against this package).                         |
 | `SITE_DIST`                | `../site/dist`         | Built site, served at `/`.                                                                                   |
 | `MAX_UPLOAD_BYTES`         | `21474836480` (20 GiB) | Largest single asset.                                                                                        |
+| `UPLOAD_EXPIRY_DAYS`       | `7`                    | Days after which the stored part of an upload that was never finished is deleted; `0` keeps them.            |
 | `TANDEM_OPEN_CREATE`       | `true`                 | Whether anyone may `POST /api/projects`. With `false` the endpoint answers 403.                              |
 | `MAX_CREATES_PER_HOUR`     | `30`                   | Projects one client address may create per hour. More are refused with `429`.                                |
 | `AUTO_SNAPSHOT_MS`         | `600000` (10 min)      | Interval of automatic versions while a project changes; `0` turns them off.                                  |
 | `TRUST_PROXY`              | `false`                | Tell clients apart by the last `X-Forwarded-For` entry. Enable only behind a reverse proxy that sets it.     |
 | `MAX_CONNECTIONS_PER_IP`   | `200`                  | WebSockets one client address may hold open at a time (an editor tab uses two). More are refused with `429`. |
 | `MAX_CONNECTIONS_PER_ROOM` | `100`                  | WebSockets per room, i.e. per document of a project. More are refused with `503` (see the security model).   |
+| `MAX_PROJECT_DOC_BYTES`    | `33554432` (32 MiB)    | Size a project document may reach. At the limit it takes no more changes (see "Limits").                     |
+| `MAX_REVIEW_DOC_BYTES`     | `2097152` (2 MiB)      | The same for a review document (the comments of a project).                                                  |
+| `MAX_OPEN_DOC_BYTES`       | 1 % of the V8 heap     | Size of all documents held in memory at the same time. No document's limit is more than half of it.          |
+| `MAX_PRESENCE_BYTES`       | `262144` (256 KiB)     | Largest presence update (cursor, selection) that is relayed, and what one link may show in a room in all.    |
+| `MAX_SYNC_BACKLOG_BYTES`   | `134217728` (128 MiB)  | Document copies queued for clients that have not read them yet. Further copies wait for their turn.          |
 
 The server speaks plain HTTP. Put it behind a reverse proxy for TLS (and compression of the static
 files); the proxy must pass WebSocket upgrades and should not buffer request bodies of uploads.
@@ -96,9 +102,92 @@ never pruned.
 (otherwise `409` with the real offset), and renames it to `<assetId>` once `Upload-Length` bytes are there.
 Each chunk is fsynced before the `204`. If a connection dies mid-chunk, the bytes that arrived are kept;
 `HEAD` reports where to resume (`HEAD …?probe` answers offset 0 instead of `404` when nothing is stored yet).
-A new `PUT` for an asset supersedes one that is still open for it.
+A new `PUT` for an asset supersedes one that is still open for it. A `.part` file that has not been
+written to for `UPLOAD_EXPIRY_DAYS` is deleted (checked at startup and once a day); the upload then
+starts over. Finished assets are never deleted by the server.
 
 Only one server process may use a data directory at a time.
+
+## Limits
+
+Whoever holds a link, a viewer included, makes the server store and send things. Each of them is
+bounded, so that the worst a link can do is use up its own allowance. Nothing over a limit is dropped
+without a word: the client gets a control message of type `error` with the reason, and where the
+connection cannot go on, a close code.
+
+**Documents.** A document may grow to `MAX_PROJECT_DOC_BYTES` / `MAX_REVIEW_DOC_BYTES` (the encoded
+size, which is also what is on disk and what a joining client downloads), and to one _struct_ per 16
+bytes of that. Structs are Yjs's unit of change and what a document costs in memory: 250 to 700
+bytes of heap each, however little they say. Ordinary projects average 13 to 25 bytes per struct, so
+for them the two limits come to much the same (one that has been edited a lot reaches the second a
+little earlier); a document made of minimal structs is stopped by the second one long before it
+reaches the first. The server counts what an update would add before applying it,
+including the structs it would cut in two (a few bytes of deletions can cut one struct into
+thousands); a subdocument counts as nine structs. A document never shrinks by much: every edit leaves
+about 15 bytes behind for good. A 2,000-clip project is a third of a megabyte when new and 1.5 MiB
+after 80,000 edits.
+
+- An update that would take a document over its limit is not applied. The sender gets
+  `the project document has reached the size this server allows` and close code `1009`; everyone else
+  keeps the document as it was. The editor reconnects and offers the same change again, with the same
+  result, until the limit is raised. An update is judged by what it adds, also when it deletes more
+  than that: replacing most of a document that is over half full does not fit.
+- All documents in memory together stay within `MAX_OPEN_DOC_BYTES` (and one struct per 16 bytes of
+  it). When that is used up, further projects cannot be opened (the upgrade is refused with `503`) and
+  open ones take no changes that need more, until rooms are unloaded. The sender of such a change gets
+  `the server has no memory to spare for more document data` and close code `1009`. In the worst case
+  a document costs about 40 times its limit in heap, an ordinary one about 15 times its size; the
+  default of 1 % of the heap keeps the worst case under half of it. Raise the heap
+  (`node --max-old-space-size`) or this limit for a server with many busy projects.
+- A document's limit is at most half of `MAX_OPEN_DOC_BYTES`, whatever `MAX_PROJECT_DOC_BYTES` and
+  `MAX_REVIEW_DOC_BYTES` say. With the default of 1 % of the heap that is what decides on a heap
+  under 6.4 GiB: 10 MiB for a project on a 2 GiB heap.
+- A stored document of more than twice the limit, in bytes or in structs, is not loaded: upgrades
+  for it are refused with `507`, the log names the project, the file and the settings, and nothing
+  is changed on disk. Raise the limit to open it again. (Twice, because the size is kept as an
+  estimate between snapshots, and a document this server wrote itself must always load. It always
+  fits, since twice a limit is never more than `MAX_OPEN_DOC_BYTES`.) The same goes for a document
+  whose snapshot and log together hold more than `MAX_OPEN_DOC_BYTES`, as data written under
+  larger limits may: `503` is only ever the answer for a document that will fit once others are
+  unloaded.
+
+**Messages.** A connection that may write a document can send messages as large as that document may
+be; every other connection 1 MiB, enough to ask for the document and to send presence. A larger
+message closes the connection with code `1009` before it is read.
+
+**Presence.** A connection publishes one presence entry, under the client id it announced first.
+Entries about other ids are not taken: not states (`a connection can announce one presence entry`,
+`the entry belongs to another participant`), and not removals either, which clients send when their
+own copy timed a peer out; the room notices by itself who left. A client id belongs to the link it
+was first announced with, for as long as the room is loaded: a connection opened with the same link
+may take the entry over, which is what a tab does when it reconnects, while its old socket still
+lingers or after it was away, and nobody with another link gets the id, also not when its entry has
+lapsed or its holder is gone (the room remembers the ids of the last thousand or so who left).
+Updates over `MAX_PRESENCE_BYTES`, more than 20 a second (40 at once) or more than twice
+`MAX_PRESENCE_BYTES` a second are skipped. So is what goes beyond the share of a link: the
+connections opened with one link may send 200 updates a second between them (400 at once), and the
+updates their entries were last set by may come to `MAX_PRESENCE_BYTES` taken together
+(`the connections made with this link already show as much as one link may`), so that a link has a
+room relay 20 times `MAX_PRESENCE_BYTES` a second at the very most, on however many sockets. A room
+keeps four times `MAX_PRESENCE_BYTES` in all. None of this closes the connection. States must be
+JSON objects nested at most 32 levels deep; one that is not closes the connection like any other
+malformed message (code `1007`), and no part of that update is kept or relayed. A client is told
+who is in the room once the document it asked for has left for it, in one message of at most four
+times `MAX_PRESENCE_BYTES`; one that never asks for the document is not told. A member whose
+connection is behind is not sent every presence update in between, only the latest states once it
+has caught up.
+
+**Sending.** A client that asks for the document again while the answer to its last request is still
+on its way gets one more answer when that one has arrived, not one per request. The copies on their
+way to all clients together stay within `MAX_SYNC_BACKLOG_BYTES`; when that is used up, further
+clients wait in line for theirs (a client that does not read loses its place at the next heartbeat,
+after 30 to 60 s). A connection with more than twice its document's limit plus 32 MiB queued is
+dropped, and synchronises from scratch when it reconnects.
+
+**Connections.** Open WebSockets are capped per client address and per room; an upgrade over a cap is
+refused before the handshake. A full room still admits a participant who outranks someone in it
+(viewer < commenter < editor < owner): the most recent connection of the lowest role below theirs is
+closed (code `1013`) to make way.
 
 ## Security model
 
@@ -129,15 +218,22 @@ What the server enforces:
   document are dropped — neither applied nor relayed — and the client receives a `readonly` control message.
 - Ids (project, asset, version) must match `^[A-Za-z0-9_-]{6,64}$` before they are used in a path; static
   files are confined to their build directory.
-- Request limits: JSON bodies 64 KiB, WebSocket messages 32 MiB, assets `MAX_UPLOAD_BYTES`; project
-  creation 30/hour and invites 120/hour per client address (in memory, best effort).
-- Open WebSockets are capped per client address and per room; an upgrade over a cap is refused before the
-  handshake. A full room still admits a participant who may write its document: the most recent read-only
-  connection is closed (code `1013`) to make way, so a viewer link cannot be used to keep editors out.
-- Presence updates over 1 MiB are ignored. One whose states are not valid JSON, or nest more than 32 levels
-  deep, closes the connection like any other malformed message, and no part of it is kept or relayed.
-- Uploaded files are served with their stored content type, `X-Content-Type-Options: nosniff` and
-  `Content-Security-Policy: sandbox`, so an uploaded HTML or SVG file cannot run script in the app's origin.
+- Request limits: JSON bodies 64 KiB, assets `MAX_UPLOAD_BYTES`; project creation 30/hour and invites
+  120/hour per client address (in memory, best effort). What a connection may send, and what a room
+  holds and sends on its behalf, is bounded as described under "Limits".
+- A lesser link cannot be used to keep people out: a full room makes way for whoever outranks someone
+  in it, so viewers cannot lock out commenters, commenters cannot lock editors and the owner out of
+  the review, and nobody can lock out the owner.
+- A participant's presence entry is their own. Nobody holding a different link can rewrite or remove
+  it, or take its place while they are away, a connection cannot publish entries for made-up
+  participants, and the `role` in an entry is the role of the token it was published with, whatever
+  the client wrote there. However many sockets are opened with a link, together they show no more
+  than one connection could.
+- Uploaded files are served as what they are only if that is video, audio or a raster image (PNG,
+  JPEG, WebP, AVIF, GIF). Everything else, HTML and SVG included, is served as
+  `application/octet-stream` with `Content-Disposition: attachment`, so opening its address saves a
+  file instead of showing a page under this server's name. All of them carry
+  `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`.
 - The pages themselves (site and editor) are served with a Content-Security-Policy that allows scripts,
   styles, media and connections from their own origin only, `frame-ancestors 'none'` / `X-Frame-Options:
 DENY`, and a Permissions-Policy that grants the microphone (voiceover) and nothing else.
@@ -148,14 +244,26 @@ What it does **not** do — know this before exposing a server:
   replaced (delete `secret` and restart), which invalidates every token of every project.
 - **Tokens in URLs leak** into proxy and access logs and browser history. Responses carry
   `Referrer-Policy: no-referrer`, but treat logs as sensitive, and always use TLS.
-- **Presence is not authenticated.** Any participant, viewers included, can publish arbitrary awareness
-  state (name, colour, claimed role) and can overwrite another participant's presence. Never derive
+- **Presence is only as authentic as the link.** Any participant, viewers included, can publish any
+  name and colour, and people who share one link can overwrite each other's presence. Never derive
   permissions from awareness; the role in the `hello` control message is the authoritative one.
 - **Editors are trusted with the document.** The server relays Yjs updates without understanding the
-  project model, so an editor can write anything into the document, and can fill the disk: there is no
-  per-project quota, only the per-asset limit.
-- **The connection caps do not arbitrate between equals.** Participants with the same rights can still
-  fill a room and keep each other out (viewers other viewers, editors other editors) until they leave.
+  project model, so an editor can write anything into the document, up to its size limit. Uploads have
+  no per-project quota, only the per-asset limit, so an editor can fill the disk.
+- **Commenters are trusted with the review document, all of it.** "Write `review` doc" in the table
+  above is meant literally: the server does not know whose comment is whose, so someone with a
+  comment link and a raw client can rewrite or delete other people's comments and post under any name.
+  The editor only offers people their own comments to delete. Tokens name a role, not a person, so
+  this cannot be enforced without per-person links.
+- **The limits bound what one link can do, not what many can.** Participants with the same rights can
+  still fill a room and keep each other out (viewers other viewers, editors other editors) until they
+  leave, and with `TANDEM_OPEN_CREATE=true` anyone can create projects and fill each to its limits:
+  the server then refuses to open further documents rather than run out of memory, which is an outage
+  for those projects all the same.
+- **Almost nothing is ever deleted by the server.** The editor does not remove media from the server
+  (removing an asset can be undone, and a version may still need it), and there is no way to delete a
+  project or a named version over the API. Only automatic versions beyond the fiftieth and abandoned
+  uploads go by themselves. Ordinary use only ever grows the data directory; clear it out by hand.
 - **No encryption at rest**, and anyone who can read `DATA_DIR/secret` can mint any token.
 - With `TANDEM_OPEN_CREATE=true` anyone who can reach the server can create projects. With `false` nobody
   can — create the projects you need first, then switch it off.
@@ -170,6 +278,11 @@ What it does **not** do — know this before exposing a server:
 - `GET …/media/:assetId` supports one byte range per request (`a-b`, `a-`, `-n`); a multi-range request
   gets the whole file with `200`.
 - A WebSocket upgrade that is refused is answered with a normal HTTP status: `401` / `404` when
-  authentication fails, `429` when the address has too many sockets open, `503` when the room is full.
-  Browsers surface all of them only as a failed connection — validate the token with
+  authentication fails, `429` when the address has too many sockets open, `503` when the room is full
+  or the server has too many documents open, `507` when the stored document is larger than the server
+  loads. Browsers surface all of them only as a failed connection — validate the token with
   `GET /api/projects/:id` first if you need to tell a bad link from a busy server.
+- WebSocket close codes the server uses: `1001` shutting down, `1007` malformed message, `1009`
+  message too large or document full, `1012` room restarting, `1013` place given to someone of a
+  higher role. Before `1007` and `1009` it sends `{ "type": "error", "message": … }`. The same control
+  message without a close says that a presence update was skipped.

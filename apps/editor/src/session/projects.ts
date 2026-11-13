@@ -5,11 +5,21 @@
 import { IndexeddbPersistence } from 'y-indexeddb';
 import * as Y from 'yjs';
 import { newProjectId, ProjectStore, type Project, type ProjectSettings } from '@tandem/core';
+import { toast } from '../ui/core';
 import { api, serverAvailable } from './api';
 import { deleteProjectMedia } from './mediaStore';
 import { registry } from './registry';
 
 export const idbName = (id: string, doc: string): string => `tandem:${id}:${doc}`;
+
+// A list that is not kept takes the links of new projects with it when the tab closes, and an
+// owner link is made only once. So it is said the moment it happens, wherever in the app that is.
+registry.whenUnsaved(() =>
+  toast(
+    'This browser has no room left to save the project list. Delete a project you no longer need: until then, projects and links added in this tab are lost when it closes.',
+    'error',
+  ),
+);
 
 export function whenSynced(p: IndexeddbPersistence, timeoutMs = 4000): Promise<void> {
   return new Promise((resolve) => {
@@ -65,6 +75,8 @@ export async function createProject(settings: Partial<ProjectSettings>, content?
 /** Remove a project and its media from this device. */
 export async function deleteLocalProject(id: string): Promise<void> {
   registry.remove(id);
+  // Deleting a project is the person letting go of it, a link the server refused included.
+  registry.dropLinkAside(id);
   await deleteProjectMedia(id);
   for (const name of ['project', 'review']) {
     await new Promise<void>((resolve) => {

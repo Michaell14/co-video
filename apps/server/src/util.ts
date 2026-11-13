@@ -1,5 +1,5 @@
 /** Small filesystem / concurrency helpers shared by the server modules. */
-import { open, readFile, rename } from 'node:fs/promises';
+import { open, readFile, rename, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as zlib from 'node:zlib';
 
@@ -36,6 +36,17 @@ export const isClientAbort = (err: unknown): boolean => {
 export async function readFileIfExists(path: string): Promise<Buffer | null> {
   try {
     return await readFile(path);
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
+/** Size of a regular file, or `null` if it does not exist. */
+export async function fileSize(path: string): Promise<number | null> {
+  try {
+    const info = await stat(path);
+    return info.isFile() ? info.size : null;
   } catch (err) {
     if (isNotFound(err)) return null;
     throw err;

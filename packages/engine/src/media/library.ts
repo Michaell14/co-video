@@ -86,6 +86,8 @@ const found = <T extends object>(answer: T | MediaFault): T | null =>
 export class MediaLibrary {
   private readonly opened = new Map<string, Promise<OpenMedia | MediaFault>>();
   private readonly blobs = new Map<string, Promise<Blob | MediaFault>>();
+  /** Per asset, what was tried for it and failed with a warning. */
+  private readonly reported = new Map<string, Set<string>>();
   private disposed = false;
 
   constructor(private readonly resolver: MediaResolver) {}
@@ -95,6 +97,9 @@ export class MediaLibrary {
    * keeping. "Missing" describes this moment, not the asset: the file may be on its way from a
    * collaborator, so the next call asks the resolver again. A request that failed is held for a
    * moment so that a struggling server, or a file that will not open, is not tried on every frame.
+   * Why it failed is said once, not for every new try: whatever shows the asset asks again every
+   * few seconds for as long as it does. It is said again when the session has reported a change
+   * to the asset (`invalidate`), and for a resolver that fails, once it has answered in between.
    */
   private shared<T extends object>(
     cache: Map<string, Promise<T | MediaFault>>,
@@ -112,15 +117,22 @@ export class MediaLibrary {
         return 'missing';
       };
       const failed = (fault: MediaFault, doing: string) => (err: unknown) => {
-        console.warn(`[media] could not ${doing} ${assetId}`, err);
+        let said = this.reported.get(assetId);
+        if (!said) this.reported.set(assetId, (said = new Set()));
+        if (!said.has(doing)) {
+          said.add(doing);
+          console.warn(`[media] could not ${doing} ${assetId}`, err);
+        }
         setTimeout(forget, FAILURE_HOLD_MS);
         return fault;
       };
       // `async`, so that a resolver that throws outright fails like one whose promise rejects.
       const locate = async () => this.resolver(assetId);
       const request: Promise<T | MediaFault> = locate().then(
-        (loc) =>
-          loc ? read(loc).then((value) => value ?? nothing(), failed('unreadable', what)) : nothing(),
+        (loc) => {
+          this.reported.get(assetId)?.delete('locate');
+          return loc ? read(loc).then((value) => value ?? nothing(), failed('unreadable', what)) : nothing();
+        },
         failed('missing', 'locate'),
       );
       cache.set(assetId, (p = request));
@@ -213,6 +225,7 @@ export class MediaLibrary {
     const p = this.opened.get(assetId);
     this.opened.delete(assetId);
     this.blobs.delete(assetId);
+    this.reported.delete(assetId);
     p?.then((m) => disposeMedia(found(m))).catch(() => {});
   }
 
@@ -221,6 +234,7 @@ export class MediaLibrary {
     for (const p of this.opened.values()) p.then((m) => disposeMedia(found(m))).catch(() => {});
     this.opened.clear();
     this.blobs.clear();
+    this.reported.clear();
   }
 }
 

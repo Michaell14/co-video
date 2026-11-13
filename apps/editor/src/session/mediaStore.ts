@@ -518,6 +518,25 @@ export class MediaStore {
     }
   }
 
+  /**
+   * Ask the server whether it holds the whole of an asset's file. `null` when it could not be
+   * asked, or gave no answer to go by.
+   */
+  async held(assetId: string, signal?: AbortSignal): Promise<boolean | null> {
+    const remote = this.remote;
+    if (!remote || this.destroyed) return null;
+    try {
+      // The same question an upload starts with: answered for a file that is not there, too.
+      const url = `${serverBase()}/api/projects/${remote.projectId}/media/${assetId}?probe`;
+      const auth = { Authorization: `Bearer ${remote.token}` };
+      const res = await fetch(url, { method: 'HEAD', headers: auth, signal });
+      if (res.ok) return res.headers.get('Upload-Complete') === '1';
+      return isRefusal(res.status) ? false : null;
+    } catch {
+      return null;
+    }
+  }
+
   // ─────────────────────────────────────────────────────────── download ──
 
   /** Cache a server-hosted asset into OPFS. Safe to call repeatedly. */

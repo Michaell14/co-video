@@ -2,6 +2,7 @@
 import { clamp, writeProp, type Clip, type Edit, type ID, type Project } from '@tandem/core';
 import { currentSession } from '../session/hooks';
 import { toast } from '../ui/core';
+import { refuseEdit } from './access';
 import { unlocked } from './edits';
 
 /** Clip-local frame under the playhead, clamped into the clip. */
@@ -30,7 +31,7 @@ function guard(): ReturnType<typeof currentSession> {
   if (!s.canEdit) {
     if (performance.now() - warned > 4000) {
       warned = performance.now();
-      toast('You have view-only access to this project.', 'info');
+      refuseEdit(s.getMeta().role);
     }
     return null;
   }

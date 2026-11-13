@@ -10,6 +10,7 @@ export * from './transitions';
 export * from './textAnim';
 export * from './store';
 export * from './query';
+export * from './overlaps';
 export * from './ops';
 export * from './frame';
 export * from './color';

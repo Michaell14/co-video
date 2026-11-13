@@ -70,10 +70,19 @@ export interface LocalCopy {
  * token stored for it. Only a refusal changes anything: a server that could not be reached, or was
  * busy, may accept the same token tomorrow. Refused with a copy on this device, the entry loses its
  * link (`unlink`) and the copy stays, to be worked on as a local project. Refused with nothing on
- * the device, the entry led nowhere but to the server, and goes (`forget`).
+ * the device, an entry that was reached through someone's link led nowhere but to the server, and
+ * goes (`forget`). The entry of a project made here (`own`) stays even then: its link is the only
+ * owner link there is, and opening the project again is how its owner asks the server once more.
+ *
+ * Whatever the entry loses, the link itself is kept aside (see `registry.setLinkAside`). A refusal
+ * is only what one server said at one moment.
  */
-export function entryFate(stored: Verdict | null, local: LocalCopy): 'keep' | 'unlink' | 'forget' {
+export function entryFate(
+  stored: Verdict | null,
+  local: LocalCopy,
+  own: boolean,
+): 'keep' | 'unlink' | 'forget' {
   if (stored !== 'refused') return 'keep';
   if (!local.empty) return 'unlink';
-  return local.loaded ? 'forget' : 'keep';
+  return local.loaded && !own ? 'forget' : 'keep';
 }

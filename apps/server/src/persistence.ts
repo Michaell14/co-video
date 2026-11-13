@@ -19,7 +19,8 @@ import type { FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as Y from 'yjs';
 import type { DocKind } from '@tandem/core';
-import { atomicWrite, crc32, readFileIfExists } from './util';
+import { RECOUNT_AFTER_STRUCTS, measureUpdate, weigh, weightOf } from './updateSize';
+import { atomicWrite, crc32, fileSize, readFileIfExists } from './util';
 
 const RECORD_HEADER_BYTES = 8;
 /** Updates are written at most this long after they were applied (the brief allows up to 200 ms). */
@@ -28,6 +29,38 @@ const FLUSH_DELAY_MS = 100;
 const RETRY_DELAY_MS = 1000;
 /** Compact once the log is larger than this. */
 export const COMPACT_LOG_BYTES = 1024 * 1024;
+
+/** The files of a document hold more than the server is set up to load. */
+export class DocumentTooLargeError extends Error {
+  constructor(paths: string[], size: number, limit: number, unit: 'bytes' | 'structs') {
+    const hold = paths.length > 1 ? 'hold' : 'holds';
+    super(`${paths.join(' and ')} ${hold} ${size} ${unit}, and at most ${limit} are loaded`);
+    this.name = 'DocumentTooLargeError';
+  }
+}
+
+export interface DocStoreLimits {
+  /**
+   * Largest snapshot that is loaded. The log may hold this much again plus one compaction's
+   * worth: it collects every update taken since the snapshot, also ones that replaced each other.
+   */
+  maxBytes?: number;
+  /**
+   * Most the snapshot and the log may hold together: what the caller could hold of one document
+   * if it held nothing else. Files beyond it will not fit however long the caller waits.
+   */
+  maxStoredBytes?: number;
+  /** Most the stored document may weigh in structs (see updateSize.ts): they are what costs memory. */
+  maxStructs?: number;
+  /**
+   * Called with the size of the stored files before any of them is read, and with the weight of
+   * the snapshot and of each update in the log right before it is applied (now and then with a
+   * negative amount, when a recount finds the document lighter than the sum of its updates).
+   * Throwing stops the load there, which is how a caller keeps several loads within one budget.
+   */
+  reserveBytes?: (bytes: number) => void;
+  reserveStructs?: (structs: number) => void;
+}
 
 /** Frame updates as log records. */
 export function encodeLogRecords(updates: readonly Uint8Array[]): Buffer {
@@ -68,6 +101,10 @@ export function* readLogRecords(log: Uint8Array): Generator<{ update: Uint8Array
 export class DocStore {
   /** Updates applied to the document but not yet written to the log. */
   private pending: Uint8Array[] = [];
+  /** What `pending` will take up in the log. */
+  private pendingBytes = 0;
+  /** Told the exact encoded size of the document each time a snapshot of it is taken. */
+  onSnapshot: ((bytes: number) => void) | undefined;
   private timer: NodeJS.Timeout | undefined;
   /** All disk work runs through this chain, one operation at a time. */
   private chain: Promise<void> = Promise.resolve();
@@ -77,8 +114,16 @@ export class DocStore {
     private readonly doc: Y.Doc,
     private readonly snapshotPath: string,
     private readonly log: FileHandle,
+    /** Size of the snapshot file. */
+    private snapshotBytes: number,
     /** Bytes of valid records currently in the log file. */
     private logBytes: number,
+    /**
+     * The log is never grown past the first, nor the two files together past the second, so that
+     * `open()` accepts whatever a crash leaves behind.
+     */
+    private readonly maxLogBytes: number,
+    private readonly maxStoredBytes: number,
   ) {}
 
   /**
@@ -88,19 +133,74 @@ export class DocStore {
    * A snapshot that cannot be decoded makes this throw: starting from an empty document would
    * later overwrite the damaged file with that emptiness, turning a recoverable problem into
    * data loss. A damaged log *tail*, on the other hand, is expected after a crash and is cut off.
+   *
+   * Files larger than `limits` allow are not read, and loading stops before the update that
+   * would make the document heavier than they allow (DocumentTooLargeError; `doc` is then left
+   * half loaded and must be discarded). A document costs many times its size in memory, and one
+   * that is too large to hold must not take the documents of every other project down with it.
    */
-  static async open(dir: string, kind: DocKind, doc: Y.Doc): Promise<DocStore> {
+  static async open(dir: string, kind: DocKind, doc: Y.Doc, limits: DocStoreLimits = {}): Promise<DocStore> {
     const snapshotPath = join(dir, `${kind}.snapshot`);
     const logPath = join(dir, `${kind}.log`);
 
+    const maxBytes = limits.maxBytes ?? Infinity;
+    const maxLogBytes = maxBytes + COMPACT_LOG_BYTES;
+    const maxStoredBytes = limits.maxStoredBytes ?? Infinity;
+    const snapshotBytes = (await fileSize(snapshotPath)) ?? 0;
+    const storedLogBytes = (await fileSize(logPath)) ?? 0;
+    const storedBytes = snapshotBytes + storedLogBytes;
+    if (snapshotBytes > maxBytes) {
+      throw new DocumentTooLargeError([snapshotPath], snapshotBytes, maxBytes, 'bytes');
+    }
+    if (storedLogBytes > maxLogBytes) {
+      throw new DocumentTooLargeError([logPath], storedLogBytes, maxLogBytes, 'bytes');
+    }
+    if (storedBytes > maxStoredBytes) {
+      throw new DocumentTooLargeError([snapshotPath, logPath], storedBytes, maxStoredBytes, 'bytes');
+    }
+    limits.reserveBytes?.(storedBytes);
+
     const snapshot = await readFileIfExists(snapshotPath);
-    if (snapshot)
-      Y.applyUpdate(doc, new Uint8Array(snapshot.buffer, snapshot.byteOffset, snapshot.byteLength));
+    const log = await readFileIfExists(logPath);
+
+    // Nothing is awaited from here until the document is complete, so whoever keeps count of
+    // the documents in memory sees every load either not at all or in full.
+    const maxStructs = limits.maxStructs ?? Infinity;
+    let structs = 0;
+    let sinceCount = 0;
+    /** Make sure there is room for an update before it is applied. */
+    const weighIn = (update: Uint8Array, path: string): void => {
+      let weight = 0;
+      try {
+        weight = weightOf(measureUpdate(update, doc));
+      } catch {
+        // Not something the walk can follow. Whether it is an update at all is for Yjs to say.
+      }
+      if (sinceCount + weight > RECOUNT_AFTER_STRUCTS) {
+        // A log of thousands of edits to one field weighs thousands of structs and leaves a few.
+        const held = weigh(doc);
+        limits.reserveStructs?.(held - structs);
+        structs = held;
+        sinceCount = 0;
+      }
+      if (structs + weight > maxStructs) {
+        throw new DocumentTooLargeError([path], structs + weight, maxStructs, 'structs');
+      }
+      limits.reserveStructs?.(weight);
+      structs += weight;
+      sinceCount += weight;
+    };
+
+    if (snapshot) {
+      const state = new Uint8Array(snapshot.buffer, snapshot.byteOffset, snapshot.byteLength);
+      weighIn(state, snapshotPath);
+      Y.applyUpdate(doc, state);
+    }
 
     let validBytes = 0;
-    const log = await readFileIfExists(logPath);
     if (log) {
       for (const { update, end } of readLogRecords(log)) {
+        weighIn(update, logPath);
         try {
           Y.applyUpdate(doc, update);
         } catch {
@@ -119,13 +219,14 @@ export class DocStore {
 
     // O_APPEND: every write lands at the current end of the file, also right after a truncate.
     const handle = await open(logPath, 'a');
-    return new DocStore(doc, snapshotPath, handle, validBytes);
+    return new DocStore(doc, snapshotPath, handle, snapshotBytes, validBytes, maxLogBytes, maxStoredBytes);
   }
 
   /** Queue an update (as emitted by the document's `update` event) for writing. */
   append(update: Uint8Array): void {
     if (this.closed) return;
     this.pending.push(update);
+    this.pendingBytes += RECORD_HEADER_BYTES + update.byteLength;
     this.schedule(FLUSH_DELAY_MS);
   }
 
@@ -181,6 +282,12 @@ export class DocStore {
   }
 
   private async writePending(): Promise<void> {
+    // A batch the log has no room for goes straight into a snapshot, which covers it just as well.
+    const roomInLog = Math.min(this.maxLogBytes, this.maxStoredBytes - this.snapshotBytes);
+    if (this.logBytes + this.pendingBytes > roomInLog) {
+      await this.compact();
+      return;
+    }
     await this.appendPending();
     if (this.logBytes > COMPACT_LOG_BYTES) await this.compact();
   }
@@ -189,7 +296,9 @@ export class DocStore {
   private async appendPending(): Promise<void> {
     if (this.pending.length === 0) return;
     const batch = this.pending;
+    const batchBytes = this.pendingBytes;
     this.pending = [];
+    this.pendingBytes = 0;
     const records = encodeLogRecords(batch);
     try {
       await this.log.appendFile(records);
@@ -199,6 +308,7 @@ export class DocStore {
       // Put the batch back for a retry, and cut off whatever part of it reached the file so the
       // retry does not end up behind a torn record.
       this.pending = batch.concat(this.pending);
+      this.pendingBytes += batchBytes;
       await this.log.truncate(this.logBytes).catch(() => undefined);
       throw err;
     }
@@ -210,14 +320,19 @@ export class DocStore {
     // ones still queued, which therefore no longer need to reach the log. Updates that arrive
     // while we are writing are queued as usual and appended after the truncate.
     const covered = this.pending;
+    const coveredBytes = this.pendingBytes;
     this.pending = [];
+    this.pendingBytes = 0;
     const state = Y.encodeStateAsUpdate(this.doc);
+    this.onSnapshot?.(state.byteLength);
     try {
       await atomicWrite(this.snapshotPath, state);
     } catch (err) {
       this.pending = covered.concat(this.pending);
+      this.pendingBytes += coveredBytes;
       throw err;
     }
+    this.snapshotBytes = state.byteLength;
     // From here on a failure costs nothing but disk space: the snapshot already holds everything.
     await this.log.truncate(0);
     this.logBytes = 0;

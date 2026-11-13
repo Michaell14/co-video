@@ -120,8 +120,15 @@ function cutEdges(clip: Clip, head: boolean, tail: boolean): Partial<Clip> {
   return patch;
 }
 
+/**
+ * The links of the pieces that cuts leave of linked clips. The first piece of a clip stays in the
+ * clip's group. The pieces that begin where a cut ends form a group of their own, the way the right
+ * halves of a split do, so picture and sound after the cut still belong together.
+ */
+type PieceLinks = Map<string, ID>;
+
 /** Edits that remove the parts of `clip` covered by `regions` (trimming, splitting or deleting it). */
-function carve(p: Project, clip: Clip, regions: Span[]): Edit[] {
+function carve(p: Project, clip: Clip, regions: Span[], links: PieceLinks): Edit[] {
   const end = clipEnd(clip);
   const pieces: Span[] = [];
   let cursor = clip.start;
@@ -139,10 +146,50 @@ function carve(p: Project, clip: Clip, regions: Span[]): Edit[] {
   const edits: Edit[] = [];
   pieces.forEach(([s, e], i) => {
     const patch = { ...retime(clip, s, e, p), ...cutEdges(clip, s !== clip.start, e !== end) };
-    if (i === 0) edits.push({ op: 'updateClip', id: clip.id, patch });
-    else edits.push({ op: 'addClip', clip: { ...clip, ...patch, id: newId(), linkId: null } });
+    if (i === 0) {
+      edits.push({ op: 'updateClip', id: clip.id, patch });
+      return;
+    }
+    let linkId: ID | null = null;
+    if (clip.linkId) {
+      const key = `${clip.linkId}:${s}`;
+      linkId = links.get(key) ?? newId();
+      links.set(key, linkId);
+    }
+    edits.push({ op: 'addClip', clip: { ...clip, ...patch, id: newId(), linkId } });
   });
   return edits;
+}
+
+/**
+ * Make room on several tracks at once: everything overlapping a track's regions (except `exclude`)
+ * is overwritten. Linked clips that are cut at the same frame stay linked on both sides of it.
+ */
+function clearTracks(p: Project, regions: Map<ID, Span[]>, exclude: ReadonlySet<ID> = new Set()): Edit[] {
+  const links: PieceLinks = new Map();
+  const edits: Edit[] = [];
+  for (const [trackId, spans] of regions) {
+    const merged = mergeSpans(spans);
+    if (!merged.length) continue;
+    const lo = merged[0][0];
+    const hi = merged[merged.length - 1][1];
+    for (const c of clipsOnTrack(p, trackId)) {
+      if (exclude.has(c.id)) continue;
+      if (c.start >= hi) break;
+      if (clipEnd(c) <= lo) continue;
+      edits.push(...carve(p, c, merged, links));
+    }
+  }
+  // A link group of one is not a link: the partner was on a track that was not cut.
+  const counts = new Map<ID, number>();
+  for (const e of edits) {
+    if (e.op === 'addClip' && e.clip.linkId) counts.set(e.clip.linkId, (counts.get(e.clip.linkId) ?? 0) + 1);
+  }
+  return edits.map((e) =>
+    e.op === 'addClip' && e.clip.linkId && counts.get(e.clip.linkId) === 1
+      ? { ...e, clip: { ...e.clip, linkId: null } }
+      : e,
+  );
 }
 
 /** Make room on a track: everything overlapping `regions` (except `exclude`) is overwritten. */
@@ -152,18 +199,7 @@ export function clearRegions(
   regions: Span[],
   exclude: ReadonlySet<ID> = new Set(),
 ): Edit[] {
-  const merged = mergeSpans(regions);
-  if (!merged.length) return [];
-  const lo = merged[0][0];
-  const hi = merged[merged.length - 1][1];
-  const edits: Edit[] = [];
-  for (const c of clipsOnTrack(p, trackId)) {
-    if (exclude.has(c.id)) continue;
-    if (c.start >= hi) break;
-    if (clipEnd(c) <= lo) continue;
-    edits.push(...carve(p, c, merged));
-  }
-  return edits;
+  return clearTracks(p, new Map([[trackId, regions]]), exclude);
 }
 
 // ──────────────────────────────────────────────────────────────── placing ──
@@ -189,8 +225,7 @@ export function placeClips(p: Project, placements: Placement[]): Edit[] {
     list.push([start, start + c.duration]);
     regions.set(m.trackId, list);
   }
-  const edits: Edit[] = [];
-  for (const [trackId, spans] of regions) edits.push(...clearRegions(p, trackId, spans, moving));
+  const edits = clearTracks(p, regions, moving);
   for (const m of valid) {
     const c = p.clips[m.id];
     if (c.start !== m.start || c.trackId !== m.trackId) {
@@ -208,8 +243,7 @@ export function insertClips(p: Project, clips: Clip[]): OpResult {
     list.push([c.start, clipEnd(c)]);
     regions.set(c.trackId, list);
   }
-  const edits: Edit[] = [];
-  for (const [trackId, spans] of regions) edits.push(...clearRegions(p, trackId, spans));
+  const edits = clearTracks(p, regions);
   for (const c of clips) edits.push({ op: 'addClip', clip: c });
   return { edits, created: clips.map((c) => c.id) };
 }
@@ -578,8 +612,7 @@ export function closeGap(p: Project, trackId: ID, frame: number): Edit[] {
 /** Remove a time range from the given tracks (lift) and optionally close it (extract). */
 export function deleteRange(p: Project, trackIds: ID[], start: number, end: number, ripple: boolean): Edit[] {
   if (end <= start) return [];
-  const edits: Edit[] = [];
-  for (const trackId of trackIds) edits.push(...clearRegions(p, trackId, [[start, end]]));
+  const edits = clearTracks(p, new Map(trackIds.map((id) => [id, [[start, end]]])));
   if (!ripple) return edits;
   const cleared = applyEdits(p, edits);
   return [...edits, ...rippleShift(cleared, trackIds, end, start - end)];

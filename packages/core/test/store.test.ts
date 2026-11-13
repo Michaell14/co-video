@@ -16,6 +16,7 @@ import {
   changeFrameRate,
   clipGainAt,
   clipsUnderFrame,
+  dbToGain,
   displayTracks,
   formatTimecode,
   framesToSeconds,
@@ -610,6 +611,162 @@ describe('ProjectStore', () => {
     expect(a.remote.thumb).toBeNull();
     expect(a.script.thumb).toBeNull();
     expect(a.svg.thumb).toBeNull();
+  });
+
+  describe('numbers an engine has to accept', () => {
+    /** Every number that is kept within a range, as [where it is, lowest, highest]. */
+    const ranges: [string, number, number][] = [
+      ['track.volume', -60, 24],
+      ['track.pan', -1, 1],
+      ['track.eq.low', -24, 24],
+      ['track.eq.mid', -24, 24],
+      ['track.eq.high', -24, 24],
+      ['track.eq.lowFreq', 20, 20000],
+      ['track.eq.midFreq', 20, 20000],
+      ['track.eq.highFreq', 20, 20000],
+      ['track.compressor.threshold', -100, 0],
+      ['track.compressor.ratio', 1, 20],
+      ['track.compressor.attack', 0, 1],
+      ['track.compressor.release', 0, 1],
+      ['track.compressor.knee', 0, 40],
+      ['track.compressor.makeup', -24, 24],
+      ['clip.volume', -60, 24],
+      ['clip.pan', -1, 1],
+      ['clip.text.size', 0, 100],
+      ['clip.text.weight', 1, 1000],
+      ['clip.text.lineHeight', 0, 100],
+      ['clip.text.letterSpacing', -1, 100],
+      ['clip.text.boxWidth', 0, 100],
+      ['clip.text.stroke.width', 0, 100],
+      ['clip.text.shadow.blur', 0, 100],
+      ['clip.text.shadow.x', -100, 100],
+      ['clip.text.shadow.y', -100, 100],
+      ['clip.text.shadow.opacity', 0, 1],
+      ['clip.text.bg.opacity', 0, 1],
+      ['clip.text.bg.padX', 0, 100],
+      ['clip.text.bg.padY', 0, 100],
+      ['clip.text.bg.radius', 0, 100],
+      ['clip.shape.w', 0, 100],
+      ['clip.shape.h', 0, 100],
+      ['clip.shape.strokeWidth', 0, 100],
+      ['clip.shape.radius', 0, 1],
+    ];
+    const at = (root: unknown, path: string[]): unknown =>
+      path.reduce<unknown>((o, key) => (o as Record<string, unknown>)[key], root);
+    /** A copy of `root` with the value at `path` replaced. */
+    const withValue = (root: unknown, path: string[], value: unknown): unknown =>
+      path.length
+        ? {
+            ...(root as object),
+            [path[0]]: withValue((root as Record<string, unknown>)[path[0]], path.slice(1), value),
+          }
+        : value;
+
+    /** What a store reads when its audio track, or its clip with a title and a shape, holds `value` at `where`. */
+    const reading = (where: string, value: unknown) => {
+      const [entity, ...path] = where.split('.');
+      const entities: Record<string, unknown> = {
+        track: { ...makeTrack('audio', 0), eq: DEFAULT_EQ, compressor: DEFAULT_COMPRESSOR },
+        clip: makeClip('text', 'v', { duration: 30, text: DEFAULT_TEXT, shape: DEFAULT_SHAPE }),
+      };
+      entities[entity] = withValue(entities[entity], path, value);
+      const s = new ProjectStore();
+      s.doc.transact(() => {
+        for (const [map, id, fields] of [
+          ['tracks', 'v', makeTrack('video', 0)],
+          ['tracks', 'a', entities.track],
+          ['clips', 'c', entities.clip],
+        ] as const) {
+          const m = new Y.Map<unknown>();
+          for (const [k, v] of Object.entries(fields as object)) if (k !== 'id') m.set(k, v);
+          s.doc.getMap(map).set(id, m);
+        }
+      });
+      const p = new ProjectStore(s.doc).get();
+      expect(s.get()).toEqual(p);
+      return { p, read: at(entity === 'track' ? p.tracks.a : p.clips.c, path) };
+    };
+
+    it('keeps each of them inside the range its engine works in', () => {
+      for (const [where, lo, hi] of ranges) {
+        expect([where, reading(where, 1e308).read]).toEqual([where, hi]);
+        expect([where, reading(where, 1e39).read]).toEqual([where, hi]);
+        expect([where, reading(where, -1e308).read]).toEqual([where, lo]);
+        expect([where, reading(where, -1e39).read]).toEqual([where, lo]);
+        // Anything that is not a number at all leaves the default, which is inside the range.
+        const fallback = reading(where, undefined).read;
+        if (fallback !== null) expect(fallback as number).toBeGreaterThanOrEqual(lo);
+        if (fallback !== null) expect(fallback as number).toBeLessThanOrEqual(hi);
+        for (const junk of [NaN, Infinity, -Infinity, '12', [1], {}]) {
+          expect([where, junk, reading(where, junk).read]).toEqual([where, junk, fallback]);
+        }
+        // A value inside the range is the value that was written.
+        const inside = where === 'clip.text.weight' ? 300 : lo + (hi - lo) / 4;
+        expect([where, reading(where, inside).read]).toEqual([where, inside]);
+        expect([where, reading(where, lo).read]).toEqual([where, lo]);
+        expect([where, reading(where, hi).read]).toEqual([where, hi]);
+      }
+      // A weight is a whole number, and a title without a box width sizes to its text.
+      expect(reading('clip.text.weight', 449.6).read).toBe(450);
+      expect(reading('clip.text.boxWidth', null).read).toBeNull();
+    });
+
+    it('gives every gain it hands to the audio graph a finite value', () => {
+      for (const db of [1e39, 1e308, -1e308, 400]) {
+        const track = reading('track.volume', db).p.tracks.a;
+        expect(Number.isFinite(dbToGain(track.volume))).toBe(true);
+        const makeup = reading('track.compressor.makeup', db).p.tracks.a.compressor!.makeup;
+        expect(Number.isFinite(dbToGain(makeup))).toBe(true);
+
+        const { p } = reading('clip.keyframes', {
+          volume: [
+            { t: 0, v: db, e: 'linear' },
+            { t: 10, v: -db, e: 'linear' },
+          ],
+          pan: [{ t: 0, v: db, e: 'linear' }],
+          opacity: [{ t: 0, v: 0.5, e: 'linear' }],
+        });
+        const clip = p.clips.c;
+        for (const k of clip.keyframes.volume) expect(Math.abs(k.v)).toBeLessThanOrEqual(60);
+        expect(Math.abs(clip.keyframes.pan[0].v)).toBe(1);
+        expect(clip.keyframes.opacity).toEqual([{ t: 0, v: 0.5, e: 'linear' }]);
+        for (const f of [0, 5, 10, 29]) expect(Number.isFinite(clipGainAt(clip, f))).toBe(true);
+      }
+    });
+
+    it('takes a font family only when it can stand between quotes', () => {
+      for (const font of [
+        'a"b',
+        "a'b",
+        'a\\',
+        'line\nbreak',
+        'tab\there',
+        '\u0000',
+        '',
+        'x'.repeat(101),
+        7,
+        null,
+      ]) {
+        expect([font, reading('clip.text.font', font).read]).toEqual([font, DEFAULT_TEXT.font]);
+      }
+      for (const font of ['Inter Variable', 'DM Serif Display', 'Noto Sans JP', 'x'.repeat(100)]) {
+        expect(reading('clip.text.font', font).read).toBe(font);
+      }
+    });
+
+    it('reads a project file the same way', () => {
+      const { p } = reading('track.volume', 0);
+      const file = JSON.parse(serializeProject(p));
+      file.project.tracks.a.volume = 1e39;
+      file.project.tracks.a.eq = { ...DEFAULT_EQ, lowFreq: -5, high: 1e300 };
+      file.project.clips.c.text = { ...DEFAULT_TEXT, weight: 1e21, font: 'a"b' };
+      file.project.clips.c.shape = { ...DEFAULT_SHAPE, w: 1e308, h: 1e308, radius: -5 };
+      const loaded = parseProjectFile(JSON.stringify(file))!;
+      expect(loaded.tracks.a.volume).toBe(24);
+      expect(loaded.tracks.a.eq).toMatchObject({ lowFreq: 20, high: 24 });
+      expect(loaded.clips.c.text).toMatchObject({ weight: 1000, font: DEFAULT_TEXT.font });
+      expect(loaded.clips.c.shape).toMatchObject({ w: 100, h: 100, radius: 0 });
+    });
   });
 
   describe('colours', () => {

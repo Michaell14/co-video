@@ -30,5 +30,6 @@ RUN addgroup -S tandem && adduser -S tandem -G tandem && mkdir -p /data && chown
 USER tandem
 VOLUME /data
 EXPOSE 8787
-HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:8787/api/health || exit 1
+# Shell form, so that the port is the one the container was started with (`-e PORT=…`).
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- "http://127.0.0.1:${PORT}/api/health" || exit 1
 CMD ["node", "server.js"]

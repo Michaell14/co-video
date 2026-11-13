@@ -1,10 +1,13 @@
 /**
  * SourceManager: turns clips into GPU textures.
  *
- *  - Video: one decode cursor per clip. A cursor owns a forward-running WebCodecs decode pipeline
- *    (via Mediabunny) with a small look-ahead buffer. Sequential playback therefore never seeks;
- *    scrubbing restarts the pipeline at the nearest keyframe. Going backwards (a reversed clip,
- *    J-shuttle, stepping back while paused) is served from short runs decoded behind the playhead.
+ *  - Video: one decode cursor per clip in the picture. A cursor owns a forward-running WebCodecs
+ *    decode pipeline (via Mediabunny) with a small look-ahead buffer. Sequential playback therefore
+ *    never seeks; scrubbing restarts the pipeline at the nearest keyframe. Going backwards (a
+ *    reversed clip, J-shuttle, stepping back while paused) is served from short runs decoded behind
+ *    the playhead. Where a clip carries on in its file from the point at which another one left it
+ *    (a take cut into pieces), it takes that clip's cursor over instead of starting its own, and
+ *    of the cursors no clip in the picture uses only the few used last are kept.
  *  - Images: decoded at the resolution the frame being drawn can show and uploaded; the least
  *    recently drawn are released when together they outgrow a memory budget.
  *  - Generators: rasterised with Canvas 2D at render resolution, cached by content.
@@ -55,6 +58,12 @@ const CONFIRM_MS = 250;
 const RESTART_MS = [100, 400];
 /** A frame further than this (seconds) from where a decoder gave up is in another part of the file. */
 const ELSEWHERE = 1.5;
+/**
+ * Decoders a viewer at rest keeps although no clip in the picture uses them: the ones used last.
+ * Stepping to and fro over a cut, or scrubbing back over the clips just passed, then finds its
+ * frames in memory. Each of them holds a decoder and about ten decoded frames.
+ */
+const RECENT_CURSORS = 3;
 
 /** Why a clip's media could not be shown as asked. */
 export type SourceFault = MediaFault | 'undecodable' | 'timeout' | 'decode-error';
@@ -386,6 +395,20 @@ class VideoCursor {
     return this.pumping && !this.incoming && t <= Math.max(end, this.pumpTo) + reach;
   }
 
+  /**
+   * How well this cursor, running as it is, would serve a clip that wants the frame at `t` with the
+   * time moving the given way: 2 when it holds that frame, 1 when its decoder is on the way there,
+   * 0 when it would have to seek like a new one. A decoder that stopped on an error serves nobody
+   * else: past its last frame it holds that frame in place of the ones it could not decode, which
+   * is the fate of the clip that ran into the damage and not of one that plays a sound part of the
+   * same file.
+   */
+  serves(t: number, reverse: boolean): 0 | 1 | 2 {
+    if (this.disposed || this.problem || this.broken || reverse !== this.reverse) return 0;
+    if (!this.inRange(t)) return 0;
+    return this.covers(t) ? 2 : 1;
+  }
+
   /** Ask for the frame at media time `t` (seconds, relative to the first video sample). */
   request(t: number): void {
     this.want = t;
@@ -706,10 +729,15 @@ class VideoCursor {
     return n >= AHEAD;
   }
 
-  private notify(): void {
+  /** Let whoever waits in `ready` look again. */
+  private wake(): void {
     const w = this.waiters;
     this.waiters = [];
     for (const fn of w) fn();
+  }
+
+  private notify(): void {
+    this.wake();
     this.onFrame();
   }
 
@@ -789,7 +817,8 @@ class VideoCursor {
     this.buffer = [];
     this.dropIncoming();
     this.resume?.();
-    this.notify();
+    // There is nothing new to draw: a cursor is let go when the picture no longer uses it.
+    this.wake();
     const gl = this.glx.gl;
     gl.deleteTexture(this.tex);
     if (this.planeTex) {
@@ -889,11 +918,24 @@ export interface SourceStats {
   stillBytes: number;
 }
 
+/** A video clip that playback is about to reach, and the first frame it will show. */
+export interface UpcomingClip {
+  clipId: string;
+  assetId: string;
+  reverse: boolean;
+  /** Seconds into the clip's file. */
+  sourceTime: number;
+}
+
 export class SourceManager implements SourceProvider {
   /** Called whenever new pixels become available, so a paused viewer can redraw. */
   onInvalidate: () => void = () => {};
 
   private readonly cursors = new Map<string, VideoCursor>();
+  /** Clips whose decoders were started ahead of them (see `prewarm`). */
+  private readonly ahead = new Set<string>();
+  /** Stills and LUTs that were said not to decode (see `reportUndecodable`). */
+  private readonly reported = new Set<string>();
   private readonly images = new Map<string, ImageEntry>();
   private readonly gens = new Map<string, GenEntry>();
   private readonly luts = new Map<string, LutEntry>();
@@ -903,10 +945,11 @@ export class SourceManager implements SourceProvider {
   direction: 1 | -1 = 1;
   /**
    * True while frames are asked for strictly in order (playback, export). Nothing behind the
-   * playhead is worth keeping then, and a decoder that would not start is not tried again for the
-   * frames that follow. Otherwise (paused, scrubbing) each decoder keeps about half a second of
-   * frames behind it, so that stepping back is served from memory instead of a seek per frame, and
-   * one that would not start gets a new try in another part of its file.
+   * playhead is worth keeping then, neither frames nor the decoder of a clip that has left the
+   * picture, and a decoder that would not start is not tried again for the frames that follow.
+   * Otherwise (paused, scrubbing) each decoder keeps about half a second of frames behind it, so
+   * that stepping back is served from memory instead of a seek per frame, the decoders used last
+   * stay for a while, and one that would not start gets a new try in another part of its file.
    */
   sequential = false;
   /**
@@ -924,7 +967,6 @@ export class SourceManager implements SourceProvider {
   private readonly fonts = new Map<string, Promise<void> | null>();
   /** How many faces the document had when the answers in `fonts` were given. */
   private fontFaces = -1;
-  private tick = 0;
   private pass = 0;
   private uses = 0;
   private usesAtCollect = 0;
@@ -952,6 +994,7 @@ export class SourceManager implements SourceProvider {
       case 'video': {
         if (!clip.assetId) return null;
         const cur = this.cursor(clip.id, clip.assetId, clip.reverse);
+        cur.pass = this.pass;
         cur.setRaw(wantsRaw(project, clip.assetId));
         if (!cur.upload(layer.sourceTime)) return null;
         // Layout is in the original's pixels even when the texture is a smaller proxy.
@@ -995,6 +1038,10 @@ export class SourceManager implements SourceProvider {
    * `frameWidth` x `frameHeight` is the size the frame will be drawn at, for a render larger than
    * the project (an export at a higher resolution): stills are then decoded with the detail that
    * size can show before the promise resolves, not after the first frame has been drawn.
+   *
+   * This is also where decoders change hands and are let go. A clip new to the picture takes over
+   * the decoder of a clip that has left it when that one is at the wanted place in the same file,
+   * and of the decoders `desc` leaves without a clip only the few used last are kept.
    */
   async prepare(
     project: Project,
@@ -1004,13 +1051,21 @@ export class SourceManager implements SourceProvider {
     frameHeight = project.settings.height,
   ): Promise<SourceProblem[]> {
     this.pass++;
+    // A viewer at rest has no clips coming up.
+    if (!this.sequential) this.ahead.clear();
+    const shown = new Set<string>();
+    for (const layer of desc.layers) {
+      if (layer.kind === 'clip') shown.add(layer.layer.clip.id);
+      else for (const l of [layer.a, layer.b]) if (l) shown.add(l.clip.id);
+    }
     const waits: Promise<SourceProblem | null>[] = [];
     const visit = (l: ClipLayer | null) => {
       if (!l) return;
       const clip = l.clip;
       const { id: clipId, assetId } = clip;
       if (clip.type === 'video' && assetId) {
-        const cur = this.cursor(clipId, assetId, clip.reverse);
+        const cur = this.cursor(clipId, assetId, clip.reverse, { at: l.sourceTime, shown });
+        cur.pass = this.pass;
         cur.setRaw(wantsRaw(project, assetId));
         if (!exact) cur.request(l.sourceTime);
         else
@@ -1047,28 +1102,67 @@ export class SourceManager implements SourceProvider {
         visit(layer.b);
       }
     }
+    this.keepRecent();
     if (!waits.length) return [];
     return (await Promise.all(waits)).filter((p) => p !== null);
   }
 
-  /** Warm up a cursor ahead of time (clips that are about to start during playback). */
-  prewarm(clipId: string, assetId: string, reverse: boolean, sourceTime: number): void {
-    const existing = this.cursors.get(clipId);
-    if (existing && existing.hasPicture) return;
-    this.cursor(clipId, assetId, reverse).request(sourceTime);
+  /**
+   * Start decoders for the clips playback is about to reach, so that their first frames are there
+   * when it does. `upcoming` replaces the clips given the time before: a decoder started for a clip
+   * that is no longer coming up is let go like any other the picture does not use.
+   */
+  prewarm(upcoming: readonly UpcomingClip[]): void {
+    this.ahead.clear();
+    for (const { clipId, assetId, reverse, sourceTime } of upcoming) {
+      this.ahead.add(clipId);
+      const existing = this.cursors.get(clipId);
+      if (existing?.assetId === assetId && existing.hasPicture) continue;
+      this.cursor(clipId, assetId, reverse).request(sourceTime);
+    }
+  }
+
+  /** Whether the frame prepared last, or a clip about to start, uses the cursor of clip `id`. */
+  private needed(id: string, cur: VideoCursor): boolean {
+    return cur.pass === this.pass || this.ahead.has(id);
+  }
+
+  /**
+   * Of the cursors nothing needs, keep the few used last, and none while frames are asked for in
+   * order: a clip that playback has left does not come back. Where the playhead crosses many clips
+   * (a scrub over a cut-dense timeline) each would otherwise leave a decoder behind that goes on
+   * to finish a seek nobody is waiting for and then holds its frames.
+   */
+  private keepRecent(): void {
+    const keep = this.sequential ? 0 : RECENT_CURSORS;
+    const unused: [string, VideoCursor][] = [];
+    for (const entry of this.cursors) if (!this.needed(...entry)) unused.push(entry);
+    if (unused.length <= keep) return;
+    unused.sort((a, b) => b[1].lastUsed - a[1].lastUsed);
+    for (const [id, cur] of unused.slice(keep)) {
+      cur.dispose();
+      this.cursors.delete(id);
+    }
+  }
+
+  /**
+   * Close the decoders that nothing needs and nobody has asked for in `maxIdleMs`. Part of
+   * `collect`, and to be called now and then on its own while no frames are drawn: a viewer at
+   * rest would otherwise keep the decoders its last moves left behind for as long as it rests.
+   */
+  releaseIdle(maxIdleMs = 4000): void {
+    const now = performance.now();
+    for (const [id, cur] of this.cursors) {
+      if (this.needed(id, cur) || now - cur.lastUsed <= maxIdleMs) continue;
+      cur.dispose();
+      this.cursors.delete(id);
+    }
   }
 
   /** Free what has not been drawn recently. Call once per rendered frame. */
   collect(maxIdleMs = 4000): void {
     this.evictStills();
-    if (++this.tick % 30 !== 0) return;
-    const now = performance.now();
-    for (const [id, cur] of this.cursors) {
-      if (now - cur.lastUsed > maxIdleMs) {
-        cur.dispose();
-        this.cursors.delete(id);
-      }
-    }
+    this.releaseIdle(maxIdleMs);
     if (this.gens.size > 96) {
       const entries = Array.from(this.gens.entries()).sort((a, b) => a[1].used - b[1].used);
       for (const [key, e] of entries.slice(0, this.gens.size - 64)) {
@@ -1131,6 +1225,7 @@ export class SourceManager implements SourceProvider {
     else if (img) img.retryAt = 0;
     const lut = this.luts.get(assetId);
     if (lut?.state === 'failed') this.luts.delete(assetId);
+    this.reported.delete(assetId);
     this.spare.delete(assetId);
     this.library.invalidate(assetId);
     this.invalidate();
@@ -1145,6 +1240,7 @@ export class SourceManager implements SourceProvider {
     for (const g of this.gens.values()) gl.deleteTexture(g.tex);
     for (const l of this.luts.values()) if (l.tex) gl.deleteTexture(l.tex);
     this.cursors.clear();
+    this.ahead.clear();
     this.images.clear();
     this.gens.clear();
     this.luts.clear();
@@ -1153,18 +1249,57 @@ export class SourceManager implements SourceProvider {
 
   // ── internals ─────────────────────────────────────────────────────────
 
-  private cursor(clipId: string, assetId: string, reverse: boolean): VideoCursor {
+  /**
+   * The cursor of a clip. With `entering`, a clip that has none yet first looks for one to take
+   * over: `at` is the time in its file it wants, `shown` the clips of the frame being prepared.
+   */
+  private cursor(
+    clipId: string,
+    assetId: string,
+    reverse: boolean,
+    entering?: { at: number; shown: ReadonlySet<string> },
+  ): VideoCursor {
+    const backwards = reverse !== this.direction < 0;
     let cur = this.cursors.get(clipId);
     if (cur && cur.assetId !== assetId) {
       cur.dispose();
+      this.cursors.delete(clipId);
       cur = undefined;
     }
+    if (!cur && entering) cur = this.takeOver(clipId, assetId, backwards, entering.at, entering.shown);
     if (!cur) {
       cur = new VideoCursor(this.glx, this.library, assetId, this.spare, this.invalidate);
       this.cursors.set(clipId, cur);
     }
-    cur.setMode(reverse !== this.direction < 0, this.sequential, this.cursors.size);
-    cur.pass = this.pass;
+    cur.setMode(backwards, this.sequential, this.cursors.size);
+    return cur;
+  }
+
+  /**
+   * Give clip `clipId` the cursor of a clip that is not in the picture any more, if one is at `at`
+   * in the same file already or decoding its way there. A take cut into pieces that still follow
+   * one another is the common case: without this every piece starts a decoder of its own, which
+   * decodes from the keyframe before the cut up to the frame the last piece's decoder has ready.
+   * Stepping back over such a cut hands the cursor back the same way, with the frames it kept.
+   */
+  private takeOver(
+    clipId: string,
+    assetId: string,
+    backwards: boolean,
+    at: number,
+    shown: ReadonlySet<string>,
+  ): VideoCursor | undefined {
+    let from: string | undefined;
+    let best = 0;
+    for (const [id, cur] of this.cursors) {
+      if (cur.assetId !== assetId || shown.has(id) || this.ahead.has(id)) continue;
+      const fit = cur.serves(at, backwards);
+      if (fit > best) [from, best] = [id, fit];
+    }
+    if (from === undefined) return undefined;
+    const cur = this.cursors.get(from)!;
+    this.cursors.delete(from);
+    this.cursors.set(clipId, cur);
     return cur;
   }
 
@@ -1240,11 +1375,12 @@ export class SourceManager implements SourceProvider {
         entry.bytes = bmp.width * bmp.height * 4;
         entry.state = 'ready';
         entry.fault = null;
+        this.reported.delete(assetId);
         bmp.close();
         this.invalidate();
       }
     } catch (err) {
-      console.warn(`[image] ${assetId}`, err);
+      this.reportUndecodable('image', assetId, fault, err);
       entry.retryAt = performance.now() + STILL_RETRY_MS;
       if (entry.tex) {
         // The sharper copy could not be made; carry on with the one there is.
@@ -1262,6 +1398,19 @@ export class SourceManager implements SourceProvider {
     } finally {
       entry.busy = false;
     }
+  }
+
+  /**
+   * Say why a still or a LUT did not decode, once for as long as it does not. Loading is tried
+   * again every few seconds while the asset is on screen, and a warning each time would never
+   * end. Nothing is said about a file that is not there or could not be read: the first is a state
+   * a project is often in (a collaborator is still uploading), and the library, which knows the
+   * cause, reports the second.
+   */
+  private reportUndecodable(what: 'image' | 'lut', assetId: string, fault: SourceFault, err: unknown): void {
+    if (fault !== 'undecodable' || this.reported.has(assetId)) return;
+    this.reported.add(assetId);
+    console.warn(`[${what}] ${assetId}`, err);
   }
 
   private lut(assetId: string): LutEntry {
@@ -1302,10 +1451,11 @@ export class SourceManager implements SourceProvider {
         entry.tex = tex;
         entry.size = parsed.size;
         entry.state = 'ready';
+        this.reported.delete(assetId);
       } catch (err) {
         entry.state = 'failed';
         entry.fault = fault;
-        console.warn(`[lut] ${assetId}`, err);
+        this.reportUndecodable('lut', assetId, fault, err);
         // A file that could not be had yet may still arrive from a collaborator; one that does
         // not parse stays as it is until the asset changes.
         if (fault !== 'undecodable')

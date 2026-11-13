@@ -18,6 +18,7 @@ function meta(page: Page): Promise<{
   busy: boolean;
   denied: boolean;
   online: boolean;
+  refusedLink: string | null;
 }> {
   return page.evaluate(() => {
     const { player: _player, user: _user, ...rest } = (window as any).tandem.session.getMeta();
@@ -27,6 +28,28 @@ function meta(page: Page): Promise<{
 
 const registry = (page: Page): Promise<{ id: string; token: string | null; role?: string }[]> =>
   page.evaluate(() => JSON.parse(localStorage.getItem('tandem.projects.v1') ?? '[]'));
+
+/**
+ * Keep the dev server from reloading a page in the middle of a test because a source file was
+ * saved meanwhile: the test would go on in a page that has forgotten everything it set up.
+ */
+const noReloads = (page: Page): Promise<void> => page.context().routeWebSocket(/\/\?token=/, () => {});
+
+/** The link the server refused for a project and this browser still keeps, if any. */
+const linkAside = (page: Page, id: string): Promise<{ token: string; role: string } | null> =>
+  page.evaluate((id) => JSON.parse(localStorage.getItem('tandem.links-aside.v1') ?? '{}')[id] ?? null, id);
+
+/** Give the page a storage that has no room for the project list for as long as its `__full` is set. */
+const listCanRunOutOfRoom = (page: Page): Promise<void> =>
+  page.addInitScript(() => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if ((window as any).__full && key === 'tandem.projects.v1') {
+        throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+      }
+      return setItem.call(this, key, value);
+    };
+  });
 
 /** The newest toast that says `text`. */
 const toast = (page: Page, text: string) => page.locator('.toast', { hasText: text }).last();
@@ -1139,5 +1162,323 @@ test.describe('projects, links and media', () => {
     await expect.poll(() => toastCount(page, 'Replaced with “Source cut”')).toBe(1);
     await page.keyboard.press('Control+z');
     expect(await layout(page)).toEqual(current);
+  });
+
+  test('a refused link is set aside, not erased, and is back once the server takes it again', async ({
+    page,
+  }) => {
+    await listCanRunOutOfRoom(page);
+    await noReloads(page);
+    await newProject(page);
+    await skipWithoutServer(page);
+    await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Kept' }));
+    const id: string = await page.evaluate(() => (window as any).tandem.session.id);
+    const [{ token }] = await registry(page);
+    expect(token).toBeTruthy();
+    // Let the edit and the list entry reach the device.
+    await page.waitForTimeout(1800);
+
+    let asked = 0;
+    let answer: 'page' | 'no' | 'real' = 'page';
+    await page.route(`**/api/projects/${id}`, (route) => {
+      asked++;
+      if (answer === 'real') return route.fallback();
+      return answer === 'page'
+        ? route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not Found</h1>' })
+        : route.fulfill({ status: 404, json: { error: 'project not found' } });
+    });
+
+    // An error page from something in front of the server is not the server refusing the link.
+    await page.reload();
+    await editorReady(page);
+    await watchToasts(page);
+    await expect.poll(() => asked).toBeGreaterThan(0);
+    await page.waitForTimeout(500);
+    expect((await registry(page))[0]).toMatchObject({ token, role: 'owner' });
+    expect(await linkAside(page, id)).toBeNull();
+    expect(await meta(page)).toMatchObject({ shared: true, refusedLink: null });
+    expect(await toastCount(page, 'no longer accepts your link')).toBe(0);
+    // It keeps asking, as for any server that cannot be reached. Leave before the answer changes.
+    await goHome(page);
+
+    // The server itself says no: the project becomes a local one, and the link is put aside.
+    answer = 'no';
+    asked = 0;
+    await page.locator('.pcard__open').click();
+    await editorReady(page);
+    await expect(toast(page, 'The link is kept, and you can try it again under Share')).toBeVisible();
+    expect(asked).toBe(1);
+    expect((await registry(page))[0].token).toBeNull();
+    expect(await linkAside(page, id)).toMatchObject({ token, role: 'owner' });
+    expect(await meta(page)).toMatchObject({ shared: false, role: 'owner', refusedLink: 'owner' });
+
+    // Later visits ask nothing and say nothing.
+    await page.reload();
+    await editorReady(page);
+    await watchToasts(page);
+    await expect(page.locator('.conn')).toContainText('Saved on this device');
+    await page.waitForTimeout(1500);
+    expect(asked).toBe(1);
+    expect(await toastCount(page, 'no longer accepts')).toBe(0);
+    expect(await meta(page)).toMatchObject({ shared: false, refusedLink: 'owner' });
+
+    // Share says what happened. Asking again is the person's to do, and a second no changes nothing.
+    await page.getByRole('button', { name: 'Share', exact: true }).click();
+    const share = page.getByRole('dialog', { name: 'Share project' });
+    await expect(share).toContainText('The server did not accept this project’s link');
+    await share.getByRole('button', { name: 'Try again' }).click();
+    await expect(toast(page, 'The server still does not accept the link.')).toBeVisible();
+    expect(asked).toBe(2);
+    expect(await linkAside(page, id)).toMatchObject({ token });
+
+    // The server is itself again: the same link, the same project, shared as before. Just now the
+    // browser has no room for a list with the link in it, so the link stays where it was kept: a
+    // reload would find it nowhere else.
+    answer = 'real';
+    await page.evaluate(() => ((window as any).__full = true));
+    await share.getByRole('button', { name: 'Try again' }).click();
+    await expect(toast(page, 'this project is shared again')).toBeVisible();
+    await expect.poll(async () => (await meta(page)).status).toBe('connected');
+    expect(await meta(page)).toMatchObject({ shared: true, role: 'owner', refusedLink: null });
+    expect(await toastCount(page, 'no room left to save the project list')).toBe(1);
+    expect((await registry(page))[0].token).toBeNull();
+    expect(await linkAside(page, id)).toMatchObject({ token, role: 'owner' });
+    await expect(share.getByRole('button', { name: 'Copy link' })).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    // With room again the next save of the list carries the link.
+    await page.evaluate(() => {
+      (window as any).__full = false;
+      (window as any).tandem.session.store.commit([{ op: 'settings', patch: { name: 'Shared again' } }]);
+    });
+    await expect
+      .poll(async () => (await registry(page))[0], { timeout: 10_000 })
+      .toMatchObject({ name: 'Shared again', token, role: 'owner' });
+
+    // One copy is enough from then on: the next time the server takes the link, the other goes.
+    await page.reload();
+    await editorReady(page);
+    await expect.poll(async () => (await meta(page)).status).toBe('connected');
+    expect(await meta(page)).toMatchObject({ shared: true, role: 'owner', refusedLink: null });
+    await expect.poll(() => linkAside(page, id)).toBeNull();
+    expect((await registry(page))[0]).toMatchObject({ token, role: 'owner' });
+    expect(await clips(page)).toHaveLength(1);
+  });
+
+  test('a link is only let go of when its holder says so, and an owner keeps the card of an empty project', async ({
+    page,
+  }) => {
+    await noReloads(page);
+    await newLocalProject(page);
+    await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Mine now' }));
+    const id: string = await page.evaluate(() => (window as any).tandem.session.id);
+    await expect.poll(async () => (await registry(page)).length, { timeout: 10_000 }).toBe(1);
+    await page.waitForTimeout(1000);
+    // Two projects that were shared once. Of the second nothing is on this device: the browser
+    // cleared it, and only the list remembers.
+    const entry = {
+      createdAt: 1,
+      updatedAt: 1,
+      thumb: null,
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      duration: 0,
+    };
+    await page.evaluate(
+      ({ id, entry }) => {
+        const list = JSON.parse(localStorage.getItem('tandem.projects.v1')!);
+        Object.assign(list[0], { token: 'viewer-link', role: 'viewer' });
+        list.push({ ...entry, id: 'emptiedowner1', name: 'Emptied', token: 'owner-link', role: 'owner' });
+        localStorage.setItem('tandem.projects.v1', JSON.stringify(list));
+        return id;
+      },
+      { id, entry },
+    );
+    await page.unroute('**/api/health');
+    await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true } }));
+    await page.route('**/api/projects/*', (route) =>
+      route.fulfill({ status: 401, json: { error: 'invalid token' } }),
+    );
+
+    await page.reload();
+    await editorReady(page);
+    await expect(toast(page, 'no longer accepts your link')).toBeVisible();
+    expect(await linkAside(page, id)).toMatchObject({ token: 'viewer-link', role: 'viewer' });
+
+    // A view-only link would replace this copy if it were taken again: the dialog says so first.
+    await page.getByRole('button', { name: 'Share', exact: true }).click();
+    const share = page.getByRole('dialog', { name: 'Share project' });
+    await expect(share).toContainText('changes made here since are not kept');
+    await share.getByRole('button', { name: 'Forget the link' }).click();
+    const sure = page.getByRole('dialog', { name: 'Forget the link to the shared project?' });
+    await sure.getByRole('button', { name: 'Cancel' }).click();
+    expect(await linkAside(page, id)).not.toBeNull();
+    await share.getByRole('button', { name: 'Forget the link' }).click();
+    await sure.getByRole('button', { name: 'Forget link' }).click();
+    // From here on it is an ordinary local project.
+    await expect(share.getByRole('button', { name: 'Publish and share' })).toBeVisible();
+    expect(await linkAside(page, id)).toBeNull();
+    expect(await meta(page)).toMatchObject({ shared: false, refusedLink: null });
+    await page.keyboard.press('Escape');
+
+    // The owner's card is the only way back to their project, so a refusal does not take it.
+    await goHome(page);
+    await page.locator('.pcard__open', { hasText: 'Emptied' }).click();
+    const notAvailable = page.locator('.splash', { hasText: 'This project is not available' });
+    await expect(notAvailable).toBeVisible();
+    await expect(notAvailable).not.toContainText('It has been removed from your projects.');
+    expect((await registry(page)).find((p) => p.id === 'emptiedowner1')).toMatchObject({
+      token: 'owner-link',
+      role: 'owner',
+    });
+    await notAvailable.getByRole('button', { name: 'Back to projects' }).click();
+    await expect(page.locator('.pcard')).toHaveCount(2);
+  });
+
+  test('a project list that cannot be saved says so, and loses nothing once there is room', async ({
+    page,
+  }) => {
+    await listCanRunOutOfRoom(page);
+    await noReloads(page);
+    await newLocalProject(page);
+    await watchToasts(page);
+    const id: string = await page.evaluate(() => (window as any).tandem.session.id);
+    const stored = async () => (await registry(page)).find((p) => p.id === id) as any;
+    const rename = (name: string) =>
+      page.evaluate(
+        (name) =>
+          (window as any).tandem.session.store.commit([{ op: 'settings', patch: { name } }], {
+            undoable: false,
+          }),
+        name,
+      );
+
+    // What a shared document can hold does not get to fill the browser's storage.
+    await page.evaluate(() => {
+      const s = (window as any).tandem.session;
+      const asset = { id: 'big1', name: 'big.png', kind: 'image', mime: 'image/png', size: 1, duration: 0 };
+      const thumb = `data:image/png;base64,${'A'.repeat(300_000)}`;
+      s.store.commit([{ op: 'addAsset', asset: { ...asset, thumb, width: 8, height: 8, createdAt: 1 } }]);
+    });
+    await rename('N'.repeat(1_000_000));
+    await expect.poll(async () => (await stored()).name.length, { timeout: 10_000 }).toBe(200);
+    expect((await stored()).thumb).toBeNull();
+    expect(JSON.stringify(await registry(page)).length).toBeLessThan(2000);
+    expect(await toastCount(page, 'no room left to save the project list')).toBe(0);
+
+    // No room: said once, not with every later change.
+    await page.evaluate(() => ((window as any).__full = true));
+    await rename('While full');
+    await expect
+      .poll(() => toastCount(page, 'no room left to save the project list'), { timeout: 10_000 })
+      .toBe(1);
+    await rename('Still full');
+    await page.waitForTimeout(2200);
+    expect(await toastCount(page, 'no room left to save the project list')).toBe(1);
+    expect((await stored()).name).toHaveLength(200);
+
+    // Room again: the next save carries everything this tab knows.
+    await page.evaluate(() => ((window as any).__full = false));
+    await rename('Saved after all');
+    await expect.poll(async () => (await stored()).name, { timeout: 10_000 }).toBe('Saved after all');
+  });
+
+  test('restoring a version from before an upload finished does not put the media out of reach', async ({
+    page,
+    browser,
+  }) => {
+    await noReloads(page);
+    await newProject(page);
+    await skipWithoutServer(page);
+    // The upload cannot get through yet.
+    let held = true;
+    await page.route('**/api/projects/*/media/*', (route) =>
+      held && route.request().method() === 'PUT' ? route.abort() : route.fallback(),
+    );
+    await importFixtures(page, ['testsrc.mp4']);
+    const assetId: string = await page.evaluate(
+      () => Object.keys((window as any).tandem.session.store.get().assets)[0],
+    );
+    const uploaded = (p: Page) =>
+      p.evaluate(() =>
+        Object.values((window as any).tandem.session.store.get().assets).map((a: any) => a.uploaded),
+      );
+    expect(await uploaded(page)).toEqual([false]);
+    // A version taken now, the way the server takes one by itself every ten minutes.
+    await page.waitForTimeout(600);
+    await page.evaluate(async () => {
+      const s = (window as any).tandem.session;
+      const res = await fetch(`/api/projects/${s.id}/versions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s.token}` },
+        body: JSON.stringify({ name: 'Mid-upload', author: 'Test' }),
+      });
+      if (!res.ok) throw new Error(`version not saved (${res.status})`);
+    });
+    const link: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('editor'));
+
+    // A second editor whose device never gets the file itself, and who is there from before the
+    // upload is through.
+    const ctx = await browser.newContext();
+    await ctx.route('**/api/projects/*/media/*', (route) =>
+      route.request().method() === 'GET' ? route.abort() : route.fallback(),
+    );
+    const b = await ctx.newPage();
+    await noReloads(b);
+    const probes: string[] = [];
+    b.on('request', (r) => {
+      if (r.method() === 'HEAD' && r.url().includes(`/media/${assetId}`)) probes.push(r.url());
+    });
+    await b.goto(link);
+    await b.waitForFunction(
+      () => Object.keys((window as any).tandem?.session?.store.get().assets ?? {}).length === 1,
+    );
+    await editorReady(b);
+    // Nothing says the server has the file, so it is asked. It has not, and is not asked over and
+    // over while the project stays that way.
+    await expect.poll(() => probes.length, { timeout: 15_000 }).toBe(1);
+    await b.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Meanwhile' }));
+    await b.waitForTimeout(1500);
+    expect(probes).toHaveLength(1);
+    expect(await uploaded(b)).toEqual([false]);
+
+    held = false;
+    await page.evaluate((id) => (window as any).tandem.session.retryTransfer(id), assetId);
+    await expect.poll(() => uploaded(page), { timeout: 30_000 }).toEqual([true]);
+    await expect.poll(() => uploaded(b)).toEqual([true]);
+    const restore = async () => {
+      await b.evaluate(() => (window as any).tandem.ui.getState().set({ dialog: 'versions' }));
+      await b.locator('.version', { hasText: 'Mid-upload' }).getByRole('button', { name: 'Restore' }).click();
+      await b.getByRole('button', { name: 'Restore version' }).click();
+      await expect(toast(b, 'Restored “Mid-upload”')).toBeVisible();
+    };
+
+    // The version says "not uploaded"; the open project knows better, and that is what counts.
+    await restore();
+    expect(await uploaded(b)).toEqual([true]);
+    await expect(b.locator('.asset')).toHaveAttribute('data-offline', 'false');
+    await expect.poll(() => uploaded(page)).toEqual([true]);
+    expect(probes).toHaveLength(1);
+
+    // The file leaves the project, and the one person who has it on their device goes home.
+    await page.evaluate(
+      (id) => (window as any).tandem.session.store.commit([{ op: 'removeAsset', id }]),
+      assetId,
+    );
+    await expect.poll(() => uploaded(b)).toEqual([]);
+    await page.close();
+
+    // Brought back by the version, nothing in the project says the server has it. The "no" it gave
+    // during the upload is from before the upload finished, so the server is asked again, once,
+    // and this time the answer is written down for everyone.
+    await restore();
+    await expect.poll(() => uploaded(b), { timeout: 15_000 }).toEqual([true]);
+    await expect(b.locator('.asset')).toHaveAttribute('data-offline', 'false');
+    expect(probes).toHaveLength(2);
+    await b.evaluate(() => (window as any).tandem.cmd.addText({ content: 'More work' }));
+    await b.waitForTimeout(1500);
+    expect(probes).toHaveLength(2);
+    await ctx.close();
   });
 });

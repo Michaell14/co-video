@@ -128,6 +128,30 @@ export const COMMANDS: Command[] = [
     keys: ['mod+alt+v'],
     run: () => cmd.pasteAttributes('all'),
   },
+  {
+    id: 'paste-grade',
+    title: 'Paste attributes: grade only',
+    group: 'Edit',
+    run: () => cmd.pasteAttributes('grade'),
+  },
+  {
+    id: 'paste-effects',
+    title: 'Paste attributes: effects only',
+    group: 'Edit',
+    run: () => cmd.pasteAttributes('effects'),
+  },
+  {
+    id: 'paste-transform',
+    title: 'Paste attributes: transform and crop only',
+    group: 'Edit',
+    run: () => cmd.pasteAttributes('transform'),
+  },
+  {
+    id: 'paste-sound',
+    title: 'Paste attributes: volume, pan and fades only',
+    group: 'Edit',
+    run: () => cmd.pasteAttributes('sound'),
+  },
   { id: 'select-all', title: 'Select all', group: 'Edit', keys: ['mod+a'], run: () => cmd.selectAll() },
   {
     id: 'select-right',
@@ -142,6 +166,45 @@ export const COMMANDS: Command[] = [
     group: 'Edit',
     keys: ['shift+home'],
     run: () => cmd.selectBeside('left'),
+  },
+  {
+    id: 'select-under',
+    title: 'Select clip under playhead',
+    group: 'Edit',
+    keys: ['shift+v'],
+    run: () => cmd.selectUnderPlayhead(),
+  },
+  {
+    id: 'select-next',
+    title: 'Select next clip',
+    group: 'Edit',
+    keys: ['mod+arrowdown'],
+    run: () => cmd.selectClip(1),
+    repeat: true,
+  },
+  {
+    id: 'select-prev',
+    title: 'Select previous clip',
+    group: 'Edit',
+    keys: ['mod+arrowup'],
+    run: () => cmd.selectClip(-1),
+    repeat: true,
+  },
+  {
+    id: 'select-next-add',
+    title: 'Add next clip to selection',
+    group: 'Edit',
+    keys: ['mod+shift+arrowdown'],
+    run: () => cmd.selectClip(1, true),
+    repeat: true,
+  },
+  {
+    id: 'select-prev-add',
+    title: 'Add previous clip to selection',
+    group: 'Edit',
+    keys: ['mod+shift+arrowup'],
+    run: () => cmd.selectClip(-1, true),
+    repeat: true,
   },
   { id: 'deselect', title: 'Deselect all', group: 'Edit', keys: ['escape'], run: () => cmd.deselect() },
   {
@@ -215,6 +278,52 @@ export const COMMANDS: Command[] = [
     group: 'Timeline',
     keys: ['w'],
     run: () => cmd.trimToPlayhead('end'),
+  },
+  {
+    id: 'trim-edge-left',
+    title: 'Trim nearest edge left',
+    group: 'Timeline',
+    keys: ['mod+arrowleft'],
+    run: () => cmd.trimEdge(-1),
+    repeat: true,
+  },
+  {
+    id: 'trim-edge-right',
+    title: 'Trim nearest edge right',
+    group: 'Timeline',
+    keys: ['mod+arrowright'],
+    run: () => cmd.trimEdge(1),
+    repeat: true,
+  },
+  {
+    id: 'trim-edge-left-5',
+    title: 'Trim nearest edge left 5 frames',
+    group: 'Timeline',
+    keys: ['mod+shift+arrowleft'],
+    run: () => cmd.trimEdge(-5),
+    repeat: true,
+  },
+  {
+    id: 'trim-edge-right-5',
+    title: 'Trim nearest edge right 5 frames',
+    group: 'Timeline',
+    keys: ['mod+shift+arrowright'],
+    run: () => cmd.trimEdge(5),
+    repeat: true,
+  },
+  {
+    id: 'extend-edit',
+    title: 'Extend edit to playhead',
+    group: 'Timeline',
+    keys: ['e'],
+    run: () => cmd.extendEdit(),
+  },
+  {
+    id: 'default-transition',
+    title: 'Add default transition',
+    group: 'Timeline',
+    keys: ['shift+d'],
+    run: () => cmd.addDefaultTransition(),
   },
   {
     id: 'close-gap',
@@ -322,12 +431,21 @@ export const COMMANDS: Command[] = [
   },
   { id: 'mark-in', title: 'Mark in', group: 'Markers', keys: ['i'], run: () => cmd.markIn() },
   { id: 'mark-out', title: 'Mark out', group: 'Markers', keys: ['o'], run: () => cmd.markOut() },
+  { id: 'mark-clip', title: 'Mark clip', group: 'Markers', keys: ['x'], run: () => cmd.markClip() },
+  { id: 'go-in', title: 'Go to in', group: 'Markers', keys: ['shift+i'], run: () => cmd.goToRange('in') },
+  { id: 'go-out', title: 'Go to out', group: 'Markers', keys: ['shift+o'], run: () => cmd.goToRange('out') },
   {
     id: 'clear-range',
     title: 'Clear in / out',
     group: 'Markers',
     keys: ['alt+x'],
     run: () => cmd.clearRange(),
+  },
+  {
+    id: 'markers-follow',
+    title: 'Toggle markers follow ripple edits',
+    group: 'Markers',
+    run: () => cmd.toggleMarkersFollow(),
   },
 
   // Tools
@@ -521,13 +639,102 @@ export function isTyping(target: EventTarget | null): boolean {
   );
 }
 
+/** The keys that carry focus from one control to another: Tab, and the keys that step through a list. */
+const FOCUS_KEYS = new Set([
+  'Tab',
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+]);
+
+/**
+ * Follow how the focused control came by its focus: `true` from the function returned while the
+ * keyboard brought it there (Tab, an arrow key in a tab list or a menu), `false` once a press of
+ * the pointer has. `:focus-visible` cannot be asked instead: in Chromium any key press, the very
+ * Space in question included, turns it on for a button that a click left focused.
+ *
+ * Focus also arrives without having been brought: a menu, a dialog or the palette closes on Escape
+ * or Enter and hands it back, or the window comes to the front again. The control it returns to is
+ * then what it was the last time it had the focus, so a button that was clicked before the palette
+ * opened is not operated by the Space that follows, and one that was reached with Tab still is.
+ */
+export function watchFocus(target: Pick<Window, 'addEventListener'>): () => boolean {
+  // What focus that arrives now follows from: a key that moves it, a press of the pointer, or
+  // neither of them.
+  let cause: 'key' | 'pointer' | null = null;
+  let focused: object | null = null;
+  let byKeyboard = false;
+  const brought = new WeakMap<object, boolean>();
+  const note = (keyboard: boolean): void => {
+    byKeyboard = keyboard;
+    if (focused) brought.set(focused, keyboard);
+  };
+  target.addEventListener(
+    'keydown',
+    (e) => {
+      // With Ctrl, Alt or the command key these keys switch tabs and windows, or are shortcuts.
+      const moves = FOCUS_KEYS.has(e.key) && !e.ctrlKey && !e.altKey && !e.metaKey;
+      cause = moves ? 'key' : null;
+    },
+    true,
+  );
+  target.addEventListener(
+    'pointerdown',
+    () => {
+      cause = 'pointer';
+      // Also when the press lands on the control that already has focus, and so moves none.
+      note(false);
+    },
+    true,
+  );
+  target.addEventListener(
+    'blur',
+    (e) => {
+      // The window itself, not a control in it: whatever was pressed last, here or elsewhere, it
+      // is not what gives the focus back when the window returns.
+      if (e.target === target) cause = null;
+    },
+    true,
+  );
+  target.addEventListener(
+    'focusin',
+    (e) => {
+      focused = e.target;
+      const before = focused ? brought.get(focused) : undefined;
+      note(cause === 'key' || (cause === null && before === true));
+    },
+    true,
+  );
+  return () => byKeyboard;
+}
+
+const focusedByKeyboard = typeof window === 'undefined' ? () => false : watchFocus(window);
+
+/**
+ * Whether Space belongs to the control it was pressed on. A button, switch, tab or option that the
+ * keyboard has brought focus to is operated with Space, like anywhere else. One that only kept the
+ * focus of the click that last pressed it is not being operated: there Space stays the transport's.
+ */
+export function spaceOperates(target: EventTarget | null, byKeyboard = focusedByKeyboard()): boolean {
+  const el = target as Element | null;
+  if (!byKeyboard || typeof el?.matches !== 'function') return false;
+  return el.matches('button, [role=switch], [role=tab], [role=option]');
+}
+
 /** Global key handler. Returns true when the event was consumed. */
 export function handleKey(e: KeyboardEvent): boolean {
   if (isTyping(e.target)) return false;
   // Nothing here acts behind a dialog, the palette or an open menu, whether or not it is one the
   // UI state knows about (confirmations are not) and wherever focus is at that moment.
   if (useUI.getState().dialog || layerOpen()) return false;
-  const c = index.get(eventKeys(e));
+  const keys = eventKeys(e);
+  if (keys === 'space' && spaceOperates(e.target)) return false;
+  const c = index.get(keys);
   if (!c) return false;
   if (e.repeat && !c.repeat) {
     e.preventDefault();

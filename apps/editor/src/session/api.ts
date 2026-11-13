@@ -41,6 +41,12 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /**
+     * The answer was in the collaboration server's own words (`{ "error": … }`). An error page
+     * that a proxy or a gateway in between made up carries the same kind of status, and says
+     * nothing about what the server thinks of a link.
+     */
+    readonly answered: boolean,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -65,7 +71,8 @@ async function call<T>(path: string, token: string | null, init: RequestInit = {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new ApiError(body?.error ?? `Request failed (${res.status})`, res.status);
+    const said = typeof body?.error === 'string' ? body.error : null;
+    throw new ApiError(said ?? `Request failed (${res.status})`, res.status, said !== null);
   }
   return (await res.json()) as T;
 }

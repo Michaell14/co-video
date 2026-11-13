@@ -6,6 +6,11 @@
  *   0 WS_MSG_SYNC       a y-protocols/sync message (step 1, step 2 or update)
  *   1 WS_MSG_AWARENESS  varUint8Array(awareness update)
  *   2 WS_MSG_CONTROL    varString(JSON ControlMessage), server → client only
+ *
+ * What a connection may make a room hold and send is bounded throughout (see limits.ts): the
+ * size of a message by role, the weight of the document, one presence entry per connection, and
+ * one document copy at a time on its way to a client. The document comes first: presence is sent
+ * to a client once it has the document, and never while it is behind.
  */
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
@@ -13,40 +18,77 @@ import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { RawData } from 'ws';
-import * as awarenessProtocol from 'y-protocols/awareness';
 import * as syncProtocol from 'y-protocols/sync';
 import * as Y from 'yjs';
-import { WS_MSG_AWARENESS, WS_MSG_CONTROL, WS_MSG_SYNC, canWriteDoc } from '@tandem/core';
+import { WS_MSG_CONTROL, WS_MSG_AWARENESS, WS_MSG_SYNC, canWriteDoc } from '@tandem/core';
 import type { ControlMessage, DocKind, Role } from '@tandem/core';
 import { HttpError } from './http';
-import { DocStore } from './persistence';
+import { Budget, LOAD_HEADROOM, STRUCT_BYTES } from './limits';
+import type { Limits } from './limits';
+import { DocStore, DocumentTooLargeError } from './persistence';
+import { RoomPresence } from './presence';
+import type { PresenceMember } from './presence';
+import { RECOUNT_AFTER_STRUCTS, measureUpdate, sameSetAside, setAside, weigh, weightOf } from './updateSize';
 import { delay } from './util';
 
-const MAX_WS_PAYLOAD_BYTES = 32 * 1024 * 1024;
+const MIB = 1024 * 1024;
 const HEARTBEAT_MS = 30_000;
 /** How long an empty room stays in memory, so a page reload does not pay for a reload from disk. */
 export const DEFAULT_ROOM_IDLE_MS = 30_000;
-/**
- * A client that cannot keep up has its messages pile up in our memory. Past this point we drop
- * the connection; when it reconnects, the sync handshake brings it up to date in one message.
- */
-const MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
-/** Presence is a few hundred bytes of JSON; a megabyte of it is abuse, and viewers may send it. */
-const MAX_AWARENESS_BYTES = 1024 * 1024;
-/**
- * Presence is a handful of flat fields. The bound matters because a state is stored parsed and
- * written back out for every broadcast and every new connection, and `JSON.stringify` overflows
- * the stack on nesting that `JSON.parse` accepts without complaint.
- */
-const MAX_AWARENESS_DEPTH = 32;
 /** How many sockets one room accepts unless configured otherwise. */
 export const DEFAULT_MAX_CONNECTIONS_PER_ROOM = 100;
-/** At most one "your edit was dropped" notice per connection in this interval. */
-const READONLY_NOTICE_INTERVAL_MS = 1000;
+/**
+ * What any connection may send in one message, whatever its role: the state vector that asks
+ * for the document, or a presence update. Only a connection that may write the document gets to
+ * send messages as large as the document may be.
+ */
+const MIN_PAYLOAD_BYTES = MIB;
+/** Room for the type and length prefixes around the largest update a message can carry. */
+const MESSAGE_OVERHEAD_BYTES = 16;
+/**
+ * A client that cannot keep up has its messages pile up in our memory. Past the document limit
+ * twice over plus this, a fresh copy of the document is cheaper than what is queued, so the
+ * connection is dropped; when it reconnects, the sync handshake brings it up to date in one message.
+ */
+const BACKLOG_ALLOWANCE_BYTES = 32 * MIB;
+/**
+ * While more than this is queued for a client, presence is not added to the queue. Presence is
+ * a stream of latest states: a client that is behind gets one update with the current ones once
+ * it has caught up, so no amount of presence can push a slow member over its backlog limit or
+ * stand between it and the document.
+ */
+const PRESENCE_HOLD_BYTES = 256 * 1024;
+/** At most one notice of each kind per connection in this interval. */
+const NOTICE_INTERVAL_MS = 1000;
+/** A refusal that repeats with every reconnect is logged once in this interval. */
+const COMPLAINT_INTERVAL_MS = 10 * 60 * 1000;
 /** On shutdown, how long clients get to complete the close handshake before sockets are destroyed. */
 const CLOSE_GRACE_MS = 1000;
 
+const CLOSE_MALFORMED = 1007;
+const CLOSE_TOO_BIG = 1009;
+const CLOSE_RESTARTING = 1012;
+const CLOSE_TRY_AGAIN_LATER = 1013;
+
+/** Who makes way for whom in a full room. */
+const RANK: Record<Role, number> = { viewer: 0, commenter: 1, editor: 2, owner: 3 };
+
+const DOC_LIMIT_SETTING: Record<DocKind, string> = {
+  project: 'MAX_PROJECT_DOC_BYTES',
+  review: 'MAX_REVIEW_DOC_BYTES',
+};
+
 export const isDocKind = (value: unknown): value is DocKind => value === 'project' || value === 'review';
+
+/** The limit of a kind of document, and the settings it comes from, for a log line. */
+function limitInWords(kind: DocKind, limits: Limits): string {
+  const bytes = limits.maxDocBytes[kind];
+  return (
+    `A ${kind} document may hold ${bytes} bytes and ${Math.floor(bytes / STRUCT_BYTES)} structs, and is ` +
+    `loaded up to ${LOAD_HEADROOM} times that (${DOC_LIMIT_SETTING[kind]}, and at most 1/${LOAD_HEADROOM} of ` +
+    `MAX_OPEN_DOC_BYTES, which is ${limits.maxOpenDocBytes})`
+  );
+}
 
 function controlFrame(message: ControlMessage): Uint8Array {
   const encoder = encoding.createEncoder();
@@ -62,57 +104,18 @@ function syncStep1Frame(doc: Y.Doc): Uint8Array {
   return encoding.toUint8Array(encoder);
 }
 
+function syncStep2Frame(doc: Y.Doc, stateVector: Uint8Array): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, WS_MSG_SYNC);
+  syncProtocol.writeSyncStep2(encoder, doc, stateVector);
+  return encoding.toUint8Array(encoder);
+}
+
 function updateFrame(update: Uint8Array): Uint8Array {
   const encoder = encoding.createEncoder();
   encoding.writeVarUint(encoder, WS_MSG_SYNC);
   syncProtocol.writeUpdate(encoder, update);
   return encoding.toUint8Array(encoder);
-}
-
-function awarenessFrame(awareness: awarenessProtocol.Awareness, clients: number[]): Uint8Array {
-  const encoder = encoding.createEncoder();
-  encoding.writeVarUint(encoder, WS_MSG_AWARENESS);
-  encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, clients));
-  return encoding.toUint8Array(encoder);
-}
-
-/** How deeply arrays and objects nest in a JSON text. Brackets inside strings are text, not structure. */
-function jsonDepth(json: string): number {
-  let depth = 0;
-  let deepest = 0;
-  let inString = false;
-  for (let i = 0; i < json.length; i++) {
-    const char = json[i];
-    if (inString) {
-      if (char === '\\') i++;
-      else if (char === '"') inString = false;
-    } else if (char === '"') {
-      inString = true;
-    } else if (char === '[' || char === '{') {
-      deepest = Math.max(deepest, ++depth);
-    } else if (char === ']' || char === '}') {
-      depth--;
-    }
-  }
-  return deepest;
-}
-
-/**
- * Throws unless every state in a client's awareness update is JSON the server can store and send
- * on. `applyAwarenessUpdate` stores entry by entry and only announces the change at the end, so
- * an update that fails halfway would leave states behind that no connection owns; checking the
- * whole update first means it is applied completely or not at all.
- */
-function assertRelayableAwareness(update: Uint8Array): void {
-  const decoder = decoding.createDecoder(update);
-  const count = decoding.readVarUint(decoder);
-  for (let i = 0; i < count; i++) {
-    decoding.readVarUint(decoder); // client id
-    decoding.readVarUint(decoder); // clock
-    const state = decoding.readVarString(decoder);
-    if (jsonDepth(state) > MAX_AWARENESS_DEPTH) throw new Error('awareness state is nested too deeply');
-    JSON.parse(state);
-  }
 }
 
 /** A plain Uint8Array view of whatever `ws` handed us (no copy for the common single-Buffer case). */
@@ -124,51 +127,106 @@ function toUint8Array(data: RawData): Uint8Array {
 }
 
 /** One WebSocket in a room. */
-class Connection {
+class Connection implements PresenceMember {
   /** Cleared when a ping goes out, set again by the pong; still false at the next ping = dead. */
   alive = true;
-  /** Awareness client ids this socket announced; they are removed from the room when it closes. */
-  readonly awarenessIds = new Set<number>();
   /** Set once the server gave up on the connection; nothing it sends afterwards is looked at. */
   rejected = false;
-  private lastReadonlyNotice = 0;
+  /** State vector of a request for the document that is not answered yet. Only the latest counts. */
+  syncRequest: Uint8Array | undefined;
+  /** Size of the document copy that is on its way to this client; 0 when none is. */
+  syncBytes = 0;
+  /**
+   * Presence entries whose latest state this client has yet to be sent: everyone who was here
+   * when it joined, until it has the document, and whatever changed while it was behind.
+   */
+  private readonly heldPresence = new Set<number>();
+  /** True once the first copy of the document has left for this client. */
+  private hasDocument = false;
+  private readonly lastNotice = new Map<ControlMessage['type'], number>();
 
   constructor(
     readonly ws: WebSocket,
     readonly role: Role,
     readonly canWrite: boolean,
+    readonly link: string,
+    private readonly maxBacklogBytes: number,
+    /** A frame with the current state of the given presence entries, if any still exist. */
+    private readonly presenceFrame: (ids: Iterable<number>) => Uint8Array | null,
   ) {}
 
-  send(frame: Uint8Array): void {
-    if (this.ws.readyState !== WebSocket.OPEN) return;
-    if (this.ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+  get open(): boolean {
+    return this.ws.readyState === WebSocket.OPEN;
+  }
+
+  /** Queue a frame. `sent` runs once it has left for the client, and never if it did not. */
+  send(frame: Uint8Array, sent?: () => void): void {
+    if (!this.open) return;
+    if (this.ws.bufferedAmount > this.maxBacklogBytes) {
       this.ws.terminate();
       return;
     }
     this.ws.send(frame, { binary: true }, (err) => {
-      if (err) this.ws.terminate();
+      if (err) {
+        this.ws.terminate();
+        return;
+      }
+      sent?.();
+      this.releaseHeldPresence();
     });
   }
 
-  /** Tell a read-only client (rate limited) that the server ignored a change it sent. */
-  notifyReadonly(doc: DocKind): void {
-    const now = Date.now();
-    if (now - this.lastReadonlyNotice < READONLY_NOTICE_INTERVAL_MS) return;
-    this.lastReadonlyNotice = now;
-    this.send(
-      controlFrame({
-        type: 'readonly',
-        role: this.role,
-        message: `role "${this.role}" cannot edit the ${doc} document`,
-      }),
-    );
+  /** Whether presence has to wait: for the document, or for the client to catch up. */
+  private get holdsPresence(): boolean {
+    return !this.hasDocument || this.ws.bufferedAmount > PRESENCE_HOLD_BYTES;
   }
-}
 
-interface AwarenessChange {
-  added: number[];
-  updated: number[];
-  removed: number[];
+  /** The client is to be told the state of these presence entries when its turn for presence comes. */
+  owePresence(ids: Iterable<number>): void {
+    for (const id of ids) this.heldPresence.add(id);
+  }
+
+  /** Pass on the new state of some presence entries, now or once the client has caught up. */
+  relayPresence(ids: number[], frame: Uint8Array): void {
+    if (this.holdsPresence) this.owePresence(ids);
+    else this.send(frame);
+  }
+
+  /**
+   * Say that some presence entries are gone, which also settles what was still owed about them.
+   * A client that has not been told about anyone yet has nothing to be told here either.
+   */
+  dropPresence(ids: number[], frame: Uint8Array): void {
+    for (const id of ids) this.heldPresence.delete(id);
+    if (this.hasDocument) this.send(frame);
+  }
+
+  /** The first copy of the document has left for the client: presence may follow. */
+  documentSent(): void {
+    this.hasDocument = true;
+  }
+
+  private releaseHeldPresence(): void {
+    if (this.heldPresence.size === 0 || this.holdsPresence) return;
+    const frame = this.presenceFrame(this.heldPresence);
+    this.heldPresence.clear();
+    if (frame) this.send(frame);
+  }
+
+  /** Tell the client (rate limited per kind of notice) that the server did not take something it sent. */
+  notify(message: ControlMessage): void {
+    const now = Date.now();
+    if (now - (this.lastNotice.get(message.type) ?? 0) < NOTICE_INTERVAL_MS) return;
+    this.lastNotice.set(message.type, now);
+    this.send(controlFrame(message));
+  }
+
+  /** Say why, then close. Nothing the client sends from here on is looked at. */
+  turnAway(code: number, reason: string): void {
+    this.rejected = true;
+    this.send(controlFrame({ type: 'error', message: reason }));
+    this.ws.close(code, reason);
+  }
 }
 
 export interface RoomHooks {
@@ -185,14 +243,12 @@ export interface RoomManagerOptions extends RoomHooks {
   autoSnapshotMs: number;
   /** How long a room without connections stays loaded. */
   roomIdleMs: number;
-  /** How many sockets one room holds at a time. */
-  maxConnectionsPerRoom: number;
+  limits: Limits;
 }
 
 export class Room {
   private readonly conns = new Set<Connection>();
-  /** Which connection announced which awareness client id. */
-  private readonly awarenessOwners = new Map<number, Connection>();
+  private readonly presence: RoomPresence;
   /** Holders (an upgrade in progress, an HTTP handler) that keep the room loaded without a socket. */
   private pins = 0;
   private idleTimer: NodeJS.Timeout | undefined;
@@ -201,6 +257,21 @@ export class Room {
   private unsnapshotted = false;
   private autoVersion: Promise<void> = Promise.resolve();
   private destroying: Promise<void> | undefined;
+  /** Encoded size the document may reach, and the structs that go with it. */
+  private readonly maxBytes: number;
+  private readonly maxStructs: number;
+  /**
+   * What the document weighs, as charged to the budget of all loaded documents: its encoded size
+   * as last measured plus the updates taken since, and its structs as last counted plus the
+   * weight of the updates taken since.
+   */
+  private bytes: number;
+  private structs: number;
+  /** True while both figures are measurements, i.e. until the next update is taken. */
+  private weighed = false;
+  private structsSinceCount = 0;
+  /** How many updates have changed the document since it was loaded. */
+  private changes = 0;
 
   private constructor(
     readonly projectId: string,
@@ -209,10 +280,31 @@ export class Room {
     private readonly manager: RoomManager,
     private readonly opts: RoomManagerOptions,
     readonly doc: Y.Doc,
-    readonly awareness: awarenessProtocol.Awareness,
+    loaded: { bytes: number; structs: number },
   ) {
+    this.maxBytes = opts.limits.maxDocBytes[kind];
+    this.maxStructs = Math.floor(this.maxBytes / STRUCT_BYTES);
+    this.bytes = loaded.bytes;
+    this.structs = loaded.structs;
+    this.setWeight(loaded.bytes, weigh(doc));
+    this.weighed = false; // the bytes are those of the files, which is more than the document
+    this.store.onSnapshot = (bytes) => this.setWeight(bytes, weigh(this.doc));
+
+    this.presence = new RoomPresence(
+      doc,
+      { maxBytes: opts.limits.maxPresenceBytes, maxEntries: opts.limits.maxConnectionsPerRoom },
+      {
+        changed: (ids, origin) => {
+          const frame = this.presence.frame(ids);
+          if (!frame) return;
+          for (const conn of this.conns) if (conn !== origin) conn.relayPresence(ids, frame);
+        },
+        removed: (ids, frame, origin) => {
+          for (const conn of this.conns) if (conn !== origin) conn.dropPresence(ids, frame);
+        },
+      },
+    );
     this.doc.on('update', this.onDocUpdate);
-    this.awareness.on('update', this.onAwarenessUpdate);
     if (kind === 'project' && opts.autoSnapshotMs > 0) {
       this.autoTimer = setInterval(() => void this.takeAutoVersion(), opts.autoSnapshotMs);
       this.autoTimer.unref();
@@ -227,14 +319,47 @@ export class Room {
     opts: RoomManagerOptions,
   ): Promise<Room> {
     const doc = new Y.Doc({ gc: true });
-    const awareness = new awarenessProtocol.Awareness(doc);
-    // The server takes part in the document, not in presence: it has no cursor to show.
-    awareness.setLocalState(null);
+    const maxBytes = opts.limits.maxDocBytes[kind];
+    const { openDocs } = manager;
+    const held = { bytes: 0, structs: 0 };
+    // Only ever asked for what would fit if nothing else were loaded (the store refuses a
+    // document beyond that as too large), so being turned away here does pass with time.
+    const reserve = (budget: Budget, amount: number): void => {
+      if (!budget.fits(amount)) {
+        manager.complain(
+          'open documents',
+          `not loading another document: the ones in memory have reached MAX_OPEN_DOC_BYTES (${openDocs.bytes.limit})`,
+        );
+        throw new HttpError(503, 'the server has too many documents open, try again later');
+      }
+      budget.add(amount);
+    };
     try {
-      const store = await DocStore.open(opts.projectDir(projectId), kind, doc);
-      return new Room(projectId, kind, store, manager, opts, doc, awareness);
+      const store = await DocStore.open(opts.projectDir(projectId), kind, doc, {
+        maxBytes: Math.min(LOAD_HEADROOM * maxBytes, openDocs.bytes.limit),
+        maxStoredBytes: openDocs.bytes.limit,
+        maxStructs: Math.min(Math.floor((LOAD_HEADROOM * maxBytes) / STRUCT_BYTES), openDocs.structs.limit),
+        reserveBytes: (bytes) => {
+          reserve(openDocs.bytes, bytes);
+          held.bytes = bytes;
+        },
+        reserveStructs: (structs) => {
+          reserve(openDocs.structs, structs);
+          held.structs += structs;
+        },
+      });
+      return new Room(projectId, kind, store, manager, opts, doc, held);
     } catch (err) {
-      doc.destroy(); // also stops the awareness instance's timer
+      openDocs.bytes.add(-held.bytes);
+      openDocs.structs.add(-held.structs);
+      doc.destroy(); // also stops the timer of an awareness instance, had one been made
+      if (err instanceof DocumentTooLargeError) {
+        manager.complain(
+          `${projectId}/${kind}`,
+          `not loading the ${kind} document of project ${projectId}: ${err.message}. ${limitInWords(kind, opts.limits)}`,
+        );
+        throw new HttpError(507, `the ${kind} document of this project is larger than this server accepts`);
+      }
       throw err;
     }
   }
@@ -274,44 +399,127 @@ export class Room {
     return Y.encodeStateAsUpdate(this.doc);
   }
 
-  private get full(): boolean {
-    return this.conns.size >= this.opts.maxConnectionsPerRoom;
-  }
+  // ──────────────────────────────────────────────────────── document weight ──
 
-  /** The connection that makes way when a full room takes someone who may write its document. */
-  private latestReadOnly(): Connection | undefined {
-    return [...this.conns].reverse().find((conn) => !conn.canWrite);
+  private setWeight(bytes: number, structs: number): void {
+    const { openDocs } = this.manager;
+    openDocs.bytes.add(bytes - this.bytes);
+    openDocs.structs.add(structs - this.structs);
+    this.bytes = bytes;
+    this.structs = structs;
+    this.weighed = true;
+    this.structsSinceCount = 0;
   }
 
   /**
-   * Whether one more connection with `role` fits in. A full room still takes someone who may
-   * write its document, as long as a read-only connection (the most recent one) can give up its
-   * place: otherwise a single viewer link would be enough to keep the editors out of their project.
+   * Put an update on the books, or say why it cannot be taken. Has to be settled before the
+   * update is applied: Yjs cannot take one back out.
+   */
+  private reserve(bytes: number, structs: number): string | null {
+    const full = `the ${this.kind} document has reached the size this server allows`;
+    if (bytes > this.maxBytes) return full;
+    const { openDocs } = this.manager;
+    const fitsDocument = (): boolean =>
+      this.bytes + bytes <= this.maxBytes && this.structs + structs <= this.maxStructs;
+    const fitsServer = (): boolean => openDocs.bytes.fits(bytes) && openDocs.structs.fits(structs);
+    // The figures on the books err on the high side. Before they turn anyone away, find out
+    // what the document really weighs (the size costs an encoding of it, hence only now).
+    if (!this.weighed && !(fitsDocument() && fitsServer())) {
+      this.setWeight(Y.encodeStateAsUpdate(this.doc).byteLength, weigh(this.doc));
+    }
+    if (!fitsDocument()) {
+      this.manager.complain(
+        `${this.projectId}/${this.kind} full`,
+        `the ${this.kind} document of project ${this.projectId} is full and takes no more changes. ${limitInWords(this.kind, this.opts.limits)}`,
+      );
+      return full;
+    }
+    if (!fitsServer()) {
+      this.manager.complain(
+        'open documents',
+        `refusing changes to documents: the ones in memory have reached MAX_OPEN_DOC_BYTES (${openDocs.bytes.limit})`,
+      );
+      return 'the server has no memory to spare for more document data';
+    }
+    this.book(bytes, structs);
+    return null;
+  }
+
+  private book(bytes: number, structs: number): void {
+    const { openDocs } = this.manager;
+    openDocs.bytes.add(bytes);
+    openDocs.structs.add(structs);
+    this.bytes += bytes;
+    this.structs += structs;
+    this.structsSinceCount += structs;
+    this.weighed = false;
+  }
+
+  /** Replace the struct count on the books by the real one, if `now` or once enough has built up. */
+  private recount(now: boolean): void {
+    if (!now && this.structsSinceCount < RECOUNT_AFTER_STRUCTS) return;
+    const structs = weigh(this.doc);
+    this.manager.openDocs.structs.add(structs - this.structs);
+    this.structs = structs;
+    this.structsSinceCount = 0;
+  }
+
+  // ───────────────────────────────────────────────────────────── members ──
+
+  private get full(): boolean {
+    return this.conns.size >= this.opts.limits.maxConnectionsPerRoom;
+  }
+
+  /**
+   * The connection that makes way when a full room takes someone with `role`: one whose role
+   * ranks below theirs, the lowest there is, and of those the most recent.
+   */
+  private yielding(role: Role): Connection | undefined {
+    let found: Connection | undefined;
+    for (const conn of this.conns) {
+      if (RANK[conn.role] < RANK[role] && (!found || RANK[conn.role] <= RANK[found.role])) found = conn;
+    }
+    return found;
+  }
+
+  /**
+   * Whether one more connection with `role` fits in. A full room still takes someone as long as
+   * a connection of a lesser role can give up its place: otherwise a single viewer link would be
+   * enough to keep the editors out of their project, or a comment link the owner out of the review.
    * Asking changes nothing. The place is only taken in connect(), by a socket that did join.
    */
   hasRoomFor(role: Role): boolean {
-    return !this.full || (canWriteDoc(role, this.kind) && this.latestReadOnly() !== undefined);
+    return !this.full || this.yielding(role) !== undefined;
   }
 
   /**
-   * Attach a freshly upgraded socket. Everything it needs to catch up is sent right away. In a
-   * full room it takes the place hasRoomFor() found for it.
+   * Attach a freshly upgraded socket. It is greeted and asked for what it has; who else is here
+   * it is told after the document, which it gets when it asks. In a full room it takes the place
+   * hasRoomFor() found for it.
    */
-  connect(ws: WebSocket, role: Role, registry: Set<Connection>): void {
+  connect(ws: WebSocket, role: Role, link: string, registry: Set<Connection>): void {
     if (this.closed) {
-      ws.close(1012, 'room is restarting');
+      ws.close(CLOSE_RESTARTING, 'room is restarting');
       return;
     }
-    const conn = new Connection(ws, role, canWriteDoc(role, this.kind));
-    const displaced = this.full && conn.canWrite ? this.latestReadOnly() : undefined;
+    const conn = new Connection(
+      ws,
+      role,
+      canWriteDoc(role, this.kind),
+      link,
+      2 * this.maxBytes + BACKLOG_ALLOWANCE_BYTES,
+      (ids) => this.presence.frame(ids),
+    );
+    const displaced = this.full ? this.yielding(role) : undefined;
     if (displaced) {
       // The place is free now, not when the peer gets round to answering the close frame.
       displaced.rejected = true;
       this.disconnect(displaced);
-      displaced.ws.close(1013, 'room is full');
+      displaced.ws.close(CLOSE_TRY_AGAIN_LATER, 'room is full');
     }
     this.conns.add(conn);
     registry.add(conn);
+    this.presence.join(conn);
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
 
@@ -328,18 +536,20 @@ export class Room {
 
     conn.send(controlFrame({ type: 'hello', role }));
     conn.send(syncStep1Frame(this.doc));
-    const present = [...this.awareness.getStates().keys()];
-    if (present.length > 0) conn.send(awarenessFrame(this.awareness, present));
+    conn.owePresence(this.presence.present);
   }
 
   private disconnect(conn: Connection): void {
     if (!this.conns.delete(conn)) return;
-    if (!this.closed && conn.awarenessIds.size > 0) {
-      // Triggers onAwarenessUpdate, which tells the remaining clients and forgets the owners.
-      awarenessProtocol.removeAwarenessStates(this.awareness, [...conn.awarenessIds], null);
-    }
+    conn.syncRequest = undefined;
+    this.manager.syncNoLongerWanted(conn);
+    this.syncDelivered(conn);
+    // Tells the remaining clients that its presence entry is gone.
+    if (!this.closed) this.presence.leave(conn);
     this.scheduleUnload();
   }
+
+  // ──────────────────────────────────────────────────────────── messages ──
 
   private onMessage(conn: Connection, data: RawData, isBinary: boolean): void {
     // Frames still in flight when a shutdown starts are applied (and persisted) as usual; only once
@@ -347,35 +557,37 @@ export class Room {
     if (this.closed || conn.rejected) return;
     try {
       if (!isBinary) throw new Error('text frames are not part of the protocol');
-      const bytes = toUint8Array(data);
-      const decoder = decoding.createDecoder(bytes);
+      const decoder = decoding.createDecoder(toUint8Array(data));
       switch (decoding.readVarUint(decoder)) {
         case WS_MSG_SYNC:
           this.onSyncMessage(conn, decoder);
           break;
-        case WS_MSG_AWARENESS:
+        case WS_MSG_AWARENESS: {
           // Presence is relayed for every role: viewers should show up in the avatar stack too.
-          if (bytes.byteLength <= MAX_AWARENESS_BYTES) {
-            const update = decoding.readVarUint8Array(decoder);
-            assertRelayableAwareness(update);
-            awarenessProtocol.applyAwarenessUpdate(this.awareness, update, conn);
-          }
+          // Presence that is not taken never costs the connection: the document matters more.
+          const refused = this.presence.receive(conn, decoding.readVarUint8Array(decoder));
+          if (refused) conn.notify({ type: 'error', message: `presence update ignored: ${refused}` });
           break;
+        }
         default:
           // Unknown frame types are ignored so newer clients can talk to an older server.
           break;
       }
     } catch (err) {
-      // A frame we cannot decode leaves this client's view of the document in doubt. Dropping the
-      // connection is the safe reaction: on reconnect the sync handshake restores a known state.
-      const reason = err instanceof Error ? err.message : String(err);
-      console.warn(
-        `[tandem] closing a ${this.kind} connection of ${this.projectId} after a malformed message: ${reason}`,
-      );
-      conn.rejected = true;
-      conn.send(controlFrame({ type: 'error', message: 'malformed message' }));
-      conn.ws.close(1007, 'malformed message');
+      this.dropMalformed(conn, err);
     }
+  }
+
+  /**
+   * A frame we cannot decode leaves this client's view of the document in doubt. Dropping the
+   * connection is the safe reaction: on reconnect the sync handshake restores a known state.
+   */
+  private dropMalformed(conn: Connection, err: unknown): void {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[tandem] closing a ${this.kind} connection of ${this.projectId} after a malformed message: ${reason}`,
+    );
+    conn.turnAway(CLOSE_MALFORMED, 'malformed message');
   }
 
   private onSyncMessage(conn: Connection, decoder: decoding.Decoder): void {
@@ -386,10 +598,10 @@ export class Room {
     switch (type) {
       case syncProtocol.messageYjsSyncStep1: {
         // Always answered, whatever the role: this is how read-only clients receive the document.
-        const encoder = encoding.createEncoder();
-        encoding.writeVarUint(encoder, WS_MSG_SYNC);
-        syncProtocol.readSyncStep1(decoder, encoder, this.doc);
-        conn.send(encoding.toUint8Array(encoder));
+        const stateVector = decoding.readVarUint8Array(decoder);
+        Y.decodeStateVector(stateVector); // throws now rather than when the answer is due
+        conn.syncRequest = stateVector;
+        this.sync(conn);
         break;
       }
       case syncProtocol.messageYjsSyncStep2:
@@ -401,12 +613,33 @@ export class Room {
           // structs (first varUint = number of clients with new structs) or any incremental
           // update is an attempted edit, and the client is told that it did not happen.
           if (type === syncProtocol.messageYjsUpdate || (update.byteLength > 0 && update[0] !== 0)) {
-            conn.notifyReadonly(this.kind);
+            conn.notify({
+              type: 'readonly',
+              role: conn.role,
+              message: `role "${conn.role}" cannot edit the ${this.kind} document`,
+            });
           }
           break;
         }
+        const structs = weightOf(measureUpdate(update, this.doc));
+        // An update that adds no struct is taken as it is. Every client sends one in the
+        // handshake: nothing new, and all the deletions it knows of, which we know as well.
+        const refusal = structs > 0 ? this.reserve(update.byteLength, structs) : null;
+        if (refusal) {
+          // What this client holds and we do not take would be missing under everything it
+          // sends next, so the connection ends here; the document stays as the others have it.
+          conn.turnAway(CLOSE_TOO_BIG, refusal);
+          break;
+        }
+        const changesBefore = this.changes;
+        const waiting = setAside(this.doc);
         // The connection is the transaction origin, so onDocUpdate can skip echoing it back.
         Y.applyUpdate(this.doc, update, conn);
+        // Deletions that were news after all leave their few bytes in the document.
+        if (structs === 0 && this.changes !== changesBefore) this.book(update.byteLength, 0);
+        // What Yjs sets aside for later was weighed against the document as it is now and will
+        // be applied to it as it is then: count again, for the worst case.
+        this.recount(!sameSetAside(waiting, setAside(this.doc)));
         break;
       }
       default:
@@ -414,34 +647,52 @@ export class Room {
     }
   }
 
+  /**
+   * Answer a request for the document, unless the answer to an earlier one is still on its way:
+   * then the request waits, and only the latest one counts. A client that asks again and again
+   * without reading therefore holds one copy of the document, not one per request, and each
+   * answer costs one encoding of the document, not one per request either.
+   */
+  private sync(conn: Connection): void {
+    if (!this.trySync(conn)) this.manager.syncWhenThereIsRoom(conn, this);
+  }
+
+  /**
+   * Send the document copy `conn` is waiting for, if there is one to send. `false` means that the
+   * copies already on their way to clients leave no room for another: ask again when one arrived.
+   */
+  trySync(conn: Connection): boolean {
+    const stateVector = conn.syncRequest;
+    if (stateVector === undefined || conn.syncBytes > 0 || !conn.open || this.closed) return true;
+    const { syncBacklog } = this.manager;
+    // The copy is at most the whole document. One at a time is always possible.
+    if (syncBacklog.used > 0 && !syncBacklog.fits(this.bytes)) return false;
+    conn.syncRequest = undefined;
+    const frame = syncStep2Frame(this.doc, stateVector);
+    conn.syncBytes = frame.byteLength;
+    syncBacklog.add(frame.byteLength);
+    conn.send(frame, () => {
+      conn.documentSent();
+      this.syncDelivered(conn);
+      this.sync(conn);
+    });
+    return true;
+  }
+
+  /** The copy that was on its way to `conn` has left our memory, one way or the other. */
+  private syncDelivered(conn: Connection): void {
+    if (conn.syncBytes === 0) return;
+    this.manager.syncBacklog.add(-conn.syncBytes);
+    conn.syncBytes = 0;
+    this.manager.syncNextInLine();
+  }
+
   private readonly onDocUpdate = (update: Uint8Array, origin: unknown): void => {
+    this.changes++;
     this.store.append(update);
     this.unsnapshotted = true;
     this.opts.onDocChanged(this.projectId);
     const frame = updateFrame(update);
-    for (const conn of this.conns) if (conn !== origin) conn.send(frame);
-  };
-
-  private readonly onAwarenessUpdate = (
-    { added, updated, removed }: AwarenessChange,
-    origin: unknown,
-  ): void => {
-    if (origin instanceof Connection) {
-      for (const id of [...added, ...updated]) {
-        const owner = this.awarenessOwners.get(id);
-        if (owner === origin) continue;
-        // A client that reconnects keeps its id while its old socket may linger until the next
-        // heartbeat. Hand the id over, so the old socket's close does not wipe the live state.
-        owner?.awarenessIds.delete(id);
-        this.awarenessOwners.set(id, origin);
-        origin.awarenessIds.add(id);
-      }
-    }
-    for (const id of removed) {
-      this.awarenessOwners.get(id)?.awarenessIds.delete(id);
-      this.awarenessOwners.delete(id);
-    }
-    const frame = awarenessFrame(this.awareness, [...added, ...updated, ...removed]);
     for (const conn of this.conns) if (conn !== origin) conn.send(frame);
   };
 
@@ -470,7 +721,7 @@ export class Room {
       if (this.idleTimer) clearTimeout(this.idleTimer);
       if (this.autoTimer) clearInterval(this.autoTimer);
       this.doc.off('update', this.onDocUpdate);
-      this.awareness.off('update', this.onAwarenessUpdate);
+      this.presence.close();
       for (const conn of this.conns) conn.ws.terminate();
       try {
         // Capture the end of an editing session as a version, so it can be returned to after
@@ -479,6 +730,8 @@ export class Room {
         await this.store.close();
       } finally {
         this.doc.destroy(); // destroys the awareness instance (and its interval) as well
+        this.store.onSnapshot = undefined;
+        this.setWeight(0, 0);
       }
     })();
     return this.destroying;
@@ -486,16 +739,30 @@ export class Room {
 }
 
 export class RoomManager {
-  private readonly wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD_BYTES });
+  /** One per message size limit: `ws` fixes the largest message it reads when it takes a socket. */
+  private readonly socketServers = new Map<number, WebSocketServer>();
   /** Loaded (or loading) rooms by `projectId/kind`. */
   private readonly rooms = new Map<string, Promise<Room>>();
   /** Rooms that left `rooms` but are still writing their final state. A reload must wait for them. */
   private readonly closing = new Map<string, Promise<void>>();
   private readonly connections = new Set<Connection>();
+  /** Connections whose document copy waits for others to arrive first, in the order they asked. */
+  private readonly syncQueue = new Map<Connection, Room>();
+  private readonly complaints = new Map<string, number>();
   private readonly heartbeat: NodeJS.Timeout;
   private closed = false;
+  /** What all loaded documents weigh together. */
+  readonly openDocs: { bytes: Budget; structs: Budget };
+  /** Document copies that are queued for clients and have not left for them yet. */
+  readonly syncBacklog: Budget;
 
   constructor(private readonly opts: RoomManagerOptions) {
+    const { maxOpenDocBytes, maxSyncBacklogBytes } = opts.limits;
+    this.openDocs = {
+      bytes: new Budget(maxOpenDocBytes),
+      structs: new Budget(Math.floor(maxOpenDocBytes / STRUCT_BYTES)),
+    };
+    this.syncBacklog = new Budget(maxSyncBacklogBytes);
     this.heartbeat = setInterval(() => this.checkConnections(), HEARTBEAT_MS);
     this.heartbeat.unref();
   }
@@ -508,6 +775,34 @@ export class RoomManager {
       }
       conn.alive = false;
       if (conn.ws.readyState === WebSocket.OPEN) conn.ws.ping();
+    }
+  }
+
+  /** Log `message`, unless the same thing was logged about `subject` a moment ago. */
+  complain(subject: string, message: string): void {
+    const now = Date.now();
+    if (now - (this.complaints.get(subject) ?? -Infinity) < COMPLAINT_INTERVAL_MS) return;
+    for (const [key, at] of this.complaints) {
+      if (now - at >= COMPLAINT_INTERVAL_MS) this.complaints.delete(key);
+    }
+    this.complaints.set(subject, now);
+    console.warn(`[tandem] ${message}`);
+  }
+
+  /** Remember that `conn` waits for its copy of the document until others have arrived. */
+  syncWhenThereIsRoom(conn: Connection, room: Room): void {
+    this.syncQueue.set(conn, room);
+  }
+
+  syncNoLongerWanted(conn: Connection): void {
+    this.syncQueue.delete(conn);
+  }
+
+  /** A document copy has arrived: serve those who waited for the room, first come first served. */
+  syncNextInLine(): void {
+    for (const [conn, room] of this.syncQueue) {
+      if (!room.trySync(conn)) break;
+      this.syncQueue.delete(conn);
     }
   }
 
@@ -557,9 +852,28 @@ export class RoomManager {
   }
 
   /**
+   * The WebSocket server for connections of `role` to a `kind` document. Whoever may write the
+   * document may send messages as large as it may get; everyone else only as much as reading
+   * takes. `ws` refuses a larger message when its header arrives (close code 1009), before any
+   * of it is held in memory.
+   */
+  private socketServer(kind: DocKind, role: Role): WebSocketServer {
+    const { maxDocBytes, maxPresenceBytes } = this.opts.limits;
+    const maxPayload =
+      Math.max(MIN_PAYLOAD_BYTES, maxPresenceBytes, canWriteDoc(role, kind) ? maxDocBytes[kind] : 0) +
+      MESSAGE_OVERHEAD_BYTES;
+    let server = this.socketServers.get(maxPayload);
+    if (!server) {
+      server = new WebSocketServer({ noServer: true, maxPayload });
+      this.socketServers.set(maxPayload, server);
+    }
+    return server;
+  }
+
+  /**
    * Complete the WebSocket handshake for an already authenticated request and join the room.
    * The room is loaded *before* the upgrade completes, so the client's first frames cannot
-   * arrive while nobody is listening.
+   * arrive while nobody is listening. `link` is the token the request was authenticated with.
    */
   async accept(
     req: IncomingMessage,
@@ -568,18 +882,19 @@ export class RoomManager {
     projectId: string,
     kind: DocKind,
     role: Role,
+    link: string,
   ): Promise<void> {
     const room = await this.acquire(projectId, kind);
     try {
       if (socket.destroyed) return; // the client gave up while we were loading
       // Nothing is awaited between this check and connect(), so concurrent upgrades cannot
       // overshoot the limit together. Nobody is displaced yet: the handshake below can still be
-      // refused, and a connection that never joins must not cost a viewer their place.
+      // refused, and a connection that never joins must not cost anyone their place.
       if (!room.hasRoomFor(role)) throw new HttpError(503, 'this project has too many open connections');
       // The callback runs synchronously inside handleUpgrade, i.e. before the pin is released.
-      this.wss.handleUpgrade(req, socket, head, (ws) => {
+      this.socketServer(kind, role).handleUpgrade(req, socket, head, (ws) => {
         try {
-          room.connect(ws, role, this.connections);
+          room.connect(ws, role, link, this.connections);
         } catch (err) {
           // The handshake is done, so this can no longer be answered with an HTTP status.
           console.error(`[tandem] could not attach a connection to ${projectId}/${kind}:`, err);
@@ -627,6 +942,10 @@ export class RoomManager {
         console.error('[tandem] could not persist a document on shutdown:', result.reason);
     }
     await Promise.allSettled(this.closing.values());
-    await new Promise<void>((resolve) => this.wss.close(() => resolve()));
+    await Promise.all(
+      [...this.socketServers.values()].map(
+        (server) => new Promise<void>((resolve) => server.close(() => resolve())),
+      ),
+    );
   }
 }

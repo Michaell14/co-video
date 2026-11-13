@@ -5,19 +5,26 @@
  * on, and a browser opens only six connections to one host. So only a few transfers run at a time,
  * most urgent first, which always leaves connections free for range requests and API calls.
  * Transfers that fail are tried again by themselves, at growing intervals.
+ *
+ * A `check` is the question that comes before a transfer nobody knows to be possible: does the
+ * server hold a file that the project says was never uploaded? It is one short request, and it is
+ * scheduled and tried again like the rest.
  */
 import { clipEnd, type Asset, type Project } from '@tandem/core';
 import type { TransferResult } from './mediaStore';
 
-export type TransferKind = 'upload' | 'download';
+export type TransferKind = 'upload' | 'download' | 'check';
 
 export interface Transfer {
   kind: TransferKind;
   assetId: string;
 }
 
-/** Transfers running at once, per direction. Together they leave two of six connections free. */
-export const TRANSFER_SLOTS: Record<TransferKind, number> = { upload: 2, download: 2 };
+/**
+ * Transfers running at once, per kind. Uploads and downloads together leave two of six connections
+ * free; checks go one at a time and are over at once.
+ */
+export const TRANSFER_SLOTS: Record<TransferKind, number> = { upload: 2, download: 2, check: 1 };
 
 const FIRST_RETRY_MS = 2000;
 const MAX_RETRY_MS = 60_000;
@@ -75,7 +82,7 @@ export class TransferQueue {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     const now = performance.now();
-    const busy: Record<TransferKind, number> = { upload: 0, download: 0 };
+    const busy: Record<TransferKind, number> = { upload: 0, download: 0, check: 0 };
     for (const kind of this.running.values()) busy[kind]++;
     let wake = Infinity;
     for (const transfer of this.wanted) {
@@ -131,4 +138,18 @@ export function byUrgency(p: Project, playhead: number): (a: Asset, b: Asset) =>
   const of = (a: Asset): number => distance.get(a.id) ?? Infinity;
   // Infinity - Infinity is NaN, so equal distances are settled before subtracting.
   return (a, b) => (of(a) === of(b) ? a.createdAt - b.createdAt : of(a) < of(b) ? -1 : 1);
+}
+
+/**
+ * `next`, about to take the open project's place, with what is known about uploads carried over.
+ * A snapshot says what was uploaded when it was taken; a file that reached the server since is
+ * still there. Everyone without a copy of their own goes by this flag, so one that fell back to
+ * "not uploaded" would put the media out of their reach.
+ */
+export function keepUploads(next: Project, open: Project): Project {
+  const assets = Object.values(next.assets).map((a) => [
+    a.id,
+    { ...a, uploaded: a.uploaded || !!open.assets[a.id]?.uploaded },
+  ]);
+  return { ...next, assets: Object.fromEntries(assets) };
 }

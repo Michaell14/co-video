@@ -37,7 +37,7 @@ import {
   type Clip,
   type Project,
 } from '@tandem/core';
-import { hasAudibleAudio, renderAudioChunk } from './audio/graph';
+import { AudioRuns, hasAudibleAudio, renderAudioChunk } from './audio/graph';
 import { Compositor } from './gl/compositor';
 import { MediaLibrary, type MediaResolver } from './media/library';
 import { SourceManager, type SourceFault } from './media/sources';
@@ -527,6 +527,8 @@ export async function exportProject(
 
   const timings = { decode: 0, render: 0, encode: 0, audio: 0 };
   const log = warningLog(project, handle.onWarning);
+  // Sound is rendered a few seconds at a time, and decoded in one pass all the same.
+  const audioRuns = new AudioRuns(startSec + durationSec);
   let audioRenderedTo = 0;
   const pumpAudio = async (upToSec: number, flush: boolean) => {
     if (!audioSource) return;
@@ -551,6 +553,7 @@ export async function exportProject(
         project.settings.sampleRate,
         undefined,
         (p) => log.add({ ...p, part: 'audio' }, Math.max(chunkFrame, project.clips[p.clipId]?.start ?? 0)),
+        audioRuns,
       );
       await audioSource.add(buf);
       audioRenderedTo += len;
@@ -636,6 +639,7 @@ export async function exportProject(
     if (handle.writable) await handle.writable.abort().catch(() => {});
     throw err;
   } finally {
+    audioRuns.dispose();
     sources?.dispose();
     compositor?.dispose();
     library.dispose();

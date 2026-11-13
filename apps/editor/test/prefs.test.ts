@@ -5,6 +5,8 @@ import { readPrefs } from '../src/state/ui';
 const FIRST_VISIT = {
   snapping: true,
   linkedSelection: true,
+  markersFollow: true,
+  defaultTransition: 'crossDissolve',
   leftWidth: 320,
   rightWidth: 316,
   timelineHeight: 320,
@@ -22,6 +24,8 @@ describe('stored interface preferences', () => {
     const written = {
       snapping: false,
       linkedSelection: false,
+      markersFollow: false,
+      defaultTransition: 'dipToBlack',
       leftWidth: 412.5,
       rightWidth: 280,
       timelineHeight: 512,
@@ -41,13 +45,30 @@ describe('stored interface preferences', () => {
   it('replace a switch that is not true or false, also inside the scopes', () => {
     for (const bad of ['null', '0', '1', '"false"', '{}', '[]']) {
       const prefs = readPrefs(
-        `{"snapping": ${bad}, "linkedSelection": ${bad}, "scopes": {"waveform": ${bad}, "histogram": ${bad}}}`,
+        `{"snapping": ${bad}, "linkedSelection": ${bad}, "markersFollow": ${bad}, "scopes": {"waveform": ${bad}, "histogram": ${bad}}}`,
       );
       expect(prefs, bad).toEqual(FIRST_VISIT);
     }
     for (const bad of ['null', '"all"', '7', 'true', '[true, true]']) {
       expect(readPrefs(`{"scopes": ${bad}}`).scopes, bad).toEqual(FIRST_VISIT.scopes);
     }
+  });
+
+  it('replace a default transition that is not the name of one', () => {
+    for (const bad of [
+      'null',
+      '7',
+      'true',
+      '""',
+      '"cross dissolve"',
+      '"<b>"',
+      `"${'x'.repeat(65)}"`,
+      '["wipe"]',
+    ]) {
+      expect(readPrefs(`{"defaultTransition": ${bad}}`).defaultTransition, bad).toBe('crossDissolve');
+    }
+    // A name no transition has any more is kept here and replaced where it is used.
+    expect(readPrefs('{"defaultTransition": "retiredWipe"}').defaultTransition).toBe('retiredWipe');
   });
 
   it('keep the good fields next to a bad one, and nothing that is not a preference', () => {

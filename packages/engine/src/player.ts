@@ -6,14 +6,18 @@
  * render loop simply draws whichever frame the clock says is current.
  */
 import {
+  clipEnd,
   clipsOnTrack,
+  findIndexAtOrBefore,
   getEffectDef,
   getTransitionDef,
   resolveFrame,
   secondsToFrames,
   sequenceEnd,
+  sourceTimeAt,
   tracksOf,
   framesToSeconds,
+  type Clip,
   type ClipLayer,
   type EffectDef,
   type Project,
@@ -23,7 +27,10 @@ import { AudioGraph } from './audio/graph';
 import { Compositor, type RenderOptions } from './gl/compositor';
 import { warmNext } from './gl/effectRunner';
 import { MediaLibrary, type MediaResolver } from './media/library';
-import { SourceManager } from './media/sources';
+import { SourceManager, type UpcomingClip } from './media/sources';
+
+/** At rest, decoders nothing has used for a while are looked for this often (milliseconds). */
+const IDLE_SWEEP_MS = 1000;
 
 export type PreviewQuality = 'auto' | 1 | 0.5 | 0.25;
 
@@ -86,9 +93,12 @@ export class Player {
   private anchorTime = 0;
   private anchorKind: 'audio' | 'perf' = 'perf';
   private lastDrawn = -1;
+  private drawn = 0;
+  /** Playhead at which the clips coming up were last looked for, or -1 when they have to be now. */
+  private warmedAt = -1;
+  private sweptAt = 0;
   private viewport = { w: 1280, h: 720, dpr: 1 };
   private fpsWindow: number[] = [];
-  private tickCount = 0;
   /** Extra down-scale applied by `auto` quality while the display cannot keep up with playback. */
   private adaptive = 1;
   private tickTimes: number[] = [];
@@ -363,6 +373,7 @@ export class Player {
     this.syncTransport();
     this.adaptSince = performance.now();
     this.lastDrawn = -1;
+    this.warmedAt = -1;
     this.reanchor();
     this.restartAudio();
   }
@@ -406,6 +417,7 @@ export class Player {
     this.dirty = true;
     // A jump is not a run of dropped frames.
     this.lastDrawn = -1;
+    this.warmedAt = -1;
     if (this.state.playing) {
       this.reanchor();
       this.restartAudio();
@@ -455,8 +467,13 @@ export class Player {
 
   private syncFrameToClock(): void {
     if (!this.state.playing) return;
+    const { rate } = this.state;
     const elapsed = this.readClock(this.anchorKind) - this.anchorTime;
-    this.frame = this.anchorFrame + elapsed * this.fps() * this.state.rate;
+    const frame = this.anchorFrame + elapsed * this.fps() * rate;
+    // The clock can step back a little: how late the output is only becomes known once sound
+    // flows, a moment after playback has begun. The playhead waits for it there. Following it
+    // back would show an earlier frame, which a decoder running forward has to seek for.
+    this.frame = rate > 0 ? Math.max(this.frame, frame) : Math.min(this.frame, frame);
     if (this.clockKind() !== this.anchorKind) {
       // The AudioContext started (or stalled): hand the playhead over to the other clock.
       this.reanchor();
@@ -528,6 +545,15 @@ export class Player {
     this.dirty = true;
   }
 
+  /**
+   * How many times the picture has been drawn since the player was made. It only ever grows, so
+   * whoever derives something from the picture (scopes) can tell that nothing was drawn since it
+   * last looked without reading a pixel.
+   */
+  get drawnFrames(): number {
+    return this.drawn;
+  }
+
   private renderOptions(): RenderOptions {
     return { falseColor: this.state.falseColor, fast: this.state.playing };
   }
@@ -535,8 +561,8 @@ export class Player {
   private tick = (): void => {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.tick);
-    this.tickCount++;
-    this.adapt(performance.now());
+    const tickedAt = performance.now();
+    this.adapt(tickedAt);
 
     if (this.state.playing) {
       this.syncFrameToClock();
@@ -559,7 +585,14 @@ export class Player {
     }
 
     const display = Math.max(0, Math.floor(this.frame + 1e-6));
-    if (display === this.lastDrawn && !this.dirty) return;
+    if (display === this.lastDrawn && !this.dirty) {
+      // Nothing to draw, so nothing lets go of the decoders the last moves left behind.
+      if (tickedAt - this.sweptAt >= IDLE_SWEEP_MS) {
+        this.sweptAt = tickedAt;
+        this.sources.releaseIdle();
+      }
+      return;
+    }
     const advanced = display !== this.lastDrawn;
     if (this.state.playing && advanced && this.lastDrawn >= 0) {
       const skipped = Math.abs(display - this.lastDrawn) - 1;
@@ -578,15 +611,21 @@ export class Player {
     const desc = resolveFrame(this.project, display);
     void this.sources.prepare(this.project, desc, false);
     const st = this.compositor.render(this.project, desc, this.sources, this.renderOptions());
+    this.drawn++;
     this.sources.collect();
     const now = performance.now();
+    this.sweptAt = now;
     this.stats.renderMs = this.stats.renderMs * 0.9 + (now - t0) * 0.1;
     this.stats.passes = st.passes;
     if (this.state.playing) {
       this.fpsWindow.push(now);
       while (this.fpsWindow.length && now - this.fpsWindow[0] > 1000) this.fpsWindow.shift();
       this.stats.fps = this.fpsWindow.length;
-      if (this.tickCount % 8 === 0) this.prewarm(display);
+      // Clips are warmed up a second ahead; looking for them a few times in that second is enough.
+      if (this.warmedAt < 0 || Math.abs(display - this.warmedAt) >= this.fps() / 4) {
+        this.warmedAt = display;
+        this.prewarm(display);
+      }
     }
     if (advanced) this.emitFrame();
   };
@@ -650,15 +689,32 @@ export class Player {
     this.applySize();
   }
 
+  /**
+   * Whether `clip` starts with the frame that follows the last one of `prev`, the clip before it on
+   * its track: two pieces of one take, cut and left where they were. The decoder that plays `prev`
+   * then has that frame ready, and `clip` takes it over at the cut (see `SourceManager.prepare`).
+   */
+  private continues(prev: Clip | undefined, clip: Clip): boolean {
+    if (!prev || !prev.enabled || prev.type !== 'video' || prev.assetId !== clip.assetId) return false;
+    if (prev.reverse !== clip.reverse || clipEnd(prev) !== clip.start || clip.transIn) return false;
+    const next = sourceTimeAt(prev, clip.start - prev.start, this.project);
+    return Math.abs(sourceTimeAt(clip, 0, this.project) - next) < 0.5 / this.fps();
+  }
+
   /** Start decoders for clips that begin within the next second so cuts play without a hitch. */
   private prewarm(frame: number): void {
-    if (this.state.rate < 0) return;
+    const upcoming: UpcomingClip[] = [];
     const horizon = frame + Math.ceil(this.fps() * Math.max(1, this.state.rate));
-    for (const track of tracksOf(this.project).video) {
+    // Backwards, clips are entered at their ends, where a decoder would have to be started
+    // differently; a shuttle in reverse is not warmed up for.
+    for (const track of this.state.rate < 0 ? [] : tracksOf(this.project).video) {
       if (track.hidden) continue;
-      for (const clip of clipsOnTrack(this.project, track.id)) {
+      const clips = clipsOnTrack(this.project, track.id);
+      for (let i = findIndexAtOrBefore(clips, frame) + 1; i < clips.length; i++) {
+        const clip = clips[i];
         if (clip.start > horizon) break;
         if (clip.type !== 'video' || !clip.assetId || !clip.enabled) continue;
+        if (this.continues(clips[i - 1], clip)) continue;
         const lead = clip.transIn ? Math.floor(clip.transIn.duration / 2) : 0;
         const first = clip.start - lead;
         if (first <= frame) continue;
@@ -671,9 +727,16 @@ export class Player {
             else if (l.a?.clip.id === clip.id) found = l.a;
           }
         }
-        if (found) this.sources.prewarm(clip.id, clip.assetId, clip.reverse, found.sourceTime);
+        if (found)
+          upcoming.push({
+            clipId: clip.id,
+            assetId: clip.assetId,
+            reverse: clip.reverse,
+            sourceTime: found.sourceTime,
+          });
       }
     }
+    this.sources.prewarm(upcoming);
   }
 
   /** Display-referred pixels for scopes. */
