@@ -21,6 +21,8 @@ import { cmd } from '../../state/commands';
 import { beginGesture, localFrameOf, patchClips, setClipValues } from '../../state/props';
 import {
   ColorField,
+  Labelled,
+  LabelText,
   NumberField,
   openContextMenu,
   Select,
@@ -76,10 +78,12 @@ export function Section({
 
 export function Row({ label, children, stack }: { label: ReactNode; children: ReactNode; stack?: boolean }) {
   return (
-    <div className={stack ? 'row row--stack' : 'row'}>
-      <div className="row__label">{label}</div>
+    <Labelled className={stack ? 'row row--stack' : 'row'}>
+      <div className="row__label">
+        <LabelText>{label}</LabelText>
+      </div>
       <div className="row__ctrl">{children}</div>
-    </div>
+    </Labelled>
   );
 }
 
@@ -321,12 +325,12 @@ export function NumericRow({
   const mixed = clips.some((c) => Math.abs(valueOf(c, path, defaultValue ?? 0) - v) > 1e-6);
   const set = (val: number) => setClipValues(ids, { [path]: val });
   return (
-    <div className="row">
+    <Labelled className="row">
       <div className="row__label">
         {animatable && (
           <KeyframeButton clips={clips} paths={[path]} label={label} fallback={defaultValue ?? 0} />
         )}
-        <span>{label}</span>
+        <LabelText>{label}</LabelText>
       </div>
       <div className="row__ctrl">
         {slider && Number.isFinite(min) && Number.isFinite(max) && (
@@ -356,7 +360,7 @@ export function NumericRow({
           ariaLabel={label}
         />
       </div>
-    </div>
+    </Labelled>
   );
 }
 

@@ -51,6 +51,8 @@ import {
   Button,
   ColorField,
   IconButton,
+  Labelled,
+  LabelText,
   MenuButton,
   NumberField,
   Segmented,
@@ -365,10 +367,10 @@ function LinkedScale({ clips, onUnlink }: { clips: Clip[]; onUnlink: () => void 
     }
   };
   return (
-    <div className="row">
+    <Labelled className="row">
       <div className="row__label">
         <KeyframeButton clips={clips} paths={['scaleX', 'scaleY']} label="Scale" fallback={1} />
-        <span>Scale</span>
+        <LabelText>Scale</LabelText>
         <button
           className="insp__link"
           onClick={onUnlink}
@@ -402,7 +404,7 @@ function LinkedScale({ clips, onUnlink }: { clips: Clip[]; onUnlink: () => void 
           ariaLabel="Scale"
         />
       </div>
-    </div>
+    </Labelled>
   );
 }
 

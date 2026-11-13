@@ -87,6 +87,11 @@ export const PRESENCE_TOO_FAST = 'updates are arriving faster than they are rela
 
 /** A close code a WebSocket uses for "too big": see the list of close codes above. */
 export const WS_CLOSE_TOO_BIG = 1009;
+/** The `error` before a close with `WS_CLOSE_TOO_BIG` when the document takes no more changes. */
+export const docFullMessage = (doc: DocKind): string =>
+  `the ${doc} document has reached the size this server allows`;
+/** The same when the document has room, but the server holds as much document data as it may. */
+export const NO_DOC_MEMORY = 'the server has no memory to spare for more document data';
 /** "Try again later": a full room gave the connection's place to someone who outranks it. */
 export const WS_CLOSE_TRY_AGAIN_LATER = 1013;
 

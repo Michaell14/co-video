@@ -21,6 +21,7 @@ import type { RawData } from 'ws';
 import * as syncProtocol from 'y-protocols/sync';
 import * as Y from 'yjs';
 import {
+  NO_DOC_MEMORY,
   PRESENCE_IGNORED,
   WS_CLOSE_TOO_BIG,
   WS_CLOSE_TRY_AGAIN_LATER,
@@ -28,6 +29,7 @@ import {
   WS_MSG_AWARENESS,
   WS_MSG_SYNC,
   canWriteDoc,
+  docFullMessage,
 } from '@tandem/core';
 import type { ControlMessage, DocAvailability, DocKind, Role } from '@tandem/core';
 import { HttpError } from './http';
@@ -442,7 +444,7 @@ export class Room {
    * update is applied: Yjs cannot take one back out.
    */
   private reserve(bytes: number, structs: number): string | null {
-    const full = `the ${this.kind} document has reached the size this server allows`;
+    const full = docFullMessage(this.kind);
     if (bytes > this.maxBytes) return full;
     const { openDocs } = this.manager;
     const fitsDocument = (): boolean =>
@@ -465,7 +467,7 @@ export class Room {
         'open documents',
         `refusing changes to documents: the ones in memory have reached MAX_OPEN_DOC_BYTES (${openDocs.bytes.limit})`,
       );
-      return 'the server has no memory to spare for more document data';
+      return NO_DOC_MEMORY;
     }
     this.book(bytes, structs);
     return null;

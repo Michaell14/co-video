@@ -8,9 +8,11 @@ import * as Y from 'yjs';
 import {
   canComment,
   canEdit,
+  canWriteDoc,
   fpsOf,
   framesToSeconds,
   newId,
+  PRESENCE_TOO_FAST,
   ProjectStore,
   ReviewStore,
   sequenceEnd,
@@ -21,9 +23,11 @@ import {
   type PresenceState,
   type PresenceUser,
   type Project,
+  type ProjectInfo,
   type Role,
 } from '@tandem/core';
 import { Player, probeFile, proxySize, type MediaResolver } from '@tandem/engine';
+import { ACCESS_NAME, refuseEdit } from '../state/access';
 import { useUI } from '../state/ui';
 import { toast } from '../ui/core';
 import { chooseAccess, claimedRole, entryFate, type Verdict } from './access';
@@ -34,6 +38,7 @@ import { MediaStore, moveProjectMedia, type TransferResult } from './mediaStore'
 import { displayName, PeerList, published } from './presence';
 import { idbName, whenSynced } from './projects';
 import { getUser, isPoster, registry, setUser } from './registry';
+import { availabilityOf, tooLargeNotice, turnedAwayNotice } from './saving';
 import { SyncProvider, type SyncStatus } from './sync';
 import { byUrgency, keepUploads, TransferQueue, type Transfer } from './transfers';
 
@@ -77,13 +82,20 @@ const ACCESS_TIMEOUT_MS = 8000;
 /** A copy thrown away twice in this time is not being repaired by reloading it; see `discardLocalCopy`. */
 const DISCARD_AGAIN_MS = 60_000;
 const discarded = new Map<string, number>();
+/**
+ * How long changes from others have to stay away before clips they left on top of each other are
+ * moved apart. A collaborator's undo arrives as several updates, and the first of them is not yet
+ * the project they mean.
+ */
+const OVERLAPS_SETTLE_MS = 400;
+/** How long after the server passed over a presence update the state is said again. */
+const PRESENCE_REPEAT_MS = 1000;
+/** Two rooms that lose their place within this time lost it to the same cause. */
+const WAITING_TOGETHER_MS = 10_000;
 
-const ACCESS_NAME: Record<Role, string> = {
-  owner: 'owner',
-  editor: 'edit',
-  commenter: 'comment-only',
-  viewer: 'view-only',
-};
+const DISPLACED =
+  'This project is full, and your place went to someone with more access. Rejoining as soon as there is room…';
+const SERVER_BUSY = 'The collaboration server is busy. Still trying to connect…';
 
 function readProxyPref(): boolean {
   try {
@@ -120,6 +132,8 @@ export class Session {
   private unsubs: (() => void)[] = [];
   private registryTimer: ReturnType<typeof setTimeout> | null = null;
   private presenceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Set while the state is due to be said again because the server passed an update over. */
+  private presenceRepeat: ReturnType<typeof setTimeout> | null = null;
   private pendingPresence: Partial<PresenceState> = {};
   /**
    * What this client announces of itself. Every announcement is made from this copy and never from
@@ -131,6 +145,7 @@ export class Session {
   /** Aborted when the session closes, so no request outlives it. */
   private readonly closing = new AbortController();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private overlapsTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 2000;
   private connecting = false;
   private probing = false;
@@ -139,6 +154,15 @@ export class Session {
   private refused = false;
   /** The person asked for the link that is kept aside to be tried again. */
   private retrying = false;
+  /** Rooms whose connection keeps being refused, until the server has been asked why. */
+  private readonly turnedDown = new Set<DocKind>();
+  /** Rooms this client is waiting for a place in, and when it was last told that it is. */
+  private readonly waiting = new Set<DocKind>();
+  private waitingSaidAt = -Infinity;
+  /** Why each document is not reaching the server; `meta.notSaving` shows the project's first. */
+  private readonly unsaved: Record<DocKind, string | null> = { project: null, review: null };
+  /** Notices of that kind already shown: each is said once, not at every attempt to connect. */
+  private readonly told = new Set<string>();
   private readonly transfers: TransferQueue;
   /** Assets the server is known to hold, to notice the moment it holds one more. */
   private readonly uploaded = new Set<string>();
@@ -325,6 +349,34 @@ export class Session {
     return true;
   }
 
+  /**
+   * Two people can each put a clip on the same frames of a track at the same moment, and both
+   * arrive. Whoever may edit then moves apart what is theirs to move (`resolveOverlaps`): once
+   * the changes of others have stopped coming in for a moment, not on the first of them.
+   */
+  private watchOverlaps(): void {
+    const onUpdate = (_update: Uint8Array, origin: unknown): void => {
+      if (origin instanceof SyncProvider) this.scheduleOverlaps();
+    };
+    this.doc.on('update', onUpdate);
+    this.unsubs.push(() => this.doc.off('update', onUpdate));
+  }
+
+  private scheduleOverlaps(): void {
+    if (this.destroyed) return;
+    if (this.overlapsTimer) clearTimeout(this.overlapsTimer);
+    this.overlapsTimer = setTimeout(() => {
+      this.overlapsTimer = null;
+      if (!this.canEdit) return;
+      // Only those who are here can move a clip, so the choice is made among them: this session
+      // and everyone presence shows with a role that edits.
+      const editors = this.peers.get().filter((peer) => canEdit(peer.role));
+      const moved = this.store.resolveOverlaps([this.doc.clientID, ...editors.map((peer) => peer.clientId)]);
+      if (moved === 1) toast('A clip that landed on another clip was moved to a free track.');
+      else if (moved > 1) toast(`${moved} clips that landed on other clips were moved to free tracks.`);
+    }, OVERLAPS_SETTLE_MS);
+  }
+
   // ───────────────────────────────────────────────────────────── lifecycle ──
 
   /**
@@ -381,6 +433,7 @@ export class Session {
     this.announce();
 
     this.followFrameRate();
+    this.watchOverlaps();
     this.unsubs.push(
       this.store.subscribe(() => {
         this.pushProjectToPlayer();
@@ -481,12 +534,11 @@ export class Session {
     }
   }
 
-  /** Ask the server what a token allows on this project. */
-  private async ask(token: string): Promise<Verdict> {
+  /** Ask the server about this project with a token: what the token allows, and how the project stands. */
+  private async inquire(token: string): Promise<ProjectInfo | 'refused' | 'unreachable'> {
     try {
       const signal = AbortSignal.any([this.closing.signal, AbortSignal.timeout(ACCESS_TIMEOUT_MS)]);
-      const info = await api.projectInfo(this.id, token, signal);
-      return { token, role: info.role };
+      return await api.projectInfo(this.id, token, signal);
     } catch (err) {
       // Only a real refusal is final; a network failure or a busy server is asked again later. And
       // only the server itself can refuse: whatever stands in front of it knows nothing of links.
@@ -494,6 +546,12 @@ export class Session {
       if (!this.destroyed) console.warn('[session] project not reachable on server', err);
       return 'unreachable';
     }
+  }
+
+  /** Ask the server what a token allows on this project. */
+  private async ask(token: string): Promise<Verdict> {
+    const info = await this.inquire(token);
+    return typeof info === 'string' ? info : { token, role: info.role };
   }
 
   /**
@@ -628,32 +686,20 @@ export class Session {
   private openRooms(token: string): void {
     this.media.setRemote({ projectId: this.id, token, canWrite: canEdit(this.meta.role) });
     const q = `?t=${encodeURIComponent(token)}`;
-    const project = new SyncProvider(`${wsBase()}/ws/${this.id}/project${q}`, this.doc, {
-      awareness: this.awareness,
-      onStatus: (status) => {
-        const connected = status === 'connected';
-        // An open socket settles what the failed attempts before it left in doubt.
-        const settled = connected ? { online: true, busy: false, denied: false } : null;
-        this.setMeta({ status, synced: connected ? this.meta.synced : false, ...settled });
-      },
-      onSynced: () => {
-        this.setMeta({ synced: true });
-        this.transfers.retryNow();
-        this.scheduleMediaSync();
-      },
-      onControl: (msg) => this.onControl('project', msg),
-      onRefused: () => void this.whyRefused(),
-      onDisplaced: () => {
-        this.setMeta({ busy: true });
-        toast(
-          'This project is full, and your place went to someone who can edit it. Rejoining as soon as there is room…',
-        );
-      },
-    });
-    const review = new SyncProvider(`${wsBase()}/ws/${this.id}/review${q}`, this.reviewDoc, {
-      onControl: (msg) => this.onControl('review', msg),
-    });
-    this.providers = [project, review];
+    // Both rooms can refuse, displace and turn away a connection, each for reasons of its own.
+    const room = (kind: DocKind, doc: Y.Doc, awareness?: Awareness): SyncProvider =>
+      new SyncProvider(`${wsBase()}/ws/${this.id}/${kind}${q}`, doc, {
+        awareness,
+        onStatus: (status) => this.onRoomStatus(kind, status),
+        onSynced: () => this.onRoomSynced(kind),
+        onControl: (msg) => this.onControl(kind, msg),
+        onRefused: () => void this.whyRefused(kind),
+        onDisplaced: () => this.waitFor(kind, DISPLACED),
+        onTurnedAway: (said) => this.onTurnedAway(kind, said),
+        onTaken: () => this.setNotSaving(kind, null),
+        onPresenceIgnored: (reason) => this.onPresenceIgnored(reason),
+      });
+    this.providers = [room('project', this.doc, this.awareness), room('review', this.reviewDoc)];
     // Until now the engine was told that media on the server is out of reach, and it remembers.
     for (const a of Object.values(this.store.get().assets)) {
       if (a.uploaded && !this.media.get(a.id).local) this.refreshMedia(a.id);
@@ -665,7 +711,36 @@ export class Session {
     for (const p of this.providers) p.destroy();
     this.providers = [];
     this.media.setRemote(null);
-    this.setMeta({ status: 'offline', synced: false, busy: false });
+    this.turnedDown.clear();
+    this.waiting.clear();
+    this.unsaved.project = this.unsaved.review = null;
+    this.setMeta({ status: 'offline', synced: false, busy: false, notSaving: null });
+  }
+
+  private provider(kind: DocKind): SyncProvider | undefined {
+    return this.providers[kind === 'project' ? 0 : 1];
+  }
+
+  private onRoomStatus(kind: DocKind, status: SyncStatus): void {
+    const connected = status === 'connected';
+    if (connected) {
+      this.turnedDown.delete(kind);
+      this.waiting.delete(kind);
+    }
+    // What the session shows as its connection is that of the project; comments ride along.
+    if (kind !== 'project') return;
+    // An open socket settles what the failed attempts before it left in doubt.
+    const settled = connected ? { online: true, busy: false, denied: false } : null;
+    this.setMeta({ status, synced: connected ? this.meta.synced : false, ...settled });
+  }
+
+  private onRoomSynced(kind: DocKind): void {
+    if (kind !== 'project') return;
+    this.setMeta({ synced: true });
+    this.transfers.retryNow();
+    this.scheduleMediaSync();
+    // What was placed here while the connection was down may lie on what others placed meanwhile.
+    this.scheduleOverlaps();
   }
 
   private onControl(kind: DocKind, msg: ControlMessage): void {
@@ -674,26 +749,86 @@ export class Session {
   }
 
   /**
-   * The project socket keeps failing to open, and a browser cannot see why. So ask over HTTP: if
-   * the link is still good, the server is at capacity (too many connections from this address, or
-   * a full room) and knocking again will get us in; if it is not, the link has been withdrawn.
+   * A room has no place for this client right now, and its connection keeps trying. That is said
+   * with `text` when the waiting begins, not at every attempt. The other room usually follows
+   * within the moment, for the same reason, and is not worth a second notice.
    */
-  private async whyRefused(): Promise<void> {
+  private waitFor(kind: DocKind, text: string | null): void {
+    const began = !this.waiting.has(kind);
+    this.waiting.add(kind);
+    if (kind === 'project' && !this.meta.busy) this.setMeta({ busy: true, denied: false });
+    const now = performance.now();
+    if (!began || !text || now - this.waitingSaidAt < WAITING_TOGETHER_MS) return;
+    this.waitingSaidAt = now;
+    toast(text);
+  }
+
+  /**
+   * Record why a document is not reaching the server (`null`: it is again), and say so once. The
+   * connection tries again every minute, and would say the same thing each time.
+   */
+  private setNotSaving(kind: DocKind, why: string | null): void {
+    this.unsaved[kind] = why;
+    const notSaving = this.unsaved.project ?? this.unsaved.review;
+    if (notSaving !== this.meta.notSaving) this.setMeta({ notSaving });
+    if (!why || this.told.has(why)) return;
+    this.told.add(why);
+    toast(why, 'error');
+  }
+
+  /**
+   * The server ended a connection over what this client sent: the document is full, the server
+   * has no memory for more, or one message was more than it reads. Where this client may write
+   * the document, its changes stay on the device and are offered again now and then. Where it may
+   * not, they are changes the server would never have taken, and what `discardLocalCopy` is for.
+   */
+  private onTurnedAway(kind: DocKind, said: string | null): void {
+    if (this.destroyed) return;
+    if (canWriteDoc(this.meta.role, kind)) this.setNotSaving(kind, turnedAwayNotice(kind, said));
+    else void this.discardLocalCopy(kind);
+  }
+
+  /**
+   * A socket keeps failing to open, and a browser cannot see why. So ask over HTTP. If the link is
+   * no longer good, it has been withdrawn. If it is, the answer also says whether the server could
+   * open the document at all: one that it holds more of than it loads stays shut however often we
+   * knock, and is said to be. Otherwise the server is at capacity (too many connections from this
+   * address, a full room, too many documents open) and knocking again will get us in.
+   */
+  private async whyRefused(kind: DocKind): Promise<void> {
+    this.turnedDown.add(kind);
     if (this.probing || this.destroyed || !this.token) return;
     this.probing = true;
-    const verdict = await this.ask(this.token);
+    const info = await this.inquire(this.token);
     this.probing = false;
     if (this.destroyed || !this.providers.length) return;
-    if (verdict === 'refused') {
+    if (info === 'refused') {
       this.closeRooms();
       // What the server refused is the token it accepted for this session: the one that is stored.
-      this.loseAccess(verdict);
-    } else if (verdict === 'unreachable') {
+      this.loseAccess(info);
+    } else if (info === 'unreachable') {
       if (this.store.isEmpty()) this.setMeta({ denied: true, online: false });
-    } else if (!this.meta.busy) {
-      this.setMeta({ busy: true, denied: false });
-      if (!this.store.isEmpty()) toast('The collaboration server is busy. Still trying to connect…');
+    } else {
+      // One answer covers every room that was refused while it was on its way.
+      for (const room of this.turnedDown) this.judgeRefusal(room, info);
     }
+  }
+
+  private judgeRefusal(kind: DocKind, info: ProjectInfo): void {
+    const provider = this.provider(kind);
+    if (!provider) return;
+    const tooLarge = tooLargeNotice(kind);
+    if (availabilityOf(info, kind) === 'too-large') {
+      provider.patient = true;
+      this.setNotSaving(kind, tooLarge);
+      return;
+    }
+    if (this.unsaved[kind] === tooLarge) {
+      // Whoever runs the server has made room for the document: back to knocking as usual.
+      provider.patient = false;
+      this.setNotSaving(kind, null);
+    }
+    this.waitFor(kind, this.store.isEmpty() ? null : SERVER_BUSY);
   }
 
   /**
@@ -783,8 +918,10 @@ export class Session {
     for (const u of this.unsubs) u();
     if (this.registryTimer) clearTimeout(this.registryTimer);
     if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    if (this.presenceRepeat) clearTimeout(this.presenceRepeat);
     if (this.mediaTimer) clearTimeout(this.mediaTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.overlapsTimer) clearTimeout(this.overlapsTimer);
     this.flushRegistry();
     this.meta.player?.dispose();
     for (const p of this.providers) p.destroy();
@@ -909,12 +1046,25 @@ export class Session {
     if (!this.destroyed) this.awareness.setLocalState(published(this.presence));
   }
 
+  /**
+   * The server passed over a presence update because they came faster than it relays them. If that
+   * was the last one of a gesture, everyone else goes on seeing the state before it, so the state
+   * is said once more when the rush is over: once, however many updates were passed over.
+   */
+  private onPresenceIgnored(reason: string): void {
+    if (reason !== PRESENCE_TOO_FAST || this.presenceRepeat || this.destroyed) return;
+    this.presenceRepeat = setTimeout(() => {
+      this.presenceRepeat = null;
+      this.announce();
+    }, PRESENCE_REPEAT_MS);
+  }
+
   // ─────────────────────────────────────────────────────────────── media ──
 
   /** Import files into the media pool. Returns the created assets. */
   async importFiles(files: File[], folderId: string | null = null): Promise<Asset[]> {
     if (!this.canEdit) {
-      toast('You have view-only access to this project.', 'error');
+      refuseEdit(this.meta.role, 'error');
       return [];
     }
     const created: Asset[] = [];
@@ -965,7 +1115,7 @@ export class Session {
     const old = this.store.get().assets[assetId];
     if (!old) return null;
     if (!this.canEdit) {
-      toast('You have view-only access to this project.', 'error');
+      refuseEdit(this.meta.role, 'error');
       return null;
     }
     try {

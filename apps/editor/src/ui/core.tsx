@@ -28,7 +28,9 @@ import {
   usingKeyboard,
   type PopoverPlace,
 } from './layers';
+import { useDrag } from './dnd';
 import { isDoublePress, isDrag, type Press } from './press';
+import { sliderKey } from './slider';
 
 export const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -163,23 +165,44 @@ export function hideTip(): void {
   showTip(null);
 }
 
-/** Props to spread on any element to give it a tooltip. */
+/**
+ * Props to spread on any element to give it a tooltip. It shows for the pointer resting on the
+ * element and for the keyboard arriving at it: for many icon buttons it is the only label there
+ * is to see. Any key pressed afterwards takes it away again (`watchTip`), Escape included.
+ */
 export function tip(text: ReactNode, keys?: string, place: 'top' | 'bottom' = 'bottom') {
+  const show = (anchor: Element) => {
+    const r = anchor.getBoundingClientRect();
+    clearTimeout(tipTimer);
+    watchTip(anchor);
+    // After the first tooltip, neighbours appear instantly — scanning a toolbar should feel fluid.
+    const delay = performance.now() - lastTipAt < 400 ? 0 : 450;
+    tipTimer = setTimeout(() => showTip({ text, keys, anchor: r, place }), delay);
+  };
+  const leave = () => {
+    hideTip();
+    lastTipAt = performance.now();
+  };
   return {
     onPointerEnter: (e: React.PointerEvent) => {
-      if (e.pointerType === 'touch') return;
-      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      clearTimeout(tipTimer);
-      watchTip(e.currentTarget);
-      // After the first tooltip, neighbours appear instantly — scanning a toolbar should feel fluid.
-      const delay = performance.now() - lastTipAt < 400 ? 0 : 450;
-      tipTimer = setTimeout(() => showTip({ text, keys, anchor: r, place }), delay);
+      // Something carried across the page is on its way to where it will be dropped: what it
+      // passes over on the way is not being asked about.
+      if (e.pointerType === 'touch' || useDrag.getState().payload) return;
+      show(e.currentTarget);
     },
-    onPointerLeave: () => {
-      hideTip();
-      lastTipAt = performance.now();
-    },
+    onPointerLeave: leave,
     onPointerDown: hideTip,
+    // The capturing handlers, so that an element's own `onFocus` and `onBlur` stay its own
+    // whichever is spread last.
+    onFocusCapture: (e: React.FocusEvent) => {
+      // Focus that a press of the pointer left behind is not a question (a text field shows it
+      // as visible all the same), and neither is focus on something inside the element.
+      const asked = e.target === e.currentTarget && usingKeyboard() && e.currentTarget.matches(':focus-visible');
+      if (asked) show(e.currentTarget);
+    },
+    onBlurCapture: (e: React.FocusEvent) => {
+      if (e.target === e.currentTarget) leave();
+    },
   };
 }
 
@@ -252,18 +275,60 @@ export function IconButton({
         t.onPointerDown();
         rest.onPointerDown?.(e);
       }}
+      onFocusCapture={t.onFocusCapture}
+      onBlurCapture={t.onBlurCapture}
     >
       {children}
     </button>
   );
 }
 
+// ───────────────────────────────────────────────────────────── labels ──
+
+/** The id of the text that names the controls of the row they are in. */
+const LabelCtx = createContext<string | undefined>(undefined);
+
+/**
+ * A label and the controls it names: a row of a property panel or of a form. The kit's fields,
+ * sliders, selects, switches and segmented controls inside it take their accessible name from its
+ * `LabelText`, unless they are given one of their own.
+ */
+export function Labelled({ className, children }: { className?: string; children: ReactNode }) {
+  const id = useId();
+  return (
+    <LabelCtx.Provider value={id}>
+      <div className={className}>{children}</div>
+    </LabelCtx.Provider>
+  );
+}
+
+/**
+ * The words of a `Labelled` row's label. Only the words: a button that shares the label's place
+ * (a keyframe toggle) stays outside, or its own name would be read as part of every control's.
+ */
+export function LabelText({ children }: { children: ReactNode }) {
+  return <span id={useContext(LabelCtx)}>{children}</span>;
+}
+
+/** `aria-label` and `aria-labelledby` for a control: its own name if it has one, else the row's. */
+function useName(own: string | undefined, ...parts: (string | false | undefined)[]) {
+  const row = useContext(LabelCtx);
+  if (own || !row) return { 'aria-label': own };
+  return { 'aria-labelledby': [row, ...parts].filter(Boolean).join(' ') };
+}
+
 // ───────────────────────────────────────────────────────────── slider ──
 
 export interface GestureProps {
-  /** Called once when an interaction begins. */
+  /**
+   * Called once when an interaction begins: a press of the pointer, or the first of a run of key
+   * presses.
+   */
   onStart?: () => void;
-  /** Called once when it ends. */
+  /**
+   * Called once when it ends: the pointer is let go, or the keys have rested for `KEY_RUN_MS` or
+   * the control has lost the keyboard.
+   */
   onEnd?: () => void;
 }
 
@@ -273,15 +338,25 @@ interface SliderProps extends GestureProps {
   max: number;
   step?: number;
   onChange: (v: number) => void;
-  /** Value restored on double-click. */
+  /** Value restored on double-click, and by Delete from the keyboard. */
   defaultValue?: number;
   /** Draw the fill from this value instead of from the minimum (bipolar controls). */
   origin?: number;
   disabled?: boolean;
+  /** What the slider sets. In a `Labelled` row it need not be given: the row's label says it. */
+  ariaLabel?: string;
+  /** The value as it is read out (`L20`, `+3.5 dB`), where the bare number would say too little. */
+  valueText?: (value: number) => string;
 }
 
 /** Half the thumb's width (`.slider__thumb` in ui.css). */
 const SLIDER_INSET = 5.5;
+
+/**
+ * A run of key presses on a slider is one interaction, as one drag is: it ends when the keys have
+ * rested this long. Whoever writes the value makes one undo step of it.
+ */
+export const KEY_RUN_MS = 600;
 
 export function Slider({
   value,
@@ -294,11 +369,29 @@ export function Slider({
   defaultValue,
   origin,
   disabled,
+  ariaLabel,
+  valueText,
 }: SliderProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(false);
   // The latest press: whether it was the second of a double-click, and whether it became a drag.
   const press = useRef<(Press & { second: boolean; dragged: boolean }) | null>(null);
+  const name = useName(ariaLabel);
+  // The run of key presses under way: the value the last press asked for, the value the slider
+  // showed when it did, and the timer that ends the run.
+  const run = useRef<{ asked: number; shown: number; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const ended = useRef(onEnd);
+  useLayoutEffect(() => {
+    ended.current = onEnd;
+  });
+  const endRun = useCallback(() => {
+    if (!run.current) return;
+    clearTimeout(run.current.timer);
+    run.current = null;
+    ended.current?.();
+  }, []);
+  // A slider taken away in the middle of a run has ended it.
+  useEffect(() => endRun, [endRun]);
   const span = max - min || 1;
   const frac = (v: number) => Math.min(1, Math.max(0, (v - min) / span));
   // The thumb stays inside the slider's own box, so its centre travels between the two insets.
@@ -327,6 +420,7 @@ export function Slider({
         press.current = { ...next, second, dragged: false };
         e.currentTarget.setPointerCapture(e.pointerId);
         setActive(true);
+        endRun();
         // The second press of a double-click asks for the reset that follows it: jumping to the
         // pointer again would put a second step between the old value and the default. It changes
         // nothing unless it turns into a drag, which carries on the step the first press began.
@@ -365,7 +459,40 @@ export function Slider({
       {origin !== undefined && origin > min && origin < max && (
         <div className="slider__center" style={{ left: at(frac(origin)) }} />
       )}
-      <div className="slider__thumb" style={{ left: at(frac(value)) }} />
+      {/* The thumb is the slider for the keyboard and for assistive technology. The pointer works
+          the whole control and never lands on the thumb itself (ui.css), so a press does not
+          leave the keyboard here: the arrow keys stay the editor's for someone using the mouse. */}
+      <div
+        className="slider__thumb"
+        style={{ left: at(frac(value)) }}
+        role="slider"
+        tabIndex={disabled ? -1 : 0}
+        {...name}
+        aria-valuemin={min}
+        aria-valuemax={max}
+        aria-valuenow={Number(value.toPrecision(6))}
+        aria-valuetext={valueText?.(value)}
+        aria-disabled={disabled || undefined}
+        onBlur={endRun}
+        onKeyDown={(e) => {
+          // With these the same keys are the editor's shortcuts.
+          if (e.ctrlKey || e.metaKey || e.altKey) return;
+          // A press the caller's rounding swallowed left the value where it was: the next one
+          // goes on from what was asked for, or a slider of whole numbers would never move.
+          const from = run.current?.shown === value ? run.current.asked : value;
+          const asked = sliderKey(e.key, e.shiftKey, from, { min, max, step, defaultValue });
+          if (asked === undefined) return;
+          // The slider's keys are its own while it has the keyboard, also where one of them has
+          // nothing to do: Delete must not go on to delete the selected clips.
+          e.preventDefault();
+          e.stopPropagation();
+          if (asked === null) return;
+          if (run.current) clearTimeout(run.current.timer);
+          else onStart?.();
+          run.current = { asked, shown: value, timer: setTimeout(endRun, KEY_RUN_MS) };
+          onChange(asked);
+        }}
+      />
     </div>
   );
 }
@@ -471,6 +598,9 @@ export function NumberField({
   const [scrubbing, setScrubbing] = useState(false);
   const drag = useRef<{ x: number; v: number; moved: boolean } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // A letter before the number (W and H, X and Y) tells two fields of one row apart.
+  const prefixId = useId();
+  const name = useName(ariaLabel, typeof prefix === 'string' && prefixId);
   const clampV = (v: number) => Math.min(max, Math.max(min, v));
   const shown = mixed ? '—' : (value * scale).toFixed(precision);
   const entry = useEntry(inputRef, (text) => {
@@ -487,10 +617,14 @@ export function NumberField({
       data-scrubbing={scrubbing}
       style={{ ...style, ...(disabled ? { opacity: 0.4, pointerEvents: 'none' } : null) }}
     >
-      {prefix && <span className="field__prefix">{prefix}</span>}
+      {prefix && (
+        <span className="field__prefix" id={prefixId}>
+          {prefix}
+        </span>
+      )}
       <input
         ref={inputRef}
-        aria-label={ariaLabel}
+        {...name}
         value={entry.text ?? shown}
         data-dirty={entry.text !== null ? '' : undefined}
         inputMode="decimal"
@@ -601,6 +735,7 @@ export function TextField({
   invalid,
   describedBy,
 }: TextFieldProps) {
+  const name = useName(ariaLabel);
   const stop = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !multiline) onEnter?.();
     if (e.key === 'Escape') (e.target as HTMLElement).blur();
@@ -615,7 +750,7 @@ export function TextField({
       {prefix && <span className="field__prefix">{prefix}</span>}
       {multiline ? (
         <textarea
-          aria-label={ariaLabel}
+          {...name}
           aria-invalid={invalid || undefined}
           aria-describedby={describedBy}
           value={value}
@@ -631,7 +766,7 @@ export function TextField({
         />
       ) : (
         <input
-          aria-label={ariaLabel}
+          {...name}
           aria-invalid={invalid || undefined}
           aria-describedby={describedBy}
           type={type}
@@ -732,8 +867,10 @@ function PopoverPanel({
         } else trapTab(el, e);
         return;
       }
-      // Text typed into one of the popover's own fields is that field's business.
-      if (el.contains(e.target as Node) && isTextEntry(e.target)) return;
+      // Text typed into one of the popover's own fields is that field's business, and so are the
+      // keys of a slider in it.
+      const target = e.target as Element;
+      if (el.contains(target) && (isTextEntry(target) || target.matches('[role="slider"]'))) return;
       e.stopPropagation();
       if (!items.length) return;
       const current = items.indexOf(document.activeElement as HTMLElement);
@@ -990,6 +1127,8 @@ export function MenuButton({
           handlers.onPointerDown();
           t?.onPointerDown();
         }}
+        onFocusCapture={t?.onFocusCapture}
+        onBlurCapture={t?.onBlurCapture}
       >
         {children}
       </button>
@@ -1059,25 +1198,36 @@ export function Select<T extends string | number>({
   const close = useCallback(() => setAnchor(null), []);
   const handlers = useListButton(button, anchor, setAnchor);
   const current = options.find((o) => o.value === value);
+  // The button is read as what it sets and what that is set to: a name alone would take the
+  // place of the value, which is all the button shows. Its own name, where it has one, is the
+  // first part (an element may name itself by its `aria-label`), else the label of its row.
+  const row = useContext(LabelCtx);
+  const id = useId();
+  const valueId = useId();
+  const named = ariaLabel ? id : row;
   let lastGroup: string | undefined;
   return (
     <>
       <button
         ref={button}
         type="button"
+        id={id}
         className="select"
         style={style}
         aria-label={ariaLabel}
+        aria-labelledby={named && `${named} ${valueId}`}
         aria-haspopup="listbox"
         aria-expanded={!!anchor}
         {...handlers}
       >
-        <span style={current?.style}>{current?.label ?? placeholder ?? '—'}</span>
+        <span id={valueId} style={current?.style}>
+          {current?.label ?? placeholder ?? '—'}
+        </span>
         <ChevronDown />
       </button>
       {anchor && (
         <Popover anchor={anchor} onClose={close} matchWidth trigger={button}>
-          <div role="listbox" aria-label={ariaLabel}>
+          <div role="listbox" aria-label={ariaLabel} aria-labelledby={ariaLabel ? undefined : row}>
             {options.map((o) => {
               const heading = o.group && o.group !== lastGroup ? o.group : null;
               lastGroup = o.group;
@@ -1126,7 +1276,7 @@ export function Switch({
       type="button"
       role="switch"
       aria-checked={checked}
-      aria-label={label}
+      {...useName(label)}
       className="switch"
       onClick={() => onChange(!checked)}
     />
@@ -1138,20 +1288,25 @@ export function Segmented<T extends string>({
   options,
   onChange,
   block,
+  ariaLabel,
 }: {
   value: T;
+  /** An option without a `label` is an icon alone: its `tip` is then its name as well. */
   options: { value: T; label?: ReactNode; icon?: ReactNode; tip?: string; keys?: string }[];
   onChange: (v: T) => void;
   block?: boolean;
+  /** What is being chosen. In a `Labelled` row it need not be given: the row's label says it. */
+  ariaLabel?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const name = useName(ariaLabel);
   const [thumb, setThumb] = useState<{ x: number; w: number } | null>(null);
   useLayoutEffect(() => {
     const el = ref.current?.querySelector<HTMLElement>('[aria-pressed="true"]');
     if (el) setThumb({ x: el.offsetLeft, w: el.offsetWidth });
   }, [value, options.length]);
   return (
-    <div ref={ref} className={cx('seg', block && 'seg--block')} role="group">
+    <div ref={ref} className={cx('seg', block && 'seg--block')} role="group" {...name}>
       {thumb && (
         <div
           className="seg__thumb"
@@ -1163,6 +1318,7 @@ export function Segmented<T extends string>({
           key={o.value}
           type="button"
           className="seg__item"
+          aria-label={o.label === undefined ? o.tip : undefined}
           aria-pressed={o.value === value}
           onClick={() => onChange(o.value)}
           {...(o.tip ? tip(o.tip, o.keys) : null)}
@@ -1194,6 +1350,11 @@ export function ColorField({
     onEnd?.();
   });
   const picker = useRef<HTMLInputElement>(null);
+  // In a labelled row each of the two inputs is read as the row's label and its own name (an
+  // element may name itself by its `aria-label`): a panel holds more than one colour.
+  const row = useContext(LabelCtx);
+  const pickerId = useId();
+  const hexId = useId();
   const started = useRef(false);
   const live = useRef(onEnd);
   useLayoutEffect(() => {
@@ -1224,7 +1385,9 @@ export function ColorField({
           ref={picker}
           type="color"
           value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'}
+          id={pickerId}
           aria-label="Pick colour"
+          aria-labelledby={row && `${row} ${pickerId}`}
           onChange={(e) => {
             if (!started.current) {
               started.current = true;
@@ -1238,7 +1401,9 @@ export function ColorField({
         <input
           ref={hexRef}
           className="mono"
+          id={hexId}
           aria-label="Hex colour"
+          aria-labelledby={row && `${row} ${hexId}`}
           value={entry.text ?? value.toUpperCase()}
           data-dirty={entry.text !== null ? '' : undefined}
           spellCheck={false}

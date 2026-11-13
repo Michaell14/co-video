@@ -7,9 +7,9 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { ProjectStore, makeClip, newId } from '@tandem/core';
-import type { VersionInfo } from '@tandem/core';
+import type { ProjectInfo, VersionInfo } from '@tandem/core';
 import { SilentPeer, awarenessFrame, sleep, upgradeStatus, useServers, waitFor } from './helpers';
-import type { Project, TestClient } from './helpers';
+import type { Api, Project, TestClient } from './helpers';
 
 const { start, connect } = useServers();
 
@@ -23,6 +23,13 @@ const errors = (client: TestClient): string[] =>
 
 /** One string of `bytes` characters: a single struct, so only the size limit is in play. */
 const blob = (bytes: number): string => 'x'.repeat(bytes);
+
+/** What `GET /api/projects/:id` says about opening the project's documents. */
+async function availability(api: Api, project: Project, token = project.token): Promise<ProjectInfo['docs']> {
+  const res = await api.fetch(`/api/projects/${project.id}`, { token });
+  expect(res.status).toBe(200);
+  return ((await res.json()) as ProjectInfo).docs;
+}
 
 describe('document limits', () => {
   it('takes no update that would grow a document past its size limit', async () => {
@@ -184,8 +191,14 @@ describe('document limits', () => {
     // in memory, it is not: 256 KiB allow 16,384 of them.
     expect(stored).toBeLessThan(2 * 256 * KIB);
     const strict = await start({ dataDir: generous.dataDir, maxProjectDocBytes: 256 * KIB });
+    // The size of the files gives nothing away, and nothing is read just because someone asks.
+    expect(await availability(strict.api, project)).toEqual({ project: 'ok', review: 'ok' });
     expect(await upgradeStatus(strict.api.wsUrl(project.id, 'project', project.token))).toBe(507);
     expect((await strict.api.fetch('/api/health')).status).toBe(200);
+    // Once a connection has made the server read them, it knows, and says so to whoever asks.
+    expect(await availability(strict.api, project)).toEqual({ project: 'too-large', review: 'ok' });
+    const viewerToken = await strict.api.invite(project, 'viewer');
+    expect(await availability(strict.api, project, viewerToken)).toEqual({ project: 'too-large', review: 'ok' });
   });
 
   it('keeps all loaded documents together within one budget', async () => {
@@ -260,11 +273,17 @@ describe('document limits', () => {
       const url = (project: Project): string => small.api.wsUrl(project.id, 'project', project.token);
 
       // More than the server holds in all: trying again later would not help, and the answer
-      // and the log say so, with nothing else loaded and with something else loaded.
+      // and the log say so, with nothing else loaded and with something else loaded. Asked over
+      // HTTP, the server says the same before anyone has tried to connect.
+      expect(await availability(small.api, huge)).toEqual({ project: 'too-large', review: 'ok' });
+      expect(await availability(small.api, other)).toEqual({ project: 'ok', review: 'ok' });
+      expect(warn).not.toHaveBeenCalled();
       expect(await upgradeStatus(url(huge))).toBe(507);
       const reader = await connect(small.api, large, 'project').whenSynced();
       expect((reader.map.get('blob') as string).length).toBe(150 * KIB);
       expect(await upgradeStatus(url(huge))).toBe(507);
+      expect(await availability(small.api, huge)).toEqual({ project: 'too-large', review: 'ok' });
+      expect(await availability(small.api, large)).toEqual({ project: 'ok', review: 'ok' });
       const logged = warn.mock.calls.map((call) => String(call[0]));
       expect(logged).toHaveLength(1);
       expect(logged[0]).toContain(`not loading the project document of project ${huge.id}`);
@@ -274,6 +293,7 @@ describe('document limits', () => {
       );
 
       // Within what the server holds, but not next to what is loaded right now: that does pass.
+      expect(await availability(small.api, other)).toEqual({ project: 'busy', review: 'ok' });
       expect(await upgradeStatus(url(other))).toBe(503);
       expect(warn.mock.calls.map((call) => String(call[0]))[1]).toMatch(/not loading another document/);
       await reader.close();
@@ -283,6 +303,7 @@ describe('document limits', () => {
         status = await upgradeStatus(url(other)).catch(() => 101);
       }
       expect(status).toBe(101);
+      expect(await availability(small.api, other)).toEqual({ project: 'ok', review: 'ok' });
       expect((await small.api.fetch('/api/health')).status).toBe(200);
     } finally {
       warn.mockRestore();

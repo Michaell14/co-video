@@ -271,7 +271,13 @@ What it does **not** do — know this before exposing a server:
 ## HTTP details worth knowing
 
 - Successful `POST`s answer `200` with JSON; errors are always `{ "error": string }`.
-- `GET /api/projects/:id` returns `ProjectInfo` plus the project's `name`.
+- `GET /api/projects/:id` returns `ProjectInfo` plus the project's `name`. Its `docs` field says, for
+  `project` and `review`, whether a connection to that document would be opened right now: `ok`,
+  `busy` (it does not fit next to the documents in memory at the moment: the upgrade gets `503`) or
+  `too-large` (more is stored than the server loads: `507`, until `MAX_PROJECT_DOC_BYTES`,
+  `MAX_REVIEW_DOC_BYTES` or `MAX_OPEN_DOC_BYTES` is raised). It is told from the size of the files and
+  loads nothing; a document that is too heavy only in structs shows as `ok` until a connection has
+  made the server read it. A full room is not part of it.
 - `PUT …/media/:assetId` requires both `Upload-Offset` and `Upload-Length`; it answers `204` with
   `Upload-Offset` and `Upload-Complete: 1|0`. Also `400` (bad headers, more bytes than declared), `413`
   (over the limit), `507` (disk full). `DELETE` is idempotent.

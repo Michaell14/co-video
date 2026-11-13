@@ -309,6 +309,9 @@
   border-radius: 50%;
   background: var(--fg-1);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  /* The pointer works the slider as a whole. A press that landed on the thumb would hand it the
+     keyboard, and the arrow keys with it, which someone using the mouse means for the playhead. */
+  pointer-events: none;
   transition:
     transform var(--dur-1) var(--ease-out),
     box-shadow var(--dur-1) ease;
@@ -321,6 +324,14 @@
   box-shadow:
     0 1px 3px rgba(0, 0, 0, 0.5),
     0 0 0 4px var(--accent-soft);
+}
+/* With the keyboard on it the thumb wears the ring, whatever else the slider is doing, and its
+   fill is lit as it is under the pointer. */
+.slider .slider__thumb:focus-visible {
+  box-shadow: var(--ring);
+}
+.slider:has(.slider__thumb:focus-visible) .slider__fill {
+  background: var(--accent);
 }
 .slider__center {
   position: absolute;

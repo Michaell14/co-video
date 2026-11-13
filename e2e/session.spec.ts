@@ -1,4 +1,9 @@
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { spawn } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join as joinPath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { clips, importFixtures, newProject } from './helpers';
 
 /** `track:start+duration` for every clip, sorted, with tracks named V1, A1, … */
@@ -137,6 +142,66 @@ async function join(browser: Browser, link: string): Promise<Page> {
   const page = await ctx.newPage();
   await page.goto(link);
   return page;
+}
+
+const SERVER_DIR = joinPath(dirname(fileURLToPath(import.meta.url)), '../apps/server');
+
+interface OwnServer {
+  port: number;
+  stop(): Promise<void>;
+}
+
+/**
+ * A collaboration server of a test's own, from the working tree, set up through its environment:
+ * limits small enough to reach, on a data directory the test can start a second server on.
+ */
+function startServer(env: Record<string, string>): Promise<OwnServer> {
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
+    cwd: SERVER_DIR,
+    env: { ...process.env, HOST: '127.0.0.1', PORT: '0', MAX_CREATES_PER_HOUR: '100000', ...env },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const stop = (): Promise<void> =>
+    new Promise((done) => {
+      if (child.exitCode !== null || child.signalCode !== null) return done();
+      child.once('exit', () => done());
+      child.kill('SIGTERM');
+    });
+  return new Promise((resolve, reject) => {
+    let said = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      said += chunk.toString();
+      const listening = /listening on http:\/\/[^:]+:(\d+)/.exec(said);
+      if (listening) resolve({ port: Number(listening[1]), stop });
+    });
+    child.once('error', reject);
+    child.once('exit', (code) => reject(new Error(`the server stopped (${code}) before it was listening`)));
+  });
+}
+
+/**
+ * Have every page of `context` talk to the collaboration server on `port` instead of the usual
+ * one. The dev server's own socket is left unanswered, which keeps it from reloading a page in
+ * the middle of the test (`noReloads` would do that with a route, and a routed socket goes past
+ * the redirect made here).
+ */
+async function useServer(context: BrowserContext, port: number): Promise<void> {
+  await context.route(/\/api\//, (route) => {
+    const url = new URL(route.request().url());
+    url.host = `127.0.0.1:${port}`;
+    return route.continue({ url: url.toString() });
+  });
+  await context.addInitScript((port) => {
+    window.WebSocket = new Proxy(window.WebSocket, {
+      construct(target, args) {
+        const url = String(args[0]);
+        if (/\/\?token=/.test(url)) {
+          return Object.assign(new EventTarget(), { readyState: 0, send() {}, close() {} });
+        }
+        return new target(url.replace(/^ws:\/\/[^/]+\/ws\//, `ws://127.0.0.1:${port}/ws/`), args[1]);
+      },
+    });
+  }, port);
 }
 
 test.describe('editing commands', () => {
@@ -1480,5 +1545,139 @@ test.describe('projects, links and media', () => {
     await b.waitForTimeout(1500);
     expect(probes).toHaveLength(2);
     await ctx.close();
+  });
+
+  test('a project the server will not take, or will not load, says so once, waits and comes back', async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const FULL =
+      'This project has reached the size the server allows. Changes made here are kept on this device but are not being saved to the server.';
+    const TOO_LARGE =
+      'This project is larger than this server loads. Whoever runs the server can raise MAX_PROJECT_DOC_BYTES.';
+    const notSaving = (p: Page): Promise<string | null> =>
+      p.evaluate(() => (window as any).tandem.session.getMeta().notSaving);
+    const titles = (p: Page): Promise<number> =>
+      p.evaluate(() => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length);
+    /** What a browser does when the network comes back: every connection tries again at once. */
+    const knock = (p: Page) => p.evaluate(() => void window.dispatchEvent(new Event('online')));
+    /** Record how the connection to the project goes from here on. */
+    const watchStatus = (p: Page) =>
+      p.evaluate(() => {
+        const s = (window as any).tandem.session;
+        const seen: string[] = ((window as any).__statuses = [s.getMeta().status]);
+        s.subscribe(() => {
+          const { status } = s.getMeta();
+          if (status !== seen[seen.length - 1]) seen.push(status);
+        });
+      });
+    const statuses = (p: Page): Promise<string[]> => p.evaluate(() => (window as any).__statuses);
+
+    // A server of this test's own, on which a project document may hold 200,000 bytes.
+    const dataDir = mkdtempSync(joinPath(tmpdir(), 'tandem-e2e-limits-'));
+    let server = await startServer({ DATA_DIR: dataDir, MAX_PROJECT_DOC_BYTES: '200000' });
+    const { port } = server;
+    const restartWithLimit = async (bytes: number): Promise<void> => {
+      await server.stop();
+      server = await startServer({ DATA_DIR: dataDir, PORT: String(port), MAX_PROJECT_DOC_BYTES: String(bytes) });
+    };
+    const contexts: BrowserContext[] = [];
+    const visitor = async (link: string): Promise<Page> => {
+      const ctx = await browser.newContext();
+      contexts.push(ctx);
+      await useServer(ctx, port);
+      const p = await ctx.newPage();
+      await p.goto(link);
+      return p;
+    };
+    try {
+      await useServer(page.context(), port);
+      await newProject(page);
+      expect(await meta(page)).toMatchObject({ shared: true, online: true, role: 'owner' });
+      await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Fits' }));
+      const editorLink: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('editor'));
+      const viewerLink: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('viewer'));
+      const b = await visitor(editorLink);
+      await expect.poll(() => titles(b)).toBe(1);
+      await watchToasts(page);
+      await watchStatus(page);
+
+      // ── A change the document has no room for ────────────────────────────
+      await page.evaluate(() => {
+        const { cmd } = (window as any).tandem;
+        cmd.seek(300);
+        cmd.addText({ content: 'x'.repeat(300_000) });
+      });
+      await expect.poll(() => notSaving(page)).toBe(FULL);
+      await expect.poll(() => toastCount(page, 'has reached the size the server allows')).toBe(1);
+      await expect(page.locator('.toast', { hasText: 'has reached the size the server allows' })).toBeVisible();
+      expect(await statuses(page)).toEqual(['connected', 'offline']);
+      // The usual retry would have been back within a second and refused again, over and over.
+      await page.waitForTimeout(4000);
+      expect(await statuses(page)).toEqual(['connected', 'offline']);
+      // Work goes on, on this device.
+      await page.evaluate(() => {
+        const { cmd } = (window as any).tandem;
+        cmd.seek(600);
+        cmd.addText({ content: 'Later' });
+      });
+      expect(await titles(page)).toBe(3);
+      expect(await titles(b)).toBe(1);
+
+      // Asked to try now, it does, is told the same, and does not say it a second time.
+      await knock(page);
+      await expect
+        .poll(() => statuses(page))
+        .toEqual(['connected', 'offline', 'connecting', 'connected', 'offline']);
+      expect(await notSaving(page)).toBe(FULL);
+      expect(await toastCount(page, 'has reached the size the server allows')).toBe(1);
+      expect(await titles(b)).toBe(1);
+
+      // Whoever runs the server raises the limit: everything made meanwhile arrives, and once the
+      // connection has held for a moment the notice goes.
+      await restartWithLimit(1_000_000);
+      await knock(page);
+      await knock(b);
+      await expect.poll(() => titles(b), { timeout: 60_000 }).toBe(3);
+      await expect.poll(() => notSaving(page), { timeout: 30_000 }).toBeNull();
+      expect((await meta(page)).status).toBe('connected');
+
+      // ── A stored document the server does not load ───────────────────────
+      // The same data under a server set up for far smaller documents: connections are refused.
+      await restartWithLimit(50_000);
+      await knock(page);
+      await expect.poll(() => notSaving(page), { timeout: 60_000 }).toBe(TOO_LARGE);
+      await expect.poll(() => toastCount(page, 'larger than this server loads')).toBe(1);
+      expect(await meta(page)).toMatchObject({ busy: false, denied: false, shared: true });
+      expect(
+        await page.evaluate(() => (window as any).tandem.session.providers.map((p: any) => p.patient)),
+      ).toEqual([true, false]);
+      // Comments are another document, and that one is fine.
+      await expect
+        .poll(() => page.evaluate(() => (window as any).tandem.session.providers[1].status))
+        .toBe('connected');
+
+      // Someone with nothing of the project on their device is told the same, not to wait for a place.
+      const c = await visitor(viewerLink);
+      await editorReady(c);
+      await expect.poll(() => notSaving(c), { timeout: 60_000 }).toBe(TOO_LARGE);
+      await expect(c.locator('.toast', { hasText: 'larger than this server loads' })).toBeVisible();
+      await expect(c.getByText('Waiting for a place in this project')).toHaveCount(0);
+      expect(await meta(c)).toMatchObject({ busy: false, denied: false, role: 'viewer' });
+
+      // The limit is raised: both get in, and the notice goes.
+      await restartWithLimit(1_000_000);
+      await knock(page);
+      await knock(c);
+      await expect.poll(() => titles(c), { timeout: 60_000 }).toBe(3);
+      await expect.poll(() => notSaving(c), { timeout: 30_000 }).toBeNull();
+      await expect.poll(() => notSaving(page), { timeout: 30_000 }).toBeNull();
+      expect(await toastCount(page, 'larger than this server loads')).toBe(1);
+      expect(await toastCount(page, 'has reached the size the server allows')).toBe(1);
+    } finally {
+      await Promise.all(contexts.map((ctx) => ctx.close()));
+      await server.stop();
+    }
   });
 });
