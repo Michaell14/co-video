@@ -1096,7 +1096,7 @@ function SourceMonitor({ assetId }: { assetId: string }) {
             variant="primary"
             icon={<ArrowDownToLine />}
             onClick={() => cmd.addFromSource(false)}
-            {...tip('Add at the playhead, on a track that is free there', 'period')}
+            {...tip('Add at the playhead, on a free track', 'period')}
           >
             Add to timeline
           </Button>

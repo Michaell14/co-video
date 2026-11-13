@@ -1,6 +1,6 @@
 import { Menu, X } from 'lucide-react';
 import { AnimatePresence, motion, useMotionValueEvent, useScroll, useSpring } from 'motion/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '../components/Button';
 import { GithubMark } from '../components/GithubMark';
 import { Logo } from '../components/Logo';
@@ -53,10 +53,15 @@ export function Nav({ sectionsReady }: NavProps) {
   useMotionValueEvent(scrollY, 'change', (y) => setScrolled(y > 16));
   const progress = useSpring(scrollYProgress, { stiffness: 200, damping: 40, mass: 0.3 });
 
+  const toggle = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key !== 'Escape') return;
+      // The menu takes whatever is focused inside it away with it. Hand that focus back to the
+      // button that opened the menu, or it would be left on nothing at all.
+      if (document.getElementById('nav-menu')?.contains(document.activeElement)) toggle.current?.focus();
+      setOpen(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -94,6 +99,7 @@ export function Nav({ sectionsReady }: NavProps) {
           </a>
           <Button href={EDITOR_URL}>Open the editor</Button>
           <button
+            ref={toggle}
             type="button"
             className="nav__toggle"
             aria-expanded={open}

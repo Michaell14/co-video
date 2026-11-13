@@ -84,6 +84,24 @@ const token = (page: Page, name: string): Promise<string> =>
 
 const toast = (page: Page, text: string) => page.locator('.toast', { hasText: text }).first();
 
+/**
+ * Keys pressed on the focused control one straight after the other, as a held key repeats: each in
+ * a turn of its own, with nothing but the page's own work between them. A run of presses is told
+ * from the next by a rest of over half a second, and presses sent one by one to a busy page can
+ * lie further apart than that.
+ */
+const burst = (page: Page, keys: string[]): Promise<void> =>
+  page.evaluate(async (keys) => {
+    for (const name of keys) {
+      const shiftKey = name.startsWith('Shift+');
+      const key = shiftKey ? name.slice(6) : name;
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true }),
+      );
+      await new Promise((turn) => setTimeout(turn));
+    }
+  }, keys);
+
 // A file saved while the suite runs makes the dev server reload the page under the test; its
 // socket is left unanswered so that cannot happen.
 test.beforeEach(async ({ context }) => {
@@ -922,8 +940,8 @@ test.describe('colour', () => {
     // A run of presses is one undo step, as one drag is; after a rest the next press begins another.
     await page.waitForTimeout(800);
     const depth = await undoDepth(page);
-    for (const key of ['ArrowLeft', 'ArrowLeft', 'ArrowDown', 'Shift+ArrowLeft'])
-      await page.keyboard.press(key);
+    await burst(page, ['ArrowLeft', 'ArrowLeft', 'ArrowDown', 'Shift+ArrowLeft']);
+    await expect(lift).toHaveAttribute('aria-valuetext', '24% toward blue');
     expect(await undoDepth(page)).toBe(depth + 1);
     await page.waitForTimeout(800);
     await page.keyboard.press('ArrowLeft');
@@ -951,7 +969,7 @@ test.describe('colour', () => {
     await expect(point).toBeFocused();
     await expect(point).toHaveAttribute('aria-valuetext', 'Input 50%, output 50%');
     const before = await undoDepth(page);
-    for (const key of ['ArrowUp', 'ArrowUp', 'Shift+ArrowLeft']) await page.keyboard.press(key);
+    await burst(page, ['ArrowUp', 'ArrowUp', 'Shift+ArrowLeft']);
     await expect(point).toHaveAttribute('aria-valuetext', 'Input 40%, output 52%');
     expect((await grade()).curves.m).toEqual([
       [0, 0],
@@ -982,7 +1000,7 @@ test.describe('colour', () => {
     await expect(mid).toHaveAttribute('aria-orientation', 'vertical');
     await mid.focus();
     const zones = await undoDepth(page);
-    for (const key of ['ArrowUp', 'ArrowUp', 'Shift+ArrowUp', 'PageDown']) await page.keyboard.press(key);
+    await burst(page, ['ArrowUp', 'ArrowUp', 'Shift+ArrowUp', 'PageDown']);
     // Two steps of 0.05 and one of 0.5 up, then a tenth of the eight stops down.
     expect((await grade()).zones.mid).toBe(-0.2);
     await expect(mid).toHaveAttribute('aria-valuetext', '−0.20 stops');
@@ -1137,13 +1155,19 @@ test.describe('mixer', () => {
     await expect(fader).toHaveAttribute('aria-valuetext', '−6.0 dB');
     await page.keyboard.press('End');
     expect((await a1()).volume).toBe(12);
-    expect(await undoDepth(page)).toBe(depth + 1);
+    // A run of presses is one undo step.
+    await page.waitForTimeout(800);
+    const run = await undoDepth(page);
+    await burst(page, ['ArrowDown', 'ArrowDown', 'PageDown']);
+    expect((await a1()).volume).toBe(4);
+    expect(await undoDepth(page)).toBe(run + 1);
+    await undo(page);
+    expect((await a1()).volume).toBe(12);
     await page.keyboard.press('Delete');
     expect((await a1()).volume).toBe(0);
     expect(await frame()).toBe(at);
-    await undo(page);
+    for (let steps = await undoDepth(page); steps > depth; steps--) await undo(page);
     expect((await a1()).volume).toBe(0);
-    expect(await undoDepth(page)).toBe(depth);
     // A drag on the fader does not leave the keyboard on it.
     const track = await box(page.locator('.fader').first());
     await page.mouse.click(track.x + 10, track.y + track.height * 0.5);

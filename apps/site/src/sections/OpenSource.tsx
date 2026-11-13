@@ -128,6 +128,11 @@ export function OpenSource() {
               That starts one small Node server, which serves the editor, relays edits and keeps the media of
               the projects made on it. Your footage stays on your machine and on the server you run.
             </p>
+            <p className="os__note">
+              It holds itself to limits you can change: the document that keeps a project’s edits (not its
+              media) may grow to 32 MiB at most by default, and past a limit the server turns changes away
+              rather than fall over.
+            </p>
           </Reveal>
         </div>
       </div>

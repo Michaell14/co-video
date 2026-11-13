@@ -226,7 +226,11 @@ const ALSO = [
   { icon: Captions, text: 'Subtitles: SRT and VTT in, SRT out' },
 ];
 
-/** Every effect in the editor's catalogue, for the ticker. */
+/**
+ * Every effect in the editor's catalogue (EFFECTS in packages/core/src/effects.ts), in its order
+ * and under its names, for the ticker and for the count in the heading. The site does not build
+ * against the editor's packages, so this is a copy; test/catalogue.test.ts fails when it is stale.
+ */
 const CATALOGUE = [
   'Brightness & Contrast',
   'Exposure',
@@ -303,7 +307,7 @@ export function Effects() {
           id="effects-title"
           title={
             <>
-              50 effects. <em>None of them</em> wait for a render.
+              {CATALOGUE.length} effects. <em>None of them</em> wait for a render.
             </>
           }
           lead="Every effect and transition is a shader running on your GPU, stacked and keyframed on the clip or on an adjustment layer. What you scrub through is the finished frame."

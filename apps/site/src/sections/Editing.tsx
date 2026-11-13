@@ -23,6 +23,7 @@ import { Keycap } from '../components/Keycap';
 import { Reveal } from '../components/Reveal';
 import { SectionHead } from '../components/SectionHead';
 import { useLoopActive } from '../lib/hooks';
+import { SHORTCUTS } from '../lib/shortcuts';
 import './Editing.css';
 
 /* ---- Looping illustrations. Pure CSS; paused whenever the section is off screen. ---- */
@@ -164,20 +165,8 @@ const DETAILS = [
   { icon: Mic, text: 'Voiceover recording' },
   { icon: AudioLines, text: 'Loudness normalisation to LUFS' },
   { icon: WifiOff, text: 'Opens and edits offline' },
-  { icon: Keyboard, text: 'A full keyboard workflow' },
+  { icon: Keyboard, text: 'Select, trim and split from the keyboard' },
   { icon: Search, text: 'Command palette' },
-];
-
-const SHORTCUTS: { keys: string[]; label: string }[] = [
-  { keys: ['J', 'K', 'L'], label: 'Shuttle' },
-  { keys: ['I'], label: 'Mark in' },
-  { keys: ['O'], label: 'Mark out' },
-  { keys: ['cmd', 'B'], label: 'Blade' },
-  { keys: ['shift', 'delete'], label: 'Ripple delete' },
-  { keys: ['space'], label: 'Play / pause' },
-  { keys: ['left', 'right'], label: 'Step a frame' },
-  { keys: ['cmd', 'Z'], label: 'Undo (yours only)' },
-  { keys: ['cmd', 'K'], label: 'Command palette' },
 ];
 
 function ShortcutRow({ hidden }: { hidden?: boolean }) {
@@ -186,9 +175,11 @@ function ShortcutRow({ hidden }: { hidden?: boolean }) {
       {SHORTCUTS.map((shortcut) => (
         <li key={shortcut.label} className="keys__item">
           <span className="keys__caps">
-            {shortcut.keys.map((k) => (
-              <Keycap key={k} k={k} />
-            ))}
+            {shortcut.chords
+              .flatMap((chord) => chord.split('+'))
+              .map((k) => (
+                <Keycap key={k} k={k} />
+              ))}
           </span>
           <span className="keys__label">{shortcut.label}</span>
         </li>

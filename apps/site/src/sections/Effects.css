@@ -571,7 +571,8 @@
 }
 .fx-ticker__row li {
   position: relative;
-  color: var(--fg-4);
+  /* The strip is the one place every effect is named, so it is set to be read. */
+  color: var(--fg-3);
   font-size: clamp(1.25rem, 2.4vw, 2rem);
   font-weight: 600;
   letter-spacing: -0.03em;
@@ -641,9 +642,8 @@
     min-width: 0;
     padding: 0;
   }
-  /* Standing still, the catalogue is a list to be read, not a texture going past. */
+  /* Standing still, the catalogue is a plain list: every name on screen at once, at text size. */
   .fx-ticker__row li {
-    color: var(--fg-3);
     font-size: 1rem;
   }
   /* The separators belong to the moving strip; in wrapped rows they would dangle at line ends. */

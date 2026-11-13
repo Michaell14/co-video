@@ -168,40 +168,47 @@ export function ColorPanel() {
           <div className="tabs__ink" style={{ width: ink.w, transform: `translateX(${ink.x}px)` }} />
         </div>
         <span className="panel__spacer" />
-        {readOnly && <span className="badge badge--amber">Read only</span>}
-        <IconButton
-          small
-          label={grade.enabled ? 'Bypass grade' : 'Enable grade'}
-          disabled={!clip?.grade || frozen}
-          active={!!clip?.grade && !grade.enabled}
-          onClick={() => set({ enabled: !grade.enabled }, false)}
-        >
-          {grade.enabled ? <Eye /> : <EyeOff />}
-        </IconButton>
-        <IconButton
-          small
-          label="Copy grade"
-          disabled={!clip}
-          onClick={() => clip && cmd.copyAttributes(clip.id)}
-        >
-          <ClipboardCopy />
-        </IconButton>
-        <IconButton
-          small
-          label={withSelection ? 'Paste grade onto the selected clips' : 'Paste grade'}
-          disabled={!clip || !attributes?.look || frozen}
-          onClick={() => clip && cmd.pasteAttributes('grade', withSelection ? undefined : [clip.id])}
-        >
-          <ClipboardPaste />
-        </IconButton>
-        <IconButton
-          small
-          label="Reset grade"
-          disabled={!clip?.grade || frozen}
-          onClick={() => clip && patchClips([clip.id], { grade: null })}
-        >
-          <RotateCcw />
-        </IconButton>
+        {/* Someone who may not edit has no use for the grade's actions: in their place the panel
+            says what the Inspector and the Mixer say, in the same words. */}
+        {readOnly ? (
+          <span className="badge badge--amber color__access">Read only</span>
+        ) : (
+          <>
+            <IconButton
+              small
+              label={grade.enabled ? 'Bypass grade' : 'Enable grade'}
+              disabled={!clip?.grade || locked}
+              active={!!clip?.grade && !grade.enabled}
+              onClick={() => set({ enabled: !grade.enabled }, false)}
+            >
+              {grade.enabled ? <Eye /> : <EyeOff />}
+            </IconButton>
+            <IconButton
+              small
+              label="Copy grade"
+              disabled={!clip}
+              onClick={() => clip && cmd.copyAttributes(clip.id)}
+            >
+              <ClipboardCopy />
+            </IconButton>
+            <IconButton
+              small
+              label={withSelection ? 'Paste grade onto the selected clips' : 'Paste grade'}
+              disabled={!clip || !attributes?.look || locked}
+              onClick={() => clip && cmd.pasteAttributes('grade', withSelection ? undefined : [clip.id])}
+            >
+              <ClipboardPaste />
+            </IconButton>
+            <IconButton
+              small
+              label="Reset grade"
+              disabled={!clip?.grade || locked}
+              onClick={() => clip && patchClips([clip.id], { grade: null })}
+            >
+              <RotateCcw />
+            </IconButton>
+          </>
+        )}
       </div>
       <div className="panel__body color" role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${tab}`}>
         {!clip ? (

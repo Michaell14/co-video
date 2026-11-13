@@ -1,7 +1,8 @@
 /**
- * The effects section names every effect in the editor and counts effects and transitions in its
- * copy. The site does not depend on the editor's packages, so nothing but this keeps those in step
- * with the catalogue itself: it reads both sources and compares.
+ * The effects section names every effect in the editor, counts them in its heading and counts the
+ * transitions in its copy. The site does not depend on the editor's packages, so nothing but this
+ * keeps those in step with the catalogue itself: it reads both sources and compares. Whoever adds
+ * an effect or a transition meets this test first, so each failure says what to edit.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -20,8 +21,10 @@ function catalogueNames(path: string, list: string): string[] {
   return [...source.slice(start, end).matchAll(/^ {4}name: '([^']+)',$/gm)].map((match) => match[1]);
 }
 
+const SECTION = 'apps/site/src/sections/Effects.tsx';
+
 describe('effects section', () => {
-  const section = read('apps/site/src/sections/Effects.tsx');
+  const section = read(SECTION);
   const effects = catalogueNames('packages/core/src/effects.ts', 'EFFECTS');
   const transitions = catalogueNames('packages/core/src/transitions.ts', 'TRANSITIONS');
 
@@ -34,7 +37,10 @@ describe('effects section', () => {
   it('lists every effect in the ticker under the name the editor shows', () => {
     const ticker = /const CATALOGUE = \[([^\]]+)\]/.exec(section)?.[1] ?? '';
     const listed = [...ticker.matchAll(/'([^']+)'/g)].map((match) => match[1]);
-    expect(listed).toEqual(effects);
+    expect(
+      listed,
+      `CATALOGUE in ${SECTION} has to name the entries of EFFECTS in packages/core/src/effects.ts, in the same order`,
+    ).toEqual(effects);
   });
 
   it('names its tiles and transitions as the editor does', () => {
@@ -50,7 +56,12 @@ describe('effects section', () => {
   });
 
   it('counts what there is', () => {
-    expect(section).toContain(`${effects.length} effects.`);
-    expect(section).toContain(`${transitions.length} transitions`);
+    expect(section, `the heading in ${SECTION} counts the effects from its own list`).toContain(
+      '{CATALOGUE.length} effects.',
+    );
+    expect(
+      section,
+      `packages/core/src/transitions.ts has ${transitions.length} transitions; ${SECTION} has to say so`,
+    ).toContain(`>${transitions.length} transitions<`);
   });
 });

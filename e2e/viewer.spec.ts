@@ -273,6 +273,13 @@ test.describe('source monitor', () => {
     await page.keyboard.press('Space');
     await expect(markOut(page)).toContainText('0:02.00');
     expect(await source(page)).toEqual({ frame: 60, paused: true });
+    // The button that clears the marks goes with them, and hands the keyboard on to Mark in.
+    await page.keyboard.press('Tab');
+    await expect(clearMarks(page)).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(markIn(page)).toContainText('0:00.00');
+    await expect(markOut(page)).toContainText('0:04.00');
+    await expect(markIn(page)).toBeFocused();
 
     // The volume slider is named, says its value, and is moved by the arrow keys while it has the
     // keyboard: the file in the monitor does not step. Space on it is still the monitor's.

@@ -6,6 +6,12 @@
 .color__scroll[inert] {
   opacity: 0.7;
 }
+/* In the head, where the grade's actions stand for someone who may edit. */
+.color__access {
+  flex: none;
+  margin-right: 6px;
+  white-space: nowrap;
+}
 .color__locked {
   display: flex;
   align-items: center;

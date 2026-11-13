@@ -47,6 +47,13 @@ and the end-to-end suite automatically compiles and renders it. See the conventi
 `packages/core/src/glsl.ts` (premultiplied alpha, working encoding, top-left UVs, the `u_px`
 reference-pixel scale).
 
+The website keeps its own copy of the catalogue's names and counts, because it is not built from
+the editor's packages. Add an effect's name to `CATALOGUE` in `apps/site/src/sections/Effects.tsx`,
+in the place it has in `effects.ts`; for a transition, raise the number in that file's
+"transitions" heading. `pnpm test` fails, and says which of the two it wants, until the website
+agrees with the catalogue. The feature list in `README.md` gives both counts as well, and nothing
+checks those.
+
 ## Ground rules
 
 - **Edits are operations.** Anything that changes a project returns `Edit[]` from
