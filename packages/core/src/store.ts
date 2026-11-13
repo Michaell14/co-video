@@ -153,6 +153,32 @@ const fontFamily: Reader = (v) =>
     ? v
     : undefined;
 
+/**
+ * Longest name the readers pass on, in UTF-16 code units: of a project, an asset, a clip, a track,
+ * a marker or a folder, and of whoever imported an asset. A file name has at most 255 bytes, so
+ * nothing anyone would call a name comes near it. What is longer is cut when it is read: every
+ * collaborator draws these in lists and on clips, and one megabyte-long name in the shared document
+ * would otherwise be laid out by all of them. The text of a title is content, not a name, and has
+ * no such bound.
+ */
+export const MAX_NAME_LENGTH = 500;
+
+/**
+ * Longest poster of an asset the readers pass on, as the length of its data URL. The editor makes
+ * posters 320 pixels wide: a few kilobytes for ordinary footage, some 130,000 characters for a
+ * portrait frame of pure noise. Anything longer was not made by it and is read as no poster.
+ */
+export const MAX_THUMB_LENGTH = 256 * 1024;
+
+/** `text` cut to `max` code units, without leaving half of a surrogate pair at the end. */
+function cut(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
+}
+
+const nameText: Reader = (v) => (typeof v === 'string' ? cut(v, MAX_NAME_LENGTH) : undefined);
+
 /** Reader for a closed set of strings, written as a record so the compiler keeps it exhaustive. */
 const oneOf =
   <T extends string>(allowed: Record<T, true>): Reader =>
@@ -321,6 +347,7 @@ const readCurve: Reader = (v) => {
 
 const CLIP_READERS: Readers<typeof CLIP_DEFAULTS> = {
   assetId: strOrNull,
+  name: nameText,
   label: nullable(color),
   linkId: strOrNull,
   blend: oneOf(BLEND_MODES),
@@ -403,6 +430,7 @@ const hertz = within(20, 20000);
 const eqGain = within(-24, 24);
 
 const TRACK_READERS: Readers<Omit<Track, 'id' | 'kind'>> = {
+  name: nameText,
   volume: decibels,
   pan: balance,
   eq: nullable(
@@ -462,9 +490,14 @@ const ASSET_READERS: Readers<typeof ASSET_DEFAULTS> = {
   ),
   inputColorSpace: oneOf(INPUT_COLOR_SPACES),
   folderId: strOrNull,
-  // A poster is an inline image. Anything else (a remote URL a peer slipped in) would make every
-  // collaborator's browser call out to it.
-  thumb: (v) => (typeof v === 'string' && /^data:image\/(png|jpeg|webp|avif);/.test(v) ? v : null),
+  createdBy: nameText,
+  // A poster is an inline image of the size the editor makes them. Anything else (a remote URL a
+  // peer slipped in) would make every collaborator's browser call out to it, and megabytes of
+  // image would be decoded by each of them for a tile in the media pool.
+  thumb: (v) =>
+    typeof v === 'string' && v.length <= MAX_THUMB_LENGTH && /^data:image\/(png|jpeg|webp|avif);/.test(v)
+      ? v
+      : null,
 };
 
 function readAsset(id: ID, json: unknown): Asset | null {
@@ -474,7 +507,7 @@ function readAsset(id: ID, json: unknown): Asset | null {
     ...conform(ASSET_DEFAULTS, json, ASSET_READERS),
     id,
     kind: json.kind as AssetKind,
-    name: typeof json.name === 'string' ? json.name : 'Untitled',
+    name: typeof json.name === 'string' ? cut(json.name, MAX_NAME_LENGTH) : 'Untitled',
   };
 }
 
@@ -483,7 +516,7 @@ function readMarker(id: ID, json: unknown): Marker | null {
   return {
     id,
     frame: clamp(Math.round(json.frame), 0, MAX_FRAMES),
-    name: typeof json.name === 'string' ? json.name : '',
+    name: typeof json.name === 'string' ? cut(json.name, MAX_NAME_LENGTH) : '',
     color: hexColor(json.color) ?? MARKER_COLORS[0],
     note: typeof json.note === 'string' ? json.note : '',
   };
@@ -493,12 +526,13 @@ function readFolder(id: ID, json: unknown): Folder | null {
   if (!isSafeId(id) || !isObj(json)) return null;
   return {
     id,
-    name: typeof json.name === 'string' ? json.name : '',
+    name: typeof json.name === 'string' ? cut(json.name, MAX_NAME_LENGTH) : '',
     parentId: typeof json.parentId === 'string' ? json.parentId : null,
   };
 }
 
 const SETTINGS_READERS: Readers<ProjectSettings> = {
+  name: nameText,
   background: color,
   colorMode: oneOf(COLOR_MODES),
   toneMap: oneOf(TONE_MAP_OPS),

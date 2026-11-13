@@ -275,6 +275,16 @@ export class TestClient {
     this.ws.resume();
   }
 
+  /**
+   * Take what one turn of the event loop reads off the socket (a couple of megabytes at the most)
+   * and stall again: a link that is slow, not dead.
+   */
+  async readABit(): Promise<void> {
+    this.ws.resume();
+    await new Promise((resolve) => setImmediate(resolve));
+    this.ws.pause();
+  }
+
   /** Cut the connection without a closing handshake. */
   drop(): void {
     this.ws.terminate();
@@ -338,15 +348,17 @@ function clientFrame(payload: Uint8Array): Buffer {
 
 /**
  * A WebSocket peer on a bare TCP socket: it completes the handshake, sends `frames` and from then
- * on answers nothing, not even a close frame, so its connection lingers on the server.
+ * on answers nothing, not even a ping or a close frame, so its connection lingers on the server.
  */
 export class SilentPeer {
+  /** True once the server has ended the connection. */
+  ended = false;
   private received = Buffer.alloc(0);
+  private upgraded = false;
   private readonly socket: Socket;
 
   constructor(url: string, frames: Uint8Array[]) {
     const { hostname, port, host, pathname, search } = new URL(url);
-    let upgraded = false;
     this.socket = netConnect(Number(port), hostname, () => {
       this.socket.write(
         `GET ${pathname}${search} HTTP/1.1\r\nHost: ${host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
@@ -355,11 +367,24 @@ export class SilentPeer {
     });
     this.socket.on('data', (chunk: Buffer) => {
       this.received = Buffer.concat([this.received, chunk]);
-      if (upgraded || !this.received.includes('\r\n\r\n')) return;
-      upgraded = true;
+      if (this.upgraded || !this.received.includes('\r\n\r\n')) return;
+      this.upgraded = true;
       for (const frame of frames) this.socket.write(clientFrame(frame));
     });
     this.socket.on('error', () => undefined);
+    this.socket.on('close', () => {
+      this.ended = true;
+    });
+  }
+
+  /** True once the handshake is done and the frames given at the start have been sent. */
+  get joined(): boolean {
+    return this.upgraded;
+  }
+
+  /** Send one more frame. */
+  send(frame: Uint8Array): void {
+    this.socket.write(clientFrame(frame));
   }
 
   /** True once the server sent `text` (control frames carry their JSON as plain UTF-8). */

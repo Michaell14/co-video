@@ -218,10 +218,10 @@ export function Home() {
         <section className="home__recent">
           <h2>Recent projects {sorted.length > 0 && <span className="badge">{sorted.length}</span>}</h2>
           {!listSaved && (
-            <p className="home__notice" role="alert">
+            <p className="callout callout--warn home__notice" role="alert">
               <TriangleAlert />
-              This browser has no room left to save the project list. Projects and links added in this tab
-              are lost when it closes: delete a project you no longer need.
+              This browser has no room left to save the project list. Projects and links added in this tab are
+              lost when it closes: delete a project you no longer need.
             </p>
           )}
           {sorted.length === 0 ? (

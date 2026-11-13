@@ -3,9 +3,16 @@
  *
  * Both are generated lazily, off the critical path, from the same media the player decodes. Requests
  * made while drawing are remembered with a "wanted" tick, so whatever is on screen right now is
- * always generated before anything the user has already scrolled past.
+ * generated first, and thumbnails that were asked for under a view that has been scrolled or zoomed
+ * away since are not generated at all.
  */
-import { AudioBufferSink, CanvasSink, MediaLibrary, type MediaResolver } from '@tandem/engine';
+import {
+  AudioBufferSink,
+  CanvasSink,
+  MediaLibrary,
+  type MediaResolver,
+  type OpenMedia,
+} from '@tandem/engine';
 
 type Listener = () => void;
 
@@ -36,7 +43,12 @@ interface Pending {
   assetId: string;
   time: number;
   wanted: number;
+  /** The view of the timeline this was last asked for under: see `FilmstripCache.viewing`. */
+  view: number;
 }
+
+/** Called with what an asset's file turned out to hold, each time one of the caches opens it. */
+type Opened = (assetId: string, media: OpenMedia) => void;
 
 export class FilmstripCache extends Emitter {
   private readonly thumbs = new Map<string, { bmp: ImageBitmap; used: number }>();
@@ -46,9 +58,33 @@ export class FilmstripCache extends Emitter {
   private tick = 0;
   private busy = false;
   private disposed = false;
+  private view = 0;
+  private viewed = { scrollX: 0, ppf: 0 };
 
-  constructor(private readonly library: MediaLibrary) {
+  constructor(
+    private readonly library: MediaLibrary,
+    private readonly opened: Opened = () => {},
+  ) {
     super();
+  }
+
+  /**
+   * Say which stretch of the timeline is being painted, before asking for its thumbnails. Every
+   * lane is painted again when the view scrolls or zooms and asks again for what it shows, so a
+   * request that the latest view has not repeated is for a thumbnail that went out of sight, and
+   * is dropped instead of being decoded behind the ones on screen. A lane that is painted again
+   * for another reason (an edit, a thumbnail arriving) leaves the view, and with it the requests
+   * of the other lanes, as they are.
+   */
+  viewing(scrollX: number, ppf: number): void {
+    if (this.viewed.scrollX === scrollX && this.viewed.ppf === ppf) return;
+    this.viewed = { scrollX, ppf };
+    this.view++;
+  }
+
+  /** How many thumbnails are still to be made. */
+  get waiting(): number {
+    return this.pending.size;
   }
 
   /** Step size to use for tiles that each cover `tileSeconds` of media. */
@@ -76,8 +112,10 @@ export class FilmstripCache extends Emitter {
     if (!this.failed.has(assetId)) {
       const k = FilmstripCache.key(assetId, bucket);
       const p = this.pending.get(k);
-      if (p) p.wanted = this.tick;
-      else this.pending.set(k, { assetId, time: bucket, wanted: this.tick });
+      if (p) {
+        p.wanted = this.tick;
+        p.view = this.view;
+      } else this.pending.set(k, { assetId, time: bucket, wanted: this.tick, view: this.view });
       void this.work();
     }
     for (const s of STEPS) {
@@ -95,6 +133,7 @@ export class FilmstripCache extends Emitter {
     let p = this.sinks.get(assetId);
     if (!p) {
       p = this.library.get(assetId).then((m) => {
+        if (m) this.opened(assetId, m);
         if (!m || !m.video || !m.videoDecodable) return null;
         return { sink: new CanvasSink(m.video, { height: THUMB_HEIGHT, poolSize: 2 }), start: m.videoStart };
       });
@@ -108,6 +147,7 @@ export class FilmstripCache extends Emitter {
     this.busy = true;
     try {
       while (this.pending.size && !this.disposed) {
+        for (const [k, p] of this.pending) if (p.view !== this.view) this.pending.delete(k);
         // Most recently wanted request decides which asset we serve next.
         let top: Pending | null = null;
         for (const p of this.pending.values()) if (!top || p.wanted > top.wanted) top = p;
@@ -190,7 +230,10 @@ export class WaveformCache extends Emitter {
   private busy = false;
   private disposed = false;
 
-  constructor(private readonly library: MediaLibrary) {
+  constructor(
+    private readonly library: MediaLibrary,
+    private readonly opened: Opened = () => {},
+  ) {
     super();
   }
 
@@ -219,6 +262,7 @@ export class WaveformCache extends Emitter {
         const w = this.waves.get(assetId)!;
         try {
           const media = await this.library.get(assetId);
+          if (media) this.opened(assetId, media);
           if (!media || !media.audio || !media.audioDecodable) {
             w.done = true;
             continue;
@@ -254,7 +298,9 @@ export class WaveformCache extends Emitter {
             }
           }
         } catch (err) {
-          if ((err as Error)?.name === 'InputDisposedError' && !this.disposed) {
+          // The project was closed while this file was being read: nobody is left to tell.
+          if (this.disposed) return;
+          if ((err as Error)?.name === 'InputDisposedError') {
             // The file moved underneath us (finished downloading): start this one over.
             w.peaks.fill(0);
             w.loaded = 0;

@@ -71,22 +71,24 @@ function clipUpdates() {
 }
 
 /**
- * `setSpeed` for several clips, each asked about by itself, so that each stops at the clip after it
- * also when that clip is having its speed set too. Asked about all of them at once, the operation
- * lets a clip grow straight over a neighbour that is part of the same selection. No answer depends
- * on another: a change of speed moves no clip's start, which is all the clip before it stops at.
+ * `setSpeed` for several clips, each named once. Each stops at the clip after it, also when that
+ * clip is having its speed set too: a change of speed moves no clip's start, which is all the clip
+ * before it stops at, so no answer depends on another.
  */
 export function speedEach(p: Project, ids: ID[], speed: number, reverse?: boolean): Edit[] {
-  return [...new Set(ids)].flatMap((id) => setSpeed(p, [id], speed, reverse));
+  return setSpeed(p, ids, speed, reverse);
 }
 
 /** How long each of `ids` is at `speed` when nothing stands in its way. */
 function naturalLengths(p: Project, ids: ID[], speed: number, reverse?: boolean): Map<ID, number> {
-  // `setSpeed` stops a clip at the one after it. Asked about these clips alone, it has nothing to stop at.
-  const alone = { ...p, clips: Object.fromEntries(ids.map((id) => [id, p.clips[id]])) };
   const lengths = new Map<ID, number>();
-  for (const e of setSpeed(alone, ids, speed, reverse)) {
-    if (e.op === 'updateClip' && e.patch.duration !== undefined) lengths.set(e.id, e.patch.duration);
+  for (const id of ids) {
+    const clip = p.clips[id];
+    if (!clip) continue;
+    // `setSpeed` stops a clip at the one after it. In a project of its own it has nothing to stop at.
+    for (const e of setSpeed({ ...p, clips: { [id]: clip } }, [id], speed, reverse)) {
+      if (e.op === 'updateClip' && e.patch.duration !== undefined) lengths.set(e.id, e.patch.duration);
+    }
   }
   return lengths;
 }

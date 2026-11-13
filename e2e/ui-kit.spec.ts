@@ -108,6 +108,44 @@ const contrasts = (texts: Locator): Promise<number[]> =>
     });
   });
 
+/**
+ * Contrast of the line drawn round a control (its inset shadow, over its own fill) against what
+ * is painted behind the control.
+ */
+const edgeContrast = (control: Locator): Promise<number> =>
+  control.evaluate((el) => {
+    const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!;
+    const linear = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    const luminance = () => {
+      const [r, g, b] = Array.from(paint.getImageData(0, 0, 1, 1).data, (v) => linear(v / 255));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const cover = (colour: string) => {
+      paint.fillStyle = colour;
+      paint.fillRect(0, 0, 1, 1);
+    };
+    const behind: string[] = [];
+    for (let node = el.parentElement; node; node = node.parentElement) {
+      behind.unshift(getComputedStyle(node).backgroundColor);
+    }
+    behind.forEach(cover);
+    const around = luminance();
+    const line = /rgba?\([^)]+\)(?= 0px 0px 0px 1px inset)/.exec(getComputedStyle(el).boxShadow);
+    if (!line) return 0;
+    cover(getComputedStyle(el).backgroundColor);
+    cover(line[0]);
+    const edge = luminance();
+    return (Math.max(edge, around) + 0.05) / (Math.min(edge, around) + 0.05);
+  });
+
+/** Keys pressed on a control one straight after the other, with no time between them for a run of presses to end. */
+const burst = (control: Locator, keys: string[]): Promise<void> =>
+  control.evaluate((el, keys) => {
+    for (const key of keys) {
+      el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    }
+  }, keys);
+
 // A file saved while the suite runs makes the dev server reload the page under the test; its
 // socket is left unanswered so that cannot happen.
 test.beforeEach(async ({ context }) => {
@@ -813,6 +851,99 @@ test.describe('fields', () => {
   });
 });
 
+test.describe('names', () => {
+  test('a row names its controls, and a select is read with what it is set to', async ({ page }) => {
+    await sample(page);
+    await select(page, 'video');
+    // What it sets and what that is set to: the value alone says nothing, the label alone hides it.
+    const blend = row(page, 'Blend mode').locator('.select');
+    await expect(blend).toHaveAccessibleName('Blend mode Normal');
+    await blend.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('listbox', { name: 'Blend mode' })).toBeVisible();
+    await page.getByRole('option', { name: 'Screen' }).click();
+    await expect(blend).toHaveAccessibleName('Blend mode Screen');
+
+    // Only the words of the label: the keyframe button beside them has a name of its own.
+    await expect(row(page, 'Opacity').getByRole('slider')).toHaveAccessibleName('Opacity');
+    await expect(row(page, 'Opacity').getByRole('textbox')).toHaveAccessibleName('Opacity');
+
+    await select(page, 'text');
+    await expect(row(page, 'Line height').getByRole('textbox')).toHaveAccessibleName('Line height');
+    await expect(row(page, 'Line height').getByRole('slider')).toHaveAccessibleName('Line height');
+    // Segments that are icons take the name their tooltip gives, and the row names the group.
+    const align = row(page, 'Align');
+    await expect(align.getByRole('group')).toHaveAccessibleName('Align');
+    for (const name of ['Align left', 'Align centre', 'Align right']) {
+      await expect(align.getByRole('button', { name, exact: true })).toBeVisible();
+    }
+    // Two colours in one panel are told apart by their rows.
+    await expect(row(page, 'Colour').locator('input.mono')).toHaveAccessibleName('Colour Hex colour');
+    await expect(row(page, 'Colour').locator('input[type="color"]')).toHaveAccessibleName(
+      'Colour Pick colour',
+    );
+  });
+
+  test('the rows of the new-project form name theirs, in the words the project settings use', async ({
+    page,
+  }) => {
+    await page.route('**/api/health', (route) => route.abort());
+    await page.goto('/');
+    // One way of writing a frame size and a frame rate, on the starters as everywhere else.
+    await expect(page.locator('.starter__hint').first()).toHaveText('1920×1080 · 30 fps');
+    await page.getByRole('button', { name: 'Custom project…' }).click();
+    const dialog = page.getByRole('dialog', { name: 'New project' });
+    const resolution = dialog.getByRole('button', { name: 'Resolution Full HD 1080p · 1920×1080' });
+    await expect(resolution).toBeVisible();
+    await expect(dialog.getByRole('textbox', { name: 'Size W' })).toHaveValue('1920');
+    await expect(dialog.getByRole('textbox', { name: 'Size H' })).toHaveValue('1080');
+    await expect(dialog.getByRole('button', { name: 'Frame rate 30 fps' })).toBeVisible();
+    const colour = dialog.getByRole('button', { name: 'Colour SDR · Rec.709' });
+    await colour.click();
+    const modes = await page.getByRole('listbox', { name: 'Colour' }).getByRole('option').allTextContents();
+    expect(modes).toEqual(['SDR · Rec.709', 'HDR · Rec.2100 PQ', 'HDR · Rec.2100 HLG']);
+    await page.keyboard.press('Escape');
+    await resolution.click();
+    const sizes = await page
+      .getByRole('listbox', { name: 'Resolution' })
+      .getByRole('option')
+      .allTextContents();
+    expect(sizes).toContain('4K UHD · 3840×2160');
+    await page.keyboard.press('Escape');
+    await dialog.getByRole('button', { name: 'Create project' }).click();
+
+    // The same options in the project's settings, word for word, and the same size in the top bar.
+    await expect(page.locator('.tl')).toBeVisible();
+    const settings = page.locator('[aria-label="Inspector"]');
+    await expect(settings.locator('.row', { hasText: 'Resolution' }).locator('.select')).toHaveText(
+      'Full HD 1080p · 1920×1080',
+    );
+    await settings.locator('.row', { hasText: 'Colour' }).locator('.select').first().click();
+    expect(await page.getByRole('option').allTextContents()).toEqual(modes);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.topbar')).toContainText('1920×1080 · 30 fps');
+  });
+
+  test('an empty field and the chosen segment are told from their surroundings by a line that can be seen', async ({
+    page,
+  }) => {
+    await sample(page);
+    await select(page, 'text');
+    // 3:1 is what an edge needs where the edge is all there is.
+    const search = page.locator('[aria-label="Library"] .field').first();
+    await expect(search.locator('input')).toHaveValue('');
+    expect(await edgeContrast(search)).toBeGreaterThanOrEqual(3);
+    expect(await edgeContrast(page.locator('.topbar .seg__thumb'))).toBeGreaterThanOrEqual(3);
+    expect(await edgeContrast(row(page, 'Align').locator('.seg__thumb'))).toBeGreaterThanOrEqual(3);
+    await page.evaluate(() => (window as any).tandem.ui.getState().set({ commentsOpen: true }));
+    expect(await edgeContrast(page.locator('.composer textarea'))).toBeGreaterThanOrEqual(3);
+    // A field that holds something keeps the quiet line: what it holds says what it is.
+    await search.locator('input').fill('dusk');
+    await search.locator('input').blur();
+    await expect.poll(() => edgeContrast(search)).toBeLessThan(3);
+  });
+});
+
 test.describe('sliders', () => {
   test('double-click resets in one undo step, back to the value before it', async ({ page }) => {
     await sample(page);
@@ -898,6 +1029,145 @@ test.describe('sliders', () => {
     const dragged = (await thumb.boundingBox())!;
     await page.mouse.up();
     expect(Math.abs(dragged.x + dragged.width / 2 - (box.x + box.width * 0.7))).toBeLessThan(1.5);
+  });
+
+  test('work from the keyboard: arrows, Shift, the page keys, Home, End and Delete', async ({ page }) => {
+    const problems = trackProblems(page);
+    await sample(page);
+    await select(page, 'video');
+    const thumb = row(page, 'Opacity').getByRole('slider');
+    const opacity = async () => (await clipOf(page, 'video')).opacity;
+    await expect(thumb).toHaveAccessibleName('Opacity');
+    await expect(thumb).toHaveAttribute('aria-valuemin', '0');
+    await expect(thumb).toHaveAttribute('aria-valuemax', '1');
+    await expect(thumb).toHaveAttribute('aria-valuenow', '1');
+
+    // Tab reaches it from the control before it, and it shows where the keyboard is.
+    await row(page, 'Opacity').locator('.kf').focus();
+    await page.keyboard.press('Tab');
+    await expect(thumb).toBeFocused();
+    await expectRing(thumb);
+
+    const at = await frame(page);
+    const clips = await page.locator('.clip').count();
+    for (const key of ['ArrowLeft', 'ArrowDown', 'Shift+ArrowLeft']) await page.keyboard.press(key);
+    expect(await opacity()).toBeCloseTo(0.88, 6);
+    for (const key of ['ArrowRight', 'ArrowUp']) await page.keyboard.press(key);
+    expect(await opacity()).toBeCloseTo(0.9, 6);
+    await expect(thumb).toHaveAttribute('aria-valuenow', '0.9');
+    await page.keyboard.press('PageDown');
+    expect(await opacity()).toBeCloseTo(0.8, 6);
+    await page.keyboard.press('PageUp');
+    expect(await opacity()).toBeCloseTo(0.9, 6);
+    await page.keyboard.press('Home');
+    expect(await opacity()).toBe(0);
+    await page.keyboard.press('End');
+    expect(await opacity()).toBe(1);
+    await page.keyboard.press('Home');
+    // Delete goes back to the default. It is the slider's key here, not the editor's: the selected
+    // clip stays, and the arrows have not moved the playhead.
+    await page.keyboard.press('Delete');
+    expect(await opacity()).toBe(1);
+    await page.keyboard.press('Home');
+    await page.keyboard.press('Backspace');
+    expect(await opacity()).toBe(1);
+    await expect(page.locator('.clip')).toHaveCount(clips);
+    expect(await frame(page)).toBe(at);
+
+    // With Ctrl the same keys are the editor's again (select the next clip).
+    const selection = () => page.evaluate(() => (window as any).tandem.ui.getState().selection);
+    const selected = await selection();
+    await page.keyboard.press('Control+ArrowDown');
+    expect(await selection()).not.toEqual(selected);
+    expect(await opacity()).toBe(1);
+    expect(problems).toEqual([]);
+  });
+
+  test('a run of key presses is one undo step, ended by a pause or by leaving the slider', async ({
+    page,
+  }) => {
+    await sample(page);
+    await select(page, 'video');
+    const thumb = row(page, 'Opacity').getByRole('slider');
+    const opacity = async () => (await clipOf(page, 'video')).opacity;
+    await thumb.focus();
+    const steps = await undoSteps(page);
+
+    await burst(thumb, ['ArrowLeft', 'ArrowLeft', 'PageDown', 'ArrowLeft']);
+    expect(await opacity()).toBeCloseTo(0.87, 6);
+    expect(await undoSteps(page)).toBe(steps + 1);
+    await page.evaluate(() => (window as any).tandem.cmd.undo());
+    expect(await opacity()).toBe(1);
+
+    // The keys rest: the next press begins a new step.
+    await burst(thumb, ['ArrowLeft']);
+    await page.waitForTimeout(900);
+    await burst(thumb, ['ArrowLeft', 'ArrowLeft']);
+    expect(await opacity()).toBeCloseTo(0.97, 6);
+    expect(await undoSteps(page)).toBe(steps + 2);
+    await page.evaluate(() => (window as any).tandem.cmd.undo());
+    expect(await opacity()).toBeCloseTo(0.99, 6);
+
+    // The keyboard goes elsewhere and comes back: the same.
+    await page.waitForTimeout(900);
+    const base = await undoSteps(page);
+    await burst(thumb, ['ArrowLeft']);
+    await thumb.evaluate((el: HTMLElement) => {
+      el.blur();
+      el.focus();
+    });
+    await burst(thumb, ['ArrowLeft']);
+    expect(await undoSteps(page)).toBe(base + 2);
+  });
+
+  test('a slider whose values are coarser than its steps still moves', async ({ page }) => {
+    await sample(page);
+    // A fade is kept in whole frames. On a clip of one second a step of the keyboard is a third
+    // of a frame: a press that rounds away must not leave the next one where it started.
+    const sound = await clipOf(page, 'audio');
+    await page.evaluate(
+      (id) =>
+        (window as any).tandem.session.store.commit([
+          { op: 'updateClip', id, patch: { duration: 30, fadeIn: 15, fadeOut: 0 } },
+        ]),
+      sound.id,
+    );
+    await select(page, 'audio');
+    const thumb = row(page, 'Fade in').getByRole('slider');
+    const fade = async () => (await clipOf(page, 'audio')).fadeIn;
+    await thumb.focus();
+    await page.keyboard.press('ArrowRight');
+    expect(await fade()).toBe(15);
+    await page.keyboard.press('ArrowRight');
+    expect(await fade()).toBe(16);
+    await page.keyboard.press('ArrowLeft');
+    expect(await fade()).toBe(16);
+    await page.keyboard.press('ArrowLeft');
+    expect(await fade()).toBe(15);
+  });
+
+  test('a press with the pointer sets the value and leaves the arrow keys to the playhead', async ({
+    page,
+  }) => {
+    await sample(page);
+    await select(page, 'video');
+    const slider = row(page, 'Opacity').locator('.slider');
+    const thumb = slider.getByRole('slider');
+    const box = (await slider.boundingBox())!;
+    const at = await frame(page);
+
+    // On the thumb itself, where it rests at the right-hand end.
+    const t = (await thumb.boundingBox())!;
+    await page.mouse.click(t.x + t.width / 2, t.y + t.height / 2);
+    await expect(thumb).not.toBeFocused();
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(thumb).not.toBeFocused();
+    expect((await clipOf(page, 'video')).opacity).toBeCloseTo(0.5, 1);
+    const set = (await clipOf(page, 'video')).opacity;
+
+    await page.keyboard.press('ArrowRight');
+    expect(await frame(page)).toBe(at + 1);
+    expect((await clipOf(page, 'video')).opacity).toBe(set);
   });
 });
 
@@ -1017,6 +1287,61 @@ test.describe('tooltips', () => {
     );
     await expect(tooltip).toBeVisible();
   });
+
+  test('show for the keyboard as for the pointer, and go with Escape or the focus', async ({ page }) => {
+    await sample(page);
+    const tooltip = page.locator('.tooltip');
+    const zoomIn = page.getByRole('button', { name: 'Zoom in' });
+    const fit = page.getByRole('button', { name: 'Fit timeline' });
+    await page.mouse.move(700, 300);
+
+    // Tab arrives at an icon button: its name shows, with its shortcut.
+    await zoomIn.focus();
+    await page.keyboard.press('Tab');
+    await expect(fit).toBeFocused();
+    await expect(tooltip).toHaveText(/Fit timeline/);
+    await page.keyboard.press('Escape');
+    await expect(tooltip).toHaveCount(0);
+    await expect(fit).toBeFocused();
+
+    // It goes with the focus, and the next control's takes its place.
+    await page.keyboard.press('Shift+Tab');
+    await expect(tooltip).toHaveText(/Zoom in/);
+    await page.keyboard.press('Tab');
+    await expect(tooltip).toHaveText(/Fit timeline/);
+    await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+    await expect(tooltip).toHaveCount(0);
+
+    // Focus that a press of the pointer leaves behind brings nothing back.
+    await page.getByRole('button', { name: 'Zoom out' }).click();
+    await expect(tooltip).toHaveCount(0);
+    await page.waitForTimeout(700);
+    await expect(tooltip).toHaveCount(0);
+  });
+
+  test('stay away while something is carried over their controls', async ({ page }) => {
+    await sample(page);
+    const tooltip = page.locator('.tooltip');
+    await page.evaluate(() => (window as any).tandem.ui.getState().set({ libraryTab: 'effects' }));
+    const tile = (await page.locator('.fx-grid .fx').first().boundingBox())!;
+    const over = (await page.getByRole('button', { name: 'Fit timeline' }).boundingBox())!;
+    const target = [over.x + over.width / 2, over.y + over.height / 2] as const;
+
+    await page.mouse.move(tile.x + tile.width / 2, tile.y + 20);
+    await page.mouse.down();
+    await page.mouse.move(tile.x + tile.width / 2 + 30, tile.y + 50, { steps: 3 });
+    await expect(page.locator('.drag-ghost')).toBeVisible();
+    await page.mouse.move(...target, { steps: 6 });
+    await page.waitForTimeout(700);
+    await expect(tooltip).toHaveCount(0);
+    await page.mouse.up();
+    await expect(page.locator('.drag-ghost')).toHaveCount(0);
+
+    // Let go, the pointer asks again like any other.
+    await page.mouse.move(700, 300);
+    await page.mouse.move(...target);
+    await expect(tooltip).toHaveText(/Fit timeline/);
+  });
 });
 
 test.describe('command palette', () => {
@@ -1058,6 +1383,45 @@ test.describe('command palette', () => {
     await page.keyboard.press('Enter');
     await expect.poll(async () => (await uiState(page)).snapping).toBe(!before.snapping);
     expect((await uiState(page)).dialog).toBe(null);
+  });
+
+  test('says what it found and which entry Enter will run', async ({ page }) => {
+    await sample(page);
+    await page.keyboard.press('Control+k');
+    const input = page.getByRole('combobox', { name: 'Search commands' });
+    await expect(input).toBeFocused();
+    const list = page.getByRole('listbox', { name: 'Commands' });
+    await expect(input).toHaveAttribute('aria-expanded', 'true');
+    expect(await input.getAttribute('aria-controls')).toBe(await list.getAttribute('id'));
+    /** The entry the field points at, which is the one a screen reader reads out. */
+    const pointedAt = () =>
+      input.evaluate((el) => document.getElementById(el.getAttribute('aria-activedescendant')!)?.textContent);
+
+    await page.keyboard.type('marker');
+    const options = list.getByRole('option');
+    const count = await options.count();
+    expect(count).toBeGreaterThan(2);
+    await expect(page.locator('.palette').getByRole('status')).toHaveText(`${count} commands`);
+    await expect(options.first()).toHaveAttribute('aria-selected', 'true');
+    expect(await pointedAt()).toBe(await options.first().textContent());
+
+    // The highlight moves, the keyboard stays in the field, and the field follows the highlight.
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await expect(input).toBeFocused();
+    await expect(options.nth(2)).toHaveAttribute('aria-selected', 'true');
+    await expect(list.locator('[aria-selected="true"]')).toHaveCount(1);
+    expect(await pointedAt()).toBe(await options.nth(2).textContent());
+
+    await page.keyboard.type('zzzz');
+    await expect(options).toHaveCount(0);
+    await expect(input).toHaveAttribute('aria-expanded', 'false');
+    await expect(input).not.toHaveAttribute('aria-activedescendant', /./);
+    await expect(page.locator('.palette').getByRole('status')).toHaveText('No commands match');
+
+    // One match is counted as one.
+    await input.fill('toggle snapping');
+    await expect(page.locator('.palette').getByRole('status')).toHaveText('1 command');
   });
 });
 
@@ -1306,6 +1670,34 @@ test.describe('toasts', () => {
       'removed',
     ]);
   });
+
+  test('one that offers something to press waits while the pointer or the keyboard is on it', async ({
+    page,
+  }) => {
+    await sample(page);
+    await select(page, 'video');
+    // Slowed down, the first clip runs into the next one: the toast offers to make room.
+    await page.evaluate(() => (window as any).tandem.cmd.setSpeed(0.5));
+    const offer = page.locator('.toast', { hasText: 'The next clip is in the way' });
+    const action = offer.getByRole('button', { name: 'Make room' });
+    await expect(offer).toBeVisible();
+
+    // Under the pointer its time stands still: it is there long after it would have gone.
+    await offer.hover();
+    await page.waitForTimeout(11_000);
+    await expect(offer).toBeVisible();
+    // The same with the keyboard on its button, wherever the pointer has gone.
+    await action.focus();
+    await page.mouse.move(700, 300);
+    await page.waitForTimeout(10_000);
+    await expect(offer).toBeVisible();
+
+    // Left alone it still has the time it had: more than a toast that only says something gets.
+    await action.evaluate((button: HTMLElement) => button.blur());
+    await page.waitForTimeout(5_000);
+    await expect(offer).toBeVisible();
+    await expect(offer).toHaveCount(0, { timeout: 8_000 });
+  });
 });
 
 test.describe('home and profile', () => {
@@ -1385,6 +1777,116 @@ test.describe('home and profile', () => {
     await expect(dialog.getByRole('alert')).toHaveCount(0);
     expect(problems).toEqual([]);
   });
+
+  test('says so for as long as the project list cannot be saved', async ({ page }) => {
+    // Storage that has no room for the list while `__full` is set.
+    await page.addInitScript(() => {
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key: string, value: string) {
+        if ((window as any).__full && key === 'tandem.projects.v1') {
+          throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        }
+        setItem.call(this, key, value);
+      };
+    });
+    await page.route('**/api/health', (route) => route.abort());
+    await newProject(page);
+    await page.evaluate(() => (location.hash = '#/'));
+    const card = page.locator('.pcard');
+    await expect(card).toHaveCount(1);
+    const notice = page.locator('.home__recent').getByRole('alert');
+    await expect(notice).toHaveCount(0);
+
+    const rename = async (name: string) => {
+      await card.getByRole('button', { name: /^Options for/ }).click();
+      await page.getByRole('menuitem', { name: 'Rename…' }).click();
+      await page.getByRole('textbox', { name: 'Project name' }).fill(name);
+      await page.keyboard.press('Enter');
+      await expect(card.locator('.pcard__name')).toHaveText(name);
+    };
+    await page.evaluate(() => ((window as any).__full = true));
+    await rename('Kept in this tab only');
+    await expect(notice).toHaveText(
+      'This browser has no room left to save the project list. Projects and links added in this tab are lost when it closes: delete a project you no longer need.',
+    );
+    expect(Math.min(...(await contrasts(notice)))).toBeGreaterThanOrEqual(4.5);
+
+    // It is a standing notice, not a toast: it is there until the list is saved again.
+    await expect(page.locator('.toast')).toHaveCount(0, { timeout: 12_000 });
+    await expect(notice).toBeVisible();
+    await page.evaluate(() => ((window as any).__full = false));
+    await rename('Saved again');
+    await expect(notice).toHaveCount(0);
+  });
+
+  test('a project whose link the server refused says so on its card, and what to do', async ({ page }) => {
+    await page.route('**/api/health', (route) => route.abort());
+    await newProject(page);
+    // The link is kept aside, as the session leaves it after a refusal: the project is local for now.
+    await page.evaluate(() => {
+      const [project] = JSON.parse(localStorage.getItem('tandem.projects.v1')!);
+      localStorage.setItem(
+        'tandem.links-aside.v1',
+        JSON.stringify({ [project.id]: { token: 'a.b', role: 'editor', refusedAt: Date.now() } }),
+      );
+    });
+    await page.goto('/');
+    await page.reload();
+    const card = page.locator('.pcard');
+    const hint = card.locator('.pcard__refused');
+    await expect(hint).toContainText('Link refused');
+    await expect(card.locator('.pcard__shared')).toHaveCount(0);
+    const whatNow =
+      'The server did not accept this project’s link. Open the project and choose Share, then Try again.';
+    const open = card.getByRole('button', { name: /^Open / });
+    await expect(open).toHaveAccessibleDescription(whatNow);
+
+    // Asked with the pointer at the hint, and with the keyboard at the card.
+    const tooltip = page.locator('.tooltip');
+    await hint.hover();
+    await expect(tooltip).toHaveText(whatNow);
+    await page.mouse.move(700, 200);
+    await expect(tooltip).toHaveCount(0);
+    await page.getByRole('button', { name: 'Join with a link…' }).focus();
+    await page.keyboard.press('Tab');
+    await expect(open).toBeFocused();
+    await expect(tooltip).toHaveText(whatNow);
+  });
+});
+
+test.describe('an address the browser does not trust', () => {
+  test('is named as the reason nothing plays, above every screen', async ({ page }) => {
+    // What a browser reports for plain HTTP on anything but localhost.
+    await page.addInitScript(() => Object.defineProperty(window, 'isSecureContext', { get: () => false }));
+    await page.route('**/api/health', (route) => route.abort());
+    await page.goto('/');
+    const notice = page.getByRole('alert').filter({ hasText: 'Tandem needs HTTPS' });
+    await expect(notice).toContainText('Serve the editor over HTTPS');
+    expect(Math.min(...(await contrasts(notice.locator('span'))))).toBeGreaterThanOrEqual(4.5);
+    const height = page.viewportSize()!.height;
+    const bottom = async (selector: string) => {
+      const box = (await page.locator(selector).boundingBox())!;
+      return box.y + box.height;
+    };
+    // The screen has the rest of the window: nothing is pushed out of it.
+    const under = await bottom('.insecure > .callout');
+    expect((await page.locator('.home').boundingBox())!.y).toBeGreaterThanOrEqual(under);
+    expect(await bottom('.home')).toBeLessThanOrEqual(height);
+
+    await page.locator('.starter').first().click();
+    await expect(page.locator('.tl')).toBeVisible();
+    await expect(notice).toBeVisible();
+    expect((await page.locator('.app').boundingBox())!.y).toBeGreaterThanOrEqual(under);
+    expect(await bottom('.app')).toBeLessThanOrEqual(height);
+  });
+
+  test('is not mentioned on one it does', async ({ page }) => {
+    await page.route('**/api/health', (route) => route.abort());
+    await page.goto('/');
+    await expect(page.locator('.home__hero')).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.locator('.insecure')).toHaveCount(0);
+  });
 });
 
 test.describe('comments', () => {
@@ -1417,5 +1919,203 @@ test.describe('comments', () => {
     expect(ratios.length).toBeGreaterThanOrEqual(5);
     expect(Math.min(...ratios)).toBeGreaterThanOrEqual(4.5);
     expect((await contrasts(comment.locator('.comment__done')))[0]).toBeGreaterThanOrEqual(3);
+  });
+
+  test('a note written during playback is pinned where the writing began', async ({ page }) => {
+    await sample(page);
+    await page.evaluate(() => {
+      const { cmd, ui } = (window as any).tandem;
+      ui.getState().set({ commentsOpen: true });
+      cmd.seek(30);
+    });
+    const playing = () => page.evaluate(() => (window as any).tandem.session.player.getState().playing);
+    const box = page.getByRole('textbox', { name: 'Comment at the playhead' });
+    await box.click();
+    await page.evaluate(() => (window as any).tandem.session.player.play());
+    await expect.poll(() => frame(page)).toBeGreaterThan(32);
+    expect(await playing()).toBe(true);
+
+    // The first character stops playback, and the playhead waits there for the rest of the note.
+    await page.keyboard.type('T');
+    await expect.poll(playing).toBe(false);
+    const began = await frame(page);
+    await page.keyboard.type('his cut comes a beat late', { delay: 20 });
+    expect(await frame(page)).toBe(began);
+    const stamp = await page.locator('.composer__tc').textContent();
+    await page.keyboard.press('Enter');
+
+    const card = page.locator('.comment');
+    await expect(card).toHaveCount(1);
+    await expect(card.locator('.comment__tc')).toHaveText(stamp!);
+    expect(await page.evaluate(() => (window as any).tandem.session.review.get()[0].frame)).toBe(began);
+    await expect(card).toHaveAttribute('data-current', 'true');
+
+    // Playback started again on purpose is left alone by the rest of a draft.
+    await page.keyboard.type('And');
+    await page.evaluate(() => (window as any).tandem.session.player.play());
+    await page.keyboard.type(' so on');
+    expect(await playing()).toBe(true);
+    await page.evaluate(() => (window as any).tandem.session.player.pause());
+  });
+
+  test('the playhead lights the comment it is on without the list being drawn for every frame', async ({
+    page,
+  }) => {
+    // Counts, by name, the components React renders again in each commit (first renders are not
+    // counted): what its developer tools would show.
+    await page.addInitScript(() => {
+      const renders: Record<string, number> = {};
+      const walk = (fiber: any, mounting: boolean): void => {
+        const was = fiber.alternate;
+        const mount = mounting || !was;
+        const type = typeof fiber.type === 'object' && fiber.type ? fiber.type.type : fiber.type;
+        if (!mount && fiber.flags & 1 && typeof type === 'function') {
+          renders[type.name] = (renders[type.name] ?? 0) + 1;
+        }
+        if (mount || fiber.child !== was.child) {
+          for (let child = fiber.child; child; child = child.sibling) walk(child, mount);
+        }
+      };
+      (window as any).__renders = renders;
+      (window as any).__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+        supportsFiber: true,
+        isDisabled: false,
+        renderers: new Map(),
+        inject: () => 1,
+        onCommitFiberRoot: (_id: number, root: any) => walk(root.current, false),
+        onCommitFiberUnmount: () => {},
+        onPostCommitFiberRoot: () => {},
+      };
+    });
+    await sample(page);
+    await page.evaluate(() => {
+      const { session, ui } = (window as any).tandem;
+      const me = session.getMeta().user;
+      const by = { authorId: me.id, authorName: me.name, authorColor: me.color, x: null, y: null };
+      for (let i = 0; i < 12; i++) session.review.add({ frame: 200 + i * 10, text: `Note ${i}`, ...by });
+      ui.getState().set({ commentsOpen: true });
+    });
+    const cards = page.locator('.comment');
+    await expect(cards).toHaveCount(12);
+    /** Step the playhead through `frames`, one drawn frame at a time; what was rendered meanwhile. */
+    const step = (frames: number[]): Promise<Record<string, number>> =>
+      page.evaluate(async (frames) => {
+        const w = window as any;
+        for (const name of Object.keys(w.__renders)) delete w.__renders[name];
+        for (const f of frames) {
+          w.tandem.session.player.seek(f);
+          await new Promise((drawn) => requestAnimationFrame(() => setTimeout(drawn, 0)));
+        }
+        return { ...w.__renders };
+      }, frames);
+
+    // Away from every comment only the composer's timecode follows the playhead.
+    const away = await step(Array.from({ length: 30 }, (_, i) => 60 + i));
+    expect(away.PlayheadTimecode).toBeGreaterThanOrEqual(30);
+    expect(away.CommentCard ?? 0).toBe(0);
+    expect(away.CommentsPanel ?? 0).toBe(0);
+    await expect(page.locator('.composer__tc')).toHaveText('00:00:02:29');
+
+    // Coming to a comment and leaving it again draws that one card twice, and no other.
+    const across = await step([208, 209, 210, 211, 212]);
+    expect(across.CommentCard).toBe(2);
+    await page.evaluate(() => (window as any).tandem.cmd.seek(220));
+    await expect(page.locator('.comment[data-current="true"] .comment__text')).toHaveText(['Note 2']);
+  });
+
+  test('closing the panel or removing a comment from the keyboard hands the keyboard on', async ({
+    page,
+  }) => {
+    await sample(page);
+    await page.evaluate(() => {
+      const { session } = (window as any).tandem;
+      const me = session.getMeta().user;
+      const by = { authorId: me.id, authorName: me.name, authorColor: me.color, x: null, y: null };
+      for (const [i, text] of ['First', 'Second', 'Third'].entries()) {
+        session.review.add({ frame: 30 * (i + 1), text, ...by });
+      }
+    });
+    const toggle = page.locator('.topbar').getByRole('button', { name: 'Comments' });
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    const cards = page.locator('.comment');
+    await expect(cards).toHaveCount(3);
+    /** The comment the focused control belongs to. */
+    const focusedIn = () =>
+      page.evaluate(
+        () => document.activeElement?.closest('.comment')?.querySelector('.comment__text')?.textContent,
+      );
+
+    // Deleting a comment: on to the one that takes its place. Held a moment too long, the key
+    // that deleted the one does nothing to the next.
+    await cards.nth(1).getByRole('button', { name: 'Delete' }).focus();
+    await page.keyboard.down('Enter');
+    await expect(cards).toHaveCount(2);
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+    await expect(cards).toHaveCount(2);
+    await expect(page.getByRole('textbox', { name: 'Reply' })).toHaveCount(0);
+    await expect(cards.nth(1).getByRole('button', { name: 'Reply' })).toBeFocused();
+    expect(await focusedIn()).toBe('Third');
+
+    // Resolving one takes it out of the list too: the last one hands on to the one before it.
+    await cards.nth(1).getByRole('button', { name: 'Resolve' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(cards).toHaveCount(1);
+    await expect(cards.first().getByRole('button', { name: 'Reply' })).toBeFocused();
+    expect(await focusedIn()).toBe('First');
+
+    // With none left, to the box for writing a new one.
+    await cards.first().getByRole('button', { name: 'Delete' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(cards).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: 'Comment at the playhead' })).toBeFocused();
+
+    // Closing the panel: back to the button that opens it.
+    await page.getByRole('button', { name: 'Close comments' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.composer')).toHaveCount(0);
+    await expect(toggle).toBeFocused();
+
+    // A reply is a named field, and the panel keeps the inset every panel has.
+    await page.keyboard.press('Enter');
+    await page.evaluate(() => {
+      const { session } = (window as any).tandem;
+      const me = session.getMeta().user;
+      session.review.add({
+        frame: 10,
+        text: 'Again',
+        authorId: me.id,
+        authorName: me.name,
+        authorColor: me.color,
+        x: null,
+        y: null,
+      });
+    });
+    const reply = cards.first().getByRole('button', { name: 'Reply' });
+    const answer = page.getByRole('textbox', { name: 'Reply' });
+    await reply.focus();
+    await page.keyboard.press('Enter');
+    await expect(answer).toBeFocused();
+    // Given up or sent, the reply field goes and the keyboard is back on the comment's actions.
+    await page.keyboard.press('Escape');
+    await expect(answer).toHaveCount(0);
+    await expect(reply).toBeFocused();
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Agreed');
+    await page.keyboard.press('Enter');
+    await expect(cards.first().locator('.comment__reply')).toContainText('Agreed');
+    await expect(reply).toBeFocused();
+    // Measured at rest: the panel and its cards ease into place.
+    await page
+      .locator('section[aria-label="Comments"]')
+      .evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+    const panel = (await page.locator('section[aria-label="Comments"]').boundingBox())!;
+    for (const part of ['.comment', '.composer textarea']) {
+      const box = (await page.locator(`section[aria-label="Comments"] ${part}`).first().boundingBox())!;
+      expect(box.x - panel.x).toBe(10);
+      expect(panel.x + panel.width - (box.x + box.width)).toBe(10);
+    }
   });
 });

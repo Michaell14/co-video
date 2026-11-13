@@ -1,3 +1,4 @@
+import { TriangleAlert } from 'lucide-react';
 import { Component, lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { Home } from './features/home/Home';
 import { ContextMenuLayer, ToastLayer, TooltipLayer } from './ui/core';
@@ -44,19 +45,46 @@ export function App() {
     };
   }, []);
 
+  const screen = route.projectId ? (
+    <Suspense fallback={<Splash label="Loading editor" />}>
+      <Editor key={route.projectId} projectId={route.projectId} token={route.token} />
+    </Suspense>
+  ) : (
+    <Home />
+  );
   return (
     <ErrorBoundary>
-      {route.projectId ? (
-        <Suspense fallback={<Splash label="Loading editor" />}>
-          <Editor key={route.projectId} projectId={route.projectId} token={route.token} />
-        </Suspense>
+      {window.isSecureContext ? (
+        screen
       ) : (
-        <Home />
+        <div className="insecure">
+          <InsecureNotice />
+          <div className="insecure__screen">{screen}</div>
+        </div>
       )}
       <TooltipLayer />
       <ContextMenuLayer />
       <ToastLayer />
     </ErrorBoundary>
+  );
+}
+
+/**
+ * Browsers keep video decoding, storage on the device, offline use, the clipboard and the
+ * microphone for pages served over HTTPS or from localhost. On any other address the editor
+ * opens and then plays, imports and exports nothing, and the errors that follow blame the browser
+ * or the file. The cause is said once, above every screen, with what to do about it.
+ */
+function InsecureNotice() {
+  return (
+    <p className="callout callout--warn" role="alert">
+      <TriangleAlert />
+      <span>
+        <b>Tandem needs HTTPS.</b> This address is neither HTTPS nor localhost, so the browser has switched
+        off video decoding, storage on this device and offline use: media will not play, import or export
+        here. Serve the editor over HTTPS.
+      </span>
+    </p>
   );
 }
 

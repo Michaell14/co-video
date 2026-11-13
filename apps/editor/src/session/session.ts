@@ -820,6 +820,11 @@ export class Session {
     const tooLarge = tooLargeNotice(kind);
     if (availabilityOf(info, kind) === 'too-large') {
       provider.patient = true;
+      // The link is good and there is no place to wait for: neither of the two is what is wrong.
+      this.waiting.delete(kind);
+      if (kind === 'project' && (this.meta.busy || this.meta.denied)) {
+        this.setMeta({ busy: false, denied: false });
+      }
       this.setNotSaving(kind, tooLarge);
       return;
     }

@@ -592,6 +592,47 @@ describe('speed, paste, transitions, keyframes', () => {
     expect(overlaps(q)).toEqual([]);
   });
 
+  it('stops a slowed clip at the next one also when that one is slowed with it', () => {
+    const f = fixture();
+    const a = addClip(f.p, f.v1.id, 0, 100);
+    const b = addClip(a.p, f.v1.id, 100, 100);
+    const c = addClip(b.p, f.v1.id, 260, 40, { reverse: true, sourceIn: 4 });
+    const p = c.p;
+    const ids = [a.clip.id, b.clip.id, c.clip.id];
+    const q = applyEdits(p, setSpeed(p, ids, 0.5));
+    expect(overlaps(q)).toEqual([]);
+    // Every clip has the new speed and starts where it did. The first has no room to grow, the
+    // second grows up to the third, and the last, with nothing after it, to its full length.
+    const placed = ids.map((id) => {
+      const { start, duration, speed } = q.clips[id];
+      return [start, duration, speed];
+    });
+    expect(placed).toEqual([
+      [0, 100, 0.5],
+      [100, 160, 0.5],
+      [260, 80, 0.5],
+    ]);
+    // Whatever order they are named in, named once or twice, the answer is the same and names
+    // each clip once: that of asking about each clip by itself.
+    const each = ids.flatMap((id) => setSpeed(p, [id], 0.5));
+    expect(setSpeed(p, ids, 0.5)).toEqual(each);
+    const shuffled = setSpeed(p, [ids[2], ids[0], ids[1], ids[0]], 0.5);
+    expect(shuffled).toHaveLength(3);
+    expect(applyEdits(p, shuffled).clips).toEqual(q.clips);
+
+    // Clips of the selection on other tracks do not stand in each other's way.
+    const d = addClip(p, f.v2.id, 0, 100);
+    const both = applyEdits(d.p, setSpeed(d.p, [a.clip.id, d.clip.id], 0.5));
+    expect([both.clips[a.clip.id].duration, both.clips[d.clip.id].duration]).toEqual([100, 200]);
+    // Sped up, neighbours leave a gap between them, as one clip does.
+    const fast = applyEdits(p, setSpeed(p, ids, 2));
+    expect(ids.map((id) => [fast.clips[id].start, fast.clips[id].duration])).toEqual([
+      [0, 50],
+      [100, 50],
+      [260, 20],
+    ]);
+  });
+
   it('keeps keyframes on the picture when a neighbour limits a slow-down', () => {
     const f = fixture();
     const keyframes = { x: [{ t: 50, v: 1, e: 'linear' as const }] };

@@ -9,6 +9,8 @@ import {
   DEFAULT_MASK,
   DEFAULT_SHAPE,
   DEFAULT_TEXT,
+  MAX_NAME_LENGTH,
+  MAX_THUMB_LENGTH,
   ProjectStore,
   ReviewStore,
   addTrack,
@@ -611,6 +613,99 @@ describe('ProjectStore', () => {
     expect(a.remote.thumb).toBeNull();
     expect(a.script.thumb).toBeNull();
     expect(a.svg.thumb).toBeNull();
+  });
+
+  it('reads a poster of the size the editor makes, and no poster where megabytes were put', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    const header = 'data:image/jpeg;base64,';
+    const poster = (length: number): string => header + 'A'.repeat(length - header.length);
+    const asset = (id: string, thumb: string): Asset => ({
+      ...ASSET_DEFAULTS,
+      id,
+      kind: 'video',
+      name: id,
+      thumb,
+    });
+    s.commit([
+      { op: 'addAsset', asset: asset('usual', poster(8000)) },
+      { op: 'addAsset', asset: asset('largest', poster(MAX_THUMB_LENGTH)) },
+      { op: 'addAsset', asset: asset('over', poster(MAX_THUMB_LENGTH + 1)) },
+      { op: 'addAsset', asset: asset('huge', poster(5_000_000)) },
+    ]);
+    const a = s.get().assets;
+    expect(a.usual.thumb).toHaveLength(8000);
+    expect(a.largest.thumb).toHaveLength(MAX_THUMB_LENGTH);
+    expect(a.over.thumb).toBeNull();
+    expect(a.huge.thumb).toBeNull();
+    // A project file is read the same way, and so is the document by everyone else.
+    expect(parseProjectFile(serializeProject(s.get()))!.assets.huge.thumb).toBeNull();
+    const peer = new ProjectStore();
+    Y.applyUpdate(peer.doc, Y.encodeStateAsUpdate(s.doc));
+    expect(peer.get().assets.huge.thumb).toBeNull();
+    expect(peer.get().assets.largest.thumb).toHaveLength(MAX_THUMB_LENGTH);
+  });
+
+  it('cuts names to a length that can be drawn, and leaves the text of a title alone', () => {
+    const s = new ProjectStore();
+    s.initIfEmpty();
+    const long = 'n'.repeat(1_000_000);
+    const [v1] = tracksOf(s.get()).video;
+    const title = makeClip('text', v1.id, {
+      id: 'title',
+      duration: 30,
+      name: long,
+      text: { ...DEFAULT_TEXT, content: long },
+    });
+    s.commit([
+      { op: 'settings', patch: { name: long } },
+      {
+        op: 'addAsset',
+        asset: { ...ASSET_DEFAULTS, id: 'a', kind: 'video', name: long, createdBy: long },
+      },
+      { op: 'addFolder', folder: { id: 'f', name: long, parentId: null } },
+      { op: 'setMarker', marker: { id: 'm', frame: 10, name: long, color: '#ff5d5d', note: '' } },
+      { op: 'updateTrack', id: v1.id, patch: { name: long } },
+      { op: 'addClip', clip: title },
+    ]);
+    const check = (p: Project): void => {
+      expect(p.settings.name).toHaveLength(MAX_NAME_LENGTH);
+      expect(p.assets.a.name).toHaveLength(MAX_NAME_LENGTH);
+      expect(p.assets.a.createdBy).toHaveLength(MAX_NAME_LENGTH);
+      expect(p.folders.f.name).toHaveLength(MAX_NAME_LENGTH);
+      expect(p.markers.m.name).toHaveLength(MAX_NAME_LENGTH);
+      expect(p.tracks[v1.id].name).toHaveLength(MAX_NAME_LENGTH);
+      expect(p.clips.title.name).toHaveLength(MAX_NAME_LENGTH);
+      expect(p.clips.title.text!.content).toHaveLength(1_000_000);
+    };
+    check(s.get());
+    check(parseProjectFile(serializeProject(s.get()))!);
+    const peer = new ProjectStore();
+    Y.applyUpdate(peer.doc, Y.encodeStateAsUpdate(s.doc));
+    check(peer.get());
+    // Readers only: what was written is still what the document holds.
+    expect(s.doc.getMap('settings').get('name')).toHaveLength(1_000_000);
+
+    // A name of an ordinary length is the very string that was written, up to the limit exactly.
+    const exact = 'e'.repeat(MAX_NAME_LENGTH);
+    const marker = s.get().markers.m;
+    s.commit([
+      { op: 'settings', patch: { name: 'Summer cut' } },
+      { op: 'setMarker', marker: { ...marker, name: exact } },
+    ]);
+    expect(s.get().settings.name).toBe('Summer cut');
+    expect(s.get().markers.m.name).toBe(exact);
+    // A character of two code units is not cut in half.
+    const clapper = 'x'.repeat(MAX_NAME_LENGTH - 1) + '🎬 and more';
+    s.commit([{ op: 'setMarker', marker: { ...marker, name: clapper } }]);
+    expect(s.get().markers.m.name).toBe('x'.repeat(MAX_NAME_LENGTH - 1));
+  });
+
+  it('makes initials of a name, and a question mark of what is none', () => {
+    expect(initials('Swift Falcon')).toBe('SF');
+    expect(initials('  otter ')).toBe('OT');
+    expect(initials('')).toBe('?');
+    for (const junk of [12345, null, undefined, { name: 'x' }, ['a', 'b']]) expect(initials(junk)).toBe('?');
   });
 
   describe('numbers an engine has to accept', () => {

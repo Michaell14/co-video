@@ -256,16 +256,18 @@ test.describe('collaboration', () => {
         return imported.length === 0 && replaced === null ? Object.keys(s.store.get().assets).length : -1;
       });
     expect(await refusedImports(c)).toBe(1);
-    await expect(c.locator('.toast', { hasText: 'You have view-only access to this project.' })).toHaveCount(2);
+    await expect(c.locator('.toast', { hasText: 'You have view-only access to this project.' })).toHaveCount(
+      2,
+    );
     const commenterLink: string = await page.evaluate(() =>
       (window as any).tandem.session.inviteLink('commenter'),
     );
     await c.goto(commenterLink);
     await c.waitForFunction(() => (window as any).tandem?.session?.getMeta().role === 'commenter');
     expect(await refusedImports(c)).toBe(1);
-    await expect(c.locator('.toast', { hasText: 'You have comment-only access to this project.' })).toHaveCount(
-      2,
-    );
+    await expect(
+      c.locator('.toast', { hasText: 'You have comment-only access to this project.' }),
+    ).toHaveCount(2);
     await expect(c.locator('.toast', { hasText: 'view-only' })).toHaveCount(0);
 
     await ctxB.close();
@@ -418,8 +420,12 @@ test.describe('collaboration', () => {
 
     // The project file saved at 30 fps, loaded over the open project, is the same journey.
     await page.keyboard.press('Control+k');
+    await expect(page.locator('.palette input')).toBeFocused();
     await page.locator('.palette input').fill('replace this project');
+    // Enter runs the highlighted entry, and the highlight settles on the one result a moment after
+    // the list has shrunk to it.
     await expect(page.locator('.palette__item')).toHaveCount(1);
+    await expect(page.locator('.palette__item')).toHaveAttribute('data-active', 'true');
     const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.keyboard.press('Enter')]);
     await chooser.setFiles(file);
     await page.getByRole('button', { name: 'Replace project' }).click();

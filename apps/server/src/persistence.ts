@@ -101,7 +101,12 @@ export function tooLargeToOpen(stored: StoredDoc, limits: DocStoreLimits): Docum
     return new DocumentTooLargeError([logPath], logBytes, maxLogBytes, 'bytes');
   }
   if (snapshotBytes + logBytes > maxStoredBytes) {
-    return new DocumentTooLargeError([snapshotPath, logPath], snapshotBytes + logBytes, maxStoredBytes, 'bytes');
+    return new DocumentTooLargeError(
+      [snapshotPath, logPath],
+      snapshotBytes + logBytes,
+      maxStoredBytes,
+      'bytes',
+    );
   }
   return null;
 }

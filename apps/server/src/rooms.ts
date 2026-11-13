@@ -13,6 +13,7 @@
  * to a client once it has the document, and never while it is behind.
  */
 import type { IncomingMessage } from 'node:http';
+import { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
@@ -43,7 +44,14 @@ import { RECOUNT_AFTER_STRUCTS, measureUpdate, sameSetAside, setAside, weigh, we
 import { delay } from './util';
 
 const MIB = 1024 * 1024;
-const HEARTBEAT_MS = 30_000;
+/** How often every connection is asked for a sign of life. */
+export const DEFAULT_HEARTBEAT_MS = 30_000;
+/**
+ * For how many heartbeats a connection counts as alive after the last of what it was being sent
+ * left our hands. From there on it is in the buffers of the two machines, and the ping that waits
+ * behind it is answered when the client has read that far.
+ */
+const HEARTBEATS_OF_GRACE = 2;
 /** How long an empty room stays in memory, so a page reload does not pay for a reload from disk. */
 export const DEFAULT_ROOM_IDLE_MS = 30_000;
 /** How many sockets one room accepts unless configured otherwise. */
@@ -106,9 +114,11 @@ function limitInWords(kind: DocKind, limits: Limits): string {
  * in all. Never more than would fit if nothing else were loaded: what is refused as too large for
  * this stays refused, and what is turned away for want of room does get in with time.
  */
-function loadLimits(kind: DocKind, limits: Limits, openDocBytes: number): Required<
-  Pick<DocStoreLimits, 'maxBytes' | 'maxStoredBytes' | 'maxStructs'>
-> {
+function loadLimits(
+  kind: DocKind,
+  limits: Limits,
+  openDocBytes: number,
+): Required<Pick<DocStoreLimits, 'maxBytes' | 'maxStoredBytes' | 'maxStructs'>> {
   const maxBytes = LOAD_HEADROOM * limits.maxDocBytes[kind];
   return {
     maxBytes: Math.min(maxBytes, openDocBytes),
@@ -158,8 +168,12 @@ function toUint8Array(data: RawData): Uint8Array {
 
 /** One WebSocket in a room. */
 class Connection implements PresenceMember {
-  /** Cleared when a ping goes out, set again by the pong; still false at the next ping = dead. */
+  /** Cleared when a ping goes out, set again by the pong. */
   alive = true;
+  /** How much had arrived from the client at the last heartbeat. */
+  private received = 0;
+  /** When a heartbeat last found something for the client still on its way out. */
+  private sendingAt = -Infinity;
   /** Set once the server gave up on the connection; nothing it sends afterwards is looked at. */
   rejected = false;
   /** State vector of a request for the document that is not answered yet. Only the latest counts. */
@@ -177,6 +191,8 @@ class Connection implements PresenceMember {
 
   constructor(
     readonly ws: WebSocket,
+    /** The socket `ws` runs on. */
+    private readonly socket: Duplex,
     readonly role: Role,
     readonly canWrite: boolean,
     readonly link: string,
@@ -187,6 +203,39 @@ class Connection implements PresenceMember {
 
   get open(): boolean {
     return this.ws.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * End the connection when its socket has taken nothing of what is waiting to be sent for
+   * `idleMs`. A socket reports itself idle only after that long without anything read from it and
+   * without the write that is under way having moved on, so a client that reads slowly is left
+   * alone and one that has stopped reading is not.
+   */
+  watchForStall(idleMs: number): void {
+    const { socket, ws } = this;
+    if (!(socket instanceof Socket)) return;
+    socket.setTimeout(idleMs);
+    socket.on('timeout', () => {
+      if (ws.bufferedAmount > 0) ws.terminate();
+    });
+  }
+
+  /**
+   * One heartbeat: says whether the connection gave a sign of life since the one before, and asks
+   * for the next. A pong is one, and so is anything else that came in. But a ping waits its turn
+   * behind what is being sent, and its answer behind what the client is sending, and a large
+   * document on a slow link takes longer than a heartbeat either way. So a connection that is
+   * still being sent something counts as alive too (`watchForStall` ends it when the client has
+   * stopped taking it), and goes on doing so for `grace` after the last of it left.
+   */
+  beat(now: number, grace: number): boolean {
+    const received = this.socket instanceof Socket ? this.socket.bytesRead : 0;
+    if (this.ws.bufferedAmount > 0) this.sendingAt = now;
+    const alive = this.alive || received > this.received || now - this.sendingAt < grace;
+    this.received = received;
+    this.alive = false;
+    if (alive && this.open) this.ws.ping();
+    return alive;
   }
 
   /** Queue a frame. `sent` runs once it has left for the client, and never if it did not. */
@@ -273,6 +322,8 @@ export interface RoomManagerOptions extends RoomHooks {
   autoSnapshotMs: number;
   /** How long a room without connections stays loaded. */
   roomIdleMs: number;
+  /** Interval at which connections are checked for a sign of life. */
+  heartbeatMs: number;
   limits: Limits;
 }
 
@@ -525,13 +576,14 @@ export class Room {
    * it is told after the document, which it gets when it asks. In a full room it takes the place
    * hasRoomFor() found for it.
    */
-  connect(ws: WebSocket, role: Role, link: string, registry: Set<Connection>): void {
+  connect(ws: WebSocket, socket: Duplex, role: Role, link: string, registry: Set<Connection>): void {
     if (this.closed) {
       ws.close(CLOSE_RESTARTING, 'room is restarting');
       return;
     }
     const conn = new Connection(
       ws,
+      socket,
       role,
       canWriteDoc(role, this.kind),
       link,
@@ -548,6 +600,7 @@ export class Room {
     this.conns.add(conn);
     registry.add(conn);
     this.presence.join(conn);
+    conn.watchForStall(this.opts.heartbeatMs);
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
 
@@ -780,8 +833,8 @@ export class RoomManager {
   /**
    * Documents that were read and found to weigh more than is loaded, by `projectId/kind`, with the
    * size their files had. Files of a size that is fine can still hold too many structs, and only
-   * reading them tells: so that `availability` need not, the finding is kept for as long as the
-   * files stay the size they were.
+   * reading them tells: so that `availability` need not, what the read showed is kept for as long
+   * as the files stay the size they were.
    */
   private readonly tooLarge = new Map<string, string>();
   private readonly heartbeat: NodeJS.Timeout;
@@ -798,18 +851,15 @@ export class RoomManager {
       structs: new Budget(Math.floor(maxOpenDocBytes / STRUCT_BYTES)),
     };
     this.syncBacklog = new Budget(maxSyncBacklogBytes);
-    this.heartbeat = setInterval(() => this.checkConnections(), HEARTBEAT_MS);
+    this.heartbeat = setInterval(() => this.checkConnections(), opts.heartbeatMs);
     this.heartbeat.unref();
   }
 
   private checkConnections(): void {
+    const now = Date.now();
+    const grace = HEARTBEATS_OF_GRACE * this.opts.heartbeatMs;
     for (const conn of this.connections) {
-      if (!conn.alive) {
-        conn.ws.terminate(); // no pong since the last ping
-        continue;
-      }
-      conn.alive = false;
-      if (conn.ws.readyState === WebSocket.OPEN) conn.ws.ping();
+      if (!conn.beat(now, grace)) conn.ws.terminate();
     }
   }
 
@@ -962,7 +1012,7 @@ export class RoomManager {
       // The callback runs synchronously inside handleUpgrade, i.e. before the pin is released.
       this.socketServer(kind, role).handleUpgrade(req, socket, head, (ws) => {
         try {
-          room.connect(ws, role, link, this.connections);
+          room.connect(ws, socket, role, link, this.connections);
         } catch (err) {
           // The handshake is done, so this can no longer be answered with an HTTP status.
           console.error(`[tandem] could not attach a connection to ${projectId}/${kind}:`, err);

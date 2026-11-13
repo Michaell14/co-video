@@ -78,13 +78,17 @@ const toastCount = (page: Page, text: string): Promise<number> =>
     text,
   );
 
-/** Open the command palette and type into it once it has the keyboard. */
+/**
+ * Open the command palette, type into it once it has the keyboard, and wait for its one result to
+ * be the highlighted entry: that is the one Enter runs, and the highlight follows the list a moment later.
+ */
 async function searchPalette(page: Page, query: string): Promise<void> {
   await page.keyboard.press('Control+k');
   const input = page.locator('.palette input');
   await expect(input).toBeFocused();
   await input.fill(query);
   await expect(page.locator('.palette__item')).toHaveCount(1);
+  await expect(page.locator('.palette__item')).toHaveAttribute('data-active', 'true');
 }
 
 const editorReady = (page: Page) => page.waitForFunction(() => !!(window as any).tandem?.session?.player);
@@ -1561,6 +1565,8 @@ test.describe('projects, links and media', () => {
       'This project has reached the size the server allows. Changes made here are kept on this device but are not being saved to the server.';
     const TOO_LARGE =
       'This project is larger than this server loads. Whoever runs the server can raise MAX_PROJECT_DOC_BYTES.';
+    const COMMENTS_FULL =
+      'The comments of this project have reached the size the server allows. Comments made here are kept on this device but are not being saved to the server.';
     const notSaving = (p: Page): Promise<string | null> =>
       p.evaluate(() => (window as any).tandem.session.getMeta().notSaving);
     const titles = (p: Page): Promise<number> =>
@@ -1579,13 +1585,22 @@ test.describe('projects, links and media', () => {
       });
     const statuses = (p: Page): Promise<string[]> => p.evaluate(() => (window as any).__statuses);
 
-    // A server of this test's own, on which a project document may hold 200,000 bytes.
+    // A server of this test's own, on which a project document may hold 200,000 bytes and its
+    // comments 20,000.
     const dataDir = mkdtempSync(joinPath(tmpdir(), 'tandem-e2e-limits-'));
-    let server = await startServer({ DATA_DIR: dataDir, MAX_PROJECT_DOC_BYTES: '200000' });
+    let server = await startServer({
+      DATA_DIR: dataDir,
+      MAX_PROJECT_DOC_BYTES: '200000',
+      MAX_REVIEW_DOC_BYTES: '20000',
+    });
     const { port } = server;
     const restartWithLimit = async (bytes: number): Promise<void> => {
       await server.stop();
-      server = await startServer({ DATA_DIR: dataDir, PORT: String(port), MAX_PROJECT_DOC_BYTES: String(bytes) });
+      server = await startServer({
+        DATA_DIR: dataDir,
+        PORT: String(port),
+        MAX_PROJECT_DOC_BYTES: String(bytes),
+      });
     };
     const contexts: BrowserContext[] = [];
     const visitor = async (link: string): Promise<Page> => {
@@ -1601,11 +1616,39 @@ test.describe('projects, links and media', () => {
       await newProject(page);
       expect(await meta(page)).toMatchObject({ shared: true, online: true, role: 'owner' });
       await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Fits' }));
-      const editorLink: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('editor'));
-      const viewerLink: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('viewer'));
+      const editorLink: string = await page.evaluate(() =>
+        (window as any).tandem.session.inviteLink('editor'),
+      );
+      const viewerLink: string = await page.evaluate(() =>
+        (window as any).tandem.session.inviteLink('viewer'),
+      );
       const b = await visitor(editorLink);
       await expect.poll(() => titles(b)).toBe(1);
       await watchToasts(page);
+
+      // ── A comment the comments have no room for ──────────────────────────
+      await page.evaluate(() => {
+        const s = (window as any).tandem.session;
+        const u = s.getMeta().user;
+        s.review.add({
+          frame: 0,
+          text: 'c'.repeat(30_000),
+          authorId: u.id,
+          authorName: u.name,
+          authorColor: u.color,
+          x: null,
+          y: null,
+        });
+      });
+      await expect.poll(() => notSaving(page)).toBe(COMMENTS_FULL);
+      await expect.poll(() => toastCount(page, 'The comments of this project have reached')).toBe(1);
+      // The project itself is another document, and goes on being saved.
+      expect((await meta(page)).status).toBe('connected');
+      await page.evaluate(() => (window as any).tandem.cmd.renameProject('Still saved'));
+      await expect
+        .poll(() => b.evaluate(() => (window as any).tandem.session.store.get().settings.name))
+        .toBe('Still saved');
+      expect(await b.evaluate(() => (window as any).tandem.session.review.get().length)).toBe(0);
       await watchStatus(page);
 
       // ── A change the document has no room for ────────────────────────────
@@ -1615,8 +1658,10 @@ test.describe('projects, links and media', () => {
         cmd.addText({ content: 'x'.repeat(300_000) });
       });
       await expect.poll(() => notSaving(page)).toBe(FULL);
-      await expect.poll(() => toastCount(page, 'has reached the size the server allows')).toBe(1);
-      await expect(page.locator('.toast', { hasText: 'has reached the size the server allows' })).toBeVisible();
+      await expect
+        .poll(() => toastCount(page, 'This project has reached the size the server allows'))
+        .toBe(1);
+      await expect(page.locator('.toast', { hasText: FULL })).toBeVisible();
       expect(await statuses(page)).toEqual(['connected', 'offline']);
       // The usual retry would have been back within a second and refused again, over and over.
       await page.waitForTimeout(4000);
@@ -1636,7 +1681,7 @@ test.describe('projects, links and media', () => {
         .poll(() => statuses(page))
         .toEqual(['connected', 'offline', 'connecting', 'connected', 'offline']);
       expect(await notSaving(page)).toBe(FULL);
-      expect(await toastCount(page, 'has reached the size the server allows')).toBe(1);
+      expect(await toastCount(page, 'This project has reached the size the server allows')).toBe(1);
       expect(await titles(b)).toBe(1);
 
       // Whoever runs the server raises the limit: everything made meanwhile arrives, and once the
@@ -1647,6 +1692,8 @@ test.describe('projects, links and media', () => {
       await expect.poll(() => titles(b), { timeout: 60_000 }).toBe(3);
       await expect.poll(() => notSaving(page), { timeout: 30_000 }).toBeNull();
       expect((await meta(page)).status).toBe('connected');
+      // The restarted server has the usual room for comments, so that one arrived as well.
+      await expect.poll(() => b.evaluate(() => (window as any).tandem.session.review.get().length)).toBe(1);
 
       // ── A stored document the server does not load ───────────────────────
       // The same data under a server set up for far smaller documents: connections are refused.
@@ -1679,7 +1726,27 @@ test.describe('projects, links and media', () => {
       await expect.poll(() => notSaving(c), { timeout: 30_000 }).toBeNull();
       await expect.poll(() => notSaving(page), { timeout: 30_000 }).toBeNull();
       expect(await toastCount(page, 'larger than this server loads')).toBe(1);
-      expect(await toastCount(page, 'has reached the size the server allows')).toBe(1);
+      expect(await toastCount(page, 'This project has reached the size the server allows')).toBe(1);
+      expect(await toastCount(page, 'The comments of this project have reached')).toBe(1);
+
+      // ── More than the server reads, from someone who may not write at all ─
+      // Forced into the viewer's copy behind the interface's back: the server ends the connection
+      // without reading it. That copy is dropped and the project loaded again, as for any change
+      // of a viewer's that the server would not take, instead of being offered again for ever.
+      await watchToasts(c);
+      await c.evaluate(() => {
+        const s = (window as any).tandem.session;
+        (window as any).__before = s;
+        s.doc.getMap('junk').set('much', 'j'.repeat(1_200_000));
+      });
+      await c.waitForFunction(() => {
+        const s = (window as any).tandem?.session;
+        return s && s !== (window as any).__before && s.getMeta().synced;
+      });
+      expect(await toastCount(c, 'Changes made here were not saved: you have view-only access')).toBe(1);
+      expect(await c.evaluate(() => (window as any).tandem.session.doc.getMap('junk').size)).toBe(0);
+      expect(await titles(c)).toBe(3);
+      expect(await notSaving(c)).toBeNull();
     } finally {
       await Promise.all(contexts.map((ctx) => ctx.close()));
       await server.stop();
@@ -1709,8 +1776,12 @@ test.describe('projects, links and media', () => {
       await newProject(page);
       expect(await meta(page)).toMatchObject({ shared: true, online: true });
       await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Shared' }));
-      const viewerLink: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('viewer'));
-      const editorLink: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('editor'));
+      const viewerLink: string = await page.evaluate(() =>
+        (window as any).tandem.session.inviteLink('viewer'),
+      );
+      const editorLink: string = await page.evaluate(() =>
+        (window as any).tandem.session.inviteLink('editor'),
+      );
       await expect.poll(async () => (await meta(page)).synced).toBe(true);
       // The owner leaves, and a viewer takes the place.
       await goHome(page);

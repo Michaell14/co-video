@@ -406,6 +406,26 @@ describe('rippleDeleteRange', () => {
     expect(layout(p, f.a1)).toEqual(['0-20', '40-80']);
   });
 
+  it('keeps picture and sound linked on both sides of a cut through the middle of a sync clip', () => {
+    const f = fixture();
+    const v = add(f.p, f.v1, 0, 120, { linkId: 'L' });
+    const s = add(v.p, f.a1, 0, 120, { linkId: 'L' });
+    const r = rippleDeleteRange(s.p, 30, 60);
+    expect(r.refused).toBeNull();
+    const p = applyEdits(s.p, r.edits);
+    expect(layout(p, f.v1)).toEqual(['0-30', '30-90']);
+    expect(layout(p, f.a1)).toEqual(['0-30', '30-90']);
+    const linkAt = (track: Track, start: number): string | null =>
+      Object.values(p.clips).find((c) => c.trackId === track.id && c.start === start)!.linkId;
+    // The heads keep the link they had. The pieces after the cut share one of their own: a click
+    // on either still selects both, and a ripple still moves them together.
+    expect([linkAt(f.v1, 0), linkAt(f.a1, 0)]).toEqual(['L', 'L']);
+    const tail = linkAt(f.v1, 30);
+    expect(tail).not.toBeNull();
+    expect(tail).not.toBe('L');
+    expect(linkAt(f.a1, 30)).toBe(tail);
+  });
+
   it('does nothing for an empty range', () => {
     const f = fixture();
     const a = add(f.p, f.v1, 0, 100);

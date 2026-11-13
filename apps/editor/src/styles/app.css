@@ -55,3 +55,19 @@
 .callout--warn svg {
   color: var(--amber);
 }
+/* The app under a notice that concerns every screen of it: the notice takes the room it needs
+   and the screen has the rest of the window. */
+.insecure {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.insecure > .callout {
+  flex: none;
+  margin: 6px 6px 0;
+  color: var(--fg-1);
+}
+.insecure__screen {
+  flex: 1;
+  min-height: 0;
+}

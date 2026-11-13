@@ -201,6 +201,10 @@
 .field:hover {
   background: var(--bg-4);
 }
+/* A field that holds something is known by what it holds. An empty one has only its edge. */
+.field:has(:placeholder-shown) {
+  box-shadow: inset 0 0 0 1px var(--line-control);
+}
 .field:focus-within {
   background: var(--bg-1);
   box-shadow: inset 0 0 0 1px var(--accent-line);
@@ -439,7 +443,10 @@
   bottom: 2px;
   border-radius: 6px;
   background: var(--bg-6);
-  box-shadow: var(--shadow-1);
+  /* The fill alone is a shade away from the segments beside it: the line says which is chosen. */
+  box-shadow:
+    var(--shadow-1),
+    inset 0 0 0 1px var(--line-control);
   transition:
     transform var(--dur-3) var(--ease-out),
     width var(--dur-3) var(--ease-out);

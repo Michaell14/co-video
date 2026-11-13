@@ -5,7 +5,13 @@
  * 1009) gets the reason as an `error` first; a connection it will not open at all is refused
  * without a word a browser could read, and `GET /api/projects/:id` says what stands in the way.
  */
-import { NO_DOC_MEMORY, docFullMessage, type DocAvailability, type DocKind, type ProjectInfo } from '@tandem/core';
+import {
+  NO_DOC_MEMORY,
+  docFullMessage,
+  type DocAvailability,
+  type DocKind,
+  type ProjectInfo,
+} from '@tandem/core';
 
 /** What is kept here and not there, for each document. */
 const KEPT: Record<DocKind, string> = {
@@ -58,4 +64,5 @@ export function tooLargeNotice(kind: DocKind): string {
  * from before the answer had the field says nothing, which reads as `ok`: the link is good and
  * there is no place right now.
  */
-export const availabilityOf = (info: ProjectInfo, kind: DocKind): DocAvailability => info.docs?.[kind] ?? 'ok';
+export const availabilityOf = (info: ProjectInfo, kind: DocKind): DocAvailability =>
+  info.docs?.[kind] ?? 'ok';

@@ -87,7 +87,9 @@ export function colorForId(id: string): string {
   return USER_COLORS[h % USER_COLORS.length];
 }
 
-export function initials(name: string): string {
+/** Up to two letters to stand for a person. Whatever is not a name at all stands as `?`. */
+export function initials(name: unknown): string {
+  if (typeof name !== 'string') return '?';
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '?';
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();

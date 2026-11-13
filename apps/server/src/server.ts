@@ -28,7 +28,13 @@ import {
 import { MediaStore } from './media';
 import { ProjectStore } from './projects';
 import { ConcurrencyLimiter, RateLimiter } from './rateLimit';
-import { DEFAULT_MAX_CONNECTIONS_PER_ROOM, DEFAULT_ROOM_IDLE_MS, RoomManager, isDocKind } from './rooms';
+import {
+  DEFAULT_HEARTBEAT_MS,
+  DEFAULT_MAX_CONNECTIONS_PER_ROOM,
+  DEFAULT_ROOM_IDLE_MS,
+  RoomManager,
+  isDocKind,
+} from './rooms';
 import { createStaticHandler } from './static';
 import { delay, isValidId } from './util';
 import { AUTO_VERSION_NAME, VersionStore } from './versions';
@@ -104,6 +110,11 @@ export interface TandemServerOptions {
   maxSyncBacklogBytes?: number;
   /** How long a room without connections stays in memory. Default 30 s. */
   roomIdleMs?: number;
+  /**
+   * How often every WebSocket is asked for a sign of life. One that gives none from one time to
+   * the next, and is not in the middle of being sent something, is closed. Default 30 s.
+   */
+  heartbeatMs?: number;
 }
 
 export interface TandemServer {
@@ -150,6 +161,7 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
   const rooms = new RoomManager({
     autoSnapshotMs,
     roomIdleMs: options.roomIdleMs ?? DEFAULT_ROOM_IDLE_MS,
+    heartbeatMs: options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS,
     limits: {
       maxConnectionsPerRoom: options.maxConnectionsPerRoom ?? DEFAULT_MAX_CONNECTIONS_PER_ROOM,
       maxDocBytes: {

@@ -1043,17 +1043,21 @@ export function rippleTrimTo(p: Project, ids: ID[], edge: Edge, frame: number): 
 
 // ───────────────────────────────────────────────────────────────── speed ──
 
+/**
+ * Set the speed of clips, and with it their length: twice as fast is half as long. No clip's start
+ * moves, so a clip that grows stops at the one after it on its track. That holds just as much when
+ * the one after it is among `ids`: it stays where it is whatever its own new speed.
+ */
 export function setSpeed(p: Project, ids: ID[], speed: number, reverse?: boolean): Edit[] {
   const sp = clamp(speed, 0.05, 100);
   const edits: Edit[] = [];
-  const set = new Set(ids);
-  for (const id of ids) {
+  for (const id of new Set(ids)) {
     const c = p.clips[id];
     if (!c || !hasSourceTime(c.type) || c.freeze) continue;
     const natural = Math.max(1, Math.round((c.duration * c.speed) / sp));
     let duration = natural;
     const { next } = neighbors(p, c);
-    if (next && !set.has(next.id)) duration = Math.min(duration, Math.max(1, next.start - c.start));
+    if (next) duration = Math.min(duration, Math.max(1, next.start - c.start));
     const patch: Partial<Clip> = { speed: sp, duration };
     if (reverse !== undefined) patch.reverse = reverse;
     // A reversed clip plays its source range from the top down, so what no longer fits before the

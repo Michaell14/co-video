@@ -175,6 +175,10 @@ export function usingKeyboard(): boolean {
  * what the action leaves behind is there to choose from. Nothing happens when the control stays,
  * when focus has moved on by itself, or for someone working with the pointer, whose presses
  * decide about focus.
+ *
+ * The key that did it is still down when the focus arrives, and has done its work: held, it does
+ * not go on to press the control it has been handed to. An action taken on `keydown` has to
+ * prevent that event's default as well, or the same press is delivered once more as a `keypress`.
  */
 export function handFocus(from: Element, to: () => HTMLElement | null | undefined): void {
   if (!usingKeyboard()) return;
@@ -186,7 +190,9 @@ export function handFocus(from: Element, to: () => HTMLElement | null | undefine
     if (from.isConnected) return;
     done();
     const active = document.activeElement;
-    if (!active || active === document.body) to()?.focus();
+    if (active && active !== document.body) return;
+    spendKeys();
+    to()?.focus();
   });
   gone.observe(document.body, { childList: true, subtree: true });
   window.addEventListener('focusin', done, true);

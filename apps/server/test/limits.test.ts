@@ -198,7 +198,10 @@ describe('document limits', () => {
     // Once a connection has made the server read them, it knows, and says so to whoever asks.
     expect(await availability(strict.api, project)).toEqual({ project: 'too-large', review: 'ok' });
     const viewerToken = await strict.api.invite(project, 'viewer');
-    expect(await availability(strict.api, project, viewerToken)).toEqual({ project: 'too-large', review: 'ok' });
+    expect(await availability(strict.api, project, viewerToken)).toEqual({
+      project: 'too-large',
+      review: 'ok',
+    });
   });
 
   it('keeps all loaded documents together within one budget', async () => {
@@ -432,21 +435,21 @@ describe('document limits', () => {
   });
 });
 
-describe('sync answers', () => {
-  /** A project whose document is too large to disappear into the socket buffers of the machine. */
-  async function largeProject(options: Parameters<typeof start>[0] = {}) {
-    const { api } = await start({ maxOpenDocBytes: 256 * MIB, ...options });
-    const project = await api.createProject();
-    const viewerToken = await api.invite(project, 'viewer');
-    const owner = await connect(api, project, 'project').whenSynced();
-    owner.map.set('blob', blob(24 * MIB));
-    const reader = await connect(api, project, 'project', viewerToken).whenSynced();
-    await waitFor(() => reader.map.has('blob'), 'large document stored', 15_000);
-    await owner.close();
-    await reader.close();
-    return { api, project, viewerToken };
-  }
+/** A project whose document is too large to disappear into the socket buffers of the machine. */
+async function largeProject(options: Parameters<typeof start>[0] = {}) {
+  const { api } = await start({ maxOpenDocBytes: 256 * MIB, ...options });
+  const project = await api.createProject();
+  const viewerToken = await api.invite(project, 'viewer');
+  const owner = await connect(api, project, 'project').whenSynced();
+  owner.map.set('blob', blob(24 * MIB));
+  const reader = await connect(api, project, 'project', viewerToken).whenSynced();
+  await waitFor(() => reader.map.has('blob'), 'large document stored', 15_000);
+  await owner.close();
+  await reader.close();
+  return { api, project, viewerToken };
+}
 
+describe('sync answers', () => {
   it('sends a client that does not read one copy of the document, however often it asks', async () => {
     const { api, project, viewerToken } = await largeProject();
     const greedy = connect(api, project, 'project', viewerToken);
@@ -487,6 +490,74 @@ describe('sync answers', () => {
     stalled.drop();
     await waitFor(() => waiting.synced, 'the next in line is served', 15_000);
     expect((waiting.map.get('blob') as string).length).toBe(24 * MIB);
+  });
+});
+
+describe('signs of life', () => {
+  const BEAT = 300;
+
+  it('lets a client take many heartbeats over a large document, as long as it keeps reading', async () => {
+    const { api, project, viewerToken } = await largeProject({ heartbeatMs: BEAT });
+    const slow = connect(api, project, 'project', viewerToken);
+    await slow.whenOpen();
+    slow.stall();
+    // Four heartbeats in which it reads a little at a time: 16 MiB at the most. The ping of the
+    // first of them is in the queue behind 24 MiB of document all that time, and so is every later one.
+    for (let turn = 0; turn < 8; turn++) {
+      await slow.readABit();
+      await sleep(BEAT / 2);
+    }
+    expect(slow.synced).toBe(false);
+    slow.resume();
+    // Had the server ended the connection meanwhile, this is where the client would learn of it.
+    await waitFor(() => slow.synced || slow.closed, 'the document arrives, or the connection ends', 30_000);
+    expect(slow.closed).toBe(false);
+    expect((slow.map.get('blob') as string).length).toBe(24 * MIB);
+    expect(slow.answers).toBe(1);
+    // From here on it answers pings like anyone else.
+    await sleep(4 * BEAT);
+    expect(slow.closed).toBe(false);
+  });
+
+  it('ends a connection that has stopped reading what it is being sent', async () => {
+    const { api, project, viewerToken } = await largeProject({ heartbeatMs: BEAT });
+    const stuck = connect(api, project, 'project', viewerToken);
+    await stuck.whenOpen();
+    stuck.stall();
+    // Two heartbeats without the socket taking a byte, and a little for the timers.
+    await sleep(3 * BEAT + 300);
+    stuck.resume();
+    await waitFor(() => stuck.closed, 'the client notices that the connection is gone', 15_000);
+    expect(stuck.synced).toBe(false);
+    expect(stuck.closeCode).toBe(1006);
+    // The copy that was on its way to it no longer counts against anyone else.
+    const next = await connect(api, project, 'project', viewerToken).whenSynced();
+    expect((next.map.get('blob') as string).length).toBe(24 * MIB);
+  });
+
+  it('takes whatever arrives from a client as a sign of life, and ends one that has gone quiet', async () => {
+    const { api } = await start({ heartbeatMs: BEAT });
+    const project = await api.createProject();
+    // A frame of a type the server does not know, which it passes over: something that is sent
+    // while the answer to a ping waits its turn behind it, as behind a large update on a slow link.
+    const unknown = new Uint8Array([9]);
+    const busy = new SilentPeer(api.wsUrl(project.id, 'project', project.token), [unknown]);
+    const quiet = new SilentPeer(api.wsUrl(project.id, 'project', project.token), [unknown]);
+    try {
+      await waitFor(() => busy.joined && quiet.joined, 'both joined');
+      for (let turn = 0; turn < 15; turn++) {
+        busy.send(unknown);
+        await sleep(100);
+      }
+      // Five heartbeats on, neither has answered a ping. One was heard from all the time.
+      expect(busy.ended).toBe(false);
+      expect(quiet.ended).toBe(true);
+      // And when that one stops too, it is gone two heartbeats later at the most.
+      await waitFor(() => busy.ended, 'the peer that went quiet is dropped', 3 * BEAT + 300);
+    } finally {
+      busy.destroy();
+      quiet.destroy();
+    }
   });
 });
 

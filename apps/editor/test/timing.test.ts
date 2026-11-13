@@ -386,11 +386,10 @@ describe('a change of speed for several clips at once', () => {
     const a = add(f.p, f.v1, 0, 120);
     const b = add(a.p, f.v1, 120, 120);
     const both = [a.clip.id, b.clip.id];
-    // The operation asked about both at once lets the first run 120 frames into the second.
-    const atOnce = applyEdits(b.p, setSpeed(b.p, both, 0.5));
-    expect(layout(atOnce, f.v1)).toEqual(['0+240', '120+240']);
     const p = applyEdits(b.p, speedEach(b.p, both, 0.5));
     expect(layout(p, f.v1)).toEqual(['0+120', '120+240']);
+    // The operation itself says the same, asked about both at once.
+    expect(applyEdits(b.p, setSpeed(b.p, both, 0.5)).clips).toEqual(p.clips);
     expect(p.clips[a.clip.id].speed).toBe(0.5);
     expect(speedCutShort(b.p, both, 0.5)).toEqual([{ id: a.clip.id, duration: 120, natural: 240 }]);
     // Faster, both simply shrink where they are.

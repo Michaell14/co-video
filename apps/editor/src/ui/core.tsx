@@ -15,6 +15,7 @@ import {
   type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { useDrag } from './dnd';
 import {
   focusables,
   isTextEntry,
@@ -28,7 +29,6 @@ import {
   usingKeyboard,
   type PopoverPlace,
 } from './layers';
-import { useDrag } from './dnd';
 import { isDoublePress, isDrag, type Press } from './press';
 import { sliderKey } from './slider';
 
@@ -197,7 +197,8 @@ export function tip(text: ReactNode, keys?: string, place: 'top' | 'bottom' = 'b
     onFocusCapture: (e: React.FocusEvent) => {
       // Focus that a press of the pointer left behind is not a question (a text field shows it
       // as visible all the same), and neither is focus on something inside the element.
-      const asked = e.target === e.currentTarget && usingKeyboard() && e.currentTarget.matches(':focus-visible');
+      const asked =
+        e.target === e.currentTarget && usingKeyboard() && e.currentTarget.matches(':focus-visible');
       if (asked) show(e.currentTarget);
     },
     onBlurCapture: (e: React.FocusEvent) => {
@@ -320,15 +321,9 @@ function useName(own: string | undefined, ...parts: (string | false | undefined)
 // ───────────────────────────────────────────────────────────── slider ──
 
 export interface GestureProps {
-  /**
-   * Called once when an interaction begins: a press of the pointer, or the first of a run of key
-   * presses.
-   */
+  /** Called once when an interaction begins. */
   onStart?: () => void;
-  /**
-   * Called once when it ends: the pointer is let go, or the keys have rested for `KEY_RUN_MS` or
-   * the control has lost the keyboard.
-   */
+  /** Called once when it ends. */
   onEnd?: () => void;
 }
 
@@ -353,8 +348,9 @@ interface SliderProps extends GestureProps {
 const SLIDER_INSET = 5.5;
 
 /**
- * A run of key presses on a slider is one interaction, as one drag is: it ends when the keys have
- * rested this long. Whoever writes the value makes one undo step of it.
+ * A run of key presses on a slider is one interaction, as one drag is, and whoever writes the
+ * value makes one undo step of it: `onStart` comes before its first press, `onEnd` once the keys
+ * have rested this long, the slider has lost the keyboard or it has been taken away.
  */
 export const KEY_RUN_MS = 600;
 
@@ -377,19 +373,25 @@ export function Slider({
   // The latest press: whether it was the second of a double-click, and whether it became a drag.
   const press = useRef<(Press & { second: boolean; dragged: boolean }) | null>(null);
   const name = useName(ariaLabel);
-  // The run of key presses under way: the value the last press asked for, the value the slider
-  // showed when it did, and the timer that ends the run.
-  const run = useRef<{ asked: number; shown: number; timer: ReturnType<typeof setTimeout> } | null>(null);
+  // The timer that ends the run of key presses under way.
+  const run = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ended = useRef(onEnd);
   useLayoutEffect(() => {
     ended.current = onEnd;
   });
   const endRun = useCallback(() => {
-    if (!run.current) return;
-    clearTimeout(run.current.timer);
+    if (run.current === null) return;
+    clearTimeout(run.current);
     run.current = null;
     ended.current?.();
   }, []);
+  // What the last key press asked for, for as long as the value has not moved since. Whoever
+  // takes the value may round it, and a press that rounds away leaves the slider where it was:
+  // the next press goes on from what was asked, or a slider of whole numbers would never move.
+  const asked = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    asked.current = null;
+  }, [value]);
   // A slider taken away in the middle of a run has ended it.
   useEffect(() => endRun, [endRun]);
   const span = max - min || 1;
@@ -473,24 +475,26 @@ export function Slider({
         aria-valuenow={Number(value.toPrecision(6))}
         aria-valuetext={valueText?.(value)}
         aria-disabled={disabled || undefined}
-        onBlur={endRun}
+        onBlur={() => {
+          asked.current = null;
+          endRun();
+        }}
         onKeyDown={(e) => {
           // With these the same keys are the editor's shortcuts.
           if (e.ctrlKey || e.metaKey || e.altKey) return;
-          // A press the caller's rounding swallowed left the value where it was: the next one
-          // goes on from what was asked for, or a slider of whole numbers would never move.
-          const from = run.current?.shown === value ? run.current.asked : value;
-          const asked = sliderKey(e.key, e.shiftKey, from, { min, max, step, defaultValue });
-          if (asked === undefined) return;
+          const from = asked.current ?? value;
+          const next = sliderKey(e.key, e.shiftKey, from, { min, max, step, defaultValue });
+          if (next === undefined) return;
           // The slider's keys are its own while it has the keyboard, also where one of them has
           // nothing to do: Delete must not go on to delete the selected clips.
           e.preventDefault();
           e.stopPropagation();
-          if (asked === null) return;
-          if (run.current) clearTimeout(run.current.timer);
-          else onStart?.();
-          run.current = { asked, shown: value, timer: setTimeout(endRun, KEY_RUN_MS) };
-          onChange(asked);
+          if (next === null) return;
+          if (run.current === null) onStart?.();
+          else clearTimeout(run.current);
+          run.current = setTimeout(endRun, KEY_RUN_MS);
+          asked.current = next;
+          onChange(next);
         }}
       />
     </div>
@@ -1271,12 +1275,13 @@ export function Switch({
   onChange: (v: boolean) => void;
   label?: string;
 }) {
+  const name = useName(label);
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
-      {...useName(label)}
+      {...name}
       className="switch"
       onClick={() => onChange(!checked)}
     />
@@ -1548,6 +1553,81 @@ export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast
 /** Time a toast is given to fade out before it is taken away (`toast-out` in ui.css is shorter). */
 const TOAST_EXIT_MS = 120;
 
+/**
+ * How long a toast stays. One that offers something to press has to be read, decided on and
+ * reached: it gets about twice the time of one that only says something.
+ */
+function toastLife(t: Pick<Toast, 'kind' | 'action'>): number {
+  if (t.action) return 9000;
+  return t.kind === 'error' ? 7000 : 4000;
+}
+
+function ToastCard({
+  toast: t,
+  leaving,
+  dismiss,
+}: {
+  toast: Toast;
+  leaving: boolean;
+  dismiss: (id: number) => void;
+}) {
+  // Its time does not run while the pointer rests on it or the keyboard is on its button: it
+  // must not go from under someone who is reading it or about to press.
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const held = hovered || focused;
+  const left = useRef(toastLife(t));
+  useEffect(() => {
+    if (held) return;
+    const since = performance.now();
+    const timer = setTimeout(() => dismiss(t.id), left.current);
+    return () => {
+      clearTimeout(timer);
+      left.current -= performance.now() - since;
+    };
+  }, [held, dismiss, t.id]);
+  return (
+    <div
+      className="toast"
+      data-kind={t.kind}
+      data-leaving={leaving ? '' : undefined}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {t.kind === 'error' ? (
+          <path d="M12 8v5m0 3.5v.01M10.3 3.9 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+        ) : t.kind === 'success' ? (
+          <path d="M5 12.5l4.5 4.5L19 7.5" />
+        ) : (
+          <path d="M12 11v6m0-9.5v.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
+        )}
+      </svg>
+      <span>{t.text}</span>
+      {t.action && (
+        <button
+          className="toast__action"
+          onClick={() => {
+            t.action!.run();
+            dismiss(t.id);
+          }}
+        >
+          {t.action.label}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ToastLayer() {
   const [list, setList] = useState<(Toast & { leaving?: boolean })[]>([]);
   const dismiss = useCallback((id: number) => {
@@ -1555,47 +1635,15 @@ export function ToastLayer() {
     setTimeout(() => setList((l) => l.filter((t) => t.id !== id)), TOAST_EXIT_MS);
   }, []);
   useEffect(() => {
-    pushToast = (t) => {
-      setList((l) => [...l.slice(-3), t]);
-      setTimeout(() => dismiss(t.id), t.kind === 'error' ? 7000 : 4000);
-    };
+    pushToast = (t) => setList((l) => [...l.slice(-3), t]);
     return () => {
       pushToast = () => {};
     };
-  }, [dismiss]);
+  }, []);
   return createPortal(
     <div className="toasts" aria-live="polite">
       {list.map((t) => (
-        <div key={t.id} className="toast" data-kind={t.kind} data-leaving={t.leaving ? '' : undefined}>
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            {t.kind === 'error' ? (
-              <path d="M12 8v5m0 3.5v.01M10.3 3.9 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
-            ) : t.kind === 'success' ? (
-              <path d="M5 12.5l4.5 4.5L19 7.5" />
-            ) : (
-              <path d="M12 11v6m0-9.5v.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
-            )}
-          </svg>
-          <span>{t.text}</span>
-          {t.action && (
-            <button
-              className="toast__action"
-              onClick={() => {
-                t.action!.run();
-                dismiss(t.id);
-              }}
-            >
-              {t.action.label}
-            </button>
-          )}
-        </div>
+        <ToastCard key={t.id} toast={t} leaving={!!t.leaving} dismiss={dismiss} />
       ))}
     </div>,
     document.body,

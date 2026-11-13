@@ -10,7 +10,14 @@ import {
 } from 'lucide-react';
 import { memo, useEffect, useMemo, useState } from 'react';
 import { formatTimecode, initials, type Comment, type ProjectSettings } from '@tandem/core';
-import { useComments, useFrame, usePlayer, useProject, useSession, useSessionMeta } from '../../session/hooks';
+import {
+  useComments,
+  useFrame,
+  usePlayer,
+  useProject,
+  useSession,
+  useSessionMeta,
+} from '../../session/hooks';
 import { cmd } from '../../state/commands';
 import { useUI } from '../../state/ui';
 import { Button, cx, IconButton, tip } from '../../ui/core';
@@ -248,8 +255,13 @@ const CommentCard = memo(function CommentCard({
             onChange={(e) => setReply(e.target.value)}
             onKeyDown={(e) => {
               e.stopPropagation();
+              if (e.key !== 'Enter' && e.key !== 'Escape') return;
+              e.preventDefault();
+              // Sent or given up, the field goes: the keyboard returns to the comment's actions.
+              const card = e.currentTarget.closest('.comment');
+              handFocus(e.currentTarget, () => card?.querySelector<HTMLElement>('.comment__actions button'));
               if (e.key === 'Enter') send();
-              if (e.key === 'Escape') setReplying(false);
+              else setReplying(false);
             }}
             onBlur={() => !reply.trim() && setReplying(false)}
           />

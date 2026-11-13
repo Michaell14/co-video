@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { keyDown, keyUp, layerOpen, openLayer, placeTip, typeAhead, type Layer } from '../src/ui/layers';
 import { isDoublePress, isDrag } from '../src/ui/press';
+import { sliderKey } from '../src/ui/slider';
 import { handleKey } from '../src/state/shortcuts';
 import { useUI } from '../src/state/ui';
 
@@ -93,6 +94,58 @@ describe('double-press detection', () => {
     expect(isDrag(first, 103, 48)).toBe(false);
     expect(isDrag(first, 106, 50)).toBe(true);
     expect(isDrag(first, 100, 44)).toBe(true);
+  });
+});
+
+describe('slider keys', () => {
+  const pan = { min: -1, max: 1, defaultValue: 0 };
+  const frames = { min: 1, max: 90, step: 1 };
+
+  it('moves by a hundredth of the range, and by ten of those with Shift', () => {
+    expect(sliderKey('ArrowRight', false, 0, pan)).toBe(0.02);
+    expect(sliderKey('ArrowUp', false, 0, pan)).toBe(0.02);
+    expect(sliderKey('ArrowLeft', false, 0, pan)).toBe(-0.02);
+    expect(sliderKey('ArrowDown', false, 0, pan)).toBe(-0.02);
+    expect(sliderKey('ArrowRight', true, 0, pan)).toBe(0.2);
+    expect(sliderKey('ArrowLeft', true, 0.5, pan)).toBe(0.3);
+  });
+
+  it('moves by the step where the slider has one, and stays on its grid', () => {
+    expect(sliderKey('ArrowRight', false, 12, frames)).toBe(13);
+    expect(sliderKey('ArrowLeft', true, 12, frames)).toBe(2);
+    expect(sliderKey('PageUp', false, 12, frames)).toBe(21);
+    expect(sliderKey('ArrowRight', false, 12.4, frames)).toBe(13);
+  });
+
+  it('pages by a tenth of the range and goes to the ends', () => {
+    expect(sliderKey('PageUp', false, 0, pan)).toBe(0.2);
+    expect(sliderKey('PageDown', false, 0, pan)).toBe(-0.2);
+    expect(sliderKey('Home', false, 0.3, pan)).toBe(-1);
+    expect(sliderKey('End', false, 0.3, pan)).toBe(1);
+  });
+
+  it('stops at the ends of the range', () => {
+    expect(sliderKey('ArrowRight', true, 0.95, pan)).toBe(1);
+    expect(sliderKey('PageDown', false, -0.9, pan)).toBe(-1);
+    expect(sliderKey('ArrowLeft', false, 1, frames)).toBe(1);
+  });
+
+  it('goes back to the default with Delete or Backspace, and keeps the key where there is none', () => {
+    expect(sliderKey('Delete', false, 0.7, pan)).toBe(0);
+    expect(sliderKey('Backspace', false, 0.7, pan)).toBe(0);
+    expect(sliderKey('Delete', false, 12, frames)).toBe(null);
+  });
+
+  it('leaves every other key to whoever else wants it', () => {
+    for (const key of ['Enter', ' ', 'Tab', 'Escape', 'a', 'j']) {
+      expect(sliderKey(key, false, 0, pan)).toBe(undefined);
+    }
+  });
+
+  it('adds fractions without the hair that floating point leaves on them', () => {
+    let v = 0.1;
+    for (let i = 0; i < 10; i++) v = sliderKey('ArrowRight', false, v, pan) as number;
+    expect(v).toBe(0.3);
   });
 });
 

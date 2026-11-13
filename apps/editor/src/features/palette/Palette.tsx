@@ -1,5 +1,5 @@
 import { Search } from 'lucide-react';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { EFFECTS, formatTimecode, TRANSITIONS } from '@tandem/core';
 import { useProject } from '../../session/hooks';
@@ -41,6 +41,8 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   const backdropRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
+  const optionId = (item: Item) => `${listId}${item.id}`;
   const markers = useProject((p) => p.markers);
   const settings = useProject((p) => p.settings);
 
@@ -129,9 +131,16 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette">
         <div className="palette__input">
           <Search />
+          {/* Focus stays in the field while the arrow keys walk the list: the field says which
+              entry is the highlighted one, so that it is read out as the highlight moves. */}
           <input
             ref={inputRef}
+            role="combobox"
             aria-label="Search commands"
+            aria-autocomplete="list"
+            aria-expanded={results.length > 0}
+            aria-controls={listId}
+            aria-activedescendant={results[active] && optionId(results[active])}
             value={query}
             placeholder="Search commands, effects, transitions, markers…"
             onChange={(e) => setQuery(e.target.value)}
@@ -140,19 +149,32 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         </div>
         <div className="palette__list" ref={listRef}>
           {results.length === 0 && <div className="palette__none">No commands match “{query}”.</div>}
-          {results.map((item, i) => (
-            <button
-              key={item.id}
-              className="palette__item"
-              data-active={i === active}
-              onPointerMove={() => setActive(i)}
-              onClick={() => run(item)}
-            >
-              <span className="palette__title">{item.title}</span>
-              <span className="palette__group">{item.group}</span>
-              {item.keys && <Kbd keys={item.keys} />}
-            </button>
-          ))}
+          <div id={listId} role="listbox" aria-label="Commands">
+            {results.map((item, i) => (
+              <button
+                key={item.id}
+                id={optionId(item)}
+                type="button"
+                role="option"
+                tabIndex={-1}
+                aria-selected={i === active}
+                className="palette__item"
+                data-active={i === active}
+                onPointerMove={() => setActive(i)}
+                onClick={() => run(item)}
+              >
+                <span className="palette__title">{item.title}</span>
+                <span className="palette__group">{item.group}</span>
+                {item.keys && <Kbd keys={item.keys} />}
+              </button>
+            ))}
+          </div>
+        </div>
+        {/* How much the search found, for someone who cannot see the list grow and shrink. */}
+        <div className="sr-only" role="status">
+          {results.length === 0
+            ? 'No commands match'
+            : `${results.length} ${results.length === 1 ? 'command' : 'commands'}`}
         </div>
       </div>
     </div>,
@@ -200,6 +222,21 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             ['Disable snapping', 'Hold Shift while dragging'],
             ['Fine control', 'Shift / Alt on number fields'],
             ['Reset a control', 'Double-click it'],
+          ].map(([a, b]) => (
+            <div key={a} className="shortcut">
+              <span>{a}</span>
+              <span className="shortcut__keys muted">{b}</span>
+            </div>
+          ))}
+        </section>
+        <section>
+          <h4>Sliders</h4>
+          {[
+            ['Move a step', 'Arrow keys'],
+            ['Move ten steps', 'Shift + arrow keys'],
+            ['Move a tenth of the range', 'Page Up / Page Down'],
+            ['Go to either end', 'Home / End'],
+            ['Reset to the default', 'Delete'],
           ].map(([a, b]) => (
             <div key={a} className="shortcut">
               <span>{a}</span>

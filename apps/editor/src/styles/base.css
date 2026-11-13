@@ -25,6 +25,10 @@ body,
   /* The distance between a panel's edge and its content, left and right: every panel's rows,
      tiles and cards start on the same line under the head. */
   --panel-pad: 10px;
+  /* The edge of a control where the edge is all there is to tell it by: an empty field, the
+     chosen one in a row of segments or chips. Drawn over the control's own fill it holds 3:1
+     against the panels and dialogs around it, which the hairlines (--line-1 to --line-3) do not. */
+  --line-control: rgba(255, 255, 255, 0.36);
 }
 
 body {
