@@ -62,6 +62,50 @@ export interface DocStoreLimits {
   reserveStructs?: (structs: number) => void;
 }
 
+/** The two files of a document, and how much each holds. */
+export interface StoredDoc {
+  snapshotPath: string;
+  logPath: string;
+  snapshotBytes: number;
+  logBytes: number;
+}
+
+/** What is stored of a document, by the size of its files: nothing of them is read. */
+export async function storedDoc(dir: string, kind: DocKind): Promise<StoredDoc> {
+  const snapshotPath = join(dir, `${kind}.snapshot`);
+  const logPath = join(dir, `${kind}.log`);
+  return {
+    snapshotPath,
+    logPath,
+    snapshotBytes: (await fileSize(snapshotPath)) ?? 0,
+    logBytes: (await fileSize(logPath)) ?? 0,
+  };
+}
+
+/** How large a log `DocStore.open` reads next to a snapshot of at most `maxBytes`. */
+const maxLogBytesFor = (maxBytes: number): number => maxBytes + COMPACT_LOG_BYTES;
+
+/**
+ * Why files of these sizes are more than `limits` let `DocStore.open` read, or `null` when their
+ * size is no reason to refuse them. Their weight in structs only shows when they are read.
+ */
+export function tooLargeToOpen(stored: StoredDoc, limits: DocStoreLimits): DocumentTooLargeError | null {
+  const { snapshotPath, logPath, snapshotBytes, logBytes } = stored;
+  const maxBytes = limits.maxBytes ?? Infinity;
+  const maxLogBytes = maxLogBytesFor(maxBytes);
+  const maxStoredBytes = limits.maxStoredBytes ?? Infinity;
+  if (snapshotBytes > maxBytes) {
+    return new DocumentTooLargeError([snapshotPath], snapshotBytes, maxBytes, 'bytes');
+  }
+  if (logBytes > maxLogBytes) {
+    return new DocumentTooLargeError([logPath], logBytes, maxLogBytes, 'bytes');
+  }
+  if (snapshotBytes + logBytes > maxStoredBytes) {
+    return new DocumentTooLargeError([snapshotPath, logPath], snapshotBytes + logBytes, maxStoredBytes, 'bytes');
+  }
+  return null;
+}
+
 /** Frame updates as log records. */
 export function encodeLogRecords(updates: readonly Uint8Array[]): Buffer {
   let total = 0;
@@ -140,25 +184,13 @@ export class DocStore {
    * that is too large to hold must not take the documents of every other project down with it.
    */
   static async open(dir: string, kind: DocKind, doc: Y.Doc, limits: DocStoreLimits = {}): Promise<DocStore> {
-    const snapshotPath = join(dir, `${kind}.snapshot`);
-    const logPath = join(dir, `${kind}.log`);
-
-    const maxBytes = limits.maxBytes ?? Infinity;
-    const maxLogBytes = maxBytes + COMPACT_LOG_BYTES;
+    const stored = await storedDoc(dir, kind);
+    const { snapshotPath, logPath, snapshotBytes } = stored;
+    const tooLarge = tooLargeToOpen(stored, limits);
+    if (tooLarge) throw tooLarge;
+    const maxLogBytes = maxLogBytesFor(limits.maxBytes ?? Infinity);
     const maxStoredBytes = limits.maxStoredBytes ?? Infinity;
-    const snapshotBytes = (await fileSize(snapshotPath)) ?? 0;
-    const storedLogBytes = (await fileSize(logPath)) ?? 0;
-    const storedBytes = snapshotBytes + storedLogBytes;
-    if (snapshotBytes > maxBytes) {
-      throw new DocumentTooLargeError([snapshotPath], snapshotBytes, maxBytes, 'bytes');
-    }
-    if (storedLogBytes > maxLogBytes) {
-      throw new DocumentTooLargeError([logPath], storedLogBytes, maxLogBytes, 'bytes');
-    }
-    if (storedBytes > maxStoredBytes) {
-      throw new DocumentTooLargeError([snapshotPath, logPath], storedBytes, maxStoredBytes, 'bytes');
-    }
-    limits.reserveBytes?.(storedBytes);
+    limits.reserveBytes?.(snapshotBytes + stored.logBytes);
 
     const snapshot = await readFileIfExists(snapshotPath);
     const log = await readFileIfExists(logPath);

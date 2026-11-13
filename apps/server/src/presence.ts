@@ -25,7 +25,7 @@ import * as decoding from 'lib0/decoding';
 import * as encoding from 'lib0/encoding';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import type * as Y from 'yjs';
-import { WS_MSG_AWARENESS } from '@tandem/core';
+import { PRESENCE_TOO_FAST, WS_MSG_AWARENESS } from '@tandem/core';
 import type { Role } from '@tandem/core';
 import { Allowance } from './limits';
 
@@ -259,7 +259,7 @@ export class RoomPresence {
     if (full) return full;
     const { share } = seat;
     if (!seat.updates.has(1, now) || !seat.bytes.has(size, now) || !share.updates.has(1, now)) {
-      return 'updates are arriving faster than they are relayed';
+      return PRESENCE_TOO_FAST;
     }
     seat.updates.spend(1);
     seat.bytes.spend(size);

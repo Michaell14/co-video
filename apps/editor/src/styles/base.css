@@ -22,6 +22,9 @@ body,
      view): halfway between the two shortest steps of the motion scale, and nothing when those are
      zero for reduced motion. */
   --dur-hover: calc((var(--dur-1) + var(--dur-2)) / 2);
+  /* The distance between a panel's edge and its content, left and right: every panel's rows,
+     tiles and cards start on the same line under the head. */
+  --panel-pad: 10px;
 }
 
 body {

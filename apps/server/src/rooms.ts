@@ -20,12 +20,21 @@ import { WebSocket, WebSocketServer } from 'ws';
 import type { RawData } from 'ws';
 import * as syncProtocol from 'y-protocols/sync';
 import * as Y from 'yjs';
-import { WS_MSG_CONTROL, WS_MSG_AWARENESS, WS_MSG_SYNC, canWriteDoc } from '@tandem/core';
-import type { ControlMessage, DocKind, Role } from '@tandem/core';
+import {
+  PRESENCE_IGNORED,
+  WS_CLOSE_TOO_BIG,
+  WS_CLOSE_TRY_AGAIN_LATER,
+  WS_MSG_CONTROL,
+  WS_MSG_AWARENESS,
+  WS_MSG_SYNC,
+  canWriteDoc,
+} from '@tandem/core';
+import type { ControlMessage, DocAvailability, DocKind, Role } from '@tandem/core';
 import { HttpError } from './http';
 import { Budget, LOAD_HEADROOM, STRUCT_BYTES } from './limits';
 import type { Limits } from './limits';
-import { DocStore, DocumentTooLargeError } from './persistence';
+import { DocStore, DocumentTooLargeError, storedDoc, tooLargeToOpen } from './persistence';
+import type { DocStoreLimits, StoredDoc } from './persistence';
 import { RoomPresence } from './presence';
 import type { PresenceMember } from './presence';
 import { RECOUNT_AFTER_STRUCTS, measureUpdate, sameSetAside, setAside, weigh, weightOf } from './updateSize';
@@ -62,13 +71,13 @@ const PRESENCE_HOLD_BYTES = 256 * 1024;
 const NOTICE_INTERVAL_MS = 1000;
 /** A refusal that repeats with every reconnect is logged once in this interval. */
 const COMPLAINT_INTERVAL_MS = 10 * 60 * 1000;
+/** Of how many documents it is remembered that reading them found them too large to load. */
+const MAX_REMEMBERED_TOO_LARGE = 1024;
 /** On shutdown, how long clients get to complete the close handshake before sockets are destroyed. */
 const CLOSE_GRACE_MS = 1000;
 
 const CLOSE_MALFORMED = 1007;
-const CLOSE_TOO_BIG = 1009;
 const CLOSE_RESTARTING = 1012;
-const CLOSE_TRY_AGAIN_LATER = 1013;
 
 /** Who makes way for whom in a full room. */
 const RANK: Record<Role, number> = { viewer: 0, commenter: 1, editor: 2, owner: 3 };
@@ -89,6 +98,25 @@ function limitInWords(kind: DocKind, limits: Limits): string {
     `MAX_OPEN_DOC_BYTES, which is ${limits.maxOpenDocBytes})`
   );
 }
+
+/**
+ * How much of a stored document of `kind` is loaded on a server that holds `openDocBytes` of them
+ * in all. Never more than would fit if nothing else were loaded: what is refused as too large for
+ * this stays refused, and what is turned away for want of room does get in with time.
+ */
+function loadLimits(kind: DocKind, limits: Limits, openDocBytes: number): Required<
+  Pick<DocStoreLimits, 'maxBytes' | 'maxStoredBytes' | 'maxStructs'>
+> {
+  const maxBytes = LOAD_HEADROOM * limits.maxDocBytes[kind];
+  return {
+    maxBytes: Math.min(maxBytes, openDocBytes),
+    maxStoredBytes: openDocBytes,
+    maxStructs: Math.min(Math.floor(maxBytes / STRUCT_BYTES), Math.floor(openDocBytes / STRUCT_BYTES)),
+  };
+}
+
+/** The files of a document as they were when it was found too large: the same files will be again. */
+const sizesOf = (stored: StoredDoc): string => `${stored.snapshotBytes}+${stored.logBytes}`;
 
 function controlFrame(message: ControlMessage): Uint8Array {
   const encoder = encoding.createEncoder();
@@ -319,7 +347,6 @@ export class Room {
     opts: RoomManagerOptions,
   ): Promise<Room> {
     const doc = new Y.Doc({ gc: true });
-    const maxBytes = opts.limits.maxDocBytes[kind];
     const { openDocs } = manager;
     const held = { bytes: 0, structs: 0 };
     // Only ever asked for what would fit if nothing else were loaded (the store refuses a
@@ -336,9 +363,7 @@ export class Room {
     };
     try {
       const store = await DocStore.open(opts.projectDir(projectId), kind, doc, {
-        maxBytes: Math.min(LOAD_HEADROOM * maxBytes, openDocs.bytes.limit),
-        maxStoredBytes: openDocs.bytes.limit,
-        maxStructs: Math.min(Math.floor((LOAD_HEADROOM * maxBytes) / STRUCT_BYTES), openDocs.structs.limit),
+        ...loadLimits(kind, opts.limits, openDocs.bytes.limit),
         reserveBytes: (bytes) => {
           reserve(openDocs.bytes, bytes);
           held.bytes = bytes;
@@ -358,6 +383,7 @@ export class Room {
           `${projectId}/${kind}`,
           `not loading the ${kind} document of project ${projectId}: ${err.message}. ${limitInWords(kind, opts.limits)}`,
         );
+        manager.foundTooLarge(projectId, kind, await storedDoc(opts.projectDir(projectId), kind));
         throw new HttpError(507, `the ${kind} document of this project is larger than this server accepts`);
       }
       throw err;
@@ -515,7 +541,7 @@ export class Room {
       // The place is free now, not when the peer gets round to answering the close frame.
       displaced.rejected = true;
       this.disconnect(displaced);
-      displaced.ws.close(CLOSE_TRY_AGAIN_LATER, 'room is full');
+      displaced.ws.close(WS_CLOSE_TRY_AGAIN_LATER, 'room is full');
     }
     this.conns.add(conn);
     registry.add(conn);
@@ -566,7 +592,7 @@ export class Room {
           // Presence is relayed for every role: viewers should show up in the avatar stack too.
           // Presence that is not taken never costs the connection: the document matters more.
           const refused = this.presence.receive(conn, decoding.readVarUint8Array(decoder));
-          if (refused) conn.notify({ type: 'error', message: `presence update ignored: ${refused}` });
+          if (refused) conn.notify({ type: 'error', message: PRESENCE_IGNORED + refused });
           break;
         }
         default:
@@ -628,7 +654,7 @@ export class Room {
         if (refusal) {
           // What this client holds and we do not take would be missing under everything it
           // sends next, so the connection ends here; the document stays as the others have it.
-          conn.turnAway(CLOSE_TOO_BIG, refusal);
+          conn.turnAway(WS_CLOSE_TOO_BIG, refusal);
           break;
         }
         const changesBefore = this.changes;
@@ -749,6 +775,13 @@ export class RoomManager {
   /** Connections whose document copy waits for others to arrive first, in the order they asked. */
   private readonly syncQueue = new Map<Connection, Room>();
   private readonly complaints = new Map<string, number>();
+  /**
+   * Documents that were read and found to weigh more than is loaded, by `projectId/kind`, with the
+   * size their files had. Files of a size that is fine can still hold too many structs, and only
+   * reading them tells: so that `availability` need not, the finding is kept for as long as the
+   * files stay the size they were.
+   */
+  private readonly tooLarge = new Map<string, string>();
   private readonly heartbeat: NodeJS.Timeout;
   private closed = false;
   /** What all loaded documents weigh together. */
@@ -787,6 +820,39 @@ export class RoomManager {
     }
     this.complaints.set(subject, now);
     console.warn(`[tandem] ${message}`);
+  }
+
+  /** A load of this document got as far as reading it, and it weighs more than is loaded. */
+  foundTooLarge(projectId: string, kind: DocKind, stored: StoredDoc): void {
+    const key = `${projectId}/${kind}`;
+    // Insertion order is age: a document that keeps being asked for stays, the longest forgotten goes.
+    this.tooLarge.delete(key);
+    this.tooLarge.set(key, sizesOf(stored));
+    if (this.tooLarge.size > MAX_REMEMBERED_TOO_LARGE) {
+      this.tooLarge.delete(this.tooLarge.keys().next().value as string);
+    }
+  }
+
+  /**
+   * Whether a connection to this document would find it loaded or loadable right now, told from
+   * the size of its files: nothing is read, and nothing is loaded for the asking. This is what a
+   * client cannot learn from a refused upgrade, of which a browser only reports that it failed.
+   */
+  async availability(projectId: string, kind: DocKind): Promise<DocAvailability> {
+    const key = `${projectId}/${kind}`;
+    const loading = this.rooms.get(key);
+    if (loading) {
+      try {
+        await loading;
+        return 'ok';
+      } catch {
+        // The load that was under way failed: its files say why, as they do for the next one.
+      }
+    }
+    const stored = await storedDoc(this.opts.projectDir(projectId), kind);
+    const limits = loadLimits(kind, this.opts.limits, this.openDocs.bytes.limit);
+    if (tooLargeToOpen(stored, limits) || this.tooLarge.get(key) === sizesOf(stored)) return 'too-large';
+    return this.openDocs.bytes.fits(stored.snapshotBytes + stored.logBytes) ? 'ok' : 'busy';
   }
 
   /** Remember that `conn` waits for its copy of the document until others have arrived. */

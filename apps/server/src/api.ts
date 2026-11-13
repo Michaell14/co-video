@@ -195,12 +195,18 @@ export function createApiHandler(ctx: ApiContext) {
     if (segments.length === 2) {
       allowMethods(req, ['GET']);
       const { role, meta } = await authenticate(req, query, projectId);
+      // A refused WebSocket upgrade tells a browser nothing, so what would be refused is said here.
+      const [project, review] = await Promise.all([
+        ctx.rooms.availability(projectId, 'project'),
+        ctx.rooms.availability(projectId, 'review'),
+      ]);
       const info: ProjectInfo & { name: string } = {
         id: projectId,
         role,
         createdAt: meta.createdAt,
         updatedAt: meta.updatedAt,
         name: meta.name,
+        docs: { project, review },
       };
       sendJson(res, 200, info, { 'Cache-Control': 'no-store' });
       return;

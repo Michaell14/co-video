@@ -49,6 +49,7 @@ import {
   type ID,
   type Project,
   type ShapeProps,
+  type StepOutcome,
   type TextProps,
   LoudnessMeter,
   normalizationGain,
@@ -274,6 +275,19 @@ function offerRoom(s: Session, short: CutShort[]): void {
   });
 }
 
+/**
+ * Say so when an undo or redo passed over steps of which someone else's changes left nothing to
+ * take back: otherwise the key seems to do nothing, or to do something other than the last step.
+ */
+function saySteps(out: StepOutcome, verb: 'undo' | 'redo', done: 'undone' | 'redone'): void {
+  if (!out.dropped) return;
+  toast(
+    out.changed
+      ? `${count(out.dropped, 'earlier step')} could not be ${done}: someone else has changed the same things since.`
+      : `Nothing left to ${verb}: someone else has changed what those steps touched.`,
+  );
+}
+
 /** Let the user pick a `.tandem` file and read it. Says so when it is not a project file. */
 async function pickProjectFile(): Promise<Project | null> {
   const [file] = await pickFiles('.tandem,application/json', false);
@@ -355,10 +369,10 @@ export const MEDIA_ACCEPT = 'video/*,audio/*,image/*,.mkv,.mov,.ts,.cube,.srt,.v
 export const cmd = {
   // ───────────────────────────────────────────────────────────── history ──
   undo(): void {
-    editing((s) => s.store.undo());
+    editing((s) => saySteps(s.store.undo(), 'undo', 'undone'));
   },
   redo(): void {
-    editing((s) => s.store.redo());
+    editing((s) => saySteps(s.store.redo(), 'redo', 'redone'));
   },
 
   // ─────────────────────────────────────────────────────────── transport ──
