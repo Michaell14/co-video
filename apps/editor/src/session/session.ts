@@ -61,6 +61,12 @@ export interface SessionMeta {
   refusedLink: Role | null;
   /** The server accepts our link but has no place for us right now; we keep trying. */
   busy: boolean;
+  /**
+   * Why changes made here are not reaching the server although the project is shared, as a sentence
+   * for the person: the server closed the connection because the project has reached the size it
+   * allows, for example. Null while saving works.
+   */
+  notSaving: string | null;
   /** Preview from proxy media where it exists (a per-device preference). */
   proxies: boolean;
 }
@@ -169,6 +175,7 @@ export class Session {
       unlisted: false,
       refusedLink: null,
       busy: false,
+      notSaving: null,
       proxies: readProxyPref(),
     };
     this.presence = {
