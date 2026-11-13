@@ -129,10 +129,9 @@ export function OpenSource() {
               the projects made on it. Your footage stays on your machine and on the server you run.
             </p>
             <p className="os__note">
-              The server sets itself limits, all of which you can change. The document that holds a project’s
-              edit (not its media) may grow to 32 MiB at most by default, less where Node has little memory to
-              work with, and a change that would go past a limit is refused: the server says no rather than
-              fall over.
+              The server keeps to limits you can change. By default a project’s document (the edit, not the
+              media) may grow to 32 MiB at most, less where Node has little memory, and a change that would go
+              past a limit is refused: the server says no rather than fall over.
             </p>
           </Reveal>
         </div>

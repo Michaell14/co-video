@@ -68,6 +68,12 @@ export function Nav({ sectionsReady }: NavProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
+  // A closed menu stays in the document while it fades out. Nothing in it may take the focus then,
+  // or a Tab pressed right after Escape would land on a link that is about to go.
+  useEffect(() => {
+    if (menu.current) menu.current.inert = !open;
+  }, [open]);
+
   return (
     <header className="nav" data-scrolled={scrolled} data-open={open}>
       <div className="nav__bar">

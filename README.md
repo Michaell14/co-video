@@ -64,7 +64,8 @@ with projects stored in your browser.
 - Speed changes from 5 % to 10 000 %, reverse playback and freeze frames
 - Titles with 13 bundled open-source typefaces, outlines, shadows, gradients, backgrounds and
   animated in / out presets; shapes, solids and **adjustment layers**
-- Subtitles: import `.srt` / `.vtt` as editable captions, export `.srt`
+- Subtitles: import `.srt` / `.vtt` as editable captions, export `.srt` (captions only: titles and
+  lower thirds are not subtitles)
 - 18 blend modes, rectangular and elliptical masks with feathering, on-canvas transform handles
 - A source monitor with in / out marking, insert and overwrite, driven by the same transport keys
   as the timeline; **match frame** opens it on the very frame under the playhead
@@ -146,30 +147,43 @@ with projects stored in your browser.
 Press `?` in the editor for the full list; it is generated from the same table that drives the
 shortcuts and the command palette (`Ctrl+K`). The ones worth learning first:
 
-|                                                 |                                             |
-| ----------------------------------------------- | ------------------------------------------- |
-| Play / pause · shuttle back, stop, forwards     | `Space` · `J` `K` `L`                       |
-| Step a frame · a second                         | `←` `→` · `Shift+←` `Shift+→`               |
-| Previous / next edit · start / end              | `↑` `↓` · `Home` `End`                      |
-| Mark in / out · clear the range                 | `I` `O` · `Alt+X`                           |
-| Match frame                                     | `F`                                         |
-| Split · delete · ripple delete                  | `S` or `Ctrl+B` · `Delete` · `Shift+Delete` |
-| Ripple trim the start / end to the playhead     | `Q` `W`                                     |
-| Close the gap at the playhead                   | `Shift+G`                                   |
-| Select everything right / left of the playhead  | `Shift+End` · `Shift+Home`                  |
-| Nudge the selection by a frame · by ten         | `,` `.` · `Shift+,` `Shift+.`               |
-| Marker: add or remove · next · previous         | `M` · `Shift+M` · `Ctrl+Shift+M` or `Alt+M` |
-| Tools: select · blade · slip · hand             | `V` · `B` · `Y` · `H`                       |
-| Zoom the timeline · fit it · zoom to selection  | `+` `-` · `Shift+Z` · `Z`                   |
-| Add a title                                     | `T`                                         |
-| Edit · Colour · Audio workspace                 | `Shift+1` · `Shift+2` · `Shift+3`           |
-| Comments                                        | `Shift+C`                                   |
-| Import · export · export the frame as a PNG     | `Ctrl+I` · `Ctrl+E` · `Ctrl+Shift+E`        |
-| Save a project file · open one as a new project | `Ctrl+S` · `Ctrl+O`                         |
+|                                                  |                                             |
+| ------------------------------------------------ | ------------------------------------------- |
+| Play / pause · shuttle back, stop, forwards      | `Space` · `J` `K` `L`                       |
+| Step a frame · a second                          | `←` `→` · `Shift+←` `Shift+→`               |
+| Previous / next edit · start / end               | `↑` `↓` · `Home` `End`                      |
+| Mark in / out · mark the clip · clear the range  | `I` `O` · `X` · `Alt+X`                     |
+| Go to the in / out point                         | `Shift+I` `Shift+O`                         |
+| Match frame                                      | `F`                                         |
+| Insert · add (overwrite) from the source monitor | `F9` · `F10`                                |
+| Select the clip under the playhead               | `Shift+V`                                   |
+| Select the next / previous clip · add it         | `Ctrl+↓` `Ctrl+↑` · with `Shift`            |
+| Select everything right / left of the playhead   | `Shift+End` · `Shift+Home`                  |
+| Split · delete · ripple delete                   | `S` or `Ctrl+B` · `Delete` · `Shift+Delete` |
+| Ripple trim the start / end to the playhead      | `Q` `W`                                     |
+| Trim the nearest edge by a frame · by five       | `Ctrl+←` `Ctrl+→` · with `Shift`            |
+| Extend the edit to the playhead                  | `E`                                         |
+| Add the default transition to the selected cuts  | `Shift+D`                                   |
+| Close the gap at the playhead                    | `Shift+G`                                   |
+| Nudge the selection by a frame · by ten          | `,` `.` · `Shift+,` `Shift+.`               |
+| Move the selection up / down a track             | `Alt+↑` `Alt+↓`                             |
+| Marker: add or remove · next · previous          | `M` · `Shift+M` · `Ctrl+Shift+M` or `Alt+M` |
+| Tools: select · blade · slip · hand              | `V` · `B` · `Y` · `H`                       |
+| Zoom the timeline · fit it · zoom to selection   | `+` `-` · `Shift+Z` · `Z`                   |
+| Add a title                                      | `T`                                         |
+| Edit · Colour · Audio workspace                  | `Shift+1` · `Shift+2` · `Shift+3`           |
+| Comments                                         | `Shift+C`                                   |
+| Import · export · export the frame as a PNG      | `Ctrl+I` · `Ctrl+E` · `Ctrl+Shift+E`        |
+| Save a project file · open one as a new project  | `Ctrl+S` · `Ctrl+O`                         |
 
-`Ctrl` is `⌘` on a Mac. While the source monitor is open, `Space`, `J` `K` `L`, the arrow keys
-(with `Shift` for a second), `Home`, `End`, `I` and `O` drive it instead of the timeline, and `Esc`
-closes it.
+`Ctrl` is `⌘` on a Mac. A few of these are narrower than their names: `Q` and `W` trim one shot,
+the selected clip or else the picture under the playhead, and leave a music bed or a title under
+the same frame alone; `Shift+G` closes one gap, the picture's, and the other tracks follow it.
+`Space` plays and pauses, except on a button the keyboard itself moved to (with `Tab`), where it
+presses the button.
+
+While the source monitor is open, `Space`, `J` `K` `L`, the arrow keys (with `Shift` for a second),
+`Home`, `End`, `I` and `O` drive it instead of the timeline, and `Esc` closes it.
 
 ## Browser support
 
@@ -259,13 +273,17 @@ among them what such a host has to do that the bundled server does by itself.
 pnpm typecheck
 pnpm test         # unit tests: model, edit operations, colour math, server, editor logic
 pnpm test:e2e     # Playwright: editor + server + render engine in Chromium
+pnpm test:smoke   # the production build, served by the built server, in a browser
 ```
 
 The end-to-end suite drives the real application: it edits with the mouse, exports through the
 export dialog and inspects the files with `ffprobe`, connects several browsers to one project,
-records a voiceover from a fake microphone, builds a proxy, and checks that a 10-bit PQ source
-reaches a 10-bit PQ export bit-exactly. CI runs all of it on every pull request, and also builds
-the Docker image and checks what the container serves.
+records a voiceover from a fake microphone, builds a proxy, and compares the picture that an HDR
+export hands to the encoder with its 10-bit PQ source, to within one code value. The smoke test
+goes through the built product once, under the security headers and the service worker that only
+a production build has. CI runs all of it on every pull request, and also builds the Docker image
+and checks what the container serves. [`CONTRIBUTING.md`](CONTRIBUTING.md) says how to run the
+browser tests beside a dev server and what a failed one leaves behind.
 
 ## How it is built
 
@@ -308,6 +326,19 @@ Three ideas carry most of the weight:
   proxied.
 - EDL export is cuts-only (transitions are listed as comments) and assumes source timecode starts
   at zero.
+- Two people who put a clip on the same frames of a track at the same moment both succeed. One of
+  the two clips is then moved to a free track, a moment after the edits meet, by the session that
+  placed it. If that session has gone by then, the clips stay on top of each other, marked in the
+  timeline, until someone moves one (“Move to a free track” in the clip's menu).
+- Two changes of frame rate made at the same moment: one of them decides where every clip is, but
+  fades, keyframes, transition lengths and review comments can end up timed for the other.
+- Whose comment is whose is kept by the editor, not by the server, which knows roles and not
+  people: anyone with a comment link and a client of their own can rewrite or delete other people's
+  comments.
+- Nothing deletes a project or its media from the server. Deleting a project on the home screen
+  removes it from that device; on the server it stays until someone removes its folder.
+- Vorbis sound that starts part-way into its file is placed about 20 ms early, in the preview and
+  in exports alike (a limit of the decoder library; the offset is constant over the clip).
 - Performance on very long 4K+ timelines has been engineered for (virtualised timeline,
   look-ahead decode, preview-resolution scaling) but has only been measured on modest hardware.
 
@@ -315,4 +346,7 @@ Three ideas carry most of the weight:
 
 [MIT](LICENSE). Built on the excellent [Mediabunny](https://mediabunny.dev) (MPL-2.0) for
 demuxing and muxing, and [Yjs](https://yjs.dev) (MIT) for CRDTs. Bundled typefaces are under the
-SIL Open Font Licence.
+SIL Open Font Licence, except Permanent Marker (Apache 2.0).
+[`THIRD_PARTY_NOTICES.txt`](apps/editor/public/THIRD_PARTY_NOTICES.txt) names everything a build
+contains, with the licences in full. It is part of every build of the editor, so a server has it at
+`/app/THIRD_PARTY_NOTICES.txt`.

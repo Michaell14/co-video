@@ -391,8 +391,12 @@ when it starts.
   scrolled past.
 
 **Offline.** The production build ships a small generated service worker (see
-`apps/editor/vite.config.ts`): the page is network-first with a cached fallback, hashed code and
-fonts are cache-first, and API calls, sockets and media range requests are never intercepted.
+`apps/editor/serviceWorker.ts`): the page is network-first with a cached fallback, hashed code and
+fonts are cache-first, and API calls, sockets and media range requests are never intercepted. Only
+the editor's own page is ever kept as that fallback, whatever else inside the worker's reach is
+opened as a page. A new version of the worker takes over the files the one before it holds, and
+asks the browser's own cache before the network, so a first visit downloads nothing twice and a
+deploy costs a returning visitor the files that changed.
 Together with IndexedDB (documents) and OPFS (media) that makes a cold start with no network
 complete. A session that opens offline keeps retrying the server with a growing delay and syncs
 when it answers; only an explicit refusal (bad link, deleted project) stops it. The role a link
@@ -437,8 +441,9 @@ bundle; the editor chunk is warmed in the background while you choose a project.
 | Model   | timecode, keyframes, every edit operation, CRDT convergence, per-user undo, hostile input                                                     | `packages/core/test`                                                     |
 | Server  | auth, roles, sync, persistence across restart and torn logs, resumable media, versions, connection limits                                     | `apps/server/test`                                                       |
 | Engine  | all shaders compile and draw, geometry and colour, frame accuracy, HDR code values, memory held, context loss, exports inspected with ffprobe | `e2e/engine*.spec.ts`, `packages/engine/test`                            |
-| Editor  | the parts that are plain functions: panel layout, layers and focus, access, the transfer queue, timing, shortcuts                             | `apps/editor/test`                                                       |
+| Editor  | the parts that are plain functions: panel layout, layers and focus, access, the transfer queue, timing, shortcuts, the service worker         | `apps/editor/test`                                                       |
 | Product | mouse-driven editing, reload persistence, panels and dialogs from the keyboard, export, multi-user sessions with roles                        | `e2e/editor.spec.ts`, `e2e/collab.spec.ts` and the other specs in `e2e/` |
+| Build   | the production build in a browser: site, editor under `/app/`, security headers, service worker, a start with no network                      | `e2e/smoke` (`pnpm test:smoke`)                                          |
 
 The engine tests run through a bare "lab" page (`apps/editor/lab.html`) that exposes the engine
 without the editor around it. WebGL runs on SwiftShader, so the suite needs no GPU.

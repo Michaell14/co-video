@@ -29,9 +29,16 @@ jobs:
       - run: pnpm build
 
   e2e:
-    name: End-to-end (Chromium, software WebGL)
+    # One worker on software WebGL takes about eight seconds a test, which for the whole suite is
+    # more than half an hour. Three shards (whole spec files each) keep a job near twelve minutes;
+    # the limit leaves room for the retries of a bad run.
+    name: End-to-end ${{ matrix.shard }}/3 (Chromium, software WebGL)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -42,11 +49,33 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
+      - run: pnpm test:e2e --shard=${{ matrix.shard }}/3
+      # A failed attempt leaves its trace, a screenshot and the page's accessibility tree.
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-results
+          name: playwright-results-${{ matrix.shard }}
+          path: test-results
+          retention-days: 7
+
+  smoke:
+    name: Production build in a browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:smoke
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results-smoke
           path: test-results
           retention-days: 7
 
@@ -69,5 +98,20 @@ jobs:
           curl -fsS http://localhost:8787/app/ | grep -q '<div id="root">'
           curl -fsS http://localhost:8787/app/sw.js | grep -q 'tandem-'
           curl -fsSI http://localhost:8787/app/ | grep -qi '^content-security-policy:'
+          curl -fsS http://localhost:8787/app/THIRD_PARTY_NOTICES.txt | grep -q 'Apache License'
+      - name: The image's health check follows the port the container was given
+        run: |
+          docker run -d --name tandem2 -e PORT=9000 -p 9000:9000 tandem
+          # The first check runs half a minute after the start.
+          for i in $(seq 1 45); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' tandem2)
+            [ "$status" = healthy ] && break
+            sleep 2
+          done
+          echo "health: $status"
+          [ "$status" = healthy ]
+          curl -fsS http://localhost:9000/api/health | grep -q '"ok":true'
       - if: always()
-        run: docker logs tandem || true
+        run: |
+          docker logs tandem || true
+          docker logs tandem2 || true

@@ -9,12 +9,15 @@ import { useLoopActive } from '../lib/hooks';
 import { EDITOR_URL, GITHUB_URL } from '../lib/links';
 import './FinalCta.css';
 
-/** Collaborators drifting around the headline. Two of them move aside on a phone; two step out. */
+/**
+ * Collaborators drifting around the headline. Where the page is too narrow to leave room beside
+ * the headline and the buttons, two of them move aside and two step out.
+ */
 const CURSORS = [
   { name: 'Maya', color: '#ff5d5d', x: '14%', y: '26%', drift: 9 },
-  { name: 'Jonas', color: '#22d3ee', x: '80%', y: '20%', drift: 11, phone: { x: '66%', y: '9%' } },
+  { name: 'Jonas', color: '#22d3ee', x: '80%', y: '20%', drift: 11, narrow: { x: '66%', y: '9%' } },
   { name: 'Aiko', color: '#ff9f43', x: '20%', y: '72%', drift: 13 },
-  { name: 'You?', color: '#c6f84f', x: '74%', y: '70%', drift: 10, phone: { x: '12%', y: '88%' } },
+  { name: 'You?', color: '#c6f84f', x: '74%', y: '70%', drift: 10, narrow: { x: '12%', y: '88%' } },
 ];
 
 export function FinalCta() {
@@ -41,13 +44,13 @@ export function FinalCta() {
           <div
             key={cursor.name}
             className="cta__cursor"
-            data-phone={cursor.phone !== undefined}
+            data-narrow={cursor.narrow !== undefined}
             style={
               {
                 '--x': cursor.x,
                 '--y': cursor.y,
-                '--phone-x': cursor.phone?.x,
-                '--phone-y': cursor.phone?.y,
+                '--narrow-x': cursor.narrow?.x,
+                '--narrow-y': cursor.narrow?.y,
                 '--drift': `${cursor.drift}s`,
               } as CSSProperties
             }

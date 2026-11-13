@@ -76,7 +76,7 @@
   position: relative;
   font-size: 0.8125rem;
 }
-.cta__cursor[data-phone='true'] {
+.cta__cursor[data-narrow='true'] {
   animation-direction: alternate-reverse;
 }
 @keyframes cta-drift {
@@ -114,13 +114,14 @@
   gap: 0.75rem;
 }
 
-@media (max-width: 760px) {
-  .cta__cursor[data-phone='false'] {
+/* Up to this width a cursor at the headline's side drifts across the headline or under a button. */
+@media (max-width: 960px) {
+  .cta__cursor[data-narrow='false'] {
     display: none;
   }
   /* Keep the remaining two clear of the headline and the buttons. */
-  .cta__cursor[data-phone='true'] {
-    top: var(--phone-y);
-    left: var(--phone-x);
+  .cta__cursor[data-narrow='true'] {
+    top: var(--narrow-y);
+    left: var(--narrow-x);
   }
 }

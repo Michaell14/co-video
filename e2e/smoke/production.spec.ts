@@ -76,6 +76,10 @@ test('the production build works in a browser: site, editor, a second person, ex
     expect(headers['content-security-policy']).toContain("script-src 'self'");
     expect(headers['permissions-policy']).toContain('microphone=(self)');
     await expect(page.locator('.home__hero')).toBeVisible();
+    // What the build redistributes comes with the licences it is redistributed under.
+    const notices = await page.request.get('/app/THIRD_PARTY_NOTICES.txt');
+    expect(notices.headers()['content-type']).toContain('text/plain');
+    expect(await notices.text()).toContain('SIL OPEN FONT LICENSE');
   });
 
   await test.step('a new project is shared, takes the sample and plays', async () => {

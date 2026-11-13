@@ -16,13 +16,45 @@ SwiftShader.
 
 ```bash
 pnpm format       # Prettier; CI checks it
-pnpm typecheck    # every package
-pnpm test         # unit tests (core model, edit operations, server)
+pnpm typecheck    # every package, and the tests and configuration files with them
+pnpm test         # unit tests: model, edit operations, server, editor logic
 pnpm test:e2e     # Playwright: real editor + real server + real render engine
+pnpm test:smoke   # builds everything, then opens the production build in a browser
 ```
 
+### The browser tests
+
 End-to-end tests download nothing at run time; fixtures live in `e2e/fixtures`. A few export tests
-inspect their output with `ffprobe` and skip themselves when it is not installed.
+inspect their output with `ffprobe` and skip themselves when it is not installed, and the tests
+that need a shared project skip themselves when there is no collaboration server to make one. On
+CI neither excuse holds, so there a run in which any test skipped fails, and lists what skipped
+and why.
+
+`pnpm test:e2e` uses the servers it finds on its ports (API on 8797, editor dev server on 5273)
+and starts them itself when nothing is listening. To run beside servers you have open, or to
+test a change to the server, give the run a pair of ports of its own. It then starts both
+servers from your working tree and stops them when it is done:
+
+```bash
+TANDEM_E2E_SERVER_PORT=9697 TANDEM_E2E_EDITOR_PORT=9673 pnpm test:e2e e2e/collab.spec.ts
+```
+
+The editor's dev server reloads a page when a source file is saved. A test that is running at that
+moment carries on in a page that has forgotten everything it set up, and fails in a way that has
+nothing to do with the change. Do not edit while a run is going, or have the test call
+`noReloads(page)` from `e2e/helpers.ts` before it opens the page.
+
+A test that fails leaves a folder in `test-results/` with a screenshot, the page's accessibility
+tree and a trace of everything the test did: `pnpm exec playwright show-trace` followed by the
+path of the `trace.zip` opens it. CI keeps the same folder as an artifact of the failed job.
+
+`pnpm test:smoke` is the one test of what actually ships. The rest of the suite runs on the dev
+server, which has no service worker, no Content-Security-Policy, no bundling and no `/app/` path.
+The smoke test builds the editor, the website and the server, starts the built server on port 8798
+(`TANDEM_SMOKE_PORT` changes it) and goes once through the product: the site, a shared project, a
+second person joining by link, an export, a reload with no network. It fails on any console error,
+on any request for a file the build does not have, and on anything the pages' security policy
+blocks.
 
 ## Where things live
 
@@ -53,6 +85,14 @@ in the place it has in `effects.ts`; for a transition, raise the number in that 
 "transitions" heading. `pnpm test` fails, and says which of the two it wants, until the website
 agrees with the catalogue. The feature list in `README.md` gives both counts as well, and nothing
 checks those.
+
+## Adding a dependency
+
+Whatever ends up in the editor, the website or the server is somebody's work under somebody's
+licence, and `apps/editor/public/THIRD_PARTY_NOTICES.txt` names all of it: it ships with every
+build. Add the package there, with its licence and copyright line, and the licence's text if the
+file does not have it yet. `pnpm test` fails, and says what is missing, until the notices cover
+every package a build is made from.
 
 ## Ground rules
 
