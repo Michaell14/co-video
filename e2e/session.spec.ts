@@ -159,8 +159,11 @@ function startServer(env: Record<string, string>): Promise<OwnServer> {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     cwd: SERVER_DIR,
     env: { ...process.env, HOST: '127.0.0.1', PORT: '0', MAX_CREATES_PER_HOUR: '100000', ...env },
-    stdio: ['ignore', 'pipe', 'inherit'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  // What it logs is part of what is being tested (documents it refuses), and only of interest if it dies.
+  let complaints = '';
+  child.stderr.on('data', (chunk: Buffer) => (complaints += chunk.toString()));
   const stop = (): Promise<void> =>
     new Promise((done) => {
       if (child.exitCode !== null || child.signalCode !== null) return done();
@@ -175,7 +178,9 @@ function startServer(env: Record<string, string>): Promise<OwnServer> {
       if (listening) resolve({ port: Number(listening[1]), stop });
     });
     child.once('error', reject);
-    child.once('exit', (code) => reject(new Error(`the server stopped (${code}) before it was listening`)));
+    child.once('exit', (code) =>
+      reject(new Error(`the server stopped (${code}) before it was listening: ${complaints}`)),
+    );
   });
 }
 
@@ -1677,6 +1682,67 @@ test.describe('projects, links and media', () => {
       expect(await toastCount(page, 'has reached the size the server allows')).toBe(1);
     } finally {
       await Promise.all(contexts.map((ctx) => ctx.close()));
+      await server.stop();
+    }
+  });
+
+  test('whoever loses their place in a full project is told once, for both rooms, and gets back in', async ({
+    page,
+    browser,
+  }) => {
+    // A server of this test's own on which a project has one place: one socket per room.
+    const dataDir = mkdtempSync(joinPath(tmpdir(), 'tandem-e2e-places-'));
+    const server = await startServer({ DATA_DIR: dataDir, MAX_CONNECTIONS_PER_ROOM: '1' });
+    const contexts: BrowserContext[] = [];
+    const visitor = async (link: string): Promise<Page> => {
+      const ctx = await browser.newContext();
+      contexts.push(ctx);
+      await useServer(ctx, server.port);
+      const p = await ctx.newPage();
+      await p.goto(link);
+      return p;
+    };
+    const rooms = (p: Page): Promise<string[]> =>
+      p.evaluate(() => (window as any).tandem.session.providers.map((provider: any) => provider.status));
+    try {
+      await useServer(page.context(), server.port);
+      await newProject(page);
+      expect(await meta(page)).toMatchObject({ shared: true, online: true });
+      await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Shared' }));
+      const viewerLink: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('viewer'));
+      const editorLink: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('editor'));
+      await expect.poll(async () => (await meta(page)).synced).toBe(true);
+      // The owner leaves, and a viewer takes the place.
+      await goHome(page);
+      const v = await visitor(viewerLink);
+      await v.waitForFunction(
+        () => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 1,
+      );
+      await expect.poll(() => rooms(v)).toEqual(['connected', 'connected']);
+      await watchToasts(v);
+
+      // An editor arrives: the viewer makes way in the project and in its comments at once.
+      const e = await visitor(editorLink);
+      await e.waitForFunction(
+        () => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 1,
+      );
+      await expect.poll(() => toastCount(v, 'your place went to someone with more access')).toBe(1);
+      await expect(v.locator('.toast').last()).toHaveText(
+        'This project is full, and your place went to someone with more access. Rejoining as soon as there is room…',
+      );
+      expect(await meta(v)).toMatchObject({ busy: true, role: 'viewer' });
+      // It keeps knocking and keeps being turned away, without saying anything more about it.
+      await v.waitForTimeout(7000);
+      expect(await rooms(v)).not.toContain('connected');
+      expect(await v.evaluate(() => (window as any).__toasts)).toHaveLength(1);
+      expect(await rooms(e)).toEqual(['connected', 'connected']);
+
+      // The editor leaves, and the viewer is back in both rooms by itself.
+      await e.context().close();
+      await expect.poll(() => rooms(v), { timeout: 60_000 }).toEqual(['connected', 'connected']);
+      expect(await meta(v)).toMatchObject({ busy: false, status: 'connected' });
+    } finally {
+      await Promise.all(contexts.map((ctx) => ctx.close().catch(() => undefined)));
       await server.stop();
     }
   });

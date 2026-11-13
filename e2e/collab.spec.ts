@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { clips, importFixtures, newProject, trackErrors } from './helpers';
 
 /** Everything a person's view counts in frames, and the comments everyone shares. */
@@ -42,6 +42,66 @@ function comment(page: Page, frame: number, text: string): Promise<void> {
     { frame, text },
   );
 }
+
+/**
+ * Let the pages of `context` lose the collaboration server on demand (`cutOff`, `reconnect`):
+ * while cut off, their sockets to it fail to open. The dev server's own socket is left unanswered,
+ * so a file saved while the test runs does not reload a page under it.
+ */
+const canBeCutOff = (context: BrowserContext): Promise<void> =>
+  context.addInitScript(() => {
+    const net = ((window as any).__net = { down: false });
+    window.WebSocket = new Proxy(window.WebSocket, {
+      construct(target, args) {
+        const url = String(args[0]);
+        if (/\/\?token=/.test(url)) {
+          return Object.assign(new EventTarget(), { readyState: 0, send() {}, close() {} });
+        }
+        if (!net.down || !url.includes('/ws/')) return new target(...(args as [string]));
+        const dead: any = { readyState: 3, send() {}, close() {} };
+        setTimeout(() => dead.onclose?.({ code: 1006 }), 5);
+        return dead;
+      },
+    });
+  });
+
+const cutOff = (page: Page): Promise<void> =>
+  page.evaluate(() => {
+    (window as any).__net.down = true;
+    for (const p of (window as any).tandem.session.providers) p.ws?.close();
+  });
+
+const reconnect = (page: Page): Promise<void> =>
+  page.evaluate(() => {
+    (window as any).__net.down = false;
+    window.dispatchEvent(new Event('online'));
+  });
+
+/** Start counting toasts as they appear; `toasts` then lists the ones that said `text`. */
+const watchToasts = (page: Page): Promise<void> =>
+  page.evaluate(() => {
+    const seen: string[] = ((window as any).__toasts = []);
+    new MutationObserver((records) => {
+      for (const r of records)
+        for (const n of Array.from(r.addedNodes))
+          if (n instanceof HTMLElement && n.classList.contains('toast')) seen.push(n.textContent ?? '');
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+
+const toasts = (page: Page, text: string): Promise<string[]> =>
+  page.evaluate((text) => ((window as any).__toasts as string[]).filter((t) => t.includes(text)), text);
+
+/** `start+duration text` for every title, sorted; with `tracks`, `V1:`, `V2:`, … in front. */
+const titles = (page: Page, tracks = false): Promise<string[]> =>
+  page.evaluate((tracks) => {
+    const p = (window as any).tandem.session.store.get();
+    return (Object.values(p.clips) as any[])
+      .map((c) => {
+        const track = tracks ? `V${p.tracks[c.trackId].order + 1}:` : '';
+        return `${track}${c.start}+${c.duration} ${c.text?.content}`;
+      })
+      .sort();
+  }, tracks);
 
 /** An awareness update as it travels: `[client id, clock, state]` entries. Built in the page. */
 const awarenessFrame = (entries: [number, number, unknown][]): number[] => {
@@ -532,5 +592,245 @@ test.describe('collaboration', () => {
 
     await ctxB.close();
     expect(errors).toEqual([]);
+  });
+
+  test('undo and redo say so when someone else has left nothing of a step to take back', async ({
+    page,
+    browser,
+  }) => {
+    await canBeCutOff(page.context());
+    await newProject(page);
+    const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
+    test.skip(!meta.online || !meta.shared, 'collaboration server not reachable');
+    const link: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('editor'));
+    const ctxB = await browser.newContext();
+    await canBeCutOff(ctxB);
+    const b = await ctxB.newPage();
+    await b.goto(link);
+    await b.waitForFunction(() => (window as any).tandem?.session?.getMeta().status === 'connected');
+    await watchToasts(page);
+    const undoState = () =>
+      page.evaluate(() => {
+        const { store } = (window as any).tandem.session;
+        return { canUndo: store.canUndo, canRedo: store.canRedo };
+      });
+    /** The collaborator makes a title, and this person moves it: a step that is theirs. */
+    const theirTitleMovedByMe = async (content: string, at: number): Promise<void> => {
+      await b.evaluate(
+        ({ content, at }) => {
+          const { cmd } = (window as any).tandem;
+          cmd.seek(at);
+          cmd.addText({ content });
+        },
+        { content, at },
+      );
+      await expect.poll(() => titles(page)).toContain(`${at}+150 ${content}`);
+      await page.evaluate((content) => {
+        const { session, cmd, ui } = (window as any).tandem;
+        const clip = (Object.values(session.store.get().clips) as any[]).find(
+          (c) => c.text?.content === content,
+        );
+        ui.getState().select([clip.id]);
+        cmd.nudge(30);
+        ui.getState().select([]);
+      }, content);
+      await expect.poll(() => titles(b)).toContain(`${at + 30}+150 ${content}`);
+    };
+    const theyDelete = async (content: string): Promise<void> => {
+      await b.evaluate((content) => {
+        const { session } = (window as any).tandem;
+        const clip = (Object.values(session.store.get().clips) as any[]).find(
+          (c) => c.text?.content === content,
+        );
+        session.store.commit([{ op: 'removeClip', id: clip.id }]);
+      }, content);
+      await expect.poll(async () => (await titles(page)).some((t) => t.endsWith(` ${content}`))).toBe(false);
+    };
+
+    // The only step this person has is a move of a clip that is gone: nothing to undo, and it says so.
+    await theirTitleMovedByMe('Theirs', 0);
+    await theyDelete('Theirs');
+    expect(await undoState()).toEqual({ canUndo: true, canRedo: false });
+    await page.keyboard.press('Control+z');
+    await expect
+      .poll(() => toasts(page, 'undo'))
+      .toEqual(['Nothing left to undo: someone else has changed what those steps touched.']);
+    expect(await titles(page)).toEqual([]);
+    expect(await titles(b)).toEqual([]);
+    expect(await undoState()).toEqual({ canUndo: false, canRedo: false });
+
+    // With a step of their own before it, that one is taken back, and the one passed over is counted.
+    await page.evaluate(() => {
+      const { cmd, ui } = (window as any).tandem;
+      cmd.addText({ content: 'Mine' });
+      ui.getState().select([]);
+    });
+    await theirTitleMovedByMe('Also theirs', 0);
+    await theyDelete('Also theirs');
+    await page.keyboard.press('Control+z');
+    await expect
+      .poll(() => toasts(page, 'undone'))
+      .toEqual(['1 earlier step could not be undone: someone else has changed the same things since.']);
+    expect(await titles(page)).toEqual([]);
+    await expect.poll(() => titles(b)).toEqual([]);
+
+    // Redo has the same to say: the move it would make again has nothing left to move.
+    await page.keyboard.press('Control+Shift+z');
+    expect(await titles(page)).toEqual(['0+150 Mine']);
+    await theirTitleMovedByMe('Once more', 0);
+    await page.keyboard.press('Control+z');
+    await expect.poll(() => titles(b)).toContain('0+150 Once more');
+    await theyDelete('Once more');
+    await page.keyboard.press('Control+Shift+z');
+    await expect
+      .poll(() => toasts(page, 'redo'))
+      .toEqual(['Nothing left to redo: someone else has changed what those steps touched.']);
+    expect(await titles(page)).toEqual(['0+150 Mine']);
+    // An ordinary undo and redo say nothing.
+    await page.keyboard.press('Control+z');
+    expect(await titles(page)).toEqual([]);
+    await page.keyboard.press('Control+Shift+z');
+    expect(await titles(page)).toEqual(['0+150 Mine']);
+    expect(await page.evaluate(() => (window as any).__toasts)).toHaveLength(3);
+
+    await ctxB.close();
+  });
+
+  test('clips two people put on the same frames at the same moment are moved apart by one of them', async ({
+    page,
+    browser,
+  }) => {
+    await canBeCutOff(page.context());
+    await newProject(page);
+    const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
+    test.skip(!meta.online || !meta.shared, 'collaboration server not reachable');
+    const link: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('editor'));
+    const ctxB = await browser.newContext();
+    await canBeCutOff(ctxB);
+    const b = await ctxB.newPage();
+    await b.goto(link);
+    await b.waitForFunction(() => (window as any).tandem?.session?.getMeta().status === 'connected');
+    await expect.poll(() => page.evaluate(() => (window as any).tandem.session.peers.get().length)).toBe(1);
+    const people = [page, b];
+    for (const p of people) await watchToasts(p);
+
+    /** Clips that share frames with another clip of their track. */
+    const sharing = (p: Page): Promise<number> =>
+      p.evaluate(() => {
+        const all = Object.values((window as any).tandem.session.store.get().clips) as any[];
+        return all.filter((c) =>
+          all.some(
+            (o) =>
+              o !== c &&
+              o.trackId === c.trackId &&
+              o.start < c.start + c.duration &&
+              c.start < o.start + o.duration,
+          ),
+        ).length;
+      });
+    const steps = (p: Page): Promise<number> =>
+      p.evaluate(() => (window as any).tandem.session.store.undoManager.undoStack.length);
+
+    // Neither can see the other for a moment, and each puts a title at the start of the same track.
+    for (const p of people) await cutOff(p);
+    await page.evaluate(() => {
+      const { cmd } = (window as any).tandem;
+      cmd.seek(0);
+      cmd.addText({ content: 'From the owner' });
+    });
+    await b.evaluate(() => {
+      const { cmd } = (window as any).tandem;
+      cmd.seek(0);
+      cmd.addText({ content: 'From the editor' });
+    });
+    const [placed] = await titles(page, true);
+    const track = placed.slice(0, placed.indexOf(':'));
+    expect(placed).toBe(`${track}:0+150 From the owner`);
+    expect(await titles(b, true)).toEqual([`${track}:0+150 From the editor`]);
+    const before = [await steps(page), await steps(b)];
+    for (const p of people) await reconnect(p);
+
+    // Both arrive, on top of each other; a moment later one of them has moved to a track of its own.
+    for (const p of people) {
+      await expect.poll(async () => (await titles(p)).length).toBe(2);
+      await expect.poll(() => sharing(p)).toBe(0);
+    }
+    const settled = await titles(page, true);
+    expect(await titles(b, true)).toEqual(settled);
+    expect(settled.filter((t) => t.startsWith(`${track}:0+150 `))).toHaveLength(1);
+
+    // Exactly one of the two moved a clip, and said so: the one whose clip it was.
+    const moved = 'A clip that landed on another clip was moved to a free track.';
+    await expect
+      .poll(async () => [(await toasts(page, 'landed')).length, (await toasts(b, 'landed')).length].sort())
+      .toEqual([0, 1]);
+    const mover = (await toasts(page, 'landed')).length ? page : b;
+    const other = mover === page ? b : page;
+    expect(await toasts(mover, 'landed')).toEqual([moved]);
+    const mine = mover === page ? 'From the owner' : 'From the editor';
+    expect(settled).not.toContain(`${track}:0+150 ${mine}`);
+    // It stays that way: nobody moves anything a second time.
+    await page.waitForTimeout(1500);
+    expect(await titles(page, true)).toEqual(settled);
+    expect(await titles(b, true)).toEqual(settled);
+
+    // Making way is not a step of its own. Each still has the one step of placing their title,
+    // and undoing it takes that title away, wherever it ended up.
+    expect([await steps(page), await steps(b)]).toEqual(before);
+    await other.keyboard.press('Control+z');
+    await expect.poll(() => titles(mover)).toEqual([`0+150 ${mine}`]);
+    await mover.keyboard.press('Control+z');
+    await expect.poll(() => titles(other)).toEqual([]);
+
+    await ctxB.close();
+  });
+
+  test('what the server passed over of someone’s presence is said again once the rush is over', async ({
+    page,
+    browser,
+  }) => {
+    await canBeCutOff(page.context());
+    await newProject(page);
+    const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
+    test.skip(!meta.online || !meta.shared, 'collaboration server not reachable');
+    const link: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('viewer'));
+    const ctxB = await browser.newContext();
+    await canBeCutOff(ctxB);
+    const b = await ctxB.newPage();
+    await b.goto(link);
+    await b.waitForFunction(() => (window as any).tandem?.session?.getMeta().status === 'connected');
+    const id: number = await page.evaluate(() => (window as any).tandem.session.awareness.clientID);
+    /** Where the collaborator sees this person's playhead. */
+    const seen = (): Promise<number | undefined> =>
+      b.evaluate(
+        (id) => (window as any).tandem.session.peers.get().find((x: any) => x.clientId === id)?.playhead,
+        id,
+      );
+    const clock = (): Promise<number> =>
+      page.evaluate(() => {
+        const { awareness } = (window as any).tandem.session;
+        return awareness.meta.get(awareness.clientID).clock as number;
+      });
+
+    await page.evaluate(() => (window as any).tandem.session.setPresence({ playhead: 777 }));
+    await expect.poll(seen).toBe(777);
+
+    // Two hundred updates in one go, as nothing in the editor sends them: the server relays the
+    // first few and passes over the rest, so what everyone is left looking at is not the last word.
+    const flooded: number = await page.evaluate(() => {
+      const { awareness } = (window as any).tandem.session;
+      const state = awareness.getLocalState();
+      for (let i = 0; i < 200; i++) awareness.setLocalState({ ...state, playhead: 1 });
+      return awareness.meta.get(awareness.clientID).clock;
+    });
+    await expect.poll(seen).toBe(1);
+
+    // Told that updates were passed over, the editor says where it is once more, a second later.
+    await expect.poll(seen, { timeout: 8000 }).toBe(777);
+    expect(await clock()).toBe(flooded + 1);
+    await page.waitForTimeout(2500);
+    expect(await clock()).toBe(flooded + 1);
+
+    await ctxB.close();
   });
 });

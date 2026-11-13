@@ -167,6 +167,31 @@ export function usingKeyboard(): boolean {
   return !pointer;
 }
 
+/**
+ * Hand the keyboard on from a control whose own action takes it out of the page: Close with its
+ * panel, Delete with its card. The browser lets focus fall back to the document then, where the
+ * ring is gone and a screen reader starts again from the top. Call this from the control's action;
+ * once `from` has left the page, `to` says where the person carries on, asked at that moment, when
+ * what the action leaves behind is there to choose from. Nothing happens when the control stays,
+ * when focus has moved on by itself, or for someone working with the pointer, whose presses
+ * decide about focus.
+ */
+export function handFocus(from: Element, to: () => HTMLElement | null | undefined): void {
+  if (!usingKeyboard()) return;
+  const done = () => {
+    gone.disconnect();
+    window.removeEventListener('focusin', done, true);
+  };
+  const gone = new MutationObserver(() => {
+    if (from.isConnected) return;
+    done();
+    const active = document.activeElement;
+    if (!active || active === document.body) to()?.focus();
+  });
+  gone.observe(document.body, { childList: true, subtree: true });
+  window.addEventListener('focusin', done, true);
+}
+
 /** Keys that are down, and those among them that were down while a layer opened or closed. */
 const down = new Set<string>();
 const spent = new Set<string>();

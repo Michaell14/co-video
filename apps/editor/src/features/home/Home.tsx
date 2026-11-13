@@ -4,10 +4,12 @@ import {
   FileUp,
   Film,
   FolderOpen,
+  Link2Off,
   MoreHorizontal,
   Pencil,
   Plus,
   Trash2,
+  TriangleAlert,
   Users,
   Wifi,
   WifiOff,
@@ -29,30 +31,37 @@ import { confirm } from '../../ui/confirm';
 import {
   Button,
   Dialog,
+  Labelled,
+  LabelText,
   MenuButton,
   NumberField,
   openContextMenu,
   Select,
   TextField,
+  tip,
   toast,
   type MenuEntry,
 } from '../../ui/core';
+import { COLOR_MODE_OPTIONS, describeResolution, describeSize } from '../../ui/labels';
 import { duplicateProject, projectFromFile, renameProject } from './manage';
 import './home.css';
 
 const STARTERS: {
   label: string;
-  hint: string;
   w: number;
   h: number;
   fps: [number, number];
   aspect: string;
 }[] = [
-  { label: 'Landscape', hint: '1920 × 1080 · 30 fps', w: 1920, h: 1080, fps: [30, 1], aspect: '16 / 9' },
-  { label: 'Vertical', hint: '1080 × 1920 · 30 fps', w: 1080, h: 1920, fps: [30, 1], aspect: '9 / 16' },
-  { label: '4K UHD', hint: '3840 × 2160 · 24 fps', w: 3840, h: 2160, fps: [24, 1], aspect: '16 / 9' },
-  { label: 'Square', hint: '1080 × 1080 · 30 fps', w: 1080, h: 1080, fps: [30, 1], aspect: '1 / 1' },
+  { label: 'Landscape', w: 1920, h: 1080, fps: [30, 1], aspect: '16 / 9' },
+  { label: 'Vertical', w: 1080, h: 1920, fps: [30, 1], aspect: '9 / 16' },
+  { label: '4K UHD', w: 3840, h: 2160, fps: [24, 1], aspect: '16 / 9' },
+  { label: 'Square', w: 1080, h: 1080, fps: [30, 1], aspect: '1 / 1' },
 ];
+
+/** What a card with a refused link says when asked: what happened, and where the way back is. */
+const REFUSED_LINK =
+  'The server did not accept this project’s link. Open the project and choose Share, then Try again.';
 
 function timeAgo(t: number): string {
   const s = Math.max(1, Math.round((Date.now() - t) / 1000));
@@ -65,6 +74,7 @@ function timeAgo(t: number): string {
 
 export function Home() {
   const projects = useSyncExternalStore(registry.subscribe, registry.snapshot);
+  const listSaved = useSyncExternalStore(registry.subscribe, registry.saved);
   const sorted = useMemo(() => projects.slice().sort((a, b) => b.updatedAt - a.updatedAt), [projects]);
   const [online, setOnline] = useState<boolean | null>(null);
   const [creating, setCreating] = useState(false);
@@ -174,7 +184,9 @@ export function Home() {
                 </div>
               </div>
               <div className="starter__label">{s.label}</div>
-              <div className="starter__hint mono">{s.hint}</div>
+              <div className="starter__hint mono">
+                {describeSize(s.w, s.h)} · {describeFps({ fpsNum: s.fps[0], fpsDen: s.fps[1] })} fps
+              </div>
             </button>
           ))}
           <div className="home__side">
@@ -205,6 +217,13 @@ export function Home() {
 
         <section className="home__recent">
           <h2>Recent projects {sorted.length > 0 && <span className="badge">{sorted.length}</span>}</h2>
+          {!listSaved && (
+            <p className="home__notice" role="alert">
+              <TriangleAlert />
+              This browser has no room left to save the project list. Projects and links added in this tab
+              are lost when it closes: delete a project you no longer need.
+            </p>
+          )}
           {sorted.length === 0 ? (
             <div className="home__empty">
               <FolderOpen />
@@ -264,6 +283,11 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
 
   // Only someone who may edit a shared project can rename it; the server would undo anyone else's.
   const mayRename = !p.token || !p.role || canEdit(p.role);
+  // A project whose link the server turned down is a local one for now, and looks like one. The
+  // card says what happened: the way back is inside the project, not here.
+  const refused = !p.token && registry.linkAside(p.id) !== null;
+  const whatNow = tip(REFUSED_LINK);
+  const refusedId = useId();
   const items: MenuEntry[] = [
     { label: 'Open', icon: <FolderOpen />, onSelect: () => navigate(p.id) },
     { label: 'Rename…', icon: <Pencil />, disabled: !mayRename, onSelect: () => setRenaming(true) },
@@ -283,12 +307,32 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
         if (e.currentTarget.contains(e.target as Node)) openContextMenu(e, items);
       }}
     >
-      <button className="pcard__open" onClick={() => navigate(p.id)} aria-label={`Open ${p.name}`}>
+      <button
+        className="pcard__open"
+        onClick={() => navigate(p.id)}
+        aria-label={`Open ${p.name}`}
+        aria-describedby={refused ? refusedId : undefined}
+        // The pointer asks at the badge; the keyboard can only ask at the card.
+        onFocusCapture={refused ? whatNow.onFocusCapture : undefined}
+        onBlurCapture={whatNow.onBlurCapture}
+      >
         <div className="pcard__thumb">
           {p.thumb ? <img src={p.thumb} alt="" draggable={false} /> : <Film />}
           {p.token && (
             <span className="pcard__shared badge badge--accent">
               <Users size={10} /> Shared
+            </span>
+          )}
+          {refused && (
+            <span
+              className="pcard__refused badge badge--amber"
+              onPointerEnter={whatNow.onPointerEnter}
+              onPointerLeave={whatNow.onPointerLeave}
+            >
+              <Link2Off size={10} /> Link refused
+              <span className="sr-only" id={refusedId}>
+                {REFUSED_LINK}
+              </span>
             </span>
           )}
           {p.duration > 0 && <span className="pcard__dur mono">{formatClock(p.duration)}</span>}
@@ -297,7 +341,7 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
         <div className="pcard__meta">
           <Clock size={11} /> {timeAgo(p.updatedAt)}
           <span className="mono">
-            {p.width}×{p.height} · {Number.isInteger(p.fps) ? p.fps : p.fps.toFixed(2)}
+            {describeSize(p.width, p.height)} · {describeFps({ fpsNum: p.fps, fpsDen: 1 })} fps
           </span>
         </div>
       </button>
@@ -413,17 +457,17 @@ function CustomProjectDialog({
           <span>Name</span>
           <TextField value={name} onChange={setName} autoFocus />
         </label>
-        <div className="form__row">
-          <span>Resolution</span>
+        <Labelled className="form__row">
+          <LabelText>Resolution</LabelText>
           <Select
             value={preset ? `${preset.width}x${preset.height}` : 'custom'}
             options={[
               ...RESOLUTION_PRESETS.map((r) => ({
                 value: `${r.width}x${r.height}`,
-                label: `${r.label} — ${r.width} × ${r.height}`,
+                label: describeResolution(r),
                 group: r.group,
               })),
-              { value: 'custom', label: 'Custom', group: 'Other' },
+              { value: 'custom', label: `Custom · ${describeSize(width, height)}`, group: 'Other' },
             ]}
             onChange={(v) => {
               const r = RESOLUTION_PRESETS.find((x) => `${x.width}x${x.height}` === v);
@@ -433,16 +477,15 @@ function CustomProjectDialog({
               }
             }}
           />
-        </div>
-        <div className="form__row">
-          <span>Size</span>
+        </Labelled>
+        <Labelled className="form__row">
+          <LabelText>Size</LabelText>
           <div className="form__pair">
             <NumberField
               value={width}
               onChange={(v) => setWidth(Math.round(v))}
               min={16}
               max={8192}
-              suffix="px"
               prefix="W"
             />
             <NumberField
@@ -450,31 +493,22 @@ function CustomProjectDialog({
               onChange={(v) => setHeight(Math.round(v))}
               min={16}
               max={8192}
-              suffix="px"
               prefix="H"
             />
           </div>
-        </div>
-        <div className="form__row">
-          <span>Frame rate</span>
+        </Labelled>
+        <Labelled className="form__row">
+          <LabelText>Frame rate</LabelText>
           <Select
             value={fps}
             options={FRAME_RATE_PRESETS.map((f) => ({ value: f.label, label: `${describeFps(f)} fps` }))}
             onChange={setFps}
           />
-        </div>
-        <div className="form__row">
-          <span>Colour</span>
-          <Select
-            value={color}
-            options={[
-              { value: 'sdr', label: 'SDR — Rec.709' },
-              { value: 'hdr-pq', label: 'HDR — Rec.2100 PQ (HDR10)' },
-              { value: 'hdr-hlg', label: 'HDR — Rec.2100 HLG' },
-            ]}
-            onChange={setColor}
-          />
-        </div>
+        </Labelled>
+        <Labelled className="form__row">
+          <LabelText>Colour</LabelText>
+          <Select value={color} options={COLOR_MODE_OPTIONS} onChange={setColor} />
+        </Labelled>
         <p className="form__hint">
           Everything is resolution independent, so you can change any of this later without redoing your edit.
         </p>

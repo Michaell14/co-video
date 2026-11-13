@@ -261,6 +261,28 @@
   font-weight: 600;
   letter-spacing: -0.01em;
 }
+/* A standing warning above the list it is about, for as long as it is true. */
+.home__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 720px;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: rgba(255, 181, 71, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 181, 71, 0.32);
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.home__notice svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  color: var(--amber);
+}
 .home__empty {
   display: flex;
   flex-direction: column;
@@ -327,13 +349,18 @@
 .pcard__open:hover .pcard__thumb img {
   transform: scale(1.04);
 }
-.pcard__shared {
+.pcard__shared,
+.pcard__refused {
   position: absolute;
   top: 8px;
   left: 8px;
   gap: 4px;
   backdrop-filter: blur(8px);
   background: rgba(12, 15, 4, 0.7);
+}
+/* The same dark plate under the warning colour: the poster behind it can be anything. */
+.pcard__refused {
+  background: rgba(20, 13, 2, 0.78);
 }
 .pcard__dur {
   position: absolute;

@@ -1,6 +1,6 @@
 /**
  * How a project's format is worded. The same options are offered when a project is made and in
- * its settings, and shown on cards and in the top bar: one wording for all of them.
+ * its settings, and the same sizes are shown on cards and in the top bar: one wording for all.
  */
 import type { ColorMode } from '@tandem/core';
 
