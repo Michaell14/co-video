@@ -1257,12 +1257,28 @@ test.describe('timeline', () => {
       transIn: null,
       transOut: null,
     };
+    // And two of a file the project still lists, but which is on neither this device nor a server:
+    // what a project file opened on another computer brings along.
+    const listed = await page.evaluate(
+      (id) => (window as any).tandem.session.store.get().assets[id],
+      spare.assetId,
+    );
     await commit(page, [
       { op: 'addClip', clip: { ...spare, id: 'lost', assetId: 'gone', start: 380 } },
       { op: 'addClip', clip: { ...spare, id: 'lost-short', assetId: 'gone', start: 520, duration: 10 } },
       { op: 'addClip', clip: { ...spare, id: 'short', start: 540, duration: 10 } },
+      { op: 'addAsset', asset: { ...listed, id: 'away', name: 'away.mp4', uploaded: false } },
+      { op: 'addClip', clip: { ...spare, id: 'away-long', assetId: 'away', name: 'away.mp4', start: 560 } },
+      { op: 'addClip', clip: { ...spare, id: 'away-short', assetId: 'away', start: 700, duration: 10 } },
     ]);
     await page.evaluate(() => (window as any).tandem.cmd.zoomFit());
+    // The pool marks that file offline, and the timeline goes by the same rule.
+    await expect(page.locator('.asset[aria-label="away.mp4"]')).toHaveAttribute('data-offline', 'true');
+    const away = page.locator('.clip[data-clip="away-long"]');
+    await expect(away).toHaveAttribute('data-missing', 'true');
+    await expect(away.locator('.clip__chip', { hasText: 'Offline' })).toBeVisible();
+    await expect(away).toHaveAttribute('aria-label', /^away\.mp4, V2, .*, media offline$/);
+    await expect(page.locator('.clip[data-clip="short"]')).toHaveAttribute('data-missing', 'false');
     const strip = page.locator('.clip[data-clip="lost"] .clip__label');
     await expect(strip.locator('.clip__chip', { hasText: 'Offline' })).toBeVisible();
     await expect(page.locator('.clip[data-clip="lost-short"]')).toBeVisible();
@@ -1292,6 +1308,7 @@ test.describe('timeline', () => {
       }, id);
     expect(red[0]).toBeGreaterThan(red[1] + red[2]);
     await expect.poll(() => painted('lost-short')).toEqual(red);
+    await expect.poll(() => painted('away-short')).toEqual(red);
     const healthy = await painted('short');
     expect(healthy[2]).toBeGreaterThan(healthy[0]);
   });
@@ -1478,5 +1495,583 @@ test.describe('timeline', () => {
     await page.evaluate(() => (window as any).lose.restoreContext());
     await expect(page.locator('.viewer__lost')).toHaveCount(0);
     expect(await page.evaluate(() => (window as any).tandem.session.player.contextLost)).toBe(false);
+  });
+});
+
+/** `name@start+duration` for the clips of the track labelled V1, A2, …, in order. */
+function row(page: Page, label: string): Promise<string[]> {
+  return page.evaluate((label) => {
+    const p = (window as any).tandem.session.store.get();
+    const name = (id: string) => `${p.tracks[id].kind === 'video' ? 'V' : 'A'}${p.tracks[id].order + 1}`;
+    return (Object.values(p.clips) as any[])
+      .filter((c) => name(c.trackId) === label)
+      .sort((a, b) => a.start - b.start)
+      .map((c) => `${c.name || c.type}@${c.start}+${c.duration}`);
+  }, label);
+}
+
+const THREE_SHOTS = ['testsrc.mp4@0+120', 'testsrc.webm@120+120', 'testsrc.mp4@240+120'];
+
+/**
+ * A new project with three four-second shots cut together on V1 and their linked sound on A1:
+ * testsrc.mp4, testsrc.webm and testsrc.mp4 again. `more` names further files for the pool.
+ */
+async function threeShots(page: Page, more: string[] = []): Promise<void> {
+  await newProject(page);
+  await importFixtures(page, ['testsrc.mp4', 'testsrc.webm', ...more]);
+  await page.evaluate(() => {
+    const { session, cmd, ui } = (window as any).tandem;
+    const assets = Object.values(session.store.get().assets) as any[];
+    for (const name of ['testsrc.mp4', 'testsrc.webm', 'testsrc.mp4']) {
+      cmd.addAsset(assets.find((a) => a.name === name));
+    }
+    cmd.zoomFit();
+    cmd.seek(0);
+    ui.getState().clearSelection();
+  });
+  await expect.poll(() => row(page, 'V1')).toEqual(THREE_SHOTS);
+  await expect.poll(() => row(page, 'A1')).toEqual(THREE_SHOTS);
+  await expect(page.locator('.clip')).toHaveCount(6);
+}
+
+/** The clips of a track in order, as the store has them. */
+const clipsOn = (page: Page, label: string): Promise<any[]> =>
+  page.evaluate((label) => {
+    const p = (window as any).tandem.session.store.get();
+    const name = (id: string) => `${p.tracks[id].kind === 'video' ? 'V' : 'A'}${p.tracks[id].order + 1}`;
+    return (Object.values(p.clips) as any[])
+      .filter((c) => name(c.trackId) === label)
+      .sort((a, b) => a.start - b.start);
+  }, label);
+
+const boxOf = (page: Page, id: string) => box(page, `.clip[data-clip="${id}"]`);
+
+/** What the drag in progress says a drop would do, when a modifier key makes it more than an overwrite. */
+const dropMode = (page: Page): Promise<string | null> =>
+  page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('.drop-mode')!;
+    return getComputedStyle(el).visibility === 'visible' ? el.textContent : null;
+  });
+
+const markerFrames = (page: Page): Promise<number[]> =>
+  page.evaluate(() =>
+    (Object.values((window as any).tandem.session.store.get().markers) as any[])
+      .map((m) => m.frame)
+      .sort((a, b) => a - b),
+  );
+
+const undo = async (page: Page): Promise<void> => {
+  await page.evaluate(() => (window as any).tandem.cmd.undo());
+};
+
+test.describe('timeline: keyboard, drops and marks', () => {
+  // These tests are long, and a page that reloads because someone saved a file loses the project.
+  test.beforeEach(({ page }) => page.context().routeWebSocket(/\/\?token=/, () => {}));
+
+  test('clips are a list the keyboard can walk, and a click leaves the keys to the editor', async ({
+    page,
+  }) => {
+    await sample(page);
+    const state = () =>
+      page.evaluate(() => {
+        const { session, ui } = (window as any).tandem;
+        const p = session.store.get();
+        return {
+          focus: document.activeElement?.getAttribute('aria-label') ?? null,
+          ring: document.querySelectorAll('.clip[data-focus="true"]').length,
+          selected: ui.getState().selection.map((id: string) => p.clips[id].name || p.clips[id].type),
+          frame: Math.floor(session.player.getFrame()),
+          said: document.querySelector('.lanes > [role="status"]')!.textContent,
+        };
+      });
+    const names = {
+      title: 'Edit in tandem, V2, 0:00.18 to 0:03.18',
+      dusk: 'dusk.mp4, V1, 0:00.00 to 0:04.00',
+      fractal: 'fractal.mp4, V1, 0:04.00 to 0:08.00',
+      aurora: 'aurora.mp4, V1, 0:08.00 to 0:12.00',
+    };
+
+    // Each lane is a list of its clips, each clip an option with a name; the lanes are one Tab stop.
+    await expect(page.getByRole('listbox', { name: 'Clips on V1' })).toHaveAttribute(
+      'aria-multiselectable',
+      'true',
+    );
+    await expect(page.getByRole('option', { name: names.dusk })).toHaveAttribute('aria-selected', 'false');
+    await expect(page.getByRole('option')).toHaveCount(5);
+    await expect(page.locator('.clip[tabindex="0"]')).toHaveCount(1);
+
+    // Tab comes from the track headers to one clip, which shows a ring. Enter selects it.
+    await page.locator('.th .icon-btn').last().focus();
+    await page.keyboard.press('Tab');
+    expect(await state()).toMatchObject({ focus: names.title, ring: 1, selected: [], frame: 45 });
+    await page.keyboard.press('Enter');
+    expect(await state()).toMatchObject({ focus: names.title, selected: ['Text'] });
+    await expect(page.getByRole('option', { name: names.title })).toHaveAttribute('aria-selected', 'true');
+
+    // The arrow keys go from clip to clip and the selection goes along; Shift adds. The playhead stays.
+    await page.keyboard.press('ArrowDown');
+    expect(await state()).toMatchObject({ focus: names.dusk, ring: 1, selected: ['dusk.mp4'] });
+    await page.keyboard.press('ArrowRight');
+    expect(await state()).toMatchObject({ focus: names.fractal, selected: ['fractal.mp4'] });
+    await page.keyboard.press('Shift+ArrowRight');
+    expect(await state()).toMatchObject({
+      focus: names.aurora,
+      selected: ['fractal.mp4', 'aurora.mp4'],
+      frame: 45,
+    });
+    await page.keyboard.press('Home');
+    expect(await state()).toMatchObject({ focus: names.dusk, selected: ['dusk.mp4'] });
+    expect(await page.locator('.tl__body').evaluate((el) => el.scrollLeft)).toBe(0);
+
+    // The clip's menu opens from the keyboard, at the clip, and gives the keyboard back to it.
+    await page.keyboard.press('Shift+F10');
+    await expect(menuItem(page, 'Split at playhead')).toBeVisible();
+    const placed = await page.evaluate(
+      () => document.querySelector('[role="menu"]')!.getBoundingClientRect().left,
+    );
+    const dusk = await clipBox(page, 'dusk.mp4');
+    expect(placed).toBeGreaterThanOrEqual(dusk.x);
+    expect(placed).toBeLessThan(dusk.x + 40);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[role="menu"]')).toHaveCount(0);
+    expect(await state()).toMatchObject({ focus: names.dusk, ring: 1 });
+
+    // A command of the editor's that selects another clip takes the keyboard to that clip.
+    await page.keyboard.press('Control+ArrowDown');
+    expect(await state()).toMatchObject({
+      focus: names.fractal,
+      ring: 1,
+      selected: ['fractal.mp4'],
+      said: '',
+    });
+    // Tab leaves the lanes in one step and Shift+Tab comes back to the selected clip.
+    await page.keyboard.press('Tab');
+    expect((await state()).focus).not.toBe(names.fractal);
+    await page.keyboard.press('Shift+Tab');
+    expect(await state()).toMatchObject({ focus: names.fractal, ring: 1 });
+
+    // A press of the pointer selects as before. The clip it leaves focused shows no ring, and the
+    // keys are the editor's: the arrows step through frames and Space plays.
+    const aurora = await clipBox(page, 'aurora.mp4');
+    await page.mouse.click(aurora.x + aurora.width / 2, aurora.y + 30);
+    expect(await state()).toMatchObject({ focus: names.aurora, ring: 0, selected: ['aurora.mp4'], said: '' });
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    expect(await state()).toMatchObject({ frame: 47, selected: ['aurora.mp4'], ring: 0 });
+    await page.keyboard.press('Space');
+    await expect
+      .poll(() => page.evaluate(() => (window as any).tandem.session.player.getState().playing))
+      .toBe(true);
+    await page.keyboard.press('Space');
+    // The same after its menu was opened with the pointer and closed with Escape.
+    await page.mouse.click(aurora.x + aurora.width / 2, aurora.y + 30, { button: 'right' });
+    await expect(menuItem(page, 'Split at playhead')).toBeVisible();
+    await page.keyboard.press('Escape');
+    const before = (await state()).frame;
+    await page.keyboard.press('ArrowLeft');
+    expect(await state()).toMatchObject({ frame: before - 1, ring: 0 });
+
+    // With the keyboard elsewhere, a selection made by a key is said: one clip by name, more by count.
+    const lane = await laneBox(page, 'A2');
+    await page.mouse.click(lane.x + 300, lane.y + lane.height / 2);
+    await page.evaluate(() => (window as any).tandem.cmd.seek(45));
+    const said = async () => (await state()).said;
+    await page.keyboard.press('Shift+V');
+    await expect.poll(said).toBe(names.title);
+    expect((await state()).selected).toEqual(['Text']);
+    await page.keyboard.press('Control+A');
+    await expect.poll(said).toBe('5 clips selected');
+    await page.keyboard.press('Escape');
+    await expect.poll(said).toBe('No clip selected');
+  });
+
+  test('timeline buttons have names, markers open from the keyboard, and mute is one colour everywhere', async ({
+    page,
+  }) => {
+    await sample(page);
+    await expect(page.getByRole('button', { name: 'Add video track' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add audio track' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Solo track' })).toHaveCount(2);
+    const unnamed = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.tl button'))
+        .filter((b) => !(b.getAttribute('aria-label') || b.textContent || '').trim())
+        .map((b) => b.className),
+    );
+    expect(unnamed).toEqual([]);
+    const zoom = page.getByRole('slider', { name: 'Timeline zoom' });
+    await expect(zoom).toHaveAttribute('aria-valuetext', /^\d+ (second|minute)s? in view$/);
+
+    // A marker is a button: Enter goes to it and opens its editor, Escape gives the keyboard back.
+    const marker = page.getByRole('button', { name: /^Marker .*, 00:00:04:00$/ });
+    await marker.focus();
+    await page.keyboard.press('Enter');
+    const name = page.getByLabel('Marker name');
+    await expect(name).toBeFocused();
+    expect(await page.evaluate(() => (window as any).tandem.session.player.getFrame())).toBe(120);
+    // Typing a name is one undo step, not one for each letter, and does not join the step before.
+    const markerName = () =>
+      page.evaluate(
+        () => (Object.values((window as any).tandem.session.store.get().markers) as any[])[0]?.name,
+      );
+    const original = await markerName();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('Intro');
+    expect(await markerName()).toBe('Intro');
+    await page.keyboard.press('Escape');
+    await expect(name).toHaveCount(0);
+    await expect(marker.or(page.getByRole('button', { name: /^Marker Intro/ }))).toBeFocused();
+    await undo(page);
+    expect(await markerName()).toBe(original);
+    await page.evaluate(() => (window as any).tandem.cmd.redo());
+    expect(await markerName()).toBe('Intro');
+
+    // The switch for what markers do under a ripple is beside the ripple switch.
+    const follow = page.getByRole('button', { name: 'Markers follow ripple edits' });
+    await expect(follow).toHaveAttribute('aria-pressed', 'true');
+    await follow.click();
+    await expect(follow).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.evaluate(() => (window as any).tandem.ui.getState().markersFollow)).toBe(false);
+    await follow.click();
+
+    // A picture track offers its captions; a sound track has none to offer.
+    await page
+      .locator('.th[data-kind="video"]')
+      .first()
+      .click({ button: 'right', position: { x: 60, y: 30 } });
+    await expect(menuItem(page, 'Export captions from this track')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page
+      .locator('.th[data-kind="audio"]')
+      .first()
+      .click({ button: 'right', position: { x: 60, y: 20 } });
+    await expect(menuItem(page, 'Delete track')).toBeVisible();
+    await expect(menuItem(page, 'Export captions from this track')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    // Muted is red and soloed amber, in the track's header and on its strip in the mixer.
+    await page.evaluate(() => (window as any).tandem.ui.getState().set({ workspace: 'audio' }));
+    await page.getByRole('button', { name: 'Mute track' }).first().click();
+    await page.getByRole('button', { name: 'Solo track' }).last().click();
+    const colour = (selector: string) =>
+      page
+        .locator(selector)
+        .first()
+        .evaluate((el) => getComputedStyle(el).backgroundColor);
+    // Each button eases into its colour, so each is given the time to get there.
+    for (const selector of ['.th__mute--on', '.strip__btn--mute']) {
+      await expect.poll(() => colour(selector)).toBe('rgb(255, 93, 93)');
+    }
+    for (const selector of ['.th__solo--on', '.strip__btn--solo']) {
+      await expect.poll(() => colour(selector)).toBe('rgb(255, 181, 71)');
+    }
+  });
+
+  test('a roll moves the cut of picture and sound together, and a ripple trim takes the markers along', async ({
+    page,
+  }) => {
+    await threeShots(page);
+    // Give the first cut media to roll into: the first shot ends a second early, the second begins a second in.
+    const trimmed = (label: string) =>
+      clipsOn(page, label).then(([a, b, c]) => [
+        { op: 'updateClip', id: a.id, patch: { duration: 90 } },
+        { op: 'updateClip', id: b.id, patch: { start: 90, duration: 90, sourceIn: 1 } },
+        { op: 'updateClip', id: c.id, patch: { start: 180 } },
+      ]);
+    await commit(page, [...(await trimmed('V1')), ...(await trimmed('A1'))]);
+    const { ppf } = await view(page);
+    const rollBy = async (frames: number) => {
+      const second = (await clipsOn(page, 'V1'))[1];
+      const b = await boxOf(page, second.id);
+      await page.keyboard.down('Control');
+      await dragTo(page, [b.x + 2, b.y + 40], [b.x + 2 + frames * ppf, b.y + 40]);
+      await page.mouse.up();
+      await page.keyboard.up('Control');
+    };
+    const cuts = async () => [(await row(page, 'V1')).slice(0, 2), (await row(page, 'A1')).slice(0, 2)];
+    const rolled = ['testsrc.mp4@0+105', 'testsrc.webm@105+75'];
+    const straight = ['testsrc.mp4@0+90', 'testsrc.webm@90+90'];
+
+    // With linked selection on, both cuts roll, by exactly what the pointer asked for.
+    await rollBy(15);
+    expect(await cuts()).toEqual([rolled, rolled]);
+    expect((await clipsOn(page, 'A1'))[1].sourceIn).toBeCloseTo(1.5, 5);
+    await undo(page);
+    expect(await cuts()).toEqual([straight, straight]);
+    // With it off the same drag makes a split edit: the sound cut stays.
+    await page.keyboard.press('Control+Shift+L');
+    await rollBy(15);
+    expect(await cuts()).toEqual([rolled, straight]);
+    // A sound cut that is elsewhere is left alone when the picture cut is rolled again.
+    await page.keyboard.press('Control+Shift+L');
+    await rollBy(-5);
+    expect(await cuts()).toEqual([['testsrc.mp4@0+100', 'testsrc.webm@100+80'], straight]);
+    await undo(page);
+    await undo(page);
+    expect(await cuts()).toEqual([straight, straight]);
+
+    // A ripple trim by dragging: the markers on the shots that move up move with them.
+    await commit(page, [
+      {
+        op: 'setMarker',
+        marker: { id: 'on-second', frame: 150, name: 'Second', color: '#ffb547', note: '' },
+      },
+      { op: 'setMarker', marker: { id: 'on-first', frame: 40, name: 'First', color: '#ffb547', note: '' } },
+    ]);
+    const first = (await clipsOn(page, 'V1'))[0];
+    const b = await boxOf(page, first.id);
+    await page.keyboard.down('Alt');
+    await dragTo(page, [b.x + b.width - 2, b.y + 40], [b.x + b.width - 2 - 10 * ppf, b.y + 40]);
+    await page.mouse.up();
+    await page.keyboard.up('Alt');
+    expect((await row(page, 'V1'))[0]).toBe('testsrc.mp4@0+80');
+    expect(await markerFrames(page)).toEqual([40, 140]);
+    await undo(page);
+    expect(await markerFrames(page)).toEqual([40, 150]);
+  });
+
+  test('a drop with Ctrl goes in between the clips instead of over them', async ({ page }) => {
+    await threeShots(page, ['tone.ogg']);
+    await commit(page, [
+      { op: 'setMarker', marker: { id: 'm', frame: 300, name: 'Third', color: '#ffb547', note: '' } },
+    ]);
+    const { ppf } = await view(page);
+    const v1 = await laneBox(page, 'V1');
+    const third = (await clipsOn(page, 'V1'))[2];
+    const from = await boxOf(page, third.id);
+
+    // Dragged to the front, the third shot would overwrite the first. The preview shows as much.
+    await dragTo(page, [from.x + 30, from.y + 8], [v1.x + 30 + 4 * ppf, from.y + 8], 12);
+    expect(await dropMode(page)).toBeNull();
+    // Ctrl, pressed while the pointer holds still, makes it an insert, and says so beside the pointer.
+    await page.keyboard.down('Control');
+    await expect.poll(() => dropMode(page)).toBe('Insert');
+    await page.mouse.up();
+    await page.keyboard.up('Control');
+    const reordered = ['testsrc.mp4@0+120', 'testsrc.mp4@120+120', 'testsrc.webm@240+120'];
+    expect(await row(page, 'V1')).toEqual(reordered);
+    expect(await row(page, 'A1')).toEqual(reordered);
+    expect((await clipsOn(page, 'V1'))[0].id).toBe(third.id);
+    expect(await dropMode(page)).toBeNull();
+    // The marker stays on its shot, and all of it is one step to undo.
+    expect(await markerFrames(page)).toEqual([60]);
+    await undo(page);
+    expect(await row(page, 'V1')).toEqual(THREE_SHOTS);
+    expect(await row(page, 'A1')).toEqual(THREE_SHOTS);
+    expect(await markerFrames(page)).toEqual([300]);
+
+    // Without the key the same drop overwrites, as it always did.
+    await dragTo(page, [from.x + 30, from.y + 8], [v1.x + 30 + 4 * ppf, from.y + 8], 12);
+    await page.mouse.up();
+    expect(await row(page, 'V1')).toEqual(['testsrc.mp4@0+4', 'testsrc.mp4@4+120', 'testsrc.webm@124+116']);
+    await undo(page);
+
+    // A file from the pool, dropped on the first cut with Ctrl: everything from there on makes way.
+    const a1 = await laneBox(page, 'A1');
+    const card = await box(page, '.asset[aria-label="tone.ogg"]');
+    await dragTo(page, [card.x + 40, card.y + 30], [card.x + 80, card.y + 90], 3);
+    await page.keyboard.down('Control');
+    await page.mouse.move(a1.x + 121 * ppf, a1.y + a1.height / 2, { steps: 10 });
+    await expect.poll(() => dropMode(page)).toBe('Insert');
+    await page.mouse.up();
+    await page.keyboard.up('Control');
+    expect(await row(page, 'A1')).toEqual([
+      'testsrc.mp4@0+120',
+      'tone.ogg@120+90',
+      'testsrc.webm@210+120',
+      'testsrc.mp4@330+120',
+    ]);
+    expect(await row(page, 'V1')).toEqual([
+      'testsrc.mp4@0+120',
+      'testsrc.webm@210+120',
+      'testsrc.mp4@330+120',
+    ]);
+    expect(await markerFrames(page)).toEqual([390]);
+    await undo(page);
+    expect(await row(page, 'A1')).toEqual(THREE_SHOTS);
+
+    // Paste insert does the same with what was copied, at the playhead.
+    const second = (await clipsOn(page, 'V1'))[1];
+    await page.evaluate((id) => {
+      const { ui, cmd } = (window as any).tandem;
+      ui.getState().select([id]);
+      cmd.copy();
+      cmd.seek(240);
+    }, second.id);
+    await page.keyboard.press('Control+Shift+V');
+    const pasted = [...THREE_SHOTS.slice(0, 2), 'testsrc.webm@240+120', 'testsrc.mp4@360+120'];
+    expect(await row(page, 'V1')).toEqual(pasted);
+    expect(await row(page, 'A1')).toEqual(pasted);
+  });
+
+  test('a file dropped on a clip with Alt takes its place and keeps what was done to the clip', async ({
+    page,
+  }) => {
+    await threeShots(page);
+    const [first] = await clipsOn(page, 'V1');
+    await commit(page, [
+      { op: 'updateClip', id: first.id, patch: { scaleX: 1.2, scaleY: 1.2, opacity: 0.5, fadeIn: 0 } },
+    ]);
+    const target = await boxOf(page, first.id);
+    const card = await box(page, '.asset[aria-label="testsrc.webm"]');
+    await dragTo(page, [card.x + 40, card.y + 30], [card.x + 80, card.y + 90], 3);
+    await page.keyboard.down('Alt');
+    await page.mouse.move(target.x + 60, target.y + 30, { steps: 10 });
+    await expect.poll(() => dropMode(page)).toBe('Replace');
+    await expect(page.locator(`.clip[data-clip="${first.id}"]`)).toHaveAttribute('data-hint', 'all');
+    await page.mouse.up();
+    await page.keyboard.up('Alt');
+    const shots = ['testsrc.webm@0+120', 'testsrc.webm@120+120', 'testsrc.mp4@240+120'];
+    expect(await row(page, 'V1')).toEqual(shots);
+    // Its sound came along, and nothing after it was touched.
+    expect(await row(page, 'A1')).toEqual(shots);
+    const [replaced] = await clipsOn(page, 'V1');
+    expect(replaced).toMatchObject({ id: first.id, scaleX: 1.2, opacity: 0.5, linkId: first.linkId });
+    expect(replaced.assetId).not.toBe(first.assetId);
+    await undo(page);
+    expect(await row(page, 'V1')).toEqual(THREE_SHOTS);
+    expect(await row(page, 'A1')).toEqual(THREE_SHOTS);
+  });
+
+  test('keyframes are moved and removed on the clip, and the level line follows them', async ({ page }) => {
+    await sample(page);
+    const music = await clip(page, 'pulse.ogg');
+    const key = (t: number, v: number) => ({ t, v, e: 'easeInOut' });
+    await commit(page, [
+      {
+        op: 'updateClip',
+        id: music.id,
+        patch: { keyframes: { volume: [key(60, 0), key(90, -14), key(200, -14), key(230, 0)] } },
+      },
+    ]);
+    const times = () =>
+      page.evaluate(
+        (id) =>
+          (window as any).tandem.session.store
+            .get()
+            .clips[id].keyframes.volume?.map((k: any) => k.t)
+            .join(',') ?? '',
+        music.id,
+      );
+    // The marks show on the selected clip.
+    await expect(page.locator('.clip__kf')).toHaveCount(0);
+    await page.evaluate((id) => (window as any).tandem.ui.getState().select([id]), music.id);
+    await expect(page.locator('.clip__kf')).toHaveCount(4);
+    // The bracket keys step the playhead through them.
+    const playhead = () => page.evaluate(() => (window as any).tandem.session.player.getFrame());
+    await page.evaluate(() => (window as any).tandem.cmd.seek(0));
+    await page.keyboard.press(']');
+    await page.keyboard.press(']');
+    expect(await playhead()).toBe(90);
+    await page.keyboard.press('[');
+    expect(await playhead()).toBe(60);
+    const { ppf } = await view(page);
+    const mark = async (n: number): Promise<[number, number]> => {
+      const b = await box(page, `.clip__kf >> nth=${n}`);
+      return [b.x + b.width / 2, b.y + b.height / 2];
+    };
+
+    // A click takes the playhead to the keyframe; a drag moves it in time, and the clip stays.
+    await page.mouse.click(...(await mark(1)));
+    expect(await page.evaluate(() => (window as any).tandem.session.player.getFrame())).toBe(90);
+    const [x, y] = await mark(1);
+    await dragTo(page, [x, y], [x + 40 * ppf, y - 2]);
+    await page.mouse.up();
+    expect(await times()).toBe('60,130,200,230');
+    // It stops a frame short of the next one, and the whole drag is one step to undo.
+    const [x2, y2] = await mark(1);
+    await dragTo(page, [x2, y2], [x2 + 500, y2 - 2]);
+    await page.mouse.up();
+    expect(await times()).toBe('60,199,200,230');
+    await undo(page);
+    expect(await times()).toBe('60,130,200,230');
+    expect((await clip(page, 'pulse.ogg')).start).toBe(0);
+
+    // The line drawn on the clip dips where the volume does: lower at frame 160 than at frame 20.
+    const lineAt = (frame: number) =>
+      page.evaluate(
+        ([id, frame]) => {
+          const el = document.querySelector(`.clip[data-clip="${id}"]`)!;
+          const canvas = el.closest('.lane')!.querySelector('canvas')!;
+          const r = el.getBoundingClientRect();
+          const c = canvas.getBoundingClientRect();
+          const scale = canvas.width / c.width;
+          const { ppf } = (window as any).tandem.ui.getState();
+          const x = Math.round((r.left - c.left + (frame as number) * ppf) * scale);
+          const column = canvas.getContext('2d')!.getImageData(x, 0, 1, canvas.height).data;
+          // The line is the lightest thing in its column, below the label strip.
+          let best = -1;
+          let light = 0;
+          for (let row = Math.round(20 * scale); row < canvas.height; row++) {
+            const sum = column[row * 4] + column[row * 4 + 1] + column[row * 4 + 2];
+            if (sum > light) [light, best] = [sum, row];
+          }
+          return best / scale;
+        },
+        [music.id, frame] as const,
+      );
+    await expect.poll(async () => (await lineAt(160)) - (await lineAt(20))).toBeGreaterThan(4);
+
+    // Its menu removes a keyframe.
+    await page.mouse.click(...(await mark(0)), { button: 'right' });
+    await menuItem(page, 'Delete keyframe').click();
+    expect(await times()).toBe('130,200,230');
+    await expect(page.locator('.clip__kf')).toHaveCount(3);
+  });
+
+  test('clips that lost their track or share frames with another are said, and can be put right', async ({
+    page,
+  }) => {
+    await sample(page);
+    const spare = { ...(await clip(page, 'aurora.mp4')), transIn: null, transOut: null };
+    const tracks = () =>
+      page.evaluate(() => Object.keys((window as any).tandem.session.store.get().tracks).length);
+    const hidden = () => page.evaluate(() => (window as any).tandem.session.store.hiddenClips().length);
+
+    // A clip on a track that is not there: what is left when a track is removed as a clip lands on it.
+    await commit(page, [{ op: 'addClip', clip: { ...spare, id: 'stray', trackId: 'removed', start: 500 } }]);
+    expect(await layout(page)).toEqual(SAMPLE);
+    const notice = page.locator('.tl__lost');
+    await expect(notice).toContainText('A clip has lost its track.');
+    const before = await tracks();
+    await notice.getByRole('button', { name: 'Restore to a new track' }).click();
+    await expect(notice).toHaveCount(0);
+    expect(await tracks()).toBe(before + 1);
+    expect(await layout(page)).toEqual([...SAMPLE, 'V3:video@500+120'].sort());
+    // One step: undone, the clip is without a track again and the notice is back.
+    await undo(page);
+    await expect(notice).toBeVisible();
+    expect(await tracks()).toBe(before);
+    await notice.getByRole('button', { name: 'Discard' }).click();
+    await expect(notice).toHaveCount(0);
+    expect(await hidden()).toBe(0);
+    expect(await layout(page)).toEqual(SAMPLE);
+
+    // Two clips on the same frames of a track, as two people placing them at one moment leave them.
+    await commit(page, [{ op: 'addClip', clip: { ...spare, id: 'twin', start: 30, duration: 60 } }]);
+    const marked = page.locator('.clip[data-overlap="true"]');
+    await expect(marked).toHaveCount(2);
+    const twin = page.locator('.clip[data-clip="twin"]');
+    await expect(twin).toHaveAttribute('aria-label', /overlaps another clip$/);
+    await expect(twin.locator('.clip__overlap')).toBeVisible();
+    const b = await box(page, '.clip[data-clip="twin"]');
+    await page.mouse.click(b.x + b.width / 2, b.y + 40, { button: 'right' });
+    await menuItem(page, 'Move to a free track').click();
+    await expect(marked).toHaveCount(0);
+    const moved = await page.evaluate(() => {
+      const p = (window as any).tandem.session.store.get();
+      return {
+        start: p.clips.twin.start,
+        sameTrack:
+          p.clips.twin.trackId ===
+          (Object.values(p.clips) as any[]).find((c) => c.name === 'dusk.mp4').trackId,
+      };
+    });
+    expect(moved).toEqual({ start: 30, sameTrack: false });
+    // A clip that shares frames with nothing is not offered the move.
+    const dusk = await clipBox(page, 'dusk.mp4');
+    await page.mouse.click(dusk.x + dusk.width - 20, dusk.y + 40, { button: 'right' });
+    await expect(menuItem(page, 'Split at playhead')).toBeVisible();
+    await expect(menuItem(page, 'Move to a free track')).toHaveCount(0);
+    await page.keyboard.press('Escape');
   });
 });

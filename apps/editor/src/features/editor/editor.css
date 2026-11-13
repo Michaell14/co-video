@@ -142,8 +142,8 @@
   border-radius: 2px 2px 0 0;
   background: var(--accent);
   transition:
-    transform var(--dur-3) var(--ease-out),
-    width var(--dur-3) var(--ease-out);
+    transform var(--dur-2) var(--ease-out),
+    width var(--dur-2) var(--ease-out);
 }
 
 /* Splitters live in the gaps between panels */
@@ -178,6 +178,14 @@
 }
 .resizer[data-active='true']::after {
   opacity: 0.8;
+}
+/* A splitter is all gap: with the keyboard on it, the bar it shows under the pointer is the ring. */
+.resizer:focus-visible {
+  box-shadow: none;
+}
+.resizer:focus-visible::after {
+  opacity: 1;
+  transition-delay: 0s;
 }
 
 /* ───────────────────────────────────────────────────────────── top bar ── */
@@ -307,6 +315,21 @@
 }
 .conn[data-status='readonly'] {
   color: var(--amber);
+}
+/* The work that seems to be shared is not reaching the server: said in the warning colour. */
+.conn[data-status='refused'],
+.conn[data-status='unsaved'] {
+  color: var(--amber);
+}
+.conn[data-status='refused'] i,
+.conn[data-status='unsaved'] i {
+  background: var(--amber);
+}
+button.conn {
+  transition: background var(--dur-1) ease;
+}
+button.conn:hover {
+  background: var(--bg-3);
 }
 
 .avatars {
@@ -462,11 +485,20 @@
 .section__title {
   flex: 1;
 }
+.section__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+}
+.section__actions[inert] {
+  opacity: 0.4;
+}
 .section__body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 2px 10px 12px;
+  padding: 2px var(--panel-pad, 10px) 12px;
 }
 /* Only a body its own head has opened: sections also come and go with the selection, which
    changes under a drag in the timeline. */
@@ -494,6 +526,12 @@
   color: var(--fg-2);
   font-size: var(--text-sm);
   white-space: nowrap;
+}
+/* The words are what is cut short when the column is too narrow for them. The label's box is
+   not clipped: the focus ring of a button that stands in it (a keyframe diamond, the scale link)
+   reaches outside. */
+.row__label > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -531,11 +569,12 @@
 }
 /*
  * Where some rows of a section carry a keyframe diamond, the labels of the others start where
- * theirs do. The space is the first thing a label gives up when it is too long to fit beside it.
+ * theirs do. The space is the first thing a label gives up when it is too long to fit beside it:
+ * it shrinks so much faster than the words that they are not cut until it is gone.
  */
 .section__body:has(.kf) .row__label:not(:has(.kf))::before {
   content: '';
-  flex: 0 1 12px;
+  flex: 0 100000 12px;
 }
 .row--stack {
   grid-template-columns: 1fr;
@@ -548,7 +587,7 @@
   height: 16px;
   flex: none;
   border-radius: var(--r-xs);
-  color: var(--fg-4);
+  color: var(--fg-3);
   transition:
     color var(--dur-1) ease,
     transform var(--dur-hover) var(--ease-spring);

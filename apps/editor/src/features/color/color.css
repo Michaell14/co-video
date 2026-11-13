@@ -2,15 +2,15 @@
   display: flex;
   flex-direction: column;
 }
-.color[data-readonly='true'] .color__scroll {
-  pointer-events: none;
+/* Out of reach (`inert`): no edit access, or a locked track. Dimmed, so that it also looks it. */
+.color__scroll[inert] {
   opacity: 0.7;
 }
 .color__locked {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 8px 10px 0;
+  margin: 8px var(--panel-pad, 10px) 0;
   padding: 6px 10px;
   border-radius: var(--r-md);
   background: color-mix(in srgb, var(--amber) 8%, transparent);
@@ -29,7 +29,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 8px 10px 0;
+  margin: 8px var(--panel-pad, 10px) 0;
   padding: 6px 10px;
   border-radius: var(--r-md);
   background: var(--bg-3);
@@ -54,7 +54,7 @@
   white-space: nowrap;
 }
 .color__scroll {
-  padding: 12px 10px 16px;
+  padding: 12px var(--panel-pad, 10px) 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -195,6 +195,17 @@
 .wheel[data-active='true'] .wheel__puck {
   transform: scale(1.3);
 }
+/* With the keyboard on it the puck wears the ring, and the wheel is lit as it is under a drag. */
+.wheel__puck:focus-visible {
+  box-shadow:
+    0 0 0 1.5px rgba(0, 0, 0, 0.7),
+    0 0 0 4px var(--accent);
+}
+.wheel__disc:has(.wheel__puck:focus-visible) {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.22),
+    0 0 0 3px var(--accent-soft);
+}
 .wheel__master {
   display: flex;
   height: 18px;
@@ -290,6 +301,20 @@
   stroke: var(--bg-1);
   stroke-width: 7;
 }
+/* The point as the keyboard holds it: nothing to see or to press until it has the focus, then a
+   ring around the dot. A shadow cannot be put on a line, so the ring is a wider line under it. */
+.curve__pt .curve__pt-key {
+  stroke: transparent;
+  stroke-width: 21;
+  pointer-events: none;
+  transition: none;
+}
+.curve__pt .curve__pt-key:focus-visible {
+  stroke: var(--accent-line);
+}
+.curve__pt:has(:focus-visible) .curve__pt-fill {
+  stroke: #fff;
+}
 .curve__pt:hover line {
   stroke-width: 14;
 }
@@ -305,6 +330,10 @@
   gap: 8px;
   color: var(--fg-3);
   font-size: var(--text-xs);
+}
+.curve__actions {
+  display: flex;
+  flex: none;
 }
 
 /* HDR zones */
@@ -381,7 +410,16 @@
   border-radius: 3px;
   background: #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+  /* The pointer works the fader as a whole. A press that landed on the thumb would hand it the
+     keyboard, and the arrow keys with it, which someone using the mouse means for the playhead. */
+  pointer-events: none;
   transition: transform var(--dur-1) ease;
+}
+.vfader__thumb:focus-visible {
+  background: var(--accent);
+  box-shadow:
+    0 0 0 2px rgba(0, 0, 0, 0.75),
+    0 0 0 4px var(--accent);
 }
 .vfader:hover .vfader__thumb,
 .vfader[data-active='true'] .vfader__thumb {
@@ -396,7 +434,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px;
+  padding: 6px var(--panel-pad, 10px);
 }
 .scope {
   position: relative;
@@ -407,7 +445,7 @@
   background: #000;
   box-shadow: inset 0 0 0 1px var(--line-1);
   overflow: hidden;
-  animation: fade-in var(--dur-3) ease;
+  animation: fade-in var(--dur-2) ease;
 }
 .scope canvas {
   position: absolute;

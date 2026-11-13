@@ -83,6 +83,22 @@ export const COMMANDS: Command[] = [
     run: () => cmd.nextEdit(),
     repeat: true,
   },
+  {
+    id: 'prev-keyframe',
+    title: 'Go to previous keyframe of the selection',
+    group: 'Playback',
+    keys: ['['],
+    run: () => cmd.goToKeyframe(-1),
+    repeat: true,
+  },
+  {
+    id: 'next-keyframe',
+    title: 'Go to next keyframe of the selection',
+    group: 'Playback',
+    keys: [']'],
+    run: () => cmd.goToKeyframe(1),
+    repeat: true,
+  },
   { id: 'go-start', title: 'Go to start', group: 'Playback', keys: ['home'], run: () => cmd.goStart() },
   { id: 'go-end', title: 'Go to end', group: 'Playback', keys: ['end'], run: () => cmd.goEnd() },
   {

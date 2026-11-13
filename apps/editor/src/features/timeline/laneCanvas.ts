@@ -1,5 +1,15 @@
 /** Canvas painting for a track lane: filmstrips for picture clips, waveforms for sound. */
-import { CLIP_TYPE_COLORS, dbToGain, hexToRgb, sourcePerFrame, type Clip, type Project } from '@tandem/core';
+import {
+  animated,
+  CLIP_TYPE_COLORS,
+  clipGainAt,
+  dbToGain,
+  gainToDb,
+  hexToRgb,
+  sourcePerFrame,
+  type Clip,
+  type Project,
+} from '@tandem/core';
 import { canvasTheme, type CanvasTheme } from './canvasTheme';
 import { clipWidth, LABEL_H, LABEL_MIN_W, LABEL_TINT, NARROW_W } from './layout';
 import { FilmstripCache, type TimelineMedia } from './mediaCache';
@@ -77,6 +87,7 @@ export function drawLane(
         color,
         theme,
       );
+      if (bodyH >= LEVEL_MIN_H) drawLevel(ctx, clip, { x0, visL, visR, top, bodyH, ppf }, theme);
     } else if (asset && bodyH > 8) {
       const aspect = asset.width > 0 && asset.height > 0 ? asset.width / asset.height : 16 / 9;
       const th = bodyH;
@@ -126,7 +137,13 @@ function drawWaveform(
   if (!wave) return;
   const per = sourcePerFrame(clip, project); // source seconds per frame
   const mid = g.top + g.bodyH / 2;
-  const amp = (g.bodyH / 2 - 1) * Math.min(2, dbToGain(clip.volume));
+  // The height of the waveform follows the clip's volume, through its keyframes where it has any:
+  // a stretch that is turned down looks turned down.
+  const keyed = (clip.keyframes.volume?.length ?? 0) > 0;
+  const full = g.bodyH / 2 - 1;
+  const steady = full * Math.min(2, dbToGain(clip.volume));
+  const ampAt = (x: number): number =>
+    keyed ? full * Math.min(2, dbToGain(animated(clip, 'volume', (x - g.x0) / g.ppf, clip.volume))) : steady;
   const secPerPx = per / g.ppf;
   const srcEnd = clip.sourceIn + clip.duration * per;
   const peaks = wave.peaks;
@@ -144,7 +161,7 @@ function drawWaveform(
     for (let i = a; i <= b; i++) if (peaks[i] > p) p = peaks[i];
     xs.push(x);
     // Perceptual scaling: quiet material stays visible instead of collapsing into a flat line.
-    ys.push(Math.max(0.5, Math.pow(Math.min(1, p), 0.6) * amp));
+    ys.push(Math.max(0.5, Math.pow(Math.min(1, p), 0.6) * ampAt(x)));
   }
   ctx.beginPath();
   ctx.moveTo(xs[0], mid - ys[0]);
@@ -182,5 +199,58 @@ function drawWaveform(
       ctx.fillStyle = theme.pending;
       ctx.fillRect(Math.max(g.visL, loadedX), g.top, g.visR - Math.max(g.visL, loadedX), g.bodyH);
     }
+  }
+}
+
+/** The lowest a lane's body can be for the level line to say anything, in CSS pixels. */
+const LEVEL_MIN_H = 18;
+/** The levels at the bottom and at the top of a clip's body, in decibels. */
+const LEVEL_FLOOR = -48;
+const LEVEL_CEILING = 12;
+
+/** How far up a clip's body the level line runs for a gain: 0 at the floor, 1 at the ceiling. */
+export function levelHeight(gain: number): number {
+  const db = Math.min(LEVEL_CEILING, Math.max(LEVEL_FLOOR, gainToDb(gain)));
+  return (db - LEVEL_FLOOR) / (LEVEL_CEILING - LEVEL_FLOOR);
+}
+
+/**
+ * The level line of a sound clip: how loud the clip is played over its length, from its volume,
+ * the keyframes on it and its fades. A dip under dialogue shows as a dip, and a keyframe on the
+ * volume as a point on the line.
+ */
+function drawLevel(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  g: { x0: number; visL: number; visR: number; top: number; bodyH: number; ppf: number },
+  theme: CanvasTheme,
+): void {
+  // What the line shows is the level set on the clip, also while the clip is switched off.
+  const heard = clip.enabled && !clip.audioMuted ? clip : { ...clip, enabled: true, audioMuted: false };
+  const room = g.bodyH - 4;
+  const yAt = (frame: number): number =>
+    g.top + 2 + room * (1 - levelHeight(clipGainAt(heard, Math.min(clip.duration, Math.max(0, frame)))));
+  const from = Math.floor(g.visL);
+  const to = Math.ceil(g.visR);
+  ctx.beginPath();
+  for (let x = from; x <= to; x += 2) {
+    const y = yAt((x - g.x0) / g.ppf);
+    if (x === from) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = theme.levelEdge;
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.strokeStyle = theme.level;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = theme.level;
+  for (const k of clip.keyframes.volume ?? []) {
+    const x = g.x0 + k.t * g.ppf;
+    if (k.t < 0 || k.t > clip.duration || x < g.visL - 3 || x > g.visR + 3) continue;
+    ctx.beginPath();
+    ctx.arc(x, yAt(k.t), 2.5, 0, Math.PI * 2);
+    ctx.fill();
   }
 }

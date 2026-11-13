@@ -3,14 +3,16 @@
   flex-direction: column;
   animation: fade-in var(--dur-2) ease;
 }
-.mixer[data-readonly='true'] {
-  pointer-events: none;
-  opacity: 0.75;
+/* Out of reach for someone who may not edit (`inert`), and dimmed so that it also looks it. The
+   panel itself is left alone: it still scrolls, and the mix meter still reads. */
+.strip[inert],
+.mixer__fx[inert] {
+  opacity: 0.7;
 }
 .mixer__strips {
   display: flex;
   gap: 6px;
-  padding: 10px;
+  padding: 10px var(--panel-pad, 10px);
   overflow-x: auto;
   flex: 1 0 auto;
 }
@@ -138,7 +140,16 @@
   box-shadow:
     0 2px 5px rgba(0, 0, 0, 0.6),
     inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+  /* The pointer works the fader as a whole. A press that landed on the cap would hand it the
+     keyboard, and the arrow keys with it, which someone using the mouse means for the playhead. */
+  pointer-events: none;
   transition: filter var(--dur-1) ease;
+}
+.fader__cap:focus-visible {
+  box-shadow: var(--ring);
+}
+.fader:has(.fader__cap:focus-visible) .fader__cap::after {
+  background: var(--accent-press);
 }
 .fader__cap::after {
   content: '';
@@ -225,7 +236,7 @@
 }
 .mixer__fx {
   flex: none;
-  margin: 0 10px 10px;
+  margin: 0 var(--panel-pad, 10px) 10px;
   padding: 6px 10px 10px;
   border-radius: var(--r-md);
   background: var(--bg-3);

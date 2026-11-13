@@ -98,7 +98,7 @@ test.describe('inspector', () => {
     await select(page, [dusk.id]);
     await inspector(page).locator('.section__head', { hasText: 'Speed' }).click();
     const speed = inspector(page).locator('.section', { hasText: 'Presets' });
-    const field = speed.getByLabel('Speed', { exact: true });
+    const field = speed.getByRole('textbox', { name: 'Speed', exact: true });
     await speed.getByText('Duration').scrollIntoViewIfNeeded();
     const depth = await undoDepth(page);
 
@@ -312,7 +312,8 @@ test.describe('inspector', () => {
     const title = await clip(page, 'title');
     await select(page, [dusk.id]);
     const insp = inspector(page);
-    const field = async (label: string) => box(insp.getByLabel(label, { exact: true }).locator('..'));
+    const field = async (label: string) =>
+      box(insp.getByRole('textbox', { name: label, exact: true }).locator('..'));
     // The linked Scale row has its link toggle in the label, so its field lines up with the rest.
     const scale = await field('Scale');
     const rotation = await field('Rotation');

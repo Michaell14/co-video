@@ -22,7 +22,7 @@ import {
   Undo2,
 } from 'lucide-react';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { describeSettings, initials } from '@tandem/core';
+import { describeSettings, initials, type Role } from '@tandem/core';
 import { Logo, navigate } from '../../App';
 import {
   useComments,
@@ -33,8 +33,26 @@ import {
   useUndoState,
 } from '../../session/hooks';
 import { cmd } from '../../state/commands';
+import { COMMANDS } from '../../state/shortcuts';
 import { useUI } from '../../state/ui';
-import { Button, IconButton, MenuButton, Segmented, tip } from '../../ui/core';
+import { Button, IconButton, MenuButton, Segmented, tip, type MenuEntry } from '../../ui/core';
+
+/** What a person in the project may do, as the Share dialog words the access a link gives. */
+const ACCESS: Record<Role, string> = {
+  owner: 'owner',
+  editor: 'can edit',
+  commenter: 'can comment',
+  viewer: 'can view',
+};
+
+/**
+ * A menu entry for a command of the catalogue: it carries the name and the key the shortcut sheet
+ * and the palette show for it.
+ */
+function command(id: string, more: { disabled?: boolean } = {}): MenuEntry {
+  const c = COMMANDS.find((entry) => entry.id === id);
+  return c && { label: c.title, keys: c.keys?.[0], onSelect: c.run, ...more };
+}
 
 export function TopBar() {
   const session = useSession();
@@ -43,6 +61,8 @@ export function TopBar() {
   const { canUndo, canRedo } = useUndoState();
   const workspace = useUI((s) => s.workspace);
   const commentsOpen = useUI((s) => s.commentsOpen);
+  const attributes = useUI((s) => s.attributes);
+  const markersFollow = useUI((s) => s.markersFollow);
   const set = useUI((s) => s.set);
   const comments = useComments();
   const open = comments.filter((c) => !c.resolved).length;
@@ -55,32 +75,51 @@ export function TopBar() {
     document.title = `${settings.name} — Tandem`;
   }, [settings.name]);
 
-  const status = !meta.shared ? 'local' : !session.canEdit ? 'readonly' : meta.status;
+  // A project whose link the server refused runs as a local one, and one the server has stopped
+  // taking changes for still looks connected: both are said first, because in both the work that
+  // seems to be shared is not.
+  const status = !meta.shared
+    ? meta.refusedLink !== null
+      ? 'refused'
+      : 'local'
+    : meta.notSaving !== null
+      ? 'unsaved'
+      : !session.canEdit
+        ? 'readonly'
+        : meta.status;
   // Edits reach the others at once, media only when its upload is through: say which it is.
   const media = useUploads();
   const uploads = status === 'connected' ? media : 'done';
   const statusLabel =
     status === 'local'
       ? 'Saved on this device'
-      : status === 'readonly'
-        ? meta.role === 'commenter'
-          ? 'Comment-only access'
-          : 'View-only access'
-        : status === 'connected'
-          ? uploads === 'stopped'
-            ? 'Media not uploaded'
-            : uploads === 'running'
-              ? 'Uploading media…'
-              : 'All changes synced'
-          : status === 'connecting'
-            ? 'Reconnecting…'
-            : 'Offline — changes will sync';
+      : status === 'refused'
+        ? 'Not syncing: link refused'
+        : status === 'unsaved'
+          ? 'Not saving to the server'
+          : status === 'readonly'
+            ? meta.role === 'commenter'
+              ? 'Comment-only access'
+              : 'View-only access'
+            : status === 'connected'
+              ? uploads === 'stopped'
+                ? 'Media not uploaded'
+                : uploads === 'running'
+                  ? 'Uploading media…'
+                  : 'All changes synced'
+              : status === 'connecting'
+                ? 'Reconnecting…'
+                : 'Offline — changes will sync';
   const statusTip =
-    uploads === 'stopped'
-      ? 'Your edits are synced, but some media has not reached the server. The media pool marks the files; click a mark to try again.'
-      : uploads === 'running'
-        ? 'Your edits are synced. Collaborators see the media as soon as its upload is through.'
-        : statusLabel;
+    status === 'refused'
+      ? 'The server did not accept this project’s link. Open Share to try it again.'
+      : status === 'unsaved'
+        ? (meta.notSaving ?? statusLabel)
+        : uploads === 'stopped'
+          ? 'Your edits are synced, but some media has not reached the server. The media pool marks the files; click a mark to try again.'
+          : uploads === 'running'
+            ? 'Your edits are synced. Collaborators see the media as soon as its upload is through.'
+            : statusLabel;
 
   return (
     <header className="topbar">
@@ -138,6 +177,29 @@ export function TopBar() {
               onSelect: () => void cmd.replaceWithProjectFile(),
             },
             { label: 'Version history…', icon: <History />, onSelect: () => set({ dialog: 'versions' }) },
+            'separator',
+            { heading: 'Edit' },
+            command('select-under'),
+            command('select-next'),
+            command('select-prev'),
+            command('paste-grade', { disabled: !attributes?.look }),
+            command('paste-effects', { disabled: !attributes?.look }),
+            command('paste-transform', { disabled: !attributes?.look }),
+            command('paste-sound', { disabled: !attributes?.sound }),
+            { heading: 'Mark' },
+            command('mark-clip'),
+            command('go-in'),
+            command('go-out'),
+            {
+              label: 'Markers follow ripple edits',
+              checked: markersFollow,
+              onSelect: () => cmd.toggleMarkersFollow(),
+            },
+            { heading: 'Timeline' },
+            command('trim-edge-left'),
+            command('trim-edge-right'),
+            command('extend-edit'),
+            command('default-transition'),
             'separator',
             { label: 'Project settings…', icon: <Settings2 />, onSelect: () => set({ dialog: 'project' }) },
             {
@@ -218,6 +280,7 @@ export function TopBar() {
 
       <div className="topbar__center">
         <Segmented
+          ariaLabel="Workspace"
           value={workspace}
           onChange={(v) => set({ workspace: v })}
           options={[
@@ -235,10 +298,22 @@ export function TopBar() {
       </div>
 
       <div className="topbar__right">
-        <div className="conn" data-status={status} data-uploads={uploads} {...tip(statusTip)}>
-          <i />
-          <span>{statusLabel}</span>
-        </div>
+        {status === 'refused' ? (
+          <button
+            className="conn"
+            data-status={status}
+            onClick={() => set({ dialog: 'share' })}
+            {...tip(statusTip)}
+          >
+            <i />
+            <span>{statusLabel}</span>
+          </button>
+        ) : (
+          <div className="conn" data-status={status} data-uploads={uploads} {...tip(statusTip)}>
+            <i />
+            <span>{statusLabel}</span>
+          </div>
+        )}
         <Presence />
         <IconButton
           label="Comments"
@@ -305,7 +380,7 @@ function Presence() {
           {...tip(
             following === p.clientId
               ? `Following ${p.user.name} — click to stop`
-              : `${p.user.name} · click to follow`,
+              : `${p.user.name} · ${ACCESS[p.role]} · click to follow`,
           )}
         >
           {initials(p.user.name)}

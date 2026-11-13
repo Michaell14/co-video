@@ -2,7 +2,16 @@
  * Moving clips so that they go in between the others instead of over them: the drop that puts shot
  * three before shot one. Pure functions of the project, so they can be tested without a browser.
  */
-import { clipEnd, clipsOnTrack, trackLabel, type Clip, type Edit, type ID, type Placement, type Project } from '@tandem/core';
+import {
+  clipEnd,
+  clipsOnTrack,
+  trackLabel,
+  type Clip,
+  type Edit,
+  type ID,
+  type Placement,
+  type Project,
+} from '@tandem/core';
 import type { RippleSpan } from '../../state/edits';
 
 export interface InsertMove {
@@ -30,7 +39,7 @@ function tracksTakingPart(p: Project, moved: readonly Clip[], placements: readon
     if (!on) groups.set(c.linkId, (on = new Set()));
     on.add(c.trackId);
   }
-  for (let grown = true; grown; ) {
+  for (let grown = true; grown;) {
     grown = false;
     for (const on of groups.values()) {
       if (![...on].some((id) => tracks.has(id))) continue;

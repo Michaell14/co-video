@@ -16,7 +16,7 @@ import {
   Unlink2,
   SlidersHorizontal,
 } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   clipEnd,
   DEFAULT_MASK,
@@ -30,27 +30,35 @@ import {
   removeEffect,
   setEffectParam,
   TEXT_ANIMATIONS,
+  TRANSITION_CATEGORIES,
   TRANSITIONS,
   type BlendMode,
   type Clip,
   type FitMode,
   type Mask,
-  type Project,
+  type ProjectSettings,
   type ShapeProps,
   type TextProps,
   type Transition,
 } from '@tandem/core';
 import { isNeutralGrade } from '@tandem/engine';
 import { FONTS, fontByFamily } from '../../fonts';
-import { currentSession, useLiveProject, useSession, useThrottledFrame } from '../../session/hooks';
+import { currentSession, useSession, useSessionMeta } from '../../session/hooks';
 import { cmd, effectiveSelection } from '../../state/commands';
 import { beginGesture, commit, patchClips, setClipValues } from '../../state/props';
-import { speedEdits, speedGesture, speedStepped, type SpeedGesture } from '../../state/timing';
+import {
+  speedEdits,
+  speedGesture,
+  speedGestureCutShort,
+  speedStepped,
+  type SpeedGesture,
+} from '../../state/timing';
 import { useUI } from '../../state/ui';
 import {
   Button,
   ColorField,
   IconButton,
+  KEY_RUN_MS,
   Labelled,
   LabelText,
   MenuButton,
@@ -62,6 +70,7 @@ import {
   TextField,
   tip,
 } from '../../ui/core';
+import { handFocus, usingKeyboard } from '../../ui/layers';
 import {
   KeyframeButton,
   KeyframeNav,
@@ -72,6 +81,7 @@ import {
   TimecodeField,
   valueOf,
 } from './controls';
+import { useLiveClips, useLiveSelect, usePlayheadTick } from './live';
 import { ProjectSettingsForm } from './ProjectSettings';
 import './inspector.css';
 
@@ -97,25 +107,31 @@ const BLEND_MODES: { value: BlendMode; label: string; group: string }[] = [
 ];
 
 export function Inspector() {
-  const session = useSession();
-  const project = useLiveProject((p) => p);
+  const readOnly = !useSession().canEdit;
+  // Access can change while the panel is open.
+  useSessionMeta();
   const selection = useUI((s) => s.selection);
   const selTrans = useUI((s) => s.selectedTransition);
-  // Re-read animated values as the playhead moves.
-  useThrottledFrame(10);
-  const clips = selection.map((id) => project.clips[id]).filter(Boolean);
-  const readOnly = !session.canEdit;
+  // The panel is drawn again when what it shows changes, not with every edit elsewhere in the
+  // project, and with the playhead only while a value it shows is animated.
+  const clips = useLiveClips(selection);
+  const transClip = useLiveSelect((p) => (selTrans ? p.clips[selTrans.clipId] : undefined));
+  const settings = useLiveSelect((p) => p.settings);
+  usePlayheadTick(clips.some((c) => Object.values(c.keyframes).some((keys) => keys.length > 0)));
+  // An effect that was asked to be shown has been by now, if it is on the clip in the panel.
+  const revealed = useUI((s) => s.revealEffects);
+  useEffect(() => {
+    if (revealed.length) useUI.getState().set({ revealEffects: [] });
+  }, [revealed]);
 
   let title = 'Project';
   let body: React.ReactNode;
-  if (selTrans && project.clips[selTrans.clipId]) {
+  if (selTrans && transClip) {
     title = 'Transition';
-    body = (
-      <TransitionInspector project={project} clip={project.clips[selTrans.clipId]} side={selTrans.side} />
-    );
+    body = <TransitionInspector settings={settings} clip={transClip} side={selTrans.side} />;
   } else if (clips.length) {
     title = clips.length === 1 ? clips[0].name || labelFor(clips[0]) : `${clips.length} clips`;
-    body = <ClipInspector project={project} clips={clips} />;
+    body = <ClipInspector settings={settings} clips={clips} />;
   } else {
     body = (
       <div className="insp__project">
@@ -136,18 +152,28 @@ export function Inspector() {
         <span className="panel__spacer" />
         {readOnly && <span className="badge badge--amber">Read only</span>}
       </div>
-      <div className="panel__body insp" data-readonly={readOnly}>
-        {body}
-      </div>
+      <div className="panel__body insp">{body}</div>
     </>
   );
 }
 
 const labelFor = (c: Clip) => (c.type === 'text' ? 'Text' : c.type[0].toUpperCase() + c.type.slice(1));
 
+/**
+ * The label of a row in a group that a switch turns on: the colour of the outline, of the shadow.
+ * On screen the group is plain from where the row stands. Read out, the row is on its own, and a
+ * panel would hold three controls called Colour: there its name begins with the group's.
+ */
+const part = (of: string, label: string): ReactNode => (
+  <>
+    <span className="sr-only">{of} </span>
+    {label}
+  </>
+);
+
 // ───────────────────────────────────────────────────────────────── clips ──
 
-function ClipInspector({ project, clips }: { project: Project; clips: Clip[] }) {
+function ClipInspector({ settings, clips }: { settings: ProjectSettings; clips: Clip[] }) {
   const visual = clips.filter((c) => c.type !== 'audio');
   const media = clips.filter((c) => c.type === 'video' || c.type === 'image');
   const audio = clips.filter((c) => c.type === 'audio');
@@ -156,16 +182,16 @@ function ClipInspector({ project, clips }: { project: Project; clips: Clip[] }) 
   const first = clips[0];
   return (
     <div className="rows">
-      <ClipSection clips={clips} project={project} />
+      <ClipSection clips={clips} settings={settings} />
       {first.type === 'text' && first.text && clips.length === 1 && <TextSection clip={first} />}
       {first.type === 'shape' && first.shape && clips.length === 1 && <ShapeSection clip={first} />}
       {first.type === 'solid' && clips.length === 1 && <SolidSection clip={first} />}
-      {transformable.length > 0 && <TransformSection clips={transformable} project={project} />}
+      {transformable.length > 0 && <TransformSection clips={transformable} settings={settings} />}
       {visual.length > 0 && <CompositeSection clips={visual} />}
       {media.length > 0 && <CropSection clips={media} />}
       {visual.length > 0 && <MaskSection clips={visual} />}
-      {timed.length > 0 && <SpeedSection clips={timed} project={project} />}
-      {audio.length > 0 && <AudioSection clips={audio} project={project} />}
+      {timed.length > 0 && <SpeedSection clips={timed} settings={settings} />}
+      {audio.length > 0 && <AudioSection clips={audio} settings={settings} />}
       {visual.length > 0 && <ColorSummary clips={visual} />}
       {visual.length === 1 && <EffectsSection key={visual[0].id} clip={visual[0]} />}
     </div>
@@ -173,10 +199,9 @@ function ClipInspector({ project, clips }: { project: Project; clips: Clip[] }) 
 }
 
 /** What the clip is called and where it sits: name, start and length, by number. */
-function ClipSection({ clips, project }: { clips: Clip[]; project: Project }) {
+function ClipSection({ clips, settings: s }: { clips: Clip[]; settings: ProjectSettings }) {
   const first = clips[0];
   const ids = clips.map((c) => c.id);
-  const s = project.settings;
   return (
     <Section id="clip" title="Clip">
       {/* A title is known by its text, which is what the timeline shows for it. */}
@@ -216,11 +241,11 @@ function ClipSection({ clips, project }: { clips: Clip[]; project: Project }) {
   );
 }
 
-function TransformSection({ clips, project }: { clips: Clip[]; project: Project }) {
+function TransformSection({ clips, settings }: { clips: Clip[]; settings: ProjectSettings }) {
   const ids = clips.map((c) => c.id);
   const [linked, setLinked] = useState(true);
   const first = clips[0];
-  const { width, height } = project.settings;
+  const { width, height } = settings;
   const reset = () =>
     patchClips(ids, (c) => ({
       x: 0,
@@ -521,7 +546,7 @@ function MaskSection({ clips }: { clips: Clip[] }) {
   );
 }
 
-function SpeedSection({ clips, project }: { clips: Clip[]; project: Project }) {
+function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSettings }) {
   const first = clips[0];
   // Folded for a clip that plays at normal speed, and opened once it no longer does. It never folds
   // by itself while the clip is shown: a drag that passes through 100% would lose the section from
@@ -534,16 +559,38 @@ function SpeedSection({ clips, project }: { clips: Clip[]; project: Project }) {
   // ends, not the way there. The slider's double-click reset comes without a start of its own, so
   // it belongs to the press before it.
   const gesture = useRef<SpeedGesture | null>(null);
+  const offer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const begin = () => {
     gesture.current = null;
+    clearTimeout(offer.current);
   };
+  // With ripple editing on, what follows the clips moves with their ends, as it does for the
+  // speed presets and the clip menu. Without it a clip stops at the next one.
   const change = (speed: number) => {
     const store = currentSession()?.store;
     if (!store) return;
-    const g = speedGesture(gesture.current, store.get(), effectiveSelection(store.get()));
+    const { rippleMode, markersFollow } = useUI.getState();
+    const g = speedGesture(gesture.current, store.get(), effectiveSelection(store.get()), {
+      ripple: rippleMode,
+      markers: markersFollow,
+    });
     if (g !== gesture.current) beginGesture();
     commit(speedEdits(g, store.get(), speed), true);
     gesture.current = speedStepped(g, store.get());
+  };
+  // A gesture that left a clip cut short at the next one says so, and offers to make room.
+  const end = () => {
+    const g = gesture.current;
+    clearTimeout(offer.current);
+    if (!g || g.ripple) return;
+    const say = () => {
+      const store = currentSession()?.store;
+      if (store) cmd.offerSpeedRoom(speedGestureCutShort(g, store.get()));
+    };
+    // Every arrow key pressed in the number field is a gesture of its own: the offer waits until
+    // the keys have rested, as a run of them on the slider does.
+    if (usingKeyboard()) offer.current = setTimeout(say, KEY_RUN_MS);
+    else say();
   };
   return (
     <Section id="speed" title="Speed" defaultCollapsed={shown.folded}>
@@ -553,13 +600,16 @@ function SpeedSection({ clips, project }: { clips: Clip[]; project: Project }) {
           min={-3}
           max={4}
           onStart={begin}
+          onEnd={end}
           onChange={(v) => change(Math.round(Math.pow(2, v) * 100) / 100)}
           origin={0}
           defaultValue={0}
+          valueText={(v) => `${Math.round(2 ** v * 100)}%`}
         />
         <NumberField
           value={first.speed}
           onStart={begin}
+          onEnd={end}
           onChange={change}
           min={0.05}
           max={100}
@@ -582,16 +632,16 @@ function SpeedSection({ clips, project }: { clips: Clip[]; project: Project }) {
         <Switch checked={first.reverse} onChange={(r) => cmd.setReverse(r)} label="Reverse" />
       </Row>
       <Row label="Duration">
-        <span className="mono insp__read">{formatTimecode(first.duration, project.settings)}</span>
+        <span className="mono insp__read">{formatTimecode(first.duration, settings)}</span>
       </Row>
     </Section>
   );
 }
 
-function AudioSection({ clips, project }: { clips: Clip[]; project: Project }) {
+function AudioSection({ clips, settings }: { clips: Clip[]; settings: ProjectSettings }) {
   const ids = clips.map((c) => c.id);
   const first = clips[0];
-  const fps = project.settings.fpsNum / project.settings.fpsDen;
+  const fps = settings.fpsNum / settings.fpsDen;
   const fade = (key: 'fadeIn' | 'fadeOut', label: string) => (
     <Row label={label}>
       <Slider
@@ -656,7 +706,7 @@ function AudioSection({ clips, project }: { clips: Clip[]; project: Project }) {
       <Row label="Loudness">
         <MenuButton
           className="btn btn--sm"
-          label="Normalize loudness"
+          label="Normalise loudness"
           items={[
             { heading: 'Set the gain so the clip plays at' },
             { label: '−14 LUFS · streaming, social', onSelect: () => void cmd.normalizeLoudness(-14) },
@@ -664,7 +714,7 @@ function AudioSection({ clips, project }: { clips: Clip[]; project: Project }) {
             { label: '−23 LUFS · broadcast (EBU R 128)', onSelect: () => void cmd.normalizeLoudness(-23) },
           ]}
         >
-          Normalize…
+          Normalise…
         </MenuButton>
       </Row>
     </Section>
@@ -704,6 +754,13 @@ function EffectsSection({ clip }: { clip: Clip }) {
   // An effect slides into the list when it is added. Those the clip had when it was selected are
   // simply there: a press that starts a drag in the timeline selects, and nothing else may move.
   const [had] = useState(() => new Set(clip.effects.map((fx) => fx.id)));
+  // The effect someone has just added from the library, the palette or by dropping it on the
+  // clip. The section is the last of the panel and usually out of view: the new effect is brought
+  // into it, where its controls and its arrival can be seen. Only what was asked for here moves
+  // the panel: an effect a collaborator adds, or one an undo brings back, leaves it where it is.
+  const asked = useUI((s) => s.revealEffects);
+  const shown = clip.effects.find((fx) => asked.includes(fx.id))?.id;
+  const reveal = useCallback((el: HTMLDivElement | null) => el?.scrollIntoView({ block: 'nearest' }), []);
   const move = (i: number, dir: -1 | 1) => {
     const list = clip.effects.slice();
     const j = i + dir;
@@ -714,6 +771,7 @@ function EffectsSection({ clip }: { clip: Clip }) {
   return (
     <Section
       id="effects"
+      open={shown !== undefined}
       title={
         <>
           Effects{' '}
@@ -751,6 +809,7 @@ function EffectsSection({ clip }: { clip: Clip }) {
         return (
           <div
             key={fx.id}
+            ref={fx.id === shown ? reveal : undefined}
             className="fxitem"
             data-off={!fx.enabled}
             data-added={!had.has(fx.id) || undefined}
@@ -780,7 +839,19 @@ function EffectsSection({ clip }: { clip: Clip }) {
               <IconButton
                 small
                 label="Remove effect"
-                onClick={() => patchClips(ids, (c) => removeEffect(c, fx.id))}
+                onClick={(e) => {
+                  // The button goes with its effect. The keyboard moves on to the effect that takes
+                  // its place, or to the last one, or to where effects are added from.
+                  const section = e.currentTarget.closest('.section');
+                  handFocus(e.currentTarget, () => {
+                    const left = section?.querySelectorAll<HTMLElement>('[aria-label="Remove effect"]');
+                    return (
+                      left?.[Math.min(i, left.length - 1)] ??
+                      section?.querySelector<HTMLElement>('[aria-label="Browse effects"]')
+                    );
+                  });
+                  patchClips(ids, (c) => removeEffect(c, fx.id));
+                }}
               >
                 <Trash2 />
               </IconButton>
@@ -831,7 +902,7 @@ function TextSection({ clip }: { clip: Clip }) {
     patchClips(ids, (c) => ({ text: { ...(c.text ?? DEFAULT_TEXT), ...patch } }), merge);
   const font = fontByFamily(t.font) ?? FONTS[0];
   const num = (
-    label: string,
+    label: ReactNode,
     value: number,
     apply: (v: number) => Partial<TextProps>,
     min: number,
@@ -968,24 +1039,31 @@ function TextSection({ clip }: { clip: Clip }) {
         </Row>
         {t.gradient.enabled && (
           <div className="subrows">
-            <Row label="From">
+            <Row label={part('Gradient', 'From')}>
               <ColorField
                 value={t.gradient.from}
                 onChange={(from) => set({ gradient: { ...t.gradient, from } }, true)}
                 onStart={beginGesture}
               />
             </Row>
-            <Row label="To">
+            <Row label={part('Gradient', 'To')}>
               <ColorField
                 value={t.gradient.to}
                 onChange={(to) => set({ gradient: { ...t.gradient, to } }, true)}
                 onStart={beginGesture}
               />
             </Row>
-            {num('Angle', t.gradient.angle, (angle) => ({ gradient: { ...t.gradient, angle } }), 0, 360, {
-              precision: 0,
-              suffix: '°',
-            })}
+            {num(
+              part('Gradient', 'Angle'),
+              t.gradient.angle,
+              (angle) => ({ gradient: { ...t.gradient, angle } }),
+              0,
+              360,
+              {
+                precision: 0,
+                suffix: '°',
+              },
+            )}
           </div>
         )}
         <Row label="Outline">
@@ -997,17 +1075,24 @@ function TextSection({ clip }: { clip: Clip }) {
         </Row>
         {t.stroke.enabled && (
           <div className="subrows">
-            <Row label="Colour">
+            <Row label={part('Outline', 'Colour')}>
               <ColorField
                 value={t.stroke.color}
                 onChange={(color) => set({ stroke: { ...t.stroke, color } }, true)}
                 onStart={beginGesture}
               />
             </Row>
-            {num('Width', t.stroke.width, (width) => ({ stroke: { ...t.stroke, width } }), 0, 0.3, {
-              scale: 100,
-              precision: 1,
-            })}
+            {num(
+              part('Outline', 'Width'),
+              t.stroke.width,
+              (width) => ({ stroke: { ...t.stroke, width } }),
+              0,
+              0.3,
+              {
+                scale: 100,
+                precision: 1,
+              },
+            )}
           </div>
         )}
         <Row label="Shadow">
@@ -1019,27 +1104,34 @@ function TextSection({ clip }: { clip: Clip }) {
         </Row>
         {t.shadow.enabled && (
           <div className="subrows">
-            <Row label="Colour">
+            <Row label={part('Shadow', 'Colour')}>
               <ColorField
                 value={t.shadow.color}
                 onChange={(color) => set({ shadow: { ...t.shadow, color } }, true)}
                 onStart={beginGesture}
               />
             </Row>
-            {num('Opacity', t.shadow.opacity, (opacity) => ({ shadow: { ...t.shadow, opacity } }), 0, 1, {
+            {num(
+              part('Shadow', 'Opacity'),
+              t.shadow.opacity,
+              (opacity) => ({ shadow: { ...t.shadow, opacity } }),
+              0,
+              1,
+              {
+                scale: 100,
+                precision: 0,
+                suffix: '%',
+              },
+            )}
+            {num(part('Shadow', 'Blur'), t.shadow.blur, (blur) => ({ shadow: { ...t.shadow, blur } }), 0, 1, {
               scale: 100,
               precision: 0,
-              suffix: '%',
             })}
-            {num('Blur', t.shadow.blur, (blur) => ({ shadow: { ...t.shadow, blur } }), 0, 1, {
+            {num(part('Shadow', 'Offset X'), t.shadow.x, (x) => ({ shadow: { ...t.shadow, x } }), -0.5, 0.5, {
               scale: 100,
               precision: 0,
             })}
-            {num('Offset X', t.shadow.x, (x) => ({ shadow: { ...t.shadow, x } }), -0.5, 0.5, {
-              scale: 100,
-              precision: 0,
-            })}
-            {num('Offset Y', t.shadow.y, (y) => ({ shadow: { ...t.shadow, y } }), -0.5, 0.5, {
+            {num(part('Shadow', 'Offset Y'), t.shadow.y, (y) => ({ shadow: { ...t.shadow, y } }), -0.5, 0.5, {
               scale: 100,
               precision: 0,
             })}
@@ -1054,30 +1146,44 @@ function TextSection({ clip }: { clip: Clip }) {
         </Row>
         {t.bg.enabled && (
           <div className="subrows">
-            <Row label="Colour">
+            <Row label={part('Background', 'Colour')}>
               <ColorField
                 value={t.bg.color}
                 onChange={(color) => set({ bg: { ...t.bg, color } }, true)}
                 onStart={beginGesture}
               />
             </Row>
-            {num('Opacity', t.bg.opacity, (opacity) => ({ bg: { ...t.bg, opacity } }), 0, 1, {
+            {num(
+              part('Background', 'Opacity'),
+              t.bg.opacity,
+              (opacity) => ({ bg: { ...t.bg, opacity } }),
+              0,
+              1,
+              {
+                scale: 100,
+                precision: 0,
+                suffix: '%',
+              },
+            )}
+            {num(part('Background', 'Padding X'), t.bg.padX, (padX) => ({ bg: { ...t.bg, padX } }), 0, 2, {
               scale: 100,
               precision: 0,
-              suffix: '%',
             })}
-            {num('Padding X', t.bg.padX, (padX) => ({ bg: { ...t.bg, padX } }), 0, 2, {
+            {num(part('Background', 'Padding Y'), t.bg.padY, (padY) => ({ bg: { ...t.bg, padY } }), 0, 2, {
               scale: 100,
               precision: 0,
             })}
-            {num('Padding Y', t.bg.padY, (padY) => ({ bg: { ...t.bg, padY } }), 0, 2, {
-              scale: 100,
-              precision: 0,
-            })}
-            {num('Corners', t.bg.radius, (radius) => ({ bg: { ...t.bg, radius } }), 0, 1.5, {
-              scale: 100,
-              precision: 0,
-            })}
+            {num(
+              part('Background', 'Corners'),
+              t.bg.radius,
+              (radius) => ({ bg: { ...t.bg, radius } }),
+              0,
+              1.5,
+              {
+                scale: 100,
+                precision: 0,
+              },
+            )}
           </div>
         )}
       </Section>
@@ -1201,14 +1307,14 @@ function ShapeSection({ clip }: { clip: Clip }) {
           </Row>
           {sh.gradient.enabled && (
             <div className="subrows">
-              <Row label="From">
+              <Row label={part('Gradient', 'From')}>
                 <ColorField
                   value={sh.gradient.from}
                   onChange={(from) => set({ gradient: { ...sh.gradient, from } }, true)}
                   onStart={beginGesture}
                 />
               </Row>
-              <Row label="To">
+              <Row label={part('Gradient', 'To')}>
                 <ColorField
                   value={sh.gradient.to}
                   onChange={(to) => set({ gradient: { ...sh.gradient, to } }, true)}
@@ -1248,21 +1354,21 @@ function SolidSection({ clip }: { clip: Clip }) {
       </Row>
       {sh.gradient.enabled && (
         <div className="subrows">
-          <Row label="From">
+          <Row label={part('Gradient', 'From')}>
             <ColorField
               value={sh.gradient.from}
               onChange={(from) => set({ gradient: { ...sh.gradient, from } }, true)}
               onStart={beginGesture}
             />
           </Row>
-          <Row label="To">
+          <Row label={part('Gradient', 'To')}>
             <ColorField
               value={sh.gradient.to}
               onChange={(to) => set({ gradient: { ...sh.gradient, to } }, true)}
               onStart={beginGesture}
             />
           </Row>
-          <Row label="Angle">
+          <Row label={part('Gradient', 'Angle')}>
             <Slider
               value={sh.gradient.angle}
               min={0}
@@ -1279,14 +1385,23 @@ function SolidSection({ clip }: { clip: Clip }) {
 
 // ──────────────────────────────────────────────────────────── transition ──
 
-function TransitionInspector({ project, clip, side }: { project: Project; clip: Clip; side: 'in' | 'out' }) {
+function TransitionInspector({
+  settings,
+  clip,
+  side,
+}: {
+  settings: ProjectSettings;
+  clip: Clip;
+  side: 'in' | 'out';
+}) {
   const t = side === 'in' ? clip.transIn : clip.transOut;
+  // How long it may be depends on the clip beside it, which is not otherwise shown here.
+  const max = useLiveSelect((p) => (p.clips[clip.id] ? maxTransitionDuration(p, p.clips[clip.id], side) : 1));
   if (!t) {
     return <div className="insp__empty insp__project">This transition was removed.</div>;
   }
   const def = getTransitionDef(t.type);
-  const fps = project.settings.fpsNum / project.settings.fpsDen;
-  const max = maxTransitionDuration(project, clip, side);
+  const fps = settings.fpsNum / settings.fpsDen;
   const write = (next: Transition, merge = false) =>
     patchClips([clip.id], side === 'in' ? { transIn: next } : { transOut: next }, merge);
   return (
@@ -1298,7 +1413,7 @@ function TransitionInspector({ project, clip, side }: { project: Project; clip: 
             options={TRANSITIONS.map((x) => ({
               value: x.id,
               label: x.name,
-              group: x.category[0].toUpperCase() + x.category.slice(1),
+              group: TRANSITION_CATEGORIES.find((c) => c.id === x.category)?.label,
             }))}
             onChange={(type) => {
               const nd = getTransitionDef(type);

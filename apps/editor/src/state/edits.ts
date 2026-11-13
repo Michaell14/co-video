@@ -866,7 +866,12 @@ export interface Replaced {
 }
 
 /** The patch that puts `asset` behind `clip` from `sourceIn` seconds on, and whether that cut the clip short. */
-function swapped(p: Project, clip: Clip, asset: Asset, sourceIn: number): { patch: Partial<Clip>; shortened: boolean } {
+function swapped(
+  p: Project,
+  clip: Clip,
+  asset: Asset,
+  sourceIn: number,
+): { patch: Partial<Clip>; shortened: boolean } {
   const before = clip.assetId ? p.assets[clip.assetId] : undefined;
   const from = clip.type === 'image' ? 0 : Math.max(0, sourceIn);
   const patch: Partial<Clip> = { assetId: asset.id, sourceIn: from };
@@ -898,7 +903,11 @@ export function replaceEdits(p: Project, clipId: ID, asset: Asset, sourceIn = 0)
   const clip = p.clips[clipId];
   if (!clip) return { edits: [], shortened: false, refused: null };
   if (!takes(clip, asset)) {
-    return { edits: [], shortened: false, refused: REPLACED_BY[clip.type] ?? 'This clip has no media to replace.' };
+    return {
+      edits: [],
+      shortened: false,
+      refused: REPLACED_BY[clip.type] ?? 'This clip has no media to replace.',
+    };
   }
   const own = swapped(p, clip, asset, sourceIn);
   let shortened = own.shortened;

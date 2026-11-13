@@ -32,7 +32,10 @@ function cut(): Cut {
   const a2 = makeTrack('audio', 1);
   let p = applyEdits(emptyProject(), [
     ...[v1, v2, a1, a2].map((track) => ({ op: 'addTrack', track }) as const),
-    { op: 'addAsset', asset: { ...ASSET_DEFAULTS, id: 'asset1', name: 'clip.mp4', kind: 'video', duration: 60 } },
+    {
+      op: 'addAsset',
+      asset: { ...ASSET_DEFAULTS, id: 'asset1', name: 'clip.mp4', kind: 'video', duration: 60 },
+    },
   ]);
   const shots = [
     [0, 120],

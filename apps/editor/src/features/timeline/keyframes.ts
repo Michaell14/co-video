@@ -11,36 +11,33 @@ export function keyframeTimes(clip: Clip): number[] {
 }
 
 /**
- * How far the keyframes at `t` can be moved in time: up to the frame after the one before and the
- * frame before the next, on whichever path those are nearest, and not out of the clip. The keys
- * of all paths at one time move as one mark, so the tightest of the limits holds for all of them.
+ * How far the keyframes at `t` can be moved in time: up to the frame after the mark before and the
+ * frame before the mark after, whichever paths those are on, and not out of the clip. Two marks
+ * never change places and never become one, which would join keys that were made apart.
  */
 export function keyframeRange(clip: Clip, t: number): { min: number; max: number } {
   let min = 0;
   let max = Math.max(0, clip.duration - 1);
-  for (const list of Object.values(clip.keyframes)) {
-    if (!list.some((k) => k.t === t)) continue;
-    for (const k of list) {
-      if (k.t < t) min = Math.max(min, k.t + 1);
-      if (k.t > t) max = Math.min(max, k.t - 1);
-    }
+  for (const other of keyframeTimes(clip)) {
+    if (other < t) min = Math.max(min, other + 1);
+    if (other > t) max = Math.min(max, other - 1);
   }
   return { min: Math.min(min, t), max: Math.max(max, t) };
 }
 
 /**
- * The patch that moves every keyframe the clip has at `from` to `to`, on all paths, as far as
- * `keyframeRange` lets them go. Empty when nothing moves.
+ * The patch that moves every keyframe the clip has at `from` to `to`, on all of its paths. `to` is
+ * a time `keyframeRange` allows. Empty when nothing moves.
  */
 export function moveKeyframes(clip: Clip, from: number, to: number): Partial<Clip> {
-  const range = keyframeRange(clip, from);
-  const t = Math.min(range.max, Math.max(range.min, Math.round(to)));
-  if (t === from) return {};
+  if (to === from) return {};
   const keyframes: Record<string, Keyframe[]> = {};
+  let moved = false;
   for (const [path, list] of Object.entries(clip.keyframes)) {
-    keyframes[path] = list.map((k) => (k.t === from ? { ...k, t } : k));
+    keyframes[path] = list.map((k) => (k.t === from ? { ...k, t: to } : k));
+    moved ||= list.some((k) => k.t === from);
   }
-  return { keyframes };
+  return moved ? { keyframes } : {};
 }
 
 /**

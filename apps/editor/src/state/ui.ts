@@ -74,6 +74,10 @@ export interface UIState {
   sourceCue: { assetId: ID; time: number } | null;
   /** Asset the media pool is asked to bring into view; the pool clears it once it has. */
   revealAsset: ID | null;
+  /** Effects just added by hand, for the inspector to bring into view; it clears them once it has looked. */
+  revealEffects: ID[];
+  /** The files selected in the media pool, in the order they were picked. */
+  poolSelection: ID[];
   scopes: { waveform: boolean; parade: boolean; vectorscope: boolean; histogram: boolean };
   /** A voiceover is being recorded: where on the timeline it began, and when. */
   recording: { startFrame: number; startedAt: number } | null;
@@ -182,6 +186,8 @@ export const useUI = create<UIState>((set, get) => ({
   sourceAsset: null,
   sourceCue: null,
   revealAsset: null,
+  revealEffects: [],
+  poolSelection: [],
   recording: null,
   scopes: persisted.scopes,
 

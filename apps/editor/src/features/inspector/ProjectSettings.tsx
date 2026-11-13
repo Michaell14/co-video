@@ -1,20 +1,23 @@
 import { describeFps, FRAME_RATE_PRESETS, RESOLUTION_PRESETS, type ProjectSettings } from '@tandem/core';
-import { useProject, useSession } from '../../session/hooks';
+import { useProject, useSession, useSessionMeta } from '../../session/hooks';
 import { beginGesture, commit } from '../../state/props';
 import { Button, ColorField, Dialog, NumberField, Select, TextField } from '../../ui/core';
+import { COLOR_MODE_OPTIONS, describeResolution, describeSize } from '../../ui/labels';
 import { Row } from './controls';
 import { changeProjectFrameRate } from './frameRate';
 
 /** Sequence settings. Everything here is non-destructive: clips are resolution independent. */
 export function ProjectSettingsForm({ full }: { full?: boolean }) {
   const session = useSession();
+  // Access can change while the form is open.
+  useSessionMeta();
   const s = useProject((p) => p.settings);
   const set = (patch: Partial<ProjectSettings>, merge = false) => commit([{ op: 'settings', patch }], merge);
   const preset = RESOLUTION_PRESETS.find((r) => r.width === s.width && r.height === s.height);
   const rate = FRAME_RATE_PRESETS.find((f) => f.fpsNum === s.fpsNum && f.fpsDen === s.fpsDen);
   const hdr = s.colorMode !== 'sdr';
   return (
-    <div className="form" style={{ gap: 8 }}>
+    <div className="form" style={{ gap: 8 }} inert={!session.canEdit}>
       {full && (
         <Row label="Name">
           <TextField
@@ -31,10 +34,10 @@ export function ProjectSettingsForm({ full }: { full?: boolean }) {
           options={[
             ...RESOLUTION_PRESETS.map((r) => ({
               value: `${r.width}x${r.height}`,
-              label: `${r.label} · ${r.width}×${r.height}`,
+              label: describeResolution(r),
               group: r.group,
             })),
-            { value: 'custom', label: `Custom · ${s.width}×${s.height}`, group: 'Other' },
+            { value: 'custom', label: `Custom · ${describeSize(s.width, s.height)}`, group: 'Other' },
           ]}
           onChange={(v) => {
             const r = RESOLUTION_PRESETS.find((x) => `${x.width}x${x.height}` === v);
@@ -86,11 +89,7 @@ export function ProjectSettingsForm({ full }: { full?: boolean }) {
       <Row label="Colour">
         <Select
           value={s.colorMode}
-          options={[
-            { value: 'sdr', label: 'SDR · Rec.709' },
-            { value: 'hdr-pq', label: 'HDR · Rec.2100 PQ' },
-            { value: 'hdr-hlg', label: 'HDR · Rec.2100 HLG' },
-          ]}
+          options={COLOR_MODE_OPTIONS}
           onChange={(colorMode) =>
             set({
               colorMode,

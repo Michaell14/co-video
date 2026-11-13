@@ -14,12 +14,26 @@ function project(): Project {
     },
     {
       op: 'addClip',
-      clip: makeClip('audio', 'a1', { id: 'dusk-sound', name: 'dusk.mp4', start: 60, duration: 100, linkId: 'l1' }),
+      clip: makeClip('audio', 'a1', {
+        id: 'dusk-sound',
+        name: 'dusk.mp4',
+        start: 60,
+        duration: 100,
+        linkId: 'l1',
+      }),
     },
-    { op: 'addClip', clip: makeClip('video', 'v1', { id: 'dawn', name: 'dawn.mp4', start: 160, duration: 30 }) },
     {
       op: 'addClip',
-      clip: makeClip('text', 'v1', { id: 'title', start: 400, duration: 30, text: { ...DEFAULT_TEXT, content: 'Hello\nthere' } }),
+      clip: makeClip('video', 'v1', { id: 'dawn', name: 'dawn.mp4', start: 160, duration: 30 }),
+    },
+    {
+      op: 'addClip',
+      clip: makeClip('text', 'v1', {
+        id: 'title',
+        start: 400,
+        duration: 30,
+        text: { ...DEFAULT_TEXT, content: 'Hello\nthere' },
+      }),
     },
   ]);
 }
@@ -38,7 +52,10 @@ describe('what the timeline says about clips', () => {
     expect(describeClip(p.clips.dusk, 'V1', p.settings)).toBe('dusk.mp4, V1, 0:02.00 to 0:05.10');
     expect(describeClip(p.clips.title, 'V1', p.settings)).toBe('Hello there, V1, 0:13.10 to 0:14.10');
     expect(
-      describeClip({ ...p.clips.dawn, enabled: false }, 'V1', p.settings, { offline: true, overlapping: true }),
+      describeClip({ ...p.clips.dawn, enabled: false }, 'V1', p.settings, {
+        offline: true,
+        overlapping: true,
+      }),
     ).toBe('dawn.mp4, V1, 0:05.10 to 0:06.10, disabled, media offline, overlaps another clip');
   });
 

@@ -11,10 +11,11 @@ import {
   type TrackCompressor,
   type TrackEQ,
 } from '@tandem/core';
-import { usePlayer, useProject, useSession } from '../../session/hooks';
+import { usePlayer, useProject, useSession, useSessionMeta } from '../../session/hooks';
 import { beginGesture, commit } from '../../state/props';
 import { cx, IconButton, NumberField, Slider, Switch, tip } from '../../ui/core';
 import { isDoublePress, type Press } from '../../ui/press';
+import { useFaderKeys } from '../inspector/sliderKeys';
 import './mixer.css';
 
 const DB_MIN = -60;
@@ -24,8 +25,17 @@ const dbToPos = (db: number) => Math.pow(clamp((db - DB_MIN) / (DB_MAX - DB_MIN)
 const posToDb = (pos: number) => DB_MIN + Math.pow(clamp(pos, 0, 1), 1 / 2.2) * (DB_MAX - DB_MIN);
 const levelToPos = (level: number) => (level > 0.0005 ? dbToPos(20 * Math.log10(level)) : 0);
 
+/** A gain as it is shown and read out, with a real minus sign: `+3.5 dB`, `−9.0 dB`. */
+const decibels = (db: number): string => `${db > 0 ? '+' : db < 0 ? '−' : ''}${Math.abs(db).toFixed(1)} dB`;
+
+/** A pan position as the strip shows it: `C`, `L20`, `R100`. */
+const panText = (pan: number): string =>
+  pan === 0 ? 'C' : pan < 0 ? `L${Math.round(-pan * 100)}` : `R${Math.round(pan * 100)}`;
+
 export function Mixer() {
-  const session = useSession();
+  const readOnly = !useSession().canEdit;
+  // Access can change while the panel is open.
+  useSessionMeta();
   const project = useProject((p) => p);
   const { audio } = tracksOf(project);
   const [fx, setFx] = useState<ID | null>(null);
@@ -35,8 +45,10 @@ export function Mixer() {
       <div className="panel__head">
         <SlidersHorizontal size={14} style={{ marginLeft: 8, color: 'var(--fg-3)' }} />
         <div className="panel__title">Mixer</div>
+        <span className="panel__spacer" />
+        {readOnly && <span className="badge badge--amber">Read only</span>}
       </div>
-      <div className="panel__body mixer" data-readonly={!session.canEdit}>
+      <div className="panel__body mixer">
         <div className="mixer__strips">
           {audio.map((t) => (
             <Strip
@@ -45,6 +57,7 @@ export function Mixer() {
               label={trackLabel(project, t)}
               fxOpen={t.id === fx}
               onFx={() => setFx(t.id === fx ? null : t.id)}
+              readOnly={readOnly}
             />
           ))}
           <MasterStrip />
@@ -55,6 +68,7 @@ export function Mixer() {
             track={fxTrack}
             label={trackLabel(project, fxTrack)}
             onClose={() => setFx(null)}
+            readOnly={readOnly}
           />
         )}
       </div>
@@ -106,10 +120,28 @@ function Meter({ channels, read }: { channels: number; read: () => number[] }) {
   );
 }
 
-function Fader({ value, onChange }: { value: number; onChange: (db: number) => void }) {
+function Fader({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (db: number) => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const lastPress = useRef<Press | null>(null);
   const [active, setActive] = useState(false);
+  const keys = useFaderKeys({
+    value,
+    min: DB_MIN,
+    max: DB_MAX,
+    step: 0.5,
+    defaultValue: 0,
+    onChange,
+    label,
+    valueText: decibels(value),
+  });
   const from = (y: number) => {
     const r = ref.current!.getBoundingClientRect();
     return Math.round(posToDb(1 - (y - r.top - 8) / (r.height - 16)) * 10) / 10;
@@ -152,7 +184,7 @@ function Fader({ value, onChange }: { value: number; onChange: (db: number) => v
         ))}
       </div>
       <div className="fader__track" />
-      <div className="fader__cap" style={{ bottom: `calc(${dbToPos(value)} * (100% - 16px))` }} />
+      <div className="fader__cap" style={{ bottom: `calc(${dbToPos(value)} * (100% - 16px))` }} {...keys} />
     </div>
   );
 }
@@ -162,20 +194,24 @@ function Strip({
   label,
   fxOpen,
   onFx,
+  readOnly,
 }: {
   track: Track;
   label: string;
   fxOpen: boolean;
   onFx: () => void;
+  readOnly: boolean;
 }) {
   const player = usePlayer();
+  // What the strip's controls are called: by the track's name, or by its place where it has none.
+  const name = t.name || label;
   const update = (patch: Partial<Track>, merge = false) =>
     commit([{ op: 'updateTrack', id: t.id, patch }], merge);
   const read = useRef(() => [player?.levels().tracks[t.id] ?? 0]);
   read.current = () => [player?.levels().tracks[t.id] ?? 0];
   const reader = useRef(() => read.current()).current;
   return (
-    <div className="strip" data-muted={t.muted}>
+    <div className="strip" data-muted={t.muted} inert={readOnly}>
       <div className="strip__name">
         <span className="th__tag mono">{label}</span>
         <span>{t.name}</span>
@@ -189,14 +225,14 @@ function Strip({
           defaultValue={0}
           onStart={beginGesture}
           onChange={(pan) => update({ pan: Math.round(pan * 100) / 100 }, true)}
+          ariaLabel={`Pan, ${name}`}
+          valueText={panText}
         />
-        <span className="mono">
-          {t.pan === 0 ? 'C' : t.pan < 0 ? `L${Math.round(-t.pan * 100)}` : `R${Math.round(t.pan * 100)}`}
-        </span>
+        <span className="mono">{panText(t.pan)}</span>
       </div>
       <div className="strip__main">
         <Meter channels={1} read={reader} />
-        <Fader value={t.volume} onChange={(volume) => update({ volume }, true)} />
+        <Fader label={`Volume, ${name}`} value={t.volume} onChange={(volume) => update({ volume }, true)} />
       </div>
       <NumberField
         value={t.volume}
@@ -208,7 +244,7 @@ function Strip({
         precision={1}
         suffix="dB"
         defaultValue={0}
-        ariaLabel="Track volume"
+        ariaLabel={`Volume, ${name}`}
       />
       <div className="strip__btns">
         <button
@@ -248,7 +284,17 @@ function Strip({
  * EQ and compressor of one track, in a drawer under the strips. They are kept out of the strip so
  * that every fader has the same travel and the scales line up, whichever track is being worked on.
  */
-function TrackFx({ track: t, label, onClose }: { track: Track; label: string; onClose: () => void }) {
+function TrackFx({
+  track: t,
+  label,
+  onClose,
+  readOnly,
+}: {
+  track: Track;
+  label: string;
+  onClose: () => void;
+  readOnly: boolean;
+}) {
   const update = (patch: Partial<Track>, merge: boolean) =>
     commit([{ op: 'updateTrack', id: t.id, patch }], merge);
   const eq = t.eq ?? DEFAULT_EQ;
@@ -263,7 +309,13 @@ function TrackFx({ track: t, label, onClose }: { track: Track; label: string; on
     ref.current?.scrollIntoView({ block: 'nearest' });
   }, []);
   return (
-    <div ref={ref} className="mixer__fx" role="group" aria-label={`EQ and compressor for ${label}`}>
+    <div
+      ref={ref}
+      className="mixer__fx"
+      role="group"
+      aria-label={`EQ and compressor for ${label}`}
+      inert={readOnly}
+    >
       <div className="mixer__fxhead">
         <span className="th__tag mono">{label}</span>
         <span>{t.name ? `${t.name} · EQ & compressor` : 'EQ & compressor'}</span>
@@ -296,6 +348,8 @@ function TrackFx({ track: t, label, onClose }: { track: Track; label: string; on
                 defaultValue={0}
                 onStart={beginGesture}
                 onChange={(v) => setEq({ [band]: Math.round(v * 10) / 10, enabled: true })}
+                ariaLabel={`EQ ${band}`}
+                valueText={decibels}
               />
             </label>
           ))}
@@ -319,6 +373,8 @@ function TrackFx({ track: t, label, onClose }: { track: Track; label: string; on
               defaultValue={-18}
               onStart={beginGesture}
               onChange={(v) => setComp({ threshold: Math.round(v), enabled: true })}
+              ariaLabel="Compressor threshold"
+              valueText={(v) => `${v < 0 ? '−' : ''}${Math.abs(Math.round(v))} dB`}
             />
           </label>
           <label className="strip__knob">
@@ -331,6 +387,8 @@ function TrackFx({ track: t, label, onClose }: { track: Track; label: string; on
               defaultValue={3}
               onStart={beginGesture}
               onChange={(v) => setComp({ ratio: Math.round(v * 10) / 10, enabled: true })}
+              ariaLabel="Compressor ratio"
+              valueText={(v) => `${v.toFixed(1)} to 1`}
             />
           </label>
           <label className="strip__knob">
@@ -343,6 +401,8 @@ function TrackFx({ track: t, label, onClose }: { track: Track; label: string; on
               defaultValue={0}
               onStart={beginGesture}
               onChange={(v) => setComp({ makeup: Math.round(v * 10) / 10, enabled: true })}
+              ariaLabel="Compressor make-up gain"
+              valueText={decibels}
             />
           </label>
         </div>

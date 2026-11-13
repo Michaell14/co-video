@@ -31,6 +31,7 @@ import {
   clamp,
   editPoints,
   formatTimecode,
+  framesToSeconds,
   MARKER_COLORS,
   moveTrack,
   sequenceEnd,
@@ -49,7 +50,7 @@ import {
   useProject,
   useSession,
 } from '../../session/hooks';
-import { cmd, setTimelineWidth } from '../../state/commands';
+import { cmd, getTimelineWidth, setTimelineWidth } from '../../state/commands';
 import { beginGesture, commit } from '../../state/props';
 import { shortcutOf } from '../../state/shortcuts';
 import { clampPpf, MAX_PPF, MIN_PPF, useUI } from '../../state/ui';
@@ -196,6 +197,14 @@ export function Timeline() {
 
 // ───────────────────────────────────────────────────────────── toolbar ──
 
+/** How much of the sequence a zoom shows, in words: what the zoom slider's value amounts to. */
+function inView(frames: number, settings: Project['settings']): string {
+  const seconds = framesToSeconds(frames, settings);
+  const count = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'} in view`;
+  if (seconds < 1) return count(Math.max(1, Math.round(frames)), 'frame');
+  return seconds < 90 ? count(Math.round(seconds), 'second') : count(Math.round(seconds / 60), 'minute');
+}
+
 const Toolbar = memo(function Toolbar() {
   const tool = useUI((s) => s.tool);
   const snapping = useUI((s) => s.snapping);
@@ -205,6 +214,7 @@ const Toolbar = memo(function Toolbar() {
   const ppf = useUI((s) => s.ppf);
   const hasSel = useUI((s) => s.selection.length > 0 || !!s.selectedTransition);
   const set = useUI((s) => s.set);
+  const settings = useProject((p) => p.settings);
   const lo = Math.log(MIN_PPF);
   const hi = Math.log(MAX_PPF);
   return (
@@ -322,6 +332,8 @@ const Toolbar = memo(function Toolbar() {
           value={Math.log(ppf)}
           min={lo}
           max={hi}
+          ariaLabel="Timeline zoom"
+          valueText={(v) => inView(getTimelineWidth() / Math.exp(v), settings)}
           onChange={(v) => {
             const cur = useUI.getState().ppf;
             cmd.zoom(clampPpf(Math.exp(v)) / cur);

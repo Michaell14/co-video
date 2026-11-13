@@ -17,6 +17,8 @@
   --tl-fade-shade: color-mix(in srgb, var(--bg-0) 55%, transparent);
   --tl-pending: var(--line-1);
   --tl-offline-label: color-mix(in srgb, var(--red) 45%, #000);
+  --tl-level: color-mix(in srgb, var(--fg-1) 80%, transparent);
+  --tl-level-edge: color-mix(in srgb, var(--bg-0) 40%, transparent);
   display: flex;
   flex-direction: column;
   height: 100%;

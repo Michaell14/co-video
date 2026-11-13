@@ -9,16 +9,17 @@
   white-space: nowrap;
   padding-left: 6px;
 }
-.panel__body[data-readonly='true'] .section__body {
-  pointer-events: none;
+/* Out of reach for someone who may not edit (`inert`), and dimmed so that it also looks it. */
+.section__body[inert],
+.form[inert] {
   opacity: 0.7;
 }
 /* What the panel shows when it is not sections: the same side margins as their rows. */
 .insp__project {
-  padding: 12px 10px;
+  padding: 12px var(--panel-pad, 10px);
 }
 .insp__hint {
-  padding: 0 10px;
+  padding: 0 var(--panel-pad, 10px);
 }
 /* A value that cannot be typed over starts where the text of the fields around it does. */
 .insp__read {

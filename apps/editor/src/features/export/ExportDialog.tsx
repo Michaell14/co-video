@@ -1,5 +1,5 @@
 import { CircleAlert, CircleCheck, Download, Film, Info, TriangleAlert } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   describeFps,
   formatBytes,
@@ -31,6 +31,7 @@ import { usePlayerState, useProject, useSession } from '../../session/hooks';
 import { cmd, downloadBlob } from '../../state/commands';
 import { useUI } from '../../state/ui';
 import { Button, Dialog, NumberField, Segmented, Select, tip } from '../../ui/core';
+import { describeSize } from '../../ui/labels';
 import { Row } from '../inspector/controls';
 import { groupProblems, hasUnseen, usableCodec, type ProblemPlace } from './plan';
 import './export.css';
@@ -224,6 +225,23 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const abort = useRef<AbortController | null>(null);
   const closed = useRef(false);
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
+  const content = useRef<HTMLDivElement>(null);
+  const summary = useId();
+
+  // Setting up, rendering and the result are one dialog whose buttons come and go. The button
+  // that was pressed leaves with its state and would take the keyboard with it, out of the dialog.
+  // It goes to the button that carries on: Done, or Export again after a failure. While the export
+  // runs it rests on the dialog itself, where neither Enter nor a habitual Space cancels the render;
+  // Cancel is one Tab away.
+  useLayoutEffect(() => {
+    const dialog = content.current?.closest<HTMLElement>('[role="dialog"]');
+    if (!dialog || dialog.contains(document.activeElement)) return;
+    const next =
+      phase.kind === 'running'
+        ? null
+        : dialog.querySelector<HTMLElement>('.dialog__foot .btn--primary:not(:disabled)');
+    (next ?? dialog).focus();
+  }, [phase.kind]);
 
   const audioOnly = draft.container === 'wav';
   const hdr = hdrProject && draft.dynamicRange !== 'sdr' && !audioOnly;
@@ -421,13 +439,21 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     const list = Array.from(new Set([s.height, ...base])).sort((a, b) => a - b);
     return list.map((h) => ({
       value: h,
-      label: `${even((h * s.width) / s.height)} × ${even(h)}${h === s.height ? ' — project' : ''}`,
+      label: `${describeSize(even((h * s.width) / s.height), even(h))}${h === s.height ? ' · project' : ''}`,
     }));
   }, [s.width, s.height]);
 
   if (phase.kind === 'running') {
     const p = phase.progress;
     const pct = p.totalFrames ? Math.min(100, (p.frame / p.totalFrames) * 100) : 0;
+    const stage =
+      p.phase === 'preparing'
+        ? 'Preparing'
+        : p.phase === 'finalizing'
+          ? 'Writing file'
+          : audioOnly
+            ? 'Mixing audio'
+            : 'Rendering';
     return (
       <Dialog
         solid
@@ -443,22 +469,24 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           </Button>
         }
       >
-        <div className="exp__run">
-          <div className="exp__pct mono">{pct.toFixed(0)}%</div>
-          <div className="progress exp__bar">
+        <div className="exp__run" ref={content}>
+          <div className="exp__pct mono" aria-hidden="true">
+            {pct.toFixed(0)}%
+          </div>
+          <div
+            className="progress exp__bar"
+            role="progressbar"
+            aria-label="Export progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(pct)}
+            aria-valuetext={`${pct.toFixed(0)}%, ${stage.toLowerCase()}`}
+          >
             <i style={{ width: `${pct}%` }} />
           </div>
           <dl className="kv">
             <dt>Stage</dt>
-            <dd>
-              {p.phase === 'preparing'
-                ? 'Preparing'
-                : p.phase === 'finalizing'
-                  ? 'Writing file'
-                  : audioOnly
-                    ? 'Mixing audio'
-                    : 'Rendering'}
-            </dd>
+            <dd>{stage}</dd>
             {!audioOnly && (
               <>
                 <dt>Frame</dt>
@@ -517,14 +545,14 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                 Download again
               </Button>
             )}
-            <Button variant="primary" onClick={close}>
+            <Button variant="primary" onClick={close} aria-describedby={summary}>
               Done
             </Button>
           </>
         }
       >
-        <div className="exp">
-          <div className="exp__done">
+        <div className="exp" ref={content}>
+          <div className="exp__done" role="status" id={summary}>
             <Film />
             <div>
               <b>{phase.name}</b>
@@ -576,7 +604,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         </>
       }
     >
-      <div className="exp">
+      <div className="exp" ref={content}>
         <div className="exp__presets">
           {PRESETS.filter((p) => p.id !== 'hdr' || hdrProject).map((p) => (
             <button
@@ -675,7 +703,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                   <Select
                     value={draft.fps}
                     options={[
-                      { value: 'project', label: `${describeFps(s)} fps — project` },
+                      { value: 'project', label: `${describeFps(s)} fps · project` },
                       ...FRAME_RATE_PRESETS.map((f) => ({ value: f.label, label: `${f.label} fps` })),
                     ]}
                     onChange={(v) => {
@@ -804,7 +832,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <div>
             {audioOnly
               ? 'Exports the full audio mix as an uncompressed WAV file.'
-              : `${width}×${height} at ${describeFps(rate)} fps${hdr ? ', 10-bit HDR' : ''}. Your browser encodes the file locally — nothing is uploaded. Available codecs depend on the browser and GPU.`}
+              : `${describeSize(width, height)} at ${describeFps(rate)} fps${hdr ? ', 10-bit HDR' : ''}. Your browser encodes the file locally — nothing is uploaded. Available codecs depend on the browser and GPU.`}
             {pixels > 8294400 &&
               !audioOnly &&
               ' Above 4K some hardware encoders refuse; if export fails, try AV1 / VP9 or the software encoder.'}

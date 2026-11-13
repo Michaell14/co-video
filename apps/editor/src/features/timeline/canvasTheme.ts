@@ -15,6 +15,9 @@ export interface CanvasTheme {
   pending: string;
   /** The label strip of a clip whose media is missing. */
   offlineLabel: string;
+  /** The level line of a sound clip, and the darker edge that sets it off from the waveform. */
+  level: string;
+  levelEdge: string;
   clipRadius: number;
   narrowClipRadius: number;
 }
@@ -27,6 +30,8 @@ const COLORS = {
   fadeShade: '--tl-fade-shade',
   pending: '--tl-pending',
   offlineLabel: '--tl-offline-label',
+  level: '--tl-level',
+  levelEdge: '--tl-level-edge',
 } as const;
 
 let theme: CanvasTheme | null = null;
@@ -52,6 +57,8 @@ export function canvasTheme(canvas: HTMLCanvasElement): CanvasTheme {
     fadeShade: color(COLORS.fadeShade),
     pending: color(COLORS.pending),
     offlineLabel: color(COLORS.offlineLabel),
+    level: color(COLORS.level),
+    levelEdge: color(COLORS.levelEdge),
     clipRadius: length('--tl-clip-r'),
     narrowClipRadius: length('--tl-clip-r-narrow'),
   };

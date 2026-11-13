@@ -60,6 +60,7 @@ import {
 import { AudioBufferSink, renderStill, VoiceRecorder } from '@tandem/engine';
 import { navigate } from '../App';
 import { fitPanels, windowSize } from '../features/editor/layout';
+import { keyframeTimes } from '../features/timeline/keyframes';
 import { currentSession } from '../session/hooks';
 import { copyProjectMedia } from '../session/mediaStore';
 import { createProject } from '../session/projects';
@@ -438,6 +439,24 @@ export const cmd = {
     const f = frame();
     const next = editPoints(s.store.get()).find((p) => p > f);
     cmd.seek(next ?? sequenceEnd(s.store.get()));
+  },
+  /** Move the playhead to the nearest keyframe of the selected clips after (`1`) or before (`-1`) it. */
+  goToKeyframe(dir: 1 | -1): void {
+    const s = session();
+    if (!s) return;
+    const p = s.store.get();
+    const f = frame();
+    let to: number | null = null;
+    for (const id of ui().selection) {
+      const clip = p.clips[id];
+      for (const t of clip ? keyframeTimes(clip) : []) {
+        const at = clip.start + t;
+        if (dir === 1 ? at <= f : at >= f) continue;
+        if (to === null || (dir === 1 ? at < to : at > to)) to = at;
+      }
+    }
+    if (to !== null) cmd.seek(to);
+    else if (!ui().selection.length) toast('Select a clip to step through its keyframes.', 'info');
   },
   toggleLoop(): void {
     const p = session()?.player;
@@ -859,7 +878,8 @@ export const cmd = {
       }
       s.store.commit(r.edits);
       ui().select(effectiveSelection(s.store.get(), [clipId]));
-      if (r.shortened) toast(`“${asset.name}” is shorter than the clip was, so the clip now ends earlier.`, 'info');
+      if (r.shortened)
+        toast(`“${asset.name}” is shorter than the clip was, so the clip now ends earlier.`, 'info');
     });
   },
   updateSelected(patch: Partial<Clip>, merge = false): void {
@@ -1029,16 +1049,14 @@ export const cmd = {
         toast(wanted.length ? LOCKED_TRACK : 'Select a clip to apply the effect to.', 'info');
         return;
       }
+      const added = ids.map((id) => ({ id, effect: makeEffect(type) }));
       s.store.commit(
-        ids.map(
-          (id) =>
-            ({
-              op: 'updateClip',
-              id,
-              patch: { effects: [...p.clips[id].effects, makeEffect(type)] },
-            }) as Edit,
+        added.map(
+          ({ id, effect }) =>
+            ({ op: 'updateClip', id, patch: { effects: [...p.clips[id].effects, effect] } }) as Edit,
         ),
       );
+      ui().set({ revealEffects: added.map(({ effect }) => effect.id) });
       if (!clipIds) toast(`${def.name} added`, 'success');
     });
   },

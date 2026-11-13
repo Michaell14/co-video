@@ -74,6 +74,8 @@ export function Editor({ projectId, token }: { projectId: string; token: string 
         sourceAsset: null,
         sourceCue: null,
         revealAsset: null,
+        revealEffects: [],
+        poolSelection: [],
       });
       if (opened) {
         setCurrentSession(null);

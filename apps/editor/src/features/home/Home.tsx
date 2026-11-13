@@ -314,7 +314,7 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
         aria-describedby={refused ? refusedId : undefined}
         // The pointer asks at the badge; the keyboard can only ask at the card.
         onFocusCapture={refused ? whatNow.onFocusCapture : undefined}
-        onBlurCapture={whatNow.onBlurCapture}
+        onBlurCapture={refused ? whatNow.onBlurCapture : undefined}
       >
         <div className="pcard__thumb">
           {p.thumb ? <img src={p.thumb} alt="" draggable={false} /> : <Film />}

@@ -73,7 +73,7 @@ import { insideRect, onDrop, useDrag, type DragPayload } from '../../ui/dnd';
 import { usingKeyboard } from '../../ui/layers';
 import { describeClip, describeSelection } from './describe';
 import { EdgeScroller, laneAxis, timeAxis } from './edgeScroll';
-import { keyframeTimes, moveKeyframes, removeKeyframes } from './keyframes';
+import { keyframeRange, keyframeTimes, moveKeyframes, removeKeyframes } from './keyframes';
 import { drawLane } from './laneCanvas';
 import {
   clipWidth,
@@ -200,10 +200,13 @@ const pointerOf = (e: React.PointerEvent): Pointer => ({
  * key pressed or let go while the pointer holds still changes what a drop will do all the same.
  */
 const held = { alt: false, insert: false };
+/** How many times a key or a pointer button has gone down: tells one press from the next. */
+let presses = 0;
 if (typeof window !== 'undefined') {
   const note = (e: KeyboardEvent | PointerEvent) => {
     held.alt = e.altKey;
     held.insert = e.ctrlKey || e.metaKey;
+    if (e.type === 'keydown' || e.type === 'pointerdown') presses++;
   };
   for (const type of ['keydown', 'keyup', 'pointerdown', 'pointermove', 'pointerup'] as const) {
     window.addEventListener(type, note, true);
@@ -293,10 +296,13 @@ export function Lanes({ lanes, height, width, live }: Props) {
   const [lastFocus, setLastFocus] = useState<ID | null>(null);
   /** A clip that is to be given the keyboard as soon as it is drawn. */
   const wantFocus = useRef<ID | null>(null);
-  /** Set for the length of a key press made on a clip: where the selection goes, focus follows. */
-  const carry = useRef(false);
+  /**
+   * The key press (as counted by `presses`) that was made on a clip, if the last press was one:
+   * where that key takes the selection, focus follows.
+   */
+  const carry = useRef(0);
   /** Set while focus is being moved here by script, on behalf of a key. */
-  const moving = useRef(false);
+  const focusing = useRef(false);
   /** What the selection is, in words, after the keyboard changed it. */
   const [said, setSaid] = useState('');
 
@@ -408,15 +414,19 @@ export function Lanes({ lanes, height, width, live }: Props) {
     if (blade.current) blade.current.style.visibility = 'hidden';
   }, [scrollX, ppf, lanes]);
 
-  /** Snap `edges` (already offset by the raw delta) to nearby cut points. Returns the correction. */
+  /**
+   * Snap `edges` (already offset by the raw delta) to nearby cut points and to the playhead at
+   * `head`. Returns the correction.
+   */
   const snap = (
     p: Project,
     moving: ReadonlySet<ID>,
     edges: number[],
     disabled: boolean,
+    head = playhead(),
   ): { adjust: number; line: number | null } => {
     if (!ui().snapping || disabled) return { adjust: 0, line: null };
-    const pts = snapPoints(p, moving, [playhead()]);
+    const pts = snapPoints(p, moving, [head]);
     const threshold = 8 / ui().ppf;
     let best: { adjust: number; line: number } | null = null;
     for (const e of edges) {
@@ -533,7 +543,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
       prefix: used ? used.edits : [],
       line: between ? (between.refused ? null : between.at) : s.line,
       placements: between
-        ? placements.map((m) => ({ ...m, start: m.start - Math.min(...placements.map((x) => x.start)) + between.at }))
+        ? placements.map((m) => ({
+            ...m,
+            start: m.start - Math.min(...placements.map((x) => x.start)) + between.at,
+          }))
         : placements,
       opened: used ? used.trackId : null,
       spans: between ? between.spans : null,
@@ -689,7 +702,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
         const plan = planMove(d, e);
         setOpened(plan.opened);
         setPreview(plan.edits, plan.line);
-        showMode(e.altKey ? 'Duplicate' : !e.insert ? null : plan.refused ? 'No room to insert' : 'Insert', e);
+        showMode(
+          e.altKey ? 'Duplicate' : !e.insert ? null : plan.refused ? 'No room to insert' : 'Insert',
+          e,
+        );
         session.setPresence({
           dragging: plan.placements.map((m) => ({
             id: m.id,
@@ -710,7 +726,9 @@ export function Lanes({ lanes, height, width, live }: Props) {
           // Every cut moves by the same amount, so the tightest of their limits holds for all.
           const range = edgeRange(p, d.edge, cuts, []);
           const wanted = clamp(d.wanted, range.min, range.max);
-          const s = snap(p, new Set(cuts.flat()), [p.clips[lead].start + wanted], e.shiftKey);
+          // A trim shows the frame it cuts to, so the playhead follows the edge: what the edge
+          // snaps to is where the playhead stood before the drag, not where the last move put it.
+          const s = snap(p, new Set(cuts.flat()), [p.clips[lead].start + wanted], e.shiftKey, d.restore);
           d.delta = clamp(Math.round(wanted + s.adjust), range.min, range.max);
           setPreview(
             cuts.flatMap(([left, right]) => rollEdit(p, left, right, d.delta)),
@@ -725,7 +743,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
         const edgeFrame = d.edge === 'start' ? first.start : clipEnd(first);
         const range = trimRange(p, d.ids, d.edge, d.ripple);
         const delta = clamp(d.wanted, range.min, range.max);
-        const s = snap(p, new Set(d.ids), [edgeFrame + delta], e.shiftKey || d.ripple);
+        const s = snap(p, new Set(d.ids), [edgeFrame + delta], e.shiftKey || d.ripple, d.restore);
         d.delta = clamp(Math.round(delta + s.adjust), range.min, range.max);
         const edits = trimClips(p, d.ids, d.edge, d.delta, d.ripple);
         setPreview(edits, s.line);
@@ -766,13 +784,11 @@ export function Lanes({ lanes, height, width, live }: Props) {
         // A press that goes nowhere is a click on the mark, which takes the playhead to it.
         if (!d.moved && Math.abs(e.clientX - d.x0) < 3) return 'none';
         d.moved = true;
-        const patch = moveKeyframes(c, d.t, d.t0 + Math.round(toFrame(e.clientX) - d.f0));
-        const moved = patch.keyframes && keyframeTimes({ ...c, keyframes: patch.keyframes });
-        if (!patch.keyframes || !moved) return 'time';
-        // Where the held keys are now: the one time the clip did not have keys at before.
-        const before = new Set(keyframeTimes(c));
-        d.t = moved.find((t) => !before.has(t)) ?? d.t;
-        commit([{ op: 'updateClip', id: d.id, patch }], true);
+        const range = keyframeRange(c, d.t);
+        const t = clamp(d.t0 + Math.round(toFrame(e.clientX) - d.f0), range.min, range.max);
+        if (t === d.t) return 'time';
+        commit([{ op: 'updateClip', id: d.id, patch: moveKeyframes(c, d.t, t) }], true);
+        d.t = t;
         return 'time';
       }
       case 'trans': {
@@ -963,7 +979,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
       if (lanes[i].track.locked) continue;
       const clips = clipsOnTrack(p, lanes[i].track.id);
       if (!clips.length) continue;
-      const distance = (c: Clip) => (c.start <= from.start && from.start < clipEnd(c) ? -1 : Math.abs(c.start - from.start));
+      const distance = (c: Clip) =>
+        c.start <= from.start && from.start < clipEnd(c) ? -1 : Math.abs(c.start - from.start);
       return clips.reduce((best, c) => (distance(c) < distance(best) ? c : best));
     }
     return null;
@@ -974,14 +991,11 @@ export function Lanes({ lanes, height, width, live }: Props) {
     if (!selectedSet.has(id)) ui().select(ui().linkedSelection ? withLinked(store(), [id]) : [id]);
     const r = el.getBoundingClientRect();
     const view = viewRect() ?? r;
-    openContextMenu(
-      {
-        clientX: clamp(r.left, view.left, view.right) + 8,
-        clientY: clamp(r.top + r.height / 2, view.top, view.bottom),
-        preventDefault: () => {},
-      },
-      clipMenu(store(), id),
-    );
+    const at = {
+      clientX: clamp(r.left, view.left, view.right) + 8,
+      clientY: clamp(r.top + r.height / 2, view.top, view.bottom),
+    };
+    openContextMenu({ ...at, preventDefault: () => {} }, clipMenu(store(), id, at));
   };
 
   /**
@@ -998,8 +1012,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
     if (!id || !clip) return;
     // Whatever this key makes of the selection (it may be a command of the editor's), the clip
     // that is selected afterwards is the one that has the keyboard.
-    carry.current = true;
-    setTimeout(() => (carry.current = false));
+    carry.current = presses;
     if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
       e.preventDefault();
       e.stopPropagation();
@@ -1024,11 +1037,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
         else goTo(p, clip, e.shiftKey);
       },
     };
-    const act = go[e.key];
-    if (!act) return;
+    if (!Object.hasOwn(go, e.key)) return;
     e.preventDefault();
     e.stopPropagation();
-    act();
+    go[e.key]();
   };
 
   // Which clip has the keyboard. The page is listened to directly: focus that a closing menu hands
@@ -1040,7 +1052,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
       const id = (e.target as HTMLElement).dataset.clip;
       if (!id) return;
       // A clip the keyboard came to: by Tab or an arrow key, or here, following the selection.
-      setFocus({ id, keyboard: moving.current || spaceOperates(e.target) });
+      setFocus({ id, keyboard: focusing.current || spaceOperates(e.target) });
       setLastFocus(id);
     };
     const onFocusOut = (e: FocusEvent) => {
@@ -1058,7 +1070,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
   // has just gone to, and to the one a command of the editor's selected from here.
   useLayoutEffect(() => {
     let id = wantFocus.current;
-    if (!id && carry.current && lastFocus) {
+    if (!id && carry.current === presses && lastFocus) {
       const p = store();
       const from = p.clips[lastFocus];
       if (!from) id = tabStop;
@@ -1068,11 +1080,11 @@ export function Lanes({ lanes, height, width, live }: Props) {
     const el = id ? clipElement(id) : null;
     if (!el) return;
     wantFocus.current = null;
-    carry.current = false;
+    carry.current = 0;
     if (document.activeElement === el) return;
-    moving.current = true;
+    focusing.current = true;
     el.focus();
-    moving.current = false;
+    focusing.current = false;
   });
 
   // Say what is selected when the keyboard changed it and nothing else says so: focus on the
@@ -1353,7 +1365,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
         if (id && !selectedSet.has(id)) ui().select(ui().linkedSelection ? withLinked(store(), [id]) : [id]);
         const lane = laneAt(lanes, toY(e.clientY));
         const at = Math.max(0, Math.floor(toFrame(e.clientX)));
-        openContextMenu(e, id ? clipMenu(store(), id) : laneMenu(store(), lane, at));
+        const where = { clientX: e.clientX, clientY: e.clientY };
+        openContextMenu(e, id ? clipMenu(store(), id, where) : laneMenu(store(), lane, at));
       }}
     >
       {lanes.map((lane) => {
@@ -1529,22 +1542,66 @@ const LABEL_NAMES = [
   'Slate',
 ];
 
-function clipMenu(p: Project, id: ID): MenuEntry[] {
+/** Where on screen a menu was asked for. */
+interface MenuAt {
+  clientX: number;
+  clientY: number;
+}
+
+/**
+ * A menu entry that leads to a further menu, which opens where this one was. It opens once this
+ * one has closed and handed the keyboard back, and so like any menu: with its first entry focused
+ * for someone working from the keyboard.
+ */
+const further = (label: string, at: MenuAt, items: () => MenuEntry[]): MenuEntry => ({
+  label,
+  onSelect: () => setTimeout(() => openContextMenu({ ...at, preventDefault: () => {} }, items())),
+});
+
+function clipMenu(p: Project, id: ID, at: MenuAt): MenuEntry[] {
   const c = p.clips[id];
   if (!c) return [];
   const ui = useUI.getState();
   const timed = (c.type === 'video' || c.type === 'audio') && !c.freeze;
   const picture = c.type !== 'audio';
+  // The copied attributes as the menu has them when it is opened, not as they were under this one.
+  const attributes = (): MenuEntry[] => {
+    const copied = useUI.getState().attributes;
+    return [
+      { label: 'Copy attributes', keys: shortcutOf('copy-attrs'), onSelect: () => cmd.copyAttributes() },
+      'separator',
+      { heading: 'Paste attributes' },
+      {
+        label: 'Everything',
+        keys: shortcutOf('paste-attrs'),
+        onSelect: () => cmd.pasteAttributes('all'),
+        disabled: !copied,
+      },
+      { label: 'Grade only', onSelect: () => cmd.pasteAttributes('grade'), disabled: !copied?.look },
+      { label: 'Effects only', onSelect: () => cmd.pasteAttributes('effects'), disabled: !copied?.look },
+      {
+        label: 'Transform and crop only',
+        onSelect: () => cmd.pasteAttributes('transform'),
+        disabled: !copied?.look,
+      },
+      c.type === 'audio'
+        ? {
+            label: 'Volume, pan and fades only',
+            onSelect: () => cmd.pasteAttributes('sound'),
+            disabled: !copied?.sound,
+          }
+        : null,
+    ];
+  };
+  const range = (): MenuEntry[] => [
+    { label: 'Mark clip', keys: shortcutOf('mark-clip'), onSelect: cmd.markClip },
+    { label: 'Go to in', keys: shortcutOf('go-in'), onSelect: () => cmd.goToRange('in') },
+    { label: 'Go to out', keys: shortcutOf('go-out'), onSelect: () => cmd.goToRange('out') },
+  ];
   return [
     { label: 'Cut', keys: 'mod+x', onSelect: cmd.cut },
     { label: 'Copy', keys: 'mod+c', onSelect: cmd.copy },
     { label: 'Paste', keys: 'mod+v', onSelect: cmd.paste, disabled: !ui.clipboard.length },
-    {
-      label: 'Paste insert',
-      keys: shortcutOf('paste-insert'),
-      onSelect: cmd.pasteInsert,
-      disabled: !ui.clipboard.length,
-    },
     { label: 'Duplicate', keys: 'mod+d', onSelect: cmd.duplicate },
     'separator',
     { label: 'Split at playhead', keys: 'mod+b', onSelect: cmd.split },
@@ -1585,9 +1642,6 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
       ? { label: 'Move to a free track', onSelect: () => commit(separateClips(p, [id])) }
       : null,
     'separator',
-    { label: 'Mark clip', keys: shortcutOf('mark-clip'), onSelect: cmd.markClip },
-    { label: 'Go to in', keys: shortcutOf('go-in'), onSelect: () => cmd.goToRange('in') },
-    { label: 'Go to out', keys: shortcutOf('go-out'), onSelect: () => cmd.goToRange('out') },
     picture
       ? {
           label: 'Add default transition',
@@ -1596,29 +1650,9 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
         }
       : null,
     { label: 'Extend edit to playhead', keys: shortcutOf('extend-edit'), onSelect: cmd.extendEdit },
-    'separator',
-    { label: 'Copy attributes', keys: shortcutOf('copy-attrs'), onSelect: () => cmd.copyAttributes() },
-    { heading: 'Paste attributes' },
-    {
-      label: 'Everything',
-      keys: shortcutOf('paste-attrs'),
-      onSelect: () => cmd.pasteAttributes('all'),
-      disabled: !ui.attributes,
-    },
-    { label: 'Grade only', onSelect: () => cmd.pasteAttributes('grade'), disabled: !ui.attributes?.look },
-    { label: 'Effects only', onSelect: () => cmd.pasteAttributes('effects'), disabled: !ui.attributes?.look },
-    {
-      label: 'Transform and crop only',
-      onSelect: () => cmd.pasteAttributes('transform'),
-      disabled: !ui.attributes?.look,
-    },
-    c.type === 'audio'
-      ? {
-          label: 'Volume, pan and fades only',
-          onSelect: () => cmd.pasteAttributes('sound'),
-          disabled: !ui.attributes?.sound,
-        }
-      : null,
+    // Kept a step away, so that the menu stays short enough to take in at a glance.
+    further('In and out…', at, range),
+    further('Attributes…', at, attributes),
     'separator',
     { heading: 'Label' },
     {

@@ -1,6 +1,6 @@
 /** Building blocks for property panels: collapsible sections and keyframe-aware rows. */
 import { ChevronDown, ChevronLeft, ChevronRight, Diamond } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
   animated,
   baseValue,
@@ -17,6 +17,7 @@ import {
   type ParamDef,
   type ParamValue,
 } from '@tandem/core';
+import { useSession } from '../../session/hooks';
 import { cmd } from '../../state/commands';
 import { beginGesture, localFrameOf, patchClips, setClipValues } from '../../state/props';
 import {
@@ -38,17 +39,25 @@ export function Section({
   children,
   actions,
   defaultCollapsed,
+  open,
 }: {
   id: string;
   title: ReactNode;
   children: ReactNode;
   actions?: ReactNode;
   defaultCollapsed?: boolean;
+  /** Something in the section is to be shown: unfold it if it is folded. */
+  open?: boolean;
 }) {
+  // Someone who may not edit can fold and unfold the sections and read what they hold. The
+  // controls themselves are out of reach, for the keyboard as for the pointer.
+  const readOnly = !useSession().canEdit;
   const [collapsed, toggle] = useCollapsed(id, defaultCollapsed);
   // A body its head has just opened settles into place. One that comes with a new selection is
   // simply there: the selection changes under a drag in the timeline, where nothing else may move.
   const [opened, setOpened] = useState(false);
+  const unfold = open && collapsed ? toggle : null;
+  useLayoutEffect(() => unfold?.(), [unfold]);
   return (
     <div className="section" data-collapsed={collapsed}>
       <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -64,11 +73,13 @@ export function Section({
           <span className="section__title">{title}</span>
         </button>
         {actions && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 2, paddingRight: 6 }}>{actions}</div>
+          <div className="section__actions" inert={readOnly}>
+            {actions}
+          </div>
         )}
       </div>
       {!collapsed && (
-        <div className="section__body" data-opened={opened || undefined}>
+        <div className="section__body" data-opened={opened || undefined} inert={readOnly}>
           {children}
         </div>
       )}
@@ -198,13 +209,6 @@ export function KeyframeNav({ clip, path }: { clip: Clip; path: string }) {
   );
 }
 
-/** What a timecode field stands for at one moment: the frame it shows and where an entry goes. */
-interface Shown {
-  value: number;
-  mixed?: boolean;
-  onCommit: (frame: number) => void;
-}
-
 /** A timecode to type into: `1:00`, a frame count, `2.5s`, or `+12` / `-12` to move by frames. */
 export function TimecodeField({
   value,
@@ -222,53 +226,67 @@ export function TimecodeField({
   /** The selection holds different values: any entry applies to all of it. */
   mixed?: boolean;
 }) {
+  const input = useRef<HTMLInputElement>(null);
   const [text, setText] = useState<string | null>(null);
-  const shown: Shown = { value, mixed, onCommit };
-  // What is being typed, with what the field showed when the typing began. The click that takes
-  // the focus away can select other clips before the field loses it, and the entry is still meant
-  // for the clips it was typed for.
-  const entry = useRef<(Shown & { text: string }) | null>(null);
-  const apply = (to: Shown, frame: number) => {
-    const next = Math.max(min, frame);
-    if (next !== to.value || to.mixed) to.onCommit(next);
+  // Readable in the same tick it changes: Enter and Escape blur the field from inside their own
+  // handler, and that blur must see what they just decided.
+  const typed = useRef<string | null>(null);
+  const edit = (next: string | null) => {
+    typed.current = next;
+    setText(next);
   };
-  const finish = (keep: boolean) => {
-    const typed = entry.current;
-    entry.current = null;
-    setText(null);
-    const parsed = typed && keep ? parseTimecode(typed.text, fps) : null;
-    if (typed && parsed) apply(typed, parsed.relative ? typed.value + parsed.frame : parsed.frame);
+  const apply = (frame: number) => {
+    const next = Math.max(min, frame);
+    if (next !== value || mixed) onCommit(next);
+  };
+  // What was typed goes to what the field stands for when it is applied, not to what it stood for
+  // when the typing began: the clip may have been moved by someone else in the meantime, and
+  // `+12` means twelve frames on from where it is.
+  const finish = () => {
+    const entered = typed.current;
+    if (entered === null) return;
+    edit(null);
+    const parsed = parseTimecode(entered, fps);
+    if (parsed) apply(parsed.relative ? value + parsed.frame : parsed.frame);
   };
   const latest = useRef(finish);
   useLayoutEffect(() => {
     latest.current = finish;
   });
-  // That click can also change what the inspector shows, so that the field is gone before it
-  // could lose the focus. The entry counts all the same.
-  useEffect(() => () => latest.current(true), []);
+  // Losing the focus is too late for a press elsewhere: the press can select other clips, or take
+  // the field away, before the focus moves. The entry is applied the moment such a press begins,
+  // while the field still stands for the clips the text was typed for. An entry whose field goes
+  // away for any other reason goes with it, because what it was typed for is gone.
+  const pending = text !== null;
+  useLayoutEffect(() => {
+    if (!pending) return;
+    const settle = (e: PointerEvent) => {
+      if (!input.current?.contains(e.target as Node)) latest.current();
+    };
+    window.addEventListener('pointerdown', settle, true);
+    return () => window.removeEventListener('pointerdown', settle, true);
+  }, [pending]);
   return (
     <div className="field">
       <input
+        ref={input}
         className="mono"
         aria-label={ariaLabel}
         value={text ?? (mixed ? '—' : formatTimecode(value, fps))}
         spellCheck={false}
         onFocus={(e) => e.currentTarget.select()}
-        onChange={(e) => {
-          entry.current = { ...(entry.current ?? shown), text: e.target.value };
-          setText(e.target.value);
-        }}
-        onBlur={() => finish(true)}
+        onChange={(e) => edit(e.target.value)}
+        onBlur={finish}
         onKeyDown={(e) => {
           if (e.key === 'Enter') e.currentTarget.blur();
           else if (e.key === 'Escape') {
-            finish(false);
+            edit(null);
             e.currentTarget.blur();
           } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             e.preventDefault();
-            finish(false);
+            edit(null);
             const step = e.shiftKey ? Math.round(fpsOf(fps)) : 1;
-            apply(shown, value + (e.key === 'ArrowUp' ? step : -step));
+            apply(value + (e.key === 'ArrowUp' ? step : -step));
           }
           e.stopPropagation();
         }}
