@@ -246,6 +246,28 @@ test.describe('collaboration', () => {
     expect(await clips(page)).toHaveLength(3);
     expect(await clips(b)).toHaveLength(3);
 
+    // Bringing in media is refused in the words of the access each of them has.
+    const refusedImports = (p: Page): Promise<number> =>
+      p.evaluate(async () => {
+        const s = (window as any).tandem.session;
+        const [asset] = Object.keys(s.store.get().assets);
+        const imported = await s.importFiles([new File(['x'], 'still.png', { type: 'image/png' })]);
+        const replaced = await s.replaceAsset(asset, new File(['x'], 'other.mp4', { type: 'video/mp4' }));
+        return imported.length === 0 && replaced === null ? Object.keys(s.store.get().assets).length : -1;
+      });
+    expect(await refusedImports(c)).toBe(1);
+    await expect(c.locator('.toast', { hasText: 'You have view-only access to this project.' })).toHaveCount(2);
+    const commenterLink: string = await page.evaluate(() =>
+      (window as any).tandem.session.inviteLink('commenter'),
+    );
+    await c.goto(commenterLink);
+    await c.waitForFunction(() => (window as any).tandem?.session?.getMeta().role === 'commenter');
+    expect(await refusedImports(c)).toBe(1);
+    await expect(c.locator('.toast', { hasText: 'You have comment-only access to this project.' })).toHaveCount(
+      2,
+    );
+    await expect(c.locator('.toast', { hasText: 'view-only' })).toHaveCount(0);
+
     await ctxB.close();
     await ctxC.close();
     expect(errors).toEqual([]);

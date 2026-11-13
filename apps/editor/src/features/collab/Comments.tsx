@@ -8,12 +8,13 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
-import { formatTimecode, initials, type Comment } from '@tandem/core';
-import { useComments, useFrame, useProject, useSession, useSessionMeta } from '../../session/hooks';
+import { memo, useEffect, useMemo, useState } from 'react';
+import { formatTimecode, initials, type Comment, type ProjectSettings } from '@tandem/core';
+import { useComments, useFrame, usePlayer, useProject, useSession, useSessionMeta } from '../../session/hooks';
 import { cmd } from '../../state/commands';
 import { useUI } from '../../state/ui';
 import { Button, cx, IconButton, tip } from '../../ui/core';
+import { handFocus } from '../../ui/layers';
 import './collab.css';
 
 function ago(t: number): string {
@@ -24,23 +25,67 @@ function ago(t: number): string {
   return `${Math.floor(s / 86400)}d`;
 }
 
+/**
+ * The playhead's frame while a comment is pinned to it, and `null` everywhere else: all the list
+ * has to know of the playhead. It changes when the playhead comes to a comment or leaves one, not
+ * with every frame played, so the list is not rendered again for each of them.
+ */
+function usePinnedFrame(comments: Comment[]): number | null {
+  const player = usePlayer();
+  const [pinned, setPinned] = useState<number | null>(null);
+  useEffect(() => {
+    if (!player) return;
+    const look = (at: number) => {
+      const frame = Math.floor(at);
+      setPinned(comments.some((c) => Math.abs(c.frame - frame) < 1) ? frame : null);
+    };
+    look(player.getFrame());
+    return player.onFrame(look);
+  }, [player, comments]);
+  return pinned;
+}
+
+/** Where a new comment would be pinned: the playhead, as it moves. */
+function PlayheadTimecode({ settings }: { settings: ProjectSettings }) {
+  return <span className="mono composer__tc">{formatTimecode(useFrame(), settings)}</span>;
+}
+
+/**
+ * Where the keyboard goes on from an action that takes its own comment out of the list: to the
+ * comment that moves up into its place, else to the one before it, else to the box for writing a
+ * new one.
+ */
+function handOn(action: HTMLElement): void {
+  const panel = action.closest('.panel');
+  const cards = () => Array.from(panel?.querySelectorAll<HTMLElement>('.comment') ?? []);
+  const index = cards().findIndex((card) => card.contains(action));
+  handFocus(action, () => {
+    const left = cards();
+    const card = left[index] ?? left[index - 1];
+    return (
+      card?.querySelector<HTMLElement>('.comment__actions button') ??
+      panel?.querySelector<HTMLElement>('.composer textarea')
+    );
+  });
+}
+
 export function CommentsPanel() {
   const session = useSession();
   const meta = useSessionMeta();
   const settings = useProject((p) => p.settings);
   const comments = useComments();
-  const frame = useFrame();
   const [text, setText] = useState('');
   const [showResolved, setShowResolved] = useState(false);
   const canComment = session.canComment;
-  const open = comments.filter((c) => !c.resolved);
+  const open = useMemo(() => comments.filter((c) => !c.resolved), [comments]);
   const list = showResolved ? comments : open;
+  const pinned = usePinnedFrame(list);
 
   const post = () => {
     const body = text.trim();
     if (!body) return;
     session.review.add({
-      frame,
+      frame: Math.floor(meta.player?.getFrame() ?? 0),
       text: body,
       authorId: meta.user.id,
       authorName: meta.user.name,
@@ -69,7 +114,14 @@ export function CommentsPanel() {
         <IconButton
           small
           label="Close comments"
-          onClick={() => useUI.getState().set({ commentsOpen: false })}
+          onClick={(e) => {
+            // The panel goes, and this button with it: the keyboard returns to the button in the
+            // top bar that brings the panel back.
+            handFocus(e.currentTarget, () =>
+              document.querySelector<HTMLElement>('.topbar button[aria-label="Comments"]'),
+            );
+            useUI.getState().set({ commentsOpen: false });
+          }}
         >
           <X />
         </IconButton>
@@ -86,7 +138,7 @@ export function CommentsPanel() {
             <CommentCard
               key={c.id}
               comment={c}
-              current={Math.abs(c.frame - frame) < 1}
+              current={pinned !== null && Math.abs(c.frame - pinned) < 1}
               tc={formatTimecode(c.frame, settings)}
             />
           ))
@@ -95,10 +147,17 @@ export function CommentsPanel() {
       <div className="composer">
         <textarea
           value={text}
+          aria-label="Comment at the playhead"
           placeholder={canComment ? 'Add a comment at the playhead…' : 'You have view-only access'}
           disabled={!canComment}
           rows={2}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            // A note is about the moment that prompted it. Playback stops with its first
+            // character, so the playhead is still on that moment when the note is posted, however
+            // long the writing takes.
+            if (!text && e.target.value) meta.player?.pause();
+            setText(e.target.value);
+          }}
           onKeyDown={(e) => {
             e.stopPropagation();
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
@@ -108,7 +167,7 @@ export function CommentsPanel() {
           }}
         />
         <div className="composer__foot">
-          <span className="mono composer__tc">{formatTimecode(frame, settings)}</span>
+          <PlayheadTimecode settings={settings} />
           <Button size="sm" variant="primary" disabled={!canComment || !text.trim()} onClick={post}>
             Comment
           </Button>
@@ -118,7 +177,16 @@ export function CommentsPanel() {
   );
 }
 
-function CommentCard({ comment: c, current, tc }: { comment: Comment; current: boolean; tc: string }) {
+/** Rendered again only when its comment, its timecode or its place under the playhead changes. */
+const CommentCard = memo(function CommentCard({
+  comment: c,
+  current,
+  tc,
+}: {
+  comment: Comment;
+  current: boolean;
+  tc: string;
+}) {
   const session = useSession();
   const meta = useSessionMeta();
   const [reply, setReply] = useState('');
@@ -175,6 +243,7 @@ function CommentCard({ comment: c, current, tc }: { comment: Comment; current: b
           <input
             autoFocus
             value={reply}
+            aria-label="Reply"
             placeholder="Reply…"
             onChange={(e) => setReply(e.target.value)}
             onKeyDown={(e) => {
@@ -189,7 +258,13 @@ function CommentCard({ comment: c, current, tc }: { comment: Comment; current: b
         canComment && (
           <div className="comment__actions">
             <button onClick={() => setReplying(true)}>Reply</button>
-            <button onClick={() => session.review.update(c.id, { resolved: !c.resolved })}>
+            <button
+              onClick={(e) => {
+                // Resolved comments leave the list unless they are being shown.
+                handOn(e.currentTarget);
+                session.review.update(c.id, { resolved: !c.resolved });
+              }}
+            >
               {c.resolved ? (
                 <>
                   <RotateCcw /> Reopen
@@ -201,7 +276,13 @@ function CommentCard({ comment: c, current, tc }: { comment: Comment; current: b
               )}
             </button>
             {(mine || meta.role === 'owner') && (
-              <button className="comment__del" onClick={() => session.review.remove(c.id)}>
+              <button
+                className="comment__del"
+                onClick={(e) => {
+                  handOn(e.currentTarget);
+                  session.review.remove(c.id);
+                }}
+              >
                 <Trash2 /> Delete
               </button>
             )}
@@ -210,4 +291,4 @@ function CommentCard({ comment: c, current, tc }: { comment: Comment; current: b
       )}
     </div>
   );
-}
+});

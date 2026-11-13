@@ -1030,7 +1030,10 @@ export class Session {
 
   // ──────────────────────────────────────────────────────────── presence ──
 
-  /** Merge fields into our presence. Coalesced to ~12 updates a second. */
+  /**
+   * Merge fields into our presence. Coalesced to ~12 updates a second: every announcement goes
+   * through here, and the server passes over what comes faster than twenty a second.
+   */
   setPresence(patch: Partial<PresenceState>): void {
     Object.assign(this.pendingPresence, patch);
     if (this.presenceTimer || this.destroyed) return;
