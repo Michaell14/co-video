@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { useReducedMotion } from 'motion/react';
 import { useRef } from 'react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { GlowCard } from '../components/GlowCard';
 import { Keycap } from '../components/Keycap';
 import { Reveal } from '../components/Reveal';
@@ -177,8 +177,8 @@ function ShortcutRow({ hidden }: { hidden?: boolean }) {
           <span className="keys__caps">
             {shortcut.chords
               .flatMap((chord) => chord.split('+'))
-              .map((k) => (
-                <Keycap key={k} k={k} />
+              .map((k, i) => (
+                <Keycap key={i} k={k} />
               ))}
           </span>
           <span className="keys__label">{shortcut.label}</span>
@@ -245,7 +245,7 @@ export function Editing() {
       </div>
 
       <Reveal className="keys">
-        <div className="keys__track">
+        <div className="keys__track" style={{ '--keys': SHORTCUTS.length } as CSSProperties}>
           <ShortcutRow />
           <ShortcutRow hidden />
         </div>

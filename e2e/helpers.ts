@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test';
+import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,17 @@ export function trackErrors(page: Page): string[] {
     errors.push(`console: ${t}`);
   });
   return errors;
+}
+
+/**
+ * Keep the dev server from reloading a page in the middle of a test because a source file was
+ * saved meanwhile: the test would go on in a page that has forgotten everything it set up. The
+ * dev server's own socket is taken over and never answered, for every page of the context, so
+ * call this before the page is opened. `page.reload()` works as before.
+ */
+export async function noReloads(target: Page | BrowserContext): Promise<void> {
+  const context = 'context' in target ? target.context() : target;
+  await context.routeWebSocket(/\/\?token=/, () => {});
 }
 
 export async function newProject(page: Page): Promise<void> {

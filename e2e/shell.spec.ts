@@ -592,7 +592,7 @@ test.describe('library', () => {
     await expect
       .poll(async () => (await tabs(page)).map((t) => t.shown))
       .toEqual(['', '', '', 'Transitions']);
-    await standIn.evaluate((style) => style.remove());
+    await standIn.evaluate((style) => (style as Element).remove());
     await expect.poll(async () => (await tabs(page)).map((t) => t.shown)).toEqual(names);
     expect((await tabs(page)).every((t) => t.inside)).toBe(true);
   });

@@ -377,7 +377,8 @@
 .keys__track {
   display: flex;
   width: max-content;
-  animation: keys-scroll 48s linear infinite;
+  /* Timed by the number of shortcuts, so the strip passes at a reading pace however many it shows. */
+  animation: keys-scroll calc(var(--keys) * 6s) linear infinite;
 }
 .keys:hover .keys__track {
   animation-play-state: paused;
@@ -431,6 +432,10 @@
     gap: 0.5rem 2rem;
     min-width: 0;
     padding: 0;
+  }
+  /* Wrapped into rows, the items need less air than they do passing by in one line. */
+  .keys__item {
+    padding-block: 0.3rem;
   }
   .keys__row[aria-hidden='true'] {
     display: none;

@@ -45,7 +45,7 @@ const linkAside = (page: Page, id: string): Promise<{ token: string; role: strin
   page.evaluate((id) => JSON.parse(localStorage.getItem('tandem.links-aside.v1') ?? '{}')[id] ?? null, id);
 
 /** Give the page a storage that has no room for the project list for as long as its `__full` is set. */
-const listCanRunOutOfRoom = (page: Page): Promise<void> =>
+const listCanRunOutOfRoom = (page: Page): Promise<unknown> =>
   page.addInitScript(() => {
     const setItem = Storage.prototype.setItem;
     Storage.prototype.setItem = function (key: string, value: string) {

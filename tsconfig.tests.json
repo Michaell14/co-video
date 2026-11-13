@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client"],
+    "typeRoots": ["node_modules/@types", "apps/editor/node_modules"],
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "e2e",
+    "packages/*/test",
+    "apps/editor/test",
+    "apps/site/test",
+    "playwright.config.ts",
+    "playwright.smoke.config.ts",
+    "vitest.config.ts",
+    "apps/*/vite.config.ts"
+  ]
+}

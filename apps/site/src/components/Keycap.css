@@ -27,6 +27,5 @@
 
 .keycap--wide {
   min-width: 5.5em;
-  color: var(--fg-3);
   letter-spacing: 0.06em;
 }

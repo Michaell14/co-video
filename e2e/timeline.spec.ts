@@ -1212,37 +1212,56 @@ test.describe('timeline', () => {
       const title = clips.find((c) => c.type === 'text');
       const music = clips.find((c) => c.type === 'audio');
       const painted: Element[] = [];
-      let last = performance.now();
       const proto = CanvasRenderingContext2D.prototype;
       const clearRect = proto.clearRect;
       proto.clearRect = function (...args) {
-        if (this.canvas.classList.contains('lane__canvas')) {
-          painted.push(this.canvas.closest('.lane')!);
-          last = performance.now();
-        }
+        if (this.canvas.classList.contains('lane__canvas')) painted.push(this.canvas.closest('.lane')!);
         return clearRect.apply(this, args);
       };
-      // Thumbnails and the waveform repaint their lanes as they arrive: wait until that is over.
-      const began = performance.now();
-      while (performance.now() - last < 1000 && performance.now() - began < 30_000)
-        await new Promise((r) => setTimeout(r, 100));
       const frame = () => new Promise((r) => requestAnimationFrame(r));
-      painted.length = 0;
-      for (let i = 0; i < 20; i++) {
-        session.store.commit([{ op: 'updateClip', id: title.id, patch: { opacity: 0.5 + i / 100 } }], {
-          merge: true,
-        });
-        await frame();
-      }
-      const forTitle = painted.length;
-      for (let i = 0; i < 5; i++) {
-        session.store.commit([{ op: 'updateClip', id: music.id, patch: { volume: -5 - i } }], {
-          merge: true,
-        });
-        await frame();
-      }
+      /**
+       * The lanes painted while `commit` ran `times`, a frame apart. What a commit paints is
+       * painted with every commit. A thumbnail, a stretch of waveform or an upload that finishes
+       * paints lanes too, whenever it happens to arrive, so a measurement that holds more than
+       * the commits may account for is made again: for a minute, after which the last one stands.
+       */
+      const during = async (
+        times: number,
+        commit: (i: number) => void,
+        explained: (lanes: Element[]) => boolean,
+      ): Promise<Element[]> => {
+        const began = performance.now();
+        for (;;) {
+          painted.length = 0;
+          for (let i = 0; i < times; i++) {
+            commit(i);
+            await frame();
+          }
+          // What the last commit set off has been painted two frames on.
+          await frame();
+          await frame();
+          const lanes = painted.slice();
+          if (explained(lanes) || performance.now() - began > 60_000) return lanes;
+        }
+      };
+      const forTitle = await during(
+        20,
+        (i) =>
+          session.store.commit([{ op: 'updateClip', id: title.id, patch: { opacity: 0.5 + i / 100 } }], {
+            merge: true,
+          }),
+        (lanes) => lanes.length === 0,
+      );
+      const forMusic = await during(
+        5,
+        (i) =>
+          session.store.commit([{ op: 'updateClip', id: music.id, patch: { volume: -5 - i } }], {
+            merge: true,
+          }),
+        (lanes) => lanes.length <= 5 && new Set(lanes).size <= 1,
+      );
       proto.clearRect = clearRect;
-      return { forTitle, forMusic: painted.length - forTitle, lanes: new Set(painted).size };
+      return { forTitle: forTitle.length, forMusic: forMusic.length, lanes: new Set(forMusic).size };
     });
     // The title has no picture on a lane canvas; the music's waveform follows its volume.
     expect(paints.forTitle).toBe(0);

@@ -105,6 +105,21 @@ undo step, so one that returns later is where it was in real time.
 else's alone. Continuous gestures (dragging a slider) commit with `merge: true` and collapse into
 one step; `beginGesture()` starts the next.
 
+`ProjectStore.undo()` and `redo()` take back, or make again, one of your steps per call, and say
+what came of it (`StepOutcome`). Between your step and its undo other people have been editing, and
+the store decides what the step still means:
+
+- A value the step replaced is put back, also when a collaborator wrote the same field at the same
+  instant and lost the merge. Left to Yjs, undoing such a step deletes the field.
+- A step of which nothing is left, because someone else has since replaced or removed every value
+  it wrote, is dropped: the call goes on to the step before it, and `StepOutcome.dropped` counts
+  what was passed over so that the editor can say so.
+- A marker or a folder that someone else deleted stays deleted. Undoing your earlier change to it
+  does not bring it back; that is theirs to undo.
+- A clip that returns onto frames another clip has taken since moves to a free track of its kind,
+  or to a new one, within the same step. A person working alone always gets back exactly the state
+  before the step.
+
 Undo and redo put values back as they were written, and a frame number names a moment only at the
 frame rate it was written at. Every step is therefore stamped with the rate it was recorded at, and
 the store looks at each undo and redo once it is done:
@@ -121,6 +136,15 @@ step that removes a value finds the re-timed one in its place. A gesture that is
 the rate changes under it carries on in a step of its own, because a step holds the values of one
 rate.
 
+A change of rate writes the start and the duration of every clip, changed or not, so that of two
+changes of rate made at the same moment one decides where every clip is. (Fades, keyframes and
+transition lengths are written only where they change, and can still mix.) That also puts someone
+else's change of rate on top of every move and trim you made before it. Those steps stay yours to
+undo: the store recognises its own value re-timed, and what the undo puts back is re-timed in turn.
+This reaches across one change of rate. After two in a row by other people, or after someone
+deliberately moved or trimmed the same clip again, the step has nothing left to take back and is
+dropped like any other.
+
 What nothing re-times is an edit made at the old rate while its author was offline: it merges with
 the frame numbers it was written with.
 
@@ -129,6 +153,15 @@ the frame numbers it was written with.
 Awareness state carries each user's name, colour, role, playhead, selection, cursor and — while
 they are dragging — the previewed positions of the clips in flight, so collaborators see a ghost of
 the move before it is committed. Updates are coalesced to about twelve a second.
+
+Presence is announced by whoever is in the room and passed on to everyone, so it is never trusted.
+Everything that draws a collaborator reads the room through `session/presence.ts`, which makes a
+fully typed state out of whatever arrived, field by field, the way the stores read the documents;
+an entry without a usable identity is nobody. The lists a state carries are cut on both sides (a
+hundred selected clips, fifty in a drag, a hundred people). A client also ignores what the room
+says about its own id and announces itself again if someone else spoke for it. The one thing in an
+entry that can be relied on is `role`, which the server writes from the link the connection came
+with.
 
 ### Comments
 
@@ -146,8 +179,8 @@ both keep what they did. What a commenter writes is conformed like the project d
 Plain `node:http` and `ws`. Rooms hold a `Y.Doc` and awareness per (project, document). State is
 persisted as a snapshot plus a checksummed append-only log, compacted when the log grows; a torn
 final record after a crash is detected and discarded. Access is by HMAC-signed capability tokens
-(`owner`, `editor`, `commenter`, `viewer`) carried in share links; the editor strips the token from
-the address bar as soon as it has read it.
+(`owner`, `editor`, `commenter`, `viewer`) carried in share links; the editor takes the token out of
+the address bar once the server has judged it (see "Access" below).
 
 Media is uploaded with a small resumable protocol (`Upload-Offset` / `Upload-Length`) and served
 with HTTP range support. That one feature does a lot of work: a collaborator can start playing a
@@ -155,12 +188,14 @@ clip seconds after joining, because the demuxer reads just the bytes it needs, w
 downloads into their browser's private file system in the background. When it lands, the decoders
 switch to the local copy.
 
-The server protects itself with a few plain limits rather than quotas. Open sockets are capped per
-client address and per room, and an upgrade over a cap is answered before the handshake (`429` for
-the address, `503` for a full room). A full room still admits someone who may write its document:
-the most recent read-only connection is closed with code `1013` to make way, so a viewer link
-cannot be used to keep editors out. Presence updates are limited in size and in how deeply they
-nest, and project creation is limited per address and hour (`MAX_CREATES_PER_HOUR`).
+The server protects itself with budgets rather than quotas. Open sockets are capped per client
+address and per room (`429` / `503` before the handshake), and a full room makes way for whoever
+outranks someone in it (viewer < commenter < editor < owner; close code `1013`). A document may
+reach a configured size and one Yjs struct per 16 bytes of it, all loaded documents together a
+share of the heap; an update over that is refused before it is applied (close code `1009`), and a
+stored document over twice the limit is not loaded (`507`). A connection publishes one presence
+entry, metered in size and rate, and one copy of the document at a time is on its way to a client.
+Project creation is limited per address and hour (`MAX_CREATES_PER_HOUR`).
 [`apps/server/README.md`](../apps/server/README.md) has the numbers and the security model.
 
 ## 3. The render engine (`packages/engine`)
@@ -239,8 +274,9 @@ white. HDR sources are _not_ taken through the browser's 8-bit path: 10/12-bit f
 as planes, uploaded as packed RG8 textures (low byte, high byte — which keeps bilinear filtering
 exact) and converted Y'CbCr → R'G'B' in the shader. For export the compositor packs 10-bit
 limited-range Y'CbCr on the GPU and the encoder receives real `I420P10` frames tagged BT.2020 / PQ
-or HLG. An end-to-end test checks that a PQ ramp comes out with the same code values it went in
-with.
+or HLG. An end-to-end test compares the picture that is handed to the encoder with a 10-bit PQ
+ramp, to within one code value, and another checks that the exported file is laid out and tagged as
+10-bit PQ. Nothing reads code values back out of an encoded file.
 
 An SDR timeline is display-referred from the first pass to the last, so its finished picture is
 not tone-mapped: the output transform passes it through. What needs rolling off is dealt with where
@@ -256,6 +292,15 @@ with a few frames of look-ahead and back-pressure. Sequential playback never see
 restarts the pipeline at the nearest keyframe, and a restart that is already in flight is allowed to
 land before the next one starts so fast scrubbing always shows _something_. Clips that are about to
 start are warmed up a second ahead so cuts play cleanly.
+
+A clip that carries on in its file where the clip before it stops (a take cut into pieces) takes
+that clip's cursor over instead of starting one of its own. Cuts inside a take therefore cost no
+decoder start and no decode from the keyframe before, in the preview and in an export alike. A
+cursor whose decoder broke on a damaged spot is never handed on.
+
+Decoders are a scarce thing, so the ones no clip in the picture uses are not kept for long: for
+four seconds at most, the three used last while paused (stepping back over a cut should not seek)
+and none while playing. A viewer at rest is swept once a second.
 
 Going backwards — a reversed clip, the J key, stepping back while paused — is served from behind
 the playhead. A paused cursor keeps about half a second of decoded picture there, so the first
@@ -279,7 +324,8 @@ drawn are released when together they outgrow a memory budget.
 
 Media that is not there is not an error for long. A collaborator may still be uploading it, so
 cursors, audio voices, stills and LUTs each ask again every two or three seconds, and the session
-tells the engine the moment a file lands.
+tells the engine the moment a file lands. The asking is silent: the console names a file that
+cannot be had once, not once per attempt.
 
 Preview resolution follows the viewer: `auto` quality renders only as many pixels as the viewer
 shows. While playing, if animation frames arrive well below the timeline's rate the player halves
@@ -313,6 +359,11 @@ During playback, buffers are decoded and scheduled a couple of seconds ahead; ga
 (volume, keyframes, equal-power fades) are written as parameter automation. For export the mix is
 rendered offline in four-second chunks with a discarded pre-roll so filters and compressors have
 settled, and interleaved with the video as it is encoded.
+
+The mix is rendered in chunks, but each clip's sound is decoded in one pass over the whole export
+(`AudioRuns` carries the decoders from chunk to chunk). A decoder does not always place sound after
+a seek exactly where the decode before it placed the same sound, and where two stretches placed
+differently meet there is a click.
 
 The player's master clock is the audio clock, offset by output latency, so picture follows sound.
 If the audio context is not running yet the player uses a monotonic clock and hands over cleanly
@@ -351,9 +402,24 @@ gave is remembered with the project, so a viewer who opens it offline is still a
 server about the token it has stored for the project and about the one the link offers, and keeps
 the one that allows more: a link can add access but never take it away, and a token is stored only
 once the server has accepted it. A server that is unreachable, busy or full is a state to wait in,
-not an answer — the session says so and keeps knocking. A refusal is final. If the project is on
-this device it stays, as a local copy that no longer syncs; if nothing of it is here, it leaves the
-project list.
+not an answer — the session says so and keeps knocking. A refusal ends the knocking. If the project
+is on this device it stays, as a local copy that no longer syncs; if nothing of it is here, it
+leaves the project list, unless it was made on this device. The refused link is not thrown away:
+it is kept aside (`tandem.links-aside.v1` in local storage) and offered to the server again only
+when the person asks (Share → Try again), when another link to the same project is being judged,
+or when nothing of the project is on the device. A refusal is only what one server said at one
+moment, and a link is not something its holder can get again by themselves.
+
+**Replacing a project.** Restoring a version and replacing the open project with a file both go
+through `Session.replaceProject`, the one place that swaps everything a project holds: it keeps
+what is known about uploads, follows a change of frame rate (comments, playhead and range move
+with it) and files the whole thing as one undo step.
+
+**Upload flags.** `uploaded` on an asset is what tells everyone else that the file can be fetched,
+and the document can be behind the server: a version from before an upload finished brings the
+asset back unflagged, and so does undoing its removal, while the person who has the file may not be
+around. A session that may edit therefore asks the server once (`HEAD …?probe`) about each file
+that is neither on its device nor flagged, and sets the flag when the server holds it.
 
 **Media transfers.** An import joins the media pool, and the document, as soon as the file has been
 probed: the file serves the asset from memory while its copy is written to the device behind it.
@@ -366,13 +432,13 @@ bundle; the editor chunk is warmed in the background while you choose a project.
 
 ## 5. Testing strategy
 
-| Layer   | What is checked                                                                                                                             | Where                                                                    |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Model   | timecode, keyframes, every edit operation, CRDT convergence, per-user undo, hostile input                                                   | `packages/core/test`                                                     |
-| Server  | auth, roles, sync, persistence across restart and torn logs, resumable media, versions, connection limits                                   | `apps/server/test`                                                       |
-| Engine  | all shaders compile and draw, geometry and colour, frame accuracy, HDR exactness, memory held, context loss, exports inspected with ffprobe | `e2e/engine*.spec.ts`, `packages/engine/test`                            |
-| Editor  | the parts that are plain functions: panel layout, layers and focus, access, the transfer queue, timing, shortcuts                           | `apps/editor/test`                                                       |
-| Product | mouse-driven editing, reload persistence, panels and dialogs from the keyboard, export, multi-user sessions with roles                      | `e2e/editor.spec.ts`, `e2e/collab.spec.ts` and the other specs in `e2e/` |
+| Layer   | What is checked                                                                                                                               | Where                                                                    |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Model   | timecode, keyframes, every edit operation, CRDT convergence, per-user undo, hostile input                                                     | `packages/core/test`                                                     |
+| Server  | auth, roles, sync, persistence across restart and torn logs, resumable media, versions, connection limits                                     | `apps/server/test`                                                       |
+| Engine  | all shaders compile and draw, geometry and colour, frame accuracy, HDR code values, memory held, context loss, exports inspected with ffprobe | `e2e/engine*.spec.ts`, `packages/engine/test`                            |
+| Editor  | the parts that are plain functions: panel layout, layers and focus, access, the transfer queue, timing, shortcuts                             | `apps/editor/test`                                                       |
+| Product | mouse-driven editing, reload persistence, panels and dialogs from the keyboard, export, multi-user sessions with roles                        | `e2e/editor.spec.ts`, `e2e/collab.spec.ts` and the other specs in `e2e/` |
 
 The engine tests run through a bare "lab" page (`apps/editor/lab.html`) that exposes the engine
 without the editor around it. WebGL runs on SwiftShader, so the suite needs no GPU.

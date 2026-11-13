@@ -17,16 +17,17 @@ export default class NoSkips implements Reporter {
     this.skipped.set(test, why ?? 'no reason given');
   }
 
-  onEnd(result: FullResult): { status: FullResult['status'] } | undefined {
+  async onEnd(result: FullResult): Promise<{ status: FullResult['status'] } | undefined> {
     // A run that was stopped leaves the tests it never reached as skipped: that is not what this is about.
     if (!this.skipped.size || result.status === 'interrupted') return undefined;
-    console.log(`\n${this.skipped.size} skipped, and nothing may skip in this run:`);
+    console.error(`\n${this.skipped.size} skipped, and nothing may skip in this run:`);
     for (const [test, why] of this.skipped) {
-      console.log(`  ${test.titlePath().slice(2).join(' › ')}  (${why})`);
+      console.error(`  ${test.titlePath().slice(2).join(' › ')}  (${why})`);
     }
     return { status: 'failed' };
   }
 
+  // The lines above come once, at the end; the reporters that show progress keep the terminal.
   printsToStdio(): boolean {
     return false;
   }

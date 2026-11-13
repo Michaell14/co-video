@@ -211,7 +211,7 @@ test.describe('render engine', () => {
     expect(r.repeat).toEqual([0, 0]);
   });
 
-  test('HDR timeline is bit-exact from 10-bit PQ source to 10-bit PQ output', async ({ page }) => {
+  test('HDR timeline hands the encoder a 10-bit PQ source to within one code value', async ({ page }) => {
     await openLab(page);
     const r = await page.evaluate(async () => {
       const { lab } = window as any;

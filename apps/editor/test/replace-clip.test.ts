@@ -13,7 +13,7 @@ import {
 } from '@tandem/core';
 import { replaceEdits } from '../src/state/edits';
 
-const asset = (id: string, init: Partial<Asset>): Asset => ({
+const asset = (id: string, init: Partial<Asset> & Pick<Asset, 'kind'>): Asset => ({
   ...ASSET_DEFAULTS,
   id,
   name: `${id}.mp4`,

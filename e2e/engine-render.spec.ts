@@ -220,7 +220,7 @@ test.describe('render engine: resources', () => {
         return check.apply(this, args);
       };
       const stringify = JSON.stringify;
-      JSON.stringify = function (...args: Parameters<typeof JSON.stringify>) {
+      JSON.stringify = function (this: unknown, ...args: Parameters<typeof JSON.stringify>) {
         counts.stringify++;
         return stringify.apply(this, args);
       } as typeof JSON.stringify;

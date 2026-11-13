@@ -56,13 +56,59 @@ await server.close();
 | `MAX_PRESENCE_BYTES`       | `262144` (256 KiB)     | Largest presence update (cursor, selection) that is relayed, and what one link may show in a room in all.    |
 | `MAX_SYNC_BACKLOG_BYTES`   | `134217728` (128 MiB)  | Document copies queued for clients that have not read them yet. Further copies wait for their turn.          |
 
-The server speaks plain HTTP. Put it behind a reverse proxy for TLS (and compression of the static
-files); the proxy must pass WebSocket upgrades and should not buffer request bodies of uploads.
+The server speaks plain HTTP, and **the editor only works over HTTPS** unless it is opened on
+`localhost`: browsers switch off WebCodecs, the private file system, service workers, the clipboard
+and the microphone on every other page that came over plain HTTP. At `http://your-server:8787/app/`
+the editor loads and then decodes nothing, stores nothing on the device and does not open offline.
+So put the server behind a reverse proxy that terminates TLS (and compresses the static files). The
+proxy must pass WebSocket upgrades and should not buffer request bodies of uploads. With
+[Caddy](https://caddyserver.com) that is:
+
+```
+tandem.example.com {
+	reverse_proxy localhost:8787
+}
+```
 
 Behind a proxy every request arrives from the proxy's address. Unless `TRUST_PROXY` is on, all clients
 then share one rate limit and `MAX_CONNECTIONS_PER_IP` caps the whole server, so turn `TRUST_PROXY` on
 (or raise the cap). The two connection limits are a backstop against a client that opens sockets until
 the process runs out of memory, not a quota: the defaults leave room for an office behind one address.
+
+## The editor on another origin
+
+The editor is a static build and does not have to be served by this process: a CDN or any static
+host will do. These settings connect the pieces.
+
+| Set it for              | Variable          | Meaning                                                                                                                           |
+| ----------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| the editor's build      | `VITE_SERVER_URL` | Address of this server, such as `https://api.example.com`. Without it the editor talks to the origin it was loaded from.          |
+| the editor's build      | `TANDEM_BASE`     | Path the editor is served under. `/app/` by default; `/` for a host of its own.                                                   |
+| this server             | `CORS_ORIGIN`     | The editor's origin, such as `https://edit.example.com`.                                                                          |
+| the website's build     | `VITE_EDITOR_URL` | Where the website's links to the editor point. `/app/` by default.                                                                |
+| the editor's dev server | `TANDEM_SERVER`   | The server it passes `/api` and `/ws` on to. `http://localhost:8787` by default; this one is for development, not for deployment. |
+
+```sh
+VITE_SERVER_URL=https://api.example.com TANDEM_BASE=/ pnpm --filter @tandem/editor build
+VITE_EDITOR_URL=https://edit.example.com/ pnpm --filter @tandem/site build
+CORS_ORIGIN=https://edit.example.com pnpm --filter @tandem/server start
+```
+
+What this server does for the pages it serves, the other host has to do for the editor:
+
+- **HTTPS**, for the reason given above. This server must then be reached over HTTPS as well, or the
+  browser blocks the editor's requests and sockets to it as mixed content.
+- **Security headers.** The Content-Security-Policy and Permissions-Policy described under "Security
+  model" are set on the pages this server sends, and on nothing else. Send them from the other host
+  too (`documentSecurityHeaders` in [`src/static.ts`](src/static.ts) has the list), with this
+  server's address added to `connect-src`, as `https://` and as `wss://`: the editor fetches
+  everything it gets from the server, media included. Keep `microphone=(self)` in the
+  Permissions-Policy, or voiceover recording is refused.
+- **Caching.** `index.html` and `sw.js` must be revalidated on every load (`Cache-Control: no-cache`),
+  or a deploy does not reach returning visitors. Everything under `assets/` has a hash of its
+  content in its name and can be cached for good.
+- **The service worker's reach** is the path the editor is served under. Nothing else should live
+  under that path.
 
 ## Data layout
 

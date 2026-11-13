@@ -203,12 +203,55 @@ docker build -t tandem .
 docker run -p 8787:8787 -v tandem-data:/data tandem
 ```
 
-Configuration is by environment variable (`PORT`, `HOST`, `DATA_DIR`, `CORS_ORIGIN`,
-`MAX_UPLOAD_BYTES`, `TANDEM_OPEN_CREATE`, `MAX_CREATES_PER_HOUR`, `TRUST_PROXY`,
-`MAX_CONNECTIONS_PER_IP`, `MAX_CONNECTIONS_PER_ROOM`); see
-[`apps/server/README.md`](apps/server/README.md) for the full table, the on-disk layout and the
-security model. In short: projects are protected by unguessable capability links, there are no user
-accounts, and you should put the server behind HTTPS.
+**Anywhere but `localhost`, the editor needs HTTPS to work at all.** Browsers offer WebCodecs, the
+private file system, service workers, the clipboard and the microphone only to pages that came
+over HTTPS (or from `localhost`). Opened at `http://your-server:8787/app/` the editor loads, shows
+a black viewer, decodes nothing, stores nothing on the device and does not open offline. The server
+itself speaks plain HTTP, so put a reverse proxy that terminates TLS in front of it. With
+[Caddy](https://caddyserver.com), which gets the certificate by itself and passes WebSocket
+upgrades on, this is the whole configuration:
+
+```
+tandem.example.com {
+	reverse_proxy localhost:8787
+}
+```
+
+Start the server with `TRUST_PROXY=true` behind it, so that clients are told apart by their own
+address and not the proxy's.
+
+Configuration is by environment variable: `PORT`, `HOST`, `DATA_DIR`, `CORS_ORIGIN`,
+`TANDEM_OPEN_CREATE`, `MAX_CREATES_PER_HOUR`, `TRUST_PROXY`, `AUTO_SNAPSHOT_MS`, and the limits
+below. [`apps/server/README.md`](apps/server/README.md) has what each one means, the on-disk
+layout and the security model. In short: projects are protected by unguessable capability links
+and there are no user accounts.
+
+| Limit                      | Default            | Bounds                                                |
+| -------------------------- | ------------------ | ----------------------------------------------------- |
+| `MAX_UPLOAD_BYTES`         | 20 GiB             | one media file                                        |
+| `UPLOAD_EXPIRY_DAYS`       | 7                  | how long an unfinished upload is kept (`0`: for ever) |
+| `MAX_CONNECTIONS_PER_IP`   | 200                | open sockets from one address                         |
+| `MAX_CONNECTIONS_PER_ROOM` | 100                | open sockets on one document of a project             |
+| `MAX_PROJECT_DOC_BYTES`    | 32 MiB             | a project document                                    |
+| `MAX_REVIEW_DOC_BYTES`     | 2 MiB              | a project's comments                                  |
+| `MAX_OPEN_DOC_BYTES`       | 1 % of the V8 heap | all documents in memory together                      |
+| `MAX_PRESENCE_BYTES`       | 256 KiB            | one presence update, and what one link shows in all   |
+| `MAX_SYNC_BACKLOG_BYTES`   | 128 MiB            | document copies on their way to clients               |
+
+The editor can also be hosted somewhere else than the server, on a static host or a CDN. Build it
+with `VITE_SERVER_URL` set to the server's address and `TANDEM_BASE` to the path it will be served
+under, and tell the server who may call it:
+
+```bash
+VITE_SERVER_URL=https://api.example.com TANDEM_BASE=/ pnpm --filter @tandem/editor build
+```
+
+```bash
+CORS_ORIGIN=https://edit.example.com pnpm start
+```
+
+[`apps/server/README.md`](apps/server/README.md#the-editor-on-another-origin) has the details,
+among them what such a host has to do that the bundled server does by itself.
 
 ## Testing
 

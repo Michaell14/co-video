@@ -463,6 +463,11 @@ test.describe('editor', () => {
       cmd.seek(100);
       cmd.shuttle(-1);
       await wait(600);
+      // Going backwards begins once the picture behind the playhead is decoded, and on a busy
+      // machine that can take longer than this.
+      for (let waited = 0; session.player.getFrame() >= 100 && waited < 10_000; waited += 100) {
+        await wait(100);
+      }
       out.reverseFrame = session.player.getFrame();
       cmd.shuttle(0);
 

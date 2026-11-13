@@ -48,7 +48,7 @@ function comment(page: Page, frame: number, text: string): Promise<void> {
  * while cut off, their sockets to it fail to open. The dev server's own socket is left unanswered,
  * so a file saved while the test runs does not reload a page under it.
  */
-const canBeCutOff = (context: BrowserContext): Promise<void> =>
+const canBeCutOff = (context: BrowserContext): Promise<unknown> =>
   context.addInitScript(() => {
     const net = ((window as any).__net = { down: false });
     window.WebSocket = new Proxy(window.WebSocket, {

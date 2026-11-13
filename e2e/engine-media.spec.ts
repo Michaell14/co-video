@@ -1450,7 +1450,10 @@ test.describe('media engine', () => {
         for (let i = 0; i < n; i++) most = Math.max(most, Math.abs(a[i] - b[i]));
         return most;
       };
-      const measure = async (clip: { start: number; duration: number }, rate: number) => {
+      const measure = async (
+        clip: { start: number; duration: number; sourceIn?: number; reverse?: boolean },
+        rate: number,
+      ) => {
         const project = kit.project(160, 90, [sweep], [{ type: 'audio', assetId: 'sweep', ...clip }], {
           sampleRate: rate,
         });

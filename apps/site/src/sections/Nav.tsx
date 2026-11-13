@@ -54,13 +54,14 @@ export function Nav({ sectionsReady }: NavProps) {
   const progress = useSpring(scrollYProgress, { stiffness: 200, damping: 40, mass: 0.3 });
 
   const toggle = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       // The menu takes whatever is focused inside it away with it. Hand that focus back to the
       // button that opened the menu, or it would be left on nothing at all.
-      if (document.getElementById('nav-menu')?.contains(document.activeElement)) toggle.current?.focus();
+      if (menu.current?.contains(document.activeElement)) toggle.current?.focus();
       setOpen(false);
     };
     window.addEventListener('keydown', onKey);
@@ -118,6 +119,7 @@ export function Nav({ sectionsReady }: NavProps) {
       <AnimatePresence>
         {open && (
           <motion.nav
+            ref={menu}
             id="nav-menu"
             className="nav__menu"
             aria-label="Sections"

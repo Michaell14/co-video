@@ -121,7 +121,7 @@ class FakeSocket {
   }
 
   private deliver(frame: Uint8Array): void {
-    this.onmessage?.({ data: frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) });
+    this.onmessage?.({ data: frame.slice().buffer });
   }
 
   /** Deliver an awareness update the way the server would. */

@@ -16,10 +16,11 @@
     "dev:site": "pnpm --filter @tandem/site dev",
     "build": "pnpm --filter @tandem/editor build && pnpm --filter @tandem/site build && pnpm --filter @tandem/server build",
     "start": "pnpm --filter @tandem/server start",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.tests.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test --trace off",
+    "test:e2e": "playwright test",
+    "test:smoke": "pnpm build && playwright test --config playwright.smoke.config.ts",
     "format": "prettier --write ."
   },
   "devDependencies": {

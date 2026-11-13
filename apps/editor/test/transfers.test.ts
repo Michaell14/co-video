@@ -236,7 +236,13 @@ describe('byUrgency', () => {
 });
 
 describe('keepUploads', () => {
-  const asset = (id: string, uploaded: boolean): Asset => ({ ...ASSET_DEFAULTS, id, name: id, uploaded });
+  const asset = (id: string, uploaded: boolean): Asset => ({
+    ...ASSET_DEFAULTS,
+    kind: 'video',
+    id,
+    name: id,
+    uploaded,
+  });
   const project = (...assets: Asset[]) =>
     applyEdits(
       emptyProject(),

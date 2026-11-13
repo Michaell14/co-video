@@ -18,7 +18,7 @@ export const NAMED_KEYS = [
 export type NamedKey = (typeof NAMED_KEYS)[number];
 
 export interface Shortcut {
-  /** One chord such as `mod+b`, or a few keys that do one job between them. */
+  /** One chord such as `mod+b`, or a few single keys that do one job between them. */
   chords: string[];
   label: string;
 }
@@ -30,12 +30,12 @@ export const SHORTCUTS: Shortcut[] = [
   { chords: ['i'], label: 'Mark in' },
   { chords: ['o'], label: 'Mark out' },
   { chords: ['x'], label: 'Mark clip' },
-  { chords: ['mod+b'], label: 'Split at playhead' },
-  { chords: ['q', 'w'], label: 'Ripple trim to playhead' },
-  { chords: ['shift+delete'], label: 'Ripple delete' },
   { chords: ['shift+v'], label: 'Select clip under playhead' },
   { chords: ['mod+arrowdown'], label: 'Select next clip' },
+  { chords: ['mod+b'], label: 'Split at playhead' },
+  { chords: ['q', 'w'], label: 'Ripple trim to playhead' },
   { chords: ['e'], label: 'Extend edit to playhead' },
+  { chords: ['shift+delete'], label: 'Ripple delete' },
   { chords: ['shift+d'], label: 'Add default transition' },
   { chords: ['mod+z'], label: 'Undo' },
   { chords: ['mod+k'], label: 'Command palette' },
