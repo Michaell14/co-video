@@ -394,6 +394,22 @@
   padding: 8px 10px;
   flex: none;
 }
+/* The marks to the left, what puts them on the timeline to the right. A narrow viewer has no
+   room for both in one row: the buttons then go below one another instead of out of sight. */
+.source__foot,
+.source__marks,
+.source__add {
+  flex-wrap: wrap;
+}
+.source__marks,
+.source__add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.source__add {
+  margin-left: auto;
+}
 .source__name {
   font-size: var(--text-sm);
   font-weight: 600;

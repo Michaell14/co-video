@@ -2,6 +2,7 @@ import {
   AudioLines,
   ChevronFirst,
   ChevronLast,
+  Eraser,
   Gauge,
   Grid3x3,
   Maximize,
@@ -30,8 +31,6 @@ import {
   useSyncExternalStore,
 } from 'react';
 import {
-  animated,
-  clamp,
   formatTimecode,
   hasKeyframes,
   parseTimecode,
@@ -64,11 +63,21 @@ import {
 import { cmd } from '../../state/commands';
 import { eventKeys } from '../../state/keys';
 import { beginGesture, setClipValues } from '../../state/props';
-import { isTyping } from '../../state/shortcuts';
-import { useUI } from '../../state/ui';
+import { isTyping, spaceOperates } from '../../state/shortcuts';
+import { useUI, type SourceMarks } from '../../state/ui';
 import { IconButton, MenuButton, Slider, tip, cx, Button } from '../../ui/core';
-import { layerOpen } from '../../ui/layers';
+import { handFocus, layerOpen } from '../../ui/layers';
 import { angleStep, pointInQuad, quadCovers, wrapDegrees } from './geometry';
+import { selectedLayers } from './selectedLayers';
+import {
+  marksOfKnown,
+  markedRange,
+  rememberSource,
+  resumeAt,
+  UNMARKED,
+  withIn,
+  withOut,
+} from './sourceMarks';
 import { SourceTransport } from './sourceTransport';
 import './viewer.css';
 
@@ -97,6 +106,7 @@ export function Viewer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 640, h: 360, scale: 1 });
+  useSourceMarksOfProject();
 
   // The canvas belongs to the session's Player for as long as this panel is mounted.
   useEffect(() => {
@@ -188,18 +198,6 @@ interface Target {
   box: LayerBox;
 }
 
-function findLayer(project: Project, frame: number, clipId: string): ClipLayer | null {
-  for (const l of resolveFrame(project, frame).layers) {
-    if (l.kind === 'clip') {
-      if (l.layer.clip.id === clipId) return l.layer;
-    } else {
-      if (l.a?.clip.id === clipId) return l.a;
-      if (l.b?.clip.id === clipId) return l.b;
-    }
-  }
-  return null;
-}
-
 function boxFor(project: Project, layer: ClipLayer): LayerBox | null {
   const m = measureClip(layer.clip, project);
   if (!m) return null;
@@ -243,14 +241,9 @@ function Gizmo({ scale }: { scale: number }) {
   const { width: W, height: H } = project.settings;
 
   const target = useMemo<Target | null>(() => {
-    for (const id of selection) {
-      const clip = project.clips[id];
-      if (!clip || clip.type === 'audio' || clip.type === 'adjustment') continue;
-      if (project.tracks[clip.trackId]?.locked) continue;
-      const layer = findLayer(project, frame, id);
-      if (!layer) continue;
+    for (const layer of selectedLayers(project, frame, selection)) {
       const box = boxFor(project, layer);
-      if (box) return { clip, layer, box };
+      if (box) return { clip: layer.clip, layer, box };
     }
     return null;
   }, [project, selection, frame, fonts]);
@@ -722,6 +715,8 @@ function Transport() {
                 if (state.muted && v > 0) player?.setMuted(false);
               }}
               defaultValue={1}
+              ariaLabel="Volume"
+              valueText={(v) => `${Math.round(v * 100)}%`}
             />
           </div>
         </div>
@@ -826,6 +821,38 @@ function Transport() {
 
 const closeSourceMonitor = () => useUI.getState().set({ sourceAsset: null, sourceCue: null });
 
+/** The keys that move a slider: one that has the keyboard keeps them while the monitor is open. */
+const SLIDER_KEYS = new Set([
+  'arrowleft',
+  'arrowright',
+  'shift+arrowleft',
+  'shift+arrowright',
+  'home',
+  'end',
+]);
+
+/** A position in a file as minutes, seconds and hundredths. */
+function sourceClock(seconds: number): string {
+  const hundredths = Math.round(seconds * 100);
+  return `${Math.floor(hundredths / 6000)}:${((hundredths % 6000) / 100).toFixed(2).padStart(5, '0')}`;
+}
+
+/**
+ * The monitor keeps marks and a position for every file it has shown. Those of a file that has
+ * left the project go with it: nothing else would ever let go of them. And all of it belongs to
+ * the project that is open: the next one starts with nothing kept.
+ */
+function useSourceMarksOfProject(): void {
+  const session = useSession();
+  const assets = useProject((p) => p.assets);
+  useEffect(() => () => useUI.getState().set({ sourceMarks: {} }), [session]);
+  useEffect(() => {
+    const { sourceMarks, set } = useUI.getState();
+    const kept = marksOfKnown(sourceMarks, assets);
+    if (kept !== sourceMarks) set({ sourceMarks: kept });
+  }, [assets]);
+}
+
 /** The source monitor for one asset. A different asset gets a monitor of its own (it is keyed). */
 function SourceMonitor({ assetId }: { assetId: string }) {
   const session = useSession();
@@ -833,11 +860,28 @@ function SourceMonitor({ assetId }: { assetId: string }) {
   const asset = useProject((p) => p.assets[assetId]);
   const fps = useProject((p) => p.settings.fpsNum / p.settings.fpsDen);
   const cue = useUI((s) => (s.sourceCue?.assetId === assetId ? s.sourceCue : null));
+  const marks = useUI((s) => s.sourceMarks[assetId]) ?? UNMARKED;
   const [url, setUrl] = useState<string | null>(null);
-  const [marks, setMarks] = useState<{ in: number; out: number | null }>({ in: 0, out: null });
   const [transport] = useState(() => new SourceTransport());
+  const length = asset?.duration ?? 0;
+  // Where the file goes on from, decided as the monitor opens. A match frame asks for a frame of
+  // its own instead.
+  const [resume] = useState(() => (cue ? null : resumeAt(marks, length)));
   // One function for the life of the monitor: React detaches and re-attaches a ref that changes.
-  const attach = useCallback((el: HTMLMediaElement | null) => transport.attach(el), [transport]);
+  // The element is let go when the monitor closes or turns to another file, and where this file
+  // had got to is kept for the next look at it. One that never loaded has no place to keep, and
+  // one that has left the project is not coming back.
+  const attach = useCallback(
+    (el: HTMLMediaElement | null) => {
+      const shown = transport.element;
+      const loaded = !!shown && shown.readyState >= HTMLMediaElement.HAVE_METADATA;
+      if (!el && loaded && session.store.get().assets[assetId]) {
+        rememberSource(assetId, { at: transport.time });
+      }
+      transport.attach(el);
+    },
+    [transport, session, assetId],
+  );
 
   // The asset can leave the project while it is on show, removed here or by someone else. There
   // is then nothing to show, and a monitor left open unseen would go on taking the transport keys.
@@ -869,6 +913,18 @@ function SourceMonitor({ assetId }: { assetId: string }) {
   // The programme is hidden behind the monitor: it must not go on playing there, unseen.
   useEffect(() => player?.pause(), [player]);
 
+  // A file that is opened again plays on from where it was left.
+  useEffect(() => {
+    const el = transport.element;
+    if (resume === null || !url || !el) return;
+    const go = () => {
+      el.currentTime = resume;
+    };
+    if (el.readyState >= HTMLMediaElement.HAVE_METADATA) go();
+    else el.addEventListener('loadedmetadata', go, { once: true });
+    return () => el.removeEventListener('loadedmetadata', go);
+  }, [resume, url, transport]);
+
   // Match frame: hold the source at the frame that was asked for instead of playing it. The
   // request is used up by that, so opening the same file from the pool later plays it as usual.
   useEffect(() => {
@@ -884,25 +940,29 @@ function SourceMonitor({ assetId }: { assetId: string }) {
     return () => el.removeEventListener('loadedmetadata', hold);
   }, [cue, url, transport]);
 
-  const length = asset?.duration ?? 0;
-  const markIn = () => {
-    const t = clamp(transport.time, 0, length);
-    // An out point at or before the new in point no longer marks anything.
-    setMarks((m) => ({ in: t, out: m.out !== null && m.out <= t ? null : m.out }));
+  // A still has no stretch to mark.
+  const timed = !!asset && asset.kind !== 'image';
+  const range = markedRange(marks, length);
+  const changeMarks = (change: (marks: SourceMarks) => Partial<SourceMarks>) => {
+    if (timed) rememberSource(assetId, change(useUI.getState().sourceMarks[assetId] ?? UNMARKED));
   };
-  const markOut = () => {
-    const t = clamp(transport.time, 0, length);
-    setMarks((m) => ({ in: m.in < t ? m.in : 0, out: t }));
-  };
+  const markIn = () => changeMarks((m) => withIn(m, transport.time, length));
+  const markOut = () => changeMarks((m) => withOut(m, transport.time, length));
+  const clearMarks = () => changeMarks(() => ({ in: 0, out: null }));
 
-  // While the monitor is open the transport and marking keys are its own; the programme keeps
-  // every other shortcut. Listening on the document puts this after menus and drags in progress,
-  // which take Escape on the window, and before the programme's shortcuts. Under a dialog or any
-  // other layer the keys belong to that layer: Space there presses its focused button.
+  // While the monitor is open the transport and marking keys are its own, and comma and period
+  // put what is marked on the timeline; the programme keeps every other shortcut. Listening on
+  // the document puts this after menus and drags in progress, which take Escape on the window,
+  // and before the programme's shortcuts. Under a dialog or any other layer the keys belong to
+  // that layer: Space there presses its focused button.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (isTyping(e.target) || useUI.getState().dialog || layerOpen()) return;
       const keys = eventKeys(e);
+      // A control the keyboard is working keeps what is its own, as it does over the programme:
+      // Space presses a button that Tab has reached, and the arrow keys move a slider.
+      if (keys === 'space' && spaceOperates(e.target)) return;
+      if (SLIDER_KEYS.has(keys) && (e.target as Element | null)?.closest?.('[role=slider]')) return;
       const held = e.repeat && !keys.includes('arrow');
       switch (keys) {
         case 'space':
@@ -922,6 +982,21 @@ function SourceMonitor({ assetId }: { assetId: string }) {
           break;
         case 'o':
           if (!held) markOut();
+          break;
+        case 'shift+i':
+          transport.seek(range.sourceIn);
+          break;
+        case 'shift+o':
+          transport.seek(range.sourceOut);
+          break;
+        case 'alt+x':
+          clearMarks();
+          break;
+        case 'comma':
+          if (!held) cmd.addFromSource(true);
+          break;
+        case 'period':
+          if (!held) cmd.addFromSource(false);
           break;
         case 'arrowleft':
           transport.step(-1 / fps);
@@ -955,12 +1030,6 @@ function SourceMonitor({ assetId }: { assetId: string }) {
   });
 
   if (!asset) return null;
-  const add = (insert: boolean) => {
-    const out = marks.out ?? asset.duration;
-    cmd.addAsset(asset, { sourceIn: marks.in, sourceOut: out > marks.in ? out : asset.duration, insert });
-    closeSourceMonitor();
-  };
-  const fmt = (t: number) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, '0')}`;
 
   return (
     <div className="source">
@@ -988,28 +1057,50 @@ function SourceMonitor({ assetId }: { assetId: string }) {
         )}
       </div>
       <div className="source__foot">
-        {asset.kind !== 'image' && (
-          <>
+        {timed && (
+          <div className="source__marks">
             <Button size="sm" onClick={markIn} {...tip('Mark in at the current frame', 'i')}>
-              Mark in <span className="mono">{fmt(marks.in)}</span>
+              Mark in <span className="mono">{sourceClock(range.sourceIn)}</span>
             </Button>
             <Button size="sm" onClick={markOut} {...tip('Mark out at the current frame', 'o')}>
-              Mark out <span className="mono">{fmt(marks.out ?? asset.duration)}</span>
+              Mark out <span className="mono">{sourceClock(range.sourceOut)}</span>
             </Button>
-          </>
+            {(range.sourceIn > 0 || range.sourceOut < length) && (
+              <IconButton
+                label="Clear in and out"
+                keys="alt+x"
+                small
+                onClick={(e) => {
+                  // The button goes with the marks it clears: the keyboard carries on at Mark in.
+                  const group = e.currentTarget.parentElement;
+                  handFocus(e.currentTarget, () => group?.querySelector<HTMLElement>('button'));
+                  clearMarks();
+                }}
+              >
+                <Eraser />
+              </IconButton>
+            )}
+          </div>
         )}
-        <span style={{ flex: 1 }} />
-        <Button
-          size="sm"
-          icon={<CornerDownRight />}
-          onClick={() => add(true)}
-          {...tip('Ripple-insert at the playhead')}
-        >
-          Insert
-        </Button>
-        <Button size="sm" variant="primary" icon={<ArrowDownToLine />} onClick={() => add(false)}>
-          Add to timeline
-        </Button>
+        <div className="source__add">
+          <Button
+            size="sm"
+            icon={<CornerDownRight />}
+            onClick={() => cmd.addFromSource(true)}
+            {...tip('Ripple-insert at the playhead', 'comma')}
+          >
+            Insert
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            icon={<ArrowDownToLine />}
+            onClick={() => cmd.addFromSource(false)}
+            {...tip('Add at the playhead, on a track that is free there', 'period')}
+          >
+            Add to timeline
+          </Button>
+        </div>
       </div>
     </div>
   );

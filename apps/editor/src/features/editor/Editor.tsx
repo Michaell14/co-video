@@ -138,7 +138,16 @@ function Workspace() {
           )}
         </p>
         {!meta.online && <div className="splash__label">Still trying to reach the server…</div>}
-        <Button onClick={() => navigate(null)}>Back to projects</Button>
+        <div className="splash__actions">
+          {/* Every opening asks the server about the link again: a link that was refused for a
+              while, or a server that was away, may answer differently now. */}
+          {!meta.unlisted && (
+            <Button variant="primary" onClick={() => session.onReload()}>
+              Try again
+            </Button>
+          )}
+          <Button onClick={() => navigate(null)}>Back to projects</Button>
+        </div>
       </div>
     );
   }
@@ -166,6 +175,16 @@ function Workspace() {
     viewport,
   );
   const commentsColumn = layout.comments === 'column';
+  // What each splitter sizes, by the name of the panel that stands there.
+  const leftPanel = layout.comments === 'left' ? 'Comments' : workspace === 'color' ? 'Scopes' : 'Library';
+  const rightPanel =
+    layout.comments === 'right'
+      ? 'Comments'
+      : workspace === 'color'
+        ? 'Colour'
+        : workspace === 'audio'
+          ? 'Mixer'
+          : 'Inspector';
 
   return (
     <div
@@ -201,12 +220,24 @@ function Workspace() {
               {workspace === 'color' ? <Scopes /> : <Library />}
             </section>
           )}
-          <Resizer axis="x" onDrag={(d) => dragPanel('left', d)} style={{ left: layout.left }} />
+          <Resizer
+            axis="x"
+            label={`${leftPanel} width`}
+            size={layout.left}
+            limits={layout.limits.left}
+            grows={1}
+            onDrag={(d) => dragPanel('left', d)}
+            style={{ left: layout.left }}
+          />
           <section className="panel panel--viewer" aria-label="Viewer">
             <Viewer />
           </section>
           <Resizer
             axis="x"
+            label={`${rightPanel} width`}
+            size={layout.right}
+            limits={layout.limits.right}
+            grows={-1}
             onDrag={(d) => -dragPanel('right', -d)}
             style={{ right: layout.right + (commentsColumn ? COMMENTS_WIDTH + GAP : 0) }}
           />
@@ -226,7 +257,14 @@ function Workspace() {
             </section>
           )}
         </div>
-        <Resizer axis="y" onDrag={(d) => -dragPanel('timeline', -d)} />
+        <Resizer
+          axis="y"
+          label="Timeline height"
+          size={layout.timeline}
+          limits={layout.limits.timeline}
+          grows={-1}
+          onDrag={(d) => -dragPanel('timeline', -d)}
+        />
         <section className="panel panel--timeline" style={{ height: layout.timeline }} aria-label="Timeline">
           <Timeline />
         </section>
@@ -284,25 +322,86 @@ function dragPanel(splitter: Splitter, grow: number): number {
   return fitPanels(useUI.getState(), viewport)[splitter] - fitPanels(ui, viewport)[splitter];
 }
 
+/** How far one press of an arrow key moves a splitter, in pixels; ten times as far with Shift. */
+const SPLITTER_STEP = 16;
+
 function Resizer({
   axis,
+  label,
+  size,
+  limits,
+  grows,
   onDrag,
   style,
 }: {
   axis: 'x' | 'y';
+  label: string;
+  /** The size of the panel the splitter sizes, and how small and large it can be in this window. */
+  size: number;
+  limits: { min: number; max: number };
+  /** Whether the panel grows (1) or shrinks (-1) as the splitter moves right or down. */
+  grows: 1 | -1;
   /** Moves the panel edge by up to `delta` pixels and returns how far it went. */
   onDrag: (delta: number) => number;
   style?: React.CSSProperties;
 }) {
   const last = useRef(0);
   const [active, setActive] = useState(false);
+  /**
+   * The distance a key moves the splitter. The arrows along its axis move it a step, Page Up and
+   * Page Down change the panel by a tenth of its range, Home and End make it as small and as
+   * large as it goes: the keys of a slider, on the size of the panel.
+   */
+  const keyed = (key: string, shift: boolean): number | undefined => {
+    const [back, on] = axis === 'x' ? ['ArrowLeft', 'ArrowRight'] : ['ArrowUp', 'ArrowDown'];
+    const step = SPLITTER_STEP * (shift ? 10 : 1);
+    const page = (limits.max - limits.min) / 10;
+    const all = limits.max - limits.min;
+    switch (key) {
+      case back:
+        return -step;
+      case on:
+        return step;
+      case 'PageUp':
+        return grows * page;
+      case 'PageDown':
+        return -grows * page;
+      case 'Home':
+        return -grows * all;
+      case 'End':
+        return grows * all;
+      default:
+        return undefined;
+    }
+  };
   return (
     <div
       className={`resizer resizer--${axis}`}
       data-active={active}
       style={style}
       role="separator"
+      tabIndex={0}
+      aria-label={label}
       aria-orientation={axis === 'x' ? 'vertical' : 'horizontal'}
+      aria-valuemin={limits.min}
+      aria-valuemax={limits.max}
+      aria-valuenow={Math.round(size)}
+      aria-valuetext={`${Math.round(size)} pixels`}
+      onMouseDown={(e) => {
+        // A drag does not leave the keyboard on the splitter, where the arrow keys would go on
+        // sizing the panel for someone who means them for the playhead. Focus goes where a press
+        // on any other gap between panels would send it: nowhere.
+        e.preventDefault();
+        (document.activeElement as HTMLElement | null)?.blur();
+      }}
+      onKeyDown={(e) => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        const delta = keyed(e.key, e.shiftKey);
+        if (delta === undefined) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onDrag(delta);
+      }}
       onPointerDown={(e) => {
         e.currentTarget.setPointerCapture(e.pointerId);
         last.current = axis === 'x' ? e.clientX : e.clientY;

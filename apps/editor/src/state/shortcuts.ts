@@ -255,21 +255,21 @@ export const COMMANDS: Command[] = [
   },
   {
     id: 'normalize-14',
-    title: 'Normalize loudness to −14 LUFS (streaming)',
+    title: 'Normalise loudness to −14 LUFS (streaming)',
     group: 'Timeline',
     keys: [],
     run: () => void cmd.normalizeLoudness(-14),
   },
   {
     id: 'normalize-16',
-    title: 'Normalize loudness to −16 LUFS (podcast)',
+    title: 'Normalise loudness to −16 LUFS (podcast)',
     group: 'Timeline',
     keys: [],
     run: () => void cmd.normalizeLoudness(-16),
   },
   {
     id: 'normalize-23',
-    title: 'Normalize loudness to −23 LUFS (broadcast)',
+    title: 'Normalise loudness to −23 LUFS (broadcast)',
     group: 'Timeline',
     keys: [],
     run: () => void cmd.normalizeLoudness(-23),
@@ -587,6 +587,20 @@ export const COMMANDS: Command[] = [
   { id: 'add-shape', title: 'Add rectangle', group: 'Insert', run: () => cmd.addShape({ kind: 'rect' }) },
   { id: 'add-solid', title: 'Add solid colour', group: 'Insert', run: () => cmd.addSolid() },
   { id: 'add-adjustment', title: 'Add adjustment layer', group: 'Insert', run: () => cmd.addAdjustment() },
+  {
+    id: 'source-insert',
+    title: 'Insert from source monitor at playhead',
+    group: 'Insert',
+    keys: ['f9'],
+    run: () => cmd.addFromSource(true),
+  },
+  {
+    id: 'source-add',
+    title: 'Add from source monitor at playhead',
+    group: 'Insert',
+    keys: ['f10'],
+    run: () => cmd.addFromSource(false),
+  },
 
   // File
   { id: 'import', title: 'Import media…', group: 'File', keys: ['mod+i'], run: () => void cmd.importMedia() },

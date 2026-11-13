@@ -308,12 +308,16 @@ test.describe('timeline', () => {
     await expect(markIn).toContainText('0:01.00');
     await expect(markOut).toContainText('0:03.00');
     await page.locator('.source__foot button', { hasText: 'Add to timeline' }).click();
-    await expect(page.locator('.source')).toHaveCount(0);
+    // The monitor stays open for the next piece, and what it added is not selected behind it.
+    await expect(page.locator('.source')).toBeVisible();
     expect(await layout(page)).toEqual([...SAMPLE, 'V3:video@45+60'].sort());
+    expect((await view(page)).selection).toBe(0);
     // The earliest aurora clip is now the new one: it begins at the in point.
-    expect((await clip(page, 'aurora.mp4')).sourceIn).toBeCloseTo(1);
+    const added = await clip(page, 'aurora.mp4');
+    expect(added.sourceIn).toBeCloseTo(1);
 
     // Escape closes the monitor and leaves the selection alone.
+    await page.evaluate((id) => (window as any).tandem.ui.getState().select([id]), added.id);
     await page.locator('.asset', { hasText: 'dusk.mp4' }).dblclick();
     await expect(page.locator('.source')).toBeVisible();
     await page.keyboard.press('Escape');
@@ -1619,6 +1623,9 @@ test.describe('timeline: keyboard, drops and marks', () => {
       selected: ['fractal.mp4', 'aurora.mp4'],
       frame: 45,
     });
+    // Shift+Space takes the clip out of the selection again and leaves the keyboard on it.
+    await page.keyboard.press('Shift+Space');
+    expect(await state()).toMatchObject({ focus: names.aurora, ring: 1, selected: ['fractal.mp4'] });
     await page.keyboard.press('Home');
     expect(await state()).toMatchObject({ focus: names.dusk, selected: ['dusk.mp4'] });
     expect(await page.locator('.tl__body').evaluate((el) => el.scrollLeft)).toBe(0);

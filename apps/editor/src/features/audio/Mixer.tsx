@@ -120,15 +120,7 @@ function Meter({ channels, read }: { channels: number; read: () => number[] }) {
   );
 }
 
-function Fader({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  onChange: (db: number) => void;
-}) {
+function Fader({ label, value, onChange }: { label: string; value: number; onChange: (db: number) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const lastPress = useRef<Press | null>(null);
   const [active, setActive] = useState(false);

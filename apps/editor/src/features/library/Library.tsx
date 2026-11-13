@@ -22,28 +22,43 @@ import {
   Type,
   Wand2,
 } from 'lucide-react';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type HTMLAttributes,
+  type ReactNode,
+} from 'react';
 import {
   EFFECT_CATEGORIES,
   EFFECTS,
   formatBytes,
   formatClock,
+  memoByRef,
   TRANSITION_CATEGORIES,
   TRANSITIONS,
   type Asset,
   type Edit,
   type ID,
+  type Project,
   type ShapeKind,
   type TextProps,
 } from '@tandem/core';
-import { useMediaStatus, useProject, useSession, useSessionMeta } from '../../session/hooks';
-import { cmd } from '../../state/commands';
+import { currentSession, useMediaStatus, useProject, useSession, useSessionMeta } from '../../session/hooks';
+import { cmd, withMarkers } from '../../state/commands';
 import { commit } from '../../state/props';
 import { useUI, type LibraryTab } from '../../state/ui';
+import { confirm } from '../../ui/confirm';
 import { Button, cx, hideTip, IconButton, openContextMenu, tip } from '../../ui/core';
 import { beginDrag, useDrag, type DragPayload } from '../../ui/dnd';
 import { usingKeyboard } from '../../ui/layers';
+import { onTabListKey } from '../editor/tabs';
 import { FxThumb } from './fxPreview';
+import { picked, restOfDrop, type PickMode } from './pool';
+import { search } from './search';
 import { tileToward } from './tiles';
 import './library.css';
 
@@ -81,9 +96,23 @@ const tilesIn = (grid: HTMLElement): HTMLElement[] =>
  * does not have to walk through fifty effects to get past them. A button inside a tile is reached
  * with Tab from that tile.
  */
-function TileGrid({ className, children }: { className: string; children: ReactNode }) {
+function TileGrid({
+  className,
+  children,
+  onSpace,
+  ...rest
+}: {
+  className: string;
+  children: ReactNode;
+  /** Space on a tile that is being worked from the keyboard, where it does more than press it. */
+  onSpace?: (tile: HTMLElement) => void;
+} & Pick<HTMLAttributes<HTMLDivElement>, 'role' | 'aria-label' | 'aria-multiselectable' | 'onKeyDown'>) {
   const grid = useRef<HTMLDivElement>(null);
   const stop = useRef<HTMLElement | null>(null);
+  const space = useRef(onSpace);
+  useLayoutEffect(() => {
+    space.current = onSpace;
+  });
   // A tile that was clicked keeps the focus, and whoever clicked it goes on to step through frames
   // with the arrow keys: those stay the editor's until the tile is worked from the keyboard.
   const byPointer = useRef(false);
@@ -118,6 +147,12 @@ function TileGrid({ className, children }: { className: string; children: ReactN
       const from = e.target as HTMLElement;
       if (byPointer.current || !el.contains(from) || !from.matches('[data-tile]')) return;
       if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.key === ' ' && space.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        space.current(from);
+        return;
+      }
       const tiles = tilesIn(el);
       const to = tileToward(
         tiles.map((t) => t.getBoundingClientRect()),
@@ -139,6 +174,7 @@ function TileGrid({ className, children }: { className: string; children: ReactN
   }, []);
   return (
     <div
+      {...rest}
       className={className}
       ref={grid}
       onPointerDown={() => {
@@ -162,6 +198,7 @@ export function Library() {
   const [ink, setInk] = useState({ x: 0, w: 0 });
   // In a panel too narrow for four labels, only the open tab keeps its own.
   const [compact, setCompact] = useState(false);
+  const id = useId();
   // A tile on its way to the timeline passes over the others: they stay as they are meanwhile.
   const dragging = useDrag((d) => d.payload !== null);
   useLayoutEffect(() => {
@@ -195,22 +232,34 @@ export function Library() {
   return (
     <>
       <div className="panel__head" ref={headRef}>
-        <div className={cx('tabs lib__tabs', compact && 'tabs--compact')} role="tablist" ref={tabsRef}>
+        <div
+          className={cx('tabs lib__tabs', compact && 'tabs--compact')}
+          role="tablist"
+          aria-label="Library"
+          ref={tabsRef}
+          onKeyDown={(e) => onTabListKey(e, (i) => set({ libraryTab: TABS[i].id }))}
+        >
           {TABS.map((t) => {
-            // A tab folded down to its icon names itself on hover. The handlers that take the
-            // name away stay on, so it cannot outlive the fold.
+            // A tab folded down to its icon names itself on hover and under the keyboard. The
+            // handlers that take the name away stay on, so it cannot outlive the fold.
             const name = tip(t.label);
+            const folded = compact && tab !== t.id;
             return (
               <button
                 key={t.id}
                 role="tab"
+                id={`${id}-${t.id}`}
                 aria-selected={tab === t.id}
+                aria-controls={`${id}-panel`}
                 aria-label={t.label}
+                tabIndex={tab === t.id ? 0 : -1}
                 className="tab"
                 onClick={() => set({ libraryTab: t.id })}
-                onPointerEnter={compact && tab !== t.id ? name.onPointerEnter : undefined}
+                onPointerEnter={folded ? name.onPointerEnter : undefined}
                 onPointerLeave={name.onPointerLeave}
                 onPointerDown={name.onPointerDown}
+                onFocusCapture={folded ? name.onFocusCapture : undefined}
+                onBlurCapture={name.onBlurCapture}
               >
                 <t.icon />
                 <span className="tab__label">{t.label}</span>
@@ -220,7 +269,14 @@ export function Library() {
           <div className="tabs__ink" style={{ width: ink.w, transform: `translateX(${ink.x}px)` }} />
         </div>
       </div>
-      <div className="panel__body lib" key={tab} data-dragging={dragging || undefined}>
+      <div
+        className="panel__body lib"
+        key={tab}
+        role="tabpanel"
+        id={`${id}-panel`}
+        aria-labelledby={`${id}-${tab}`}
+        data-dragging={dragging || undefined}
+      >
         {tab === 'media' && <MediaPool />}
         {tab === 'text' && <Titles />}
         {tab === 'effects' && <EffectsBrowser />}
@@ -232,14 +288,88 @@ export function Library() {
 
 // ───────────────────────────────────────────────────────────────── media ──
 
+/**
+ * The assets some clip uses, as its media or as the LUT of its grade. Found once for each state of
+ * the clips, however many cards ask.
+ */
+const usedAssets = memoByRef((clips: Project['clips']) => {
+  const used = new Set<ID>();
+  for (const id in clips) {
+    const clip = clips[id];
+    if (clip.assetId) used.add(clip.assetId);
+    if (clip.grade?.lutId) used.add(clip.grade.lutId);
+  }
+  return used;
+});
+
+/** Take files out of the project, with the clips that show them and the grades that use them as a LUT. */
+function removeAssets(ids: ID[]): void {
+  const p = currentSession()?.store.get();
+  if (!p) return;
+  const gone = new Set(ids);
+  const edits: Edit[] = [];
+  for (const c of Object.values(p.clips)) {
+    if (c.assetId && gone.has(c.assetId)) edits.push({ op: 'removeClip', id: c.id });
+    else if (c.grade?.lutId && gone.has(c.grade.lutId))
+      edits.push({ op: 'updateClip', id: c.id, patch: { grade: { ...c.grade, lutId: null } } });
+  }
+  for (const id of ids) if (p.assets[id]) edits.push({ op: 'removeAsset', id });
+  commit(edits);
+}
+
+/**
+ * A drag takes one file to the timeline, which places it where it is dropped. When the card is
+ * one of several selected ones, the drag carries the first of them and the others follow it: once
+ * the timeline has placed that one, they are laid out after it on its tracks, in the order they
+ * were picked, as part of the same undo step. Call it right after `beginDrag`, for the same press.
+ */
+function followDrop(carried: ID[]): void {
+  const session = currentSession();
+  if (!session || carried.length < 2) return;
+  let before: Project | null = null;
+  // Heard ahead of the drop, which is handled as the event comes back up to the window.
+  const note = () => {
+    before = session.store.get();
+  };
+  const follow = (e: PointerEvent) => {
+    const after = session.store.get();
+    if (!before || after === before) return;
+    const rest = carried.slice(1).flatMap((id) => (after.assets[id] ? [after.assets[id]] : []));
+    // Ctrl or ⌘ held at the drop made room for the first file; the others get theirs the same way.
+    const placed = restOfDrop(before, after, carried[0], rest, e.ctrlKey || e.metaKey);
+    if (!placed?.edits.length) return;
+    commit(placed.spans.length ? withMarkers(after, placed) : placed.edits, true);
+    useUI.getState().select([...placed.dropped, ...placed.created]);
+  };
+  window.addEventListener('pointerup', note, { capture: true, once: true });
+  window.addEventListener('pointerup', follow, { once: true });
+}
+
+/** What a card needs to know about the pool it stands in. */
+interface Pool {
+  /** Files that were in the pool when it was opened, or have been shown since: they do not arrive again. */
+  known: Set<ID>;
+  /** Change the selection for a press on a card. */
+  pick: (id: ID, how: PickMode) => void;
+  /**
+   * The files an action on this card acts on: all the selected ones that are shown when the card
+   * is one of them, in the order they were picked, and otherwise the card's own.
+   */
+  carried: (id: ID) => ID[];
+}
+
 function MediaPool() {
   const session = useSession();
   const assets = useProject((p) => p.assets);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | Asset['kind']>('all');
   const reveal = useUI((s) => s.revealAsset);
+  const selection = useUI((s) => s.poolSelection);
   const [revealed, setRevealed] = useState<{ id: ID } | null>(null);
   const pool = useRef<HTMLDivElement>(null);
+  const [known] = useState(() => new Set(Object.keys(assets)));
+  // The file a Shift press measures its run from: the one pressed last without Shift.
+  const anchor = useRef<ID | null>(null);
 
   // Asked to show an asset: drop whatever narrows the list and hides it, then point at its card.
   useEffect(() => {
@@ -259,6 +389,11 @@ function MediaPool() {
     const done = setTimeout(() => setRevealed(null), REVEAL_MS);
     return () => clearTimeout(done);
   }, [revealed]);
+  // A file that has left the project has left the selection.
+  useEffect(() => {
+    if (selection.some((id) => !assets[id]))
+      useUI.getState().set({ poolSelection: selection.filter((id) => assets[id]) });
+  }, [assets, selection]);
 
   const list = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -267,6 +402,23 @@ function MediaPool() {
       .sort((a, b) => b.createdAt - a.createdAt || a.name.localeCompare(b.name));
   }, [assets, query, filter]);
   const total = Object.keys(assets).length;
+  const shown = list.map((a) => a.id);
+  // The handlers of a card outlive the render they were made in (a press ends in a later one),
+  // so they read the list and the selection as they are when they are called.
+  const live = useRef(shown);
+  live.current = shown;
+  const [cards] = useState<Pool>(() => ({
+    known,
+    pick: (id, how) => {
+      const ui = useUI.getState();
+      ui.set({ poolSelection: picked(live.current, ui.poolSelection, anchor.current, id, how) });
+      if (how !== 'range') anchor.current = id;
+    },
+    carried: (id) => {
+      const selected = useUI.getState().poolSelection.filter((s) => live.current.includes(s));
+      return selected.length > 1 && selected.includes(id) ? selected : [id];
+    },
+  }));
 
   if (total === 0) {
     return (
@@ -293,7 +445,15 @@ function MediaPool() {
     );
   }
   return (
-    <div className="pool" ref={pool}>
+    <div
+      className="pool"
+      ref={pool}
+      onPointerDown={(e) => {
+        // A press beside the cards lets go of them.
+        if ((e.target as HTMLElement).classList.contains('pool__grid') && selection.length)
+          useUI.getState().set({ poolSelection: [] });
+      }}
+    >
       <div className="lib__bar">
         <div className="field lib__search">
           <span className="field__prefix">
@@ -328,12 +488,35 @@ function MediaPool() {
           );
         })}
       </div>
-      <TileGrid className="pool__grid">
-        {list.map((a) => (
-          <AssetCard key={a.id} asset={a} revealed={revealed?.id === a.id} />
-        ))}
-        {list.length === 0 && <div className="lib__none">Nothing matches “{query}”.</div>}
-      </TileGrid>
+      {list.length === 0 ? (
+        <div className="lib__none">Nothing matches “{query}”.</div>
+      ) : (
+        <TileGrid
+          className="pool__grid"
+          role="grid"
+          aria-label="Media"
+          aria-multiselectable
+          onSpace={(tile) => tile.dataset.asset && cards.pick(tile.dataset.asset, 'toggle')}
+          onKeyDown={(e) => {
+            // With a card in hand, Ctrl+A is every file the pool shows. The clips in the timeline
+            // keep their own selection meanwhile.
+            if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'a') return;
+            e.preventDefault();
+            e.stopPropagation();
+            useUI.getState().set({ poolSelection: shown });
+          }}
+        >
+          {list.map((a) => (
+            <AssetCard
+              key={a.id}
+              asset={a}
+              revealed={revealed?.id === a.id}
+              selected={selection.includes(a.id)}
+              pool={cards}
+            />
+          ))}
+        </TileGrid>
+      )}
     </div>
   );
 }
@@ -341,15 +524,25 @@ function MediaPool() {
 /** How long a revealed card stays marked; the same as its animation in library.css. */
 const REVEAL_MS = 1600;
 
-function AssetCard({ asset, revealed }: { asset: Asset; revealed: boolean }) {
+function AssetCard({
+  asset,
+  revealed,
+  selected,
+  pool,
+}: {
+  asset: Asset;
+  revealed: boolean;
+  selected: boolean;
+  pool: Pool;
+}) {
   const session = useSession();
   const meta = useSessionMeta();
   const status = useMediaStatus(asset.id);
-  const usage = useProject((p) => p.clips);
-  const used = useMemo(
-    () => Object.values(usage).some((c) => c.assetId === asset.id || c.grade?.lutId === asset.id),
-    [usage, asset.id],
-  );
+  // Asked as a yes or no, a card is drawn again when its own answer changes, not with every edit.
+  const used = useProject((p) => usedAssets(p.clips).has(asset.id));
+  // Only a file that has just come into the pool arrives; one the pool shows again is simply there.
+  const [added] = useState(() => !pool.known.has(asset.id));
+  useEffect(() => void pool.known.add(asset.id), [pool, asset.id]);
   const available = status.local || (asset.uploaded && meta.shared);
   // A file this device could not keep goes with the page, unless the server has it by then.
   const unkept = status.unsaved === 'failed' && !(asset.uploaded && meta.shared);
@@ -362,37 +555,49 @@ function AssetCard({ asset, revealed }: { asset: Asset; revealed: boolean }) {
           ? Wand2
           : Film;
 
-  const remove = () => {
-    const p = session.store.get();
-    const edits: Edit[] = [];
-    for (const c of Object.values(p.clips)) {
-      if (c.assetId === asset.id) edits.push({ op: 'removeClip', id: c.id });
-      else if (c.grade?.lutId === asset.id)
-        edits.push({ op: 'updateClip', id: c.id, patch: { grade: { ...c.grade, lutId: null } } });
-    }
-    edits.push({ op: 'removeAsset', id: asset.id });
-    commit(edits);
-  };
-
   /** What a double-click on the card does, and Enter while it has the keyboard. */
   const open = () => {
     if (asset.kind === 'lut') cmd.applyLut(asset.id);
     else useUI.getState().set({ sourceAsset: asset.id });
   };
+  /** Add the card's file at the playhead, or every selected file when it is one of them. */
+  const add = () => {
+    const ids = pool.carried(asset.id);
+    if (ids.length < 2) return cmd.addAsset(asset);
+    const assets = session.store.get().assets;
+    cmd.addAssets(ids.flatMap((id) => (assets[id] ? [assets[id]] : [])));
+  };
+  const many = selected ? pool.carried(asset.id).length : 1;
 
   return (
     <div
       className="asset"
-      role="group"
+      role="row"
       aria-label={asset.name}
+      aria-selected={selected}
       data-tile
       data-asset={asset.id}
       data-kind={asset.kind}
       data-offline={!available}
       data-revealed={revealed || undefined}
+      data-added={added || undefined}
       onPointerDown={(e) => {
-        if ((e.target as HTMLElement).closest('button')) return;
-        beginDrag(e, { kind: 'asset', assetId: asset.id }, asset.name);
+        if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return;
+        const how = e.shiftKey ? 'range' : e.ctrlKey || e.metaKey ? 'toggle' : 'only';
+        // A press on a card that is not selected selects it at once, so that the drag it may
+        // become carries it. One on a selected card leaves the selection to be dragged, and
+        // selects the card alone only if it stays a click.
+        if (how !== 'only' || !selected) pool.pick(asset.id, how);
+        const carried = pool.carried(asset.id);
+        beginDrag(
+          e,
+          { kind: 'asset', assetId: carried[0] },
+          carried.length > 1 ? `${carried.length} files` : asset.name,
+          () => {
+            if (how === 'only' && selected) pool.pick(asset.id, 'only');
+          },
+        );
+        followDrop(carried);
       }}
       onDoubleClick={(e) => {
         if (!(e.target as HTMLElement).closest('button')) open();
@@ -400,7 +605,31 @@ function AssetCard({ asset, revealed }: { asset: Asset; revealed: boolean }) {
       onKeyDown={(e) => {
         if (e.key === 'Enter' && e.target === e.currentTarget) open();
       }}
-      onContextMenu={(e) =>
+      onContextMenu={(e) => {
+        // The menu is about what is selected. Asked for on a card outside the selection, it is
+        // about that card, which becomes the selection.
+        if (!selected) pool.pick(asset.id, 'only');
+        const ids = pool.carried(asset.id);
+        if (ids.length > 1) {
+          openContextMenu(e, [
+            { label: `Add ${ids.length} files to timeline`, icon: <Plus />, onSelect: add },
+            'separator',
+            {
+              label: `Remove ${ids.length} files…`,
+              icon: <Trash2 />,
+              danger: true,
+              onSelect: () =>
+                void confirm({
+                  title: `Remove ${ids.length} files from the project?`,
+                  message:
+                    'Clips that use them are taken off the timeline as well. Undo brings all of it back.',
+                  confirmLabel: 'Remove',
+                  danger: true,
+                }).then((ok) => ok && removeAssets(ids)),
+            },
+          ]);
+          return;
+        }
         openContextMenu(e, [
           asset.kind === 'lut'
             ? { label: 'Apply to selected clips', icon: <Wand2 />, onSelect: () => cmd.applyLut(asset.id) }
@@ -458,104 +687,109 @@ function AssetCard({ asset, revealed }: { asset: Asset; revealed: boolean }) {
             label: used ? 'Remove (and its clips)' : 'Remove from project',
             icon: <Trash2 />,
             danger: true,
-            onSelect: remove,
+            onSelect: () => removeAssets([asset.id]),
           },
-        ])
-      }
+        ]);
+      }}
     >
-      <div className="asset__thumb">
-        {asset.thumb ? <img src={asset.thumb} alt="" draggable={false} /> : <Icon />}
-        {asset.duration > 0 && <span className="asset__dur mono">{formatClock(asset.duration)}</span>}
-        <span className="asset__status">
-          {status.transferError ? (
-            <button
-              className="asset__retry"
-              aria-label={`${status.transferError}: ${asset.name}. Retry now`}
-              onClick={() => session.retryTransfer(asset.id)}
-              {...tip(`${status.transferError}. Click to retry now.`)}
-            >
-              <CircleAlert style={{ color: 'var(--red)' }} />
-            </button>
-          ) : status.uploading !== null ? (
-            <span {...tip(`Uploading ${Math.round(status.uploading * 100)}%`)}>
-              <CloudUpload />
-            </span>
-          ) : status.downloading !== null ? (
-            <span {...tip(`Downloading ${Math.round(status.downloading * 100)}%`)}>
-              <CloudDownload />
-            </span>
-          ) : status.proxying !== null ? (
-            <span {...tip(`Making proxy ${Math.round(status.proxying * 100)}%`)}>
-              <Gauge />
-            </span>
-          ) : status.proxyError ? (
-            <span {...tip(status.proxyError)}>
-              <CircleAlert style={{ color: 'var(--red)' }} />
-            </span>
-          ) : unkept ? (
-            <span {...tip('Not saved on this device: it is gone after a reload')}>
-              <CircleAlert style={{ color: 'var(--amber)' }} />
-            </span>
-          ) : status.unsaved === 'saving' ? (
-            <span {...tip('Saving to this device…')}>
-              <HardDriveDownload />
-            </span>
-          ) : !available ? (
-            <span {...tip('Media offline: not on this device or the server')}>
-              <CloudOff style={{ color: 'var(--amber)' }} />
-            </span>
-          ) : null}
-        </span>
-        {(asset.hdr || status.proxy) && (
-          <span className="asset__badges">
-            {asset.hdr && <span className="asset__hdr badge badge--amber">HDR</span>}
-            {status.proxy && (
-              <span
-                className="asset__proxy badge"
-                {...tip(
-                  meta.proxies
-                    ? 'Previewing from a proxy. Exports use the original.'
-                    : 'A proxy exists but proxies are switched off.',
-                )}
-                data-off={!meta.proxies}
+      <div className="asset__cell" role="gridcell">
+        <div className="asset__thumb">
+          {asset.thumb ? <img src={asset.thumb} alt="" draggable={false} /> : <Icon />}
+          {asset.duration > 0 && <span className="asset__dur mono">{formatClock(asset.duration)}</span>}
+          <span className="asset__status">
+            {status.transferError ? (
+              <button
+                className="asset__retry"
+                aria-label={`${status.transferError}: ${asset.name}. Retry now`}
+                onClick={() => session.retryTransfer(asset.id)}
+                {...tip(`${status.transferError}. Click to retry now.`)}
               >
-                Proxy
+                <CircleAlert style={{ color: 'var(--red)' }} />
+              </button>
+            ) : status.uploading !== null ? (
+              <span {...tip(`Uploading ${Math.round(status.uploading * 100)}%`)}>
+                <CloudUpload />
               </span>
-            )}
+            ) : status.downloading !== null ? (
+              <span {...tip(`Downloading ${Math.round(status.downloading * 100)}%`)}>
+                <CloudDownload />
+              </span>
+            ) : status.proxying !== null ? (
+              <span {...tip(`Making proxy ${Math.round(status.proxying * 100)}%`)}>
+                <Gauge />
+              </span>
+            ) : status.proxyError ? (
+              <span {...tip(status.proxyError)}>
+                <CircleAlert style={{ color: 'var(--red)' }} />
+              </span>
+            ) : unkept ? (
+              <span {...tip('Not saved on this device: it is gone after a reload')}>
+                <CircleAlert style={{ color: 'var(--amber)' }} />
+              </span>
+            ) : status.unsaved === 'saving' ? (
+              <span {...tip('Saving to this device…')}>
+                <HardDriveDownload />
+              </span>
+            ) : !available ? (
+              <span {...tip('Media offline: not on this device or the server')}>
+                <CloudOff style={{ color: 'var(--amber)' }} />
+              </span>
+            ) : null}
           </span>
-        )}
-        {(status.uploading !== null || status.downloading !== null || status.proxying !== null) && (
-          <div className="asset__progress">
-            <i
-              style={{
-                width: `${Math.round((status.uploading ?? status.downloading ?? status.proxying ?? 0) * 100)}%`,
-              }}
-            />
-          </div>
-        )}
-        {asset.kind !== 'lut' && (
-          <button
-            className="asset__add"
-            onClick={() => cmd.addAsset(asset)}
-            aria-label={`Add ${asset.name} to timeline`}
-            {...tip('Add at playhead')}
-          >
-            <Plus />
-          </button>
-        )}
-        {used && <span className="asset__used" {...tip('Used in the timeline')} />}
-      </div>
-      <div className="asset__name" title={asset.name}>
-        {asset.name}
-      </div>
-      <div className="asset__meta mono">
-        {asset.kind === 'video' || asset.kind === 'image'
-          ? `${asset.width}×${asset.height}`
-          : asset.kind === 'audio'
-            ? `${(asset.audioSampleRate / 1000).toFixed(1)} kHz`
-            : '3D LUT'}
-        {asset.fps > 0 && ` · ${Number.isInteger(asset.fps) ? asset.fps : asset.fps.toFixed(2)}`}
-        <span>{formatBytes(asset.size)}</span>
+          {(asset.hdr || status.proxy) && (
+            <span className="asset__badges">
+              {asset.hdr && <span className="asset__hdr badge badge--amber">HDR</span>}
+              {status.proxy && (
+                <span
+                  className="asset__proxy badge"
+                  {...tip(
+                    meta.proxies
+                      ? 'Previewing from a proxy. Exports use the original.'
+                      : 'A proxy exists but proxies are switched off.',
+                  )}
+                  data-off={!meta.proxies}
+                >
+                  Proxy
+                </span>
+              )}
+            </span>
+          )}
+          {(status.uploading !== null || status.downloading !== null || status.proxying !== null) && (
+            <div className="asset__progress">
+              <i
+                style={{
+                  width: `${Math.round((status.uploading ?? status.downloading ?? status.proxying ?? 0) * 100)}%`,
+                }}
+              />
+            </div>
+          )}
+          {asset.kind !== 'lut' && (
+            <button
+              className="asset__add"
+              onClick={add}
+              disabled={!session.canEdit}
+              aria-label={
+                many > 1 ? `Add ${many} selected files to timeline` : `Add ${asset.name} to timeline`
+              }
+              {...tip(many > 1 ? `Add the ${many} selected files at playhead` : 'Add at playhead')}
+            >
+              <Plus />
+            </button>
+          )}
+          {used && <span className="asset__used" {...tip('Used in the timeline')} />}
+        </div>
+        <div className="asset__name" title={asset.name}>
+          {asset.name}
+        </div>
+        <div className="asset__meta mono">
+          {asset.kind === 'video' || asset.kind === 'image'
+            ? `${asset.width}×${asset.height}`
+            : asset.kind === 'audio'
+              ? `${(asset.audioSampleRate / 1000).toFixed(1)} kHz`
+              : '3D LUT'}
+          {asset.fps > 0 && ` · ${Number.isInteger(asset.fps) ? asset.fps : asset.fps.toFixed(2)}`}
+          <span>{formatBytes(asset.size)}</span>
+        </div>
       </div>
     </div>
   );
@@ -801,12 +1035,7 @@ function Titles() {
 // ─────────────────────────────────────────────────────────────── effects ──
 
 function useSearch<T extends { name: string; description: string }>(items: T[], query: string): T[] {
-  return useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return q
-      ? items.filter((i) => i.name.toLowerCase().includes(q) || i.description.toLowerCase().includes(q))
-      : items;
-  }, [items, query]);
+  return useMemo(() => search(items, query), [items, query]);
 }
 
 function EffectsBrowser() {

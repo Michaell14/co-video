@@ -18,6 +18,7 @@ import {
   Settings2,
   Share2,
   SlidersHorizontal,
+  SquarePen,
   Subtitles,
   Undo2,
 } from 'lucide-react';
@@ -178,29 +179,6 @@ export function TopBar() {
             },
             { label: 'Version history…', icon: <History />, onSelect: () => set({ dialog: 'versions' }) },
             'separator',
-            { heading: 'Edit' },
-            command('select-under'),
-            command('select-next'),
-            command('select-prev'),
-            command('paste-grade', { disabled: !attributes?.look }),
-            command('paste-effects', { disabled: !attributes?.look }),
-            command('paste-transform', { disabled: !attributes?.look }),
-            command('paste-sound', { disabled: !attributes?.sound }),
-            { heading: 'Mark' },
-            command('mark-clip'),
-            command('go-in'),
-            command('go-out'),
-            {
-              label: 'Markers follow ripple edits',
-              checked: markersFollow,
-              onSelect: () => cmd.toggleMarkersFollow(),
-            },
-            { heading: 'Timeline' },
-            command('trim-edge-left'),
-            command('trim-edge-right'),
-            command('extend-edit'),
-            command('default-transition'),
-            'separator',
             { label: 'Project settings…', icon: <Settings2 />, onSelect: () => set({ dialog: 'project' }) },
             {
               label: 'Keyboard shortcuts',
@@ -276,6 +254,39 @@ export function TopBar() {
         >
           <Redo2 />
         </IconButton>
+        {/* The commands of the keyboard that have no button anywhere: selecting, marking and
+            trimming from the playhead, and pasting a part of what was copied. */}
+        <MenuButton
+          className="icon-btn"
+          label="Edit commands"
+          items={[
+            { heading: 'Select' },
+            command('select-under'),
+            command('select-next'),
+            command('select-prev'),
+            { heading: 'Paste' },
+            command('paste-grade', { disabled: !attributes?.look }),
+            command('paste-effects', { disabled: !attributes?.look }),
+            command('paste-transform', { disabled: !attributes?.look }),
+            command('paste-sound', { disabled: !attributes?.sound }),
+            { heading: 'Mark' },
+            command('mark-clip'),
+            command('go-in'),
+            command('go-out'),
+            {
+              label: 'Markers follow ripple edits',
+              checked: markersFollow,
+              onSelect: () => cmd.toggleMarkersFollow(),
+            },
+            { heading: 'Trim' },
+            command('trim-edge-left'),
+            command('trim-edge-right'),
+            command('extend-edit'),
+            command('default-transition'),
+          ]}
+        >
+          <SquarePen />
+        </MenuButton>
       </div>
 
       <div className="topbar__center">

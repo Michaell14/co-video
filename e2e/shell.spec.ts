@@ -263,6 +263,59 @@ test.describe('panel layout', () => {
     await page.mouse.up();
   });
 
+  test('a splitter is moved from the keyboard, and a drag leaves the keyboard alone', async ({ page }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await localProject(page);
+    const width = async (name: string) => (await box(panel(page, name))).width;
+    const library = page.getByRole('separator', { name: 'Library width' });
+    await expect(library).toHaveAttribute('aria-orientation', 'vertical');
+    await expect(library).toHaveAttribute('aria-valuenow', '320');
+    await expect(library).toHaveAttribute('aria-valuemin', '220');
+    await expect(library).toHaveAttribute('aria-valuemax', '560');
+
+    // The arrows move the splitter, and the panel with it; Shift moves it ten times as far.
+    await library.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(() => width('Library')).toBe(336);
+    await expect(library).toHaveAttribute('aria-valuenow', '336');
+    await page.keyboard.press('Shift+ArrowLeft');
+    await expect.poll(() => width('Library')).toBe(220);
+    await page.keyboard.press('End');
+    await expect.poll(() => width('Library')).toBe(560);
+    await page.keyboard.press('Home');
+    await expect.poll(() => width('Library')).toBe(220);
+    await page.keyboard.press('PageUp');
+    await expect.poll(() => width('Library')).toBe(254);
+
+    // The splitter of a panel on the far side grows it as it moves towards the middle.
+    const inspector = page.getByRole('separator', { name: 'Inspector width' });
+    await inspector.focus();
+    await page.keyboard.press('ArrowLeft');
+    await expect.poll(() => width('Inspector')).toBe(332);
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(() => width('Inspector')).toBe(316);
+    const timeline = page.getByRole('separator', { name: 'Timeline height' });
+    await expect(timeline).toHaveAttribute('aria-orientation', 'horizontal');
+    await timeline.focus();
+    await page.keyboard.press('ArrowUp');
+    await expect.poll(async () => (await box(panel(page, 'Timeline'))).height).toBe(336);
+    await setUI(page, { workspace: 'color' });
+    await expect(page.getByRole('separator', { name: 'Scopes width' })).toHaveCount(1);
+    await expect(page.getByRole('separator', { name: 'Colour width' })).toHaveCount(1);
+    await setUI(page, { workspace: 'edit' });
+
+    // Dragged with the pointer it does not keep the keyboard: the arrow keys stay the playhead's.
+    await tandem(page, (t) => t.cmd.addSolid());
+    const frame = (): Promise<number> => tandem(page, (t) => t.session.player.getFrame());
+    await tandem(page, (t) => t.cmd.seek(10));
+    await drag(page, page.locator('.resizer--x').first(), 40, 0);
+    await expect.poll(() => width('Library')).toBe(294);
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+    await page.keyboard.press('ArrowRight');
+    expect(await frame()).toBe(11);
+    expect(await width('Library')).toBe(294);
+  });
+
   test('comments leave the colour and audio workspaces the panel they are for', async ({ page }) => {
     await localProject(page);
     const workspaces = [
@@ -374,6 +427,106 @@ test.describe('top bar', () => {
     expect(narrow).toBeLessThan(280);
     expect(await clear()).toBeGreaterThanOrEqual(8);
     expect(await offCentre(1920)).toBeLessThanOrEqual(1);
+  });
+
+  test('the status says when the work is not reaching the server', async ({ page }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await localProject(page);
+    const status = page.locator('.conn');
+    const amber = await page.evaluate(() => {
+      const probe = document.body.appendChild(document.createElement('span'));
+      probe.style.color = 'var(--amber)';
+      const colour = getComputedStyle(probe).color;
+      probe.remove();
+      return colour;
+    });
+    await expect(status).toHaveText('Saved on this device');
+
+    // A link the server refused: the project runs from this device, and the way back is Share.
+    await tandem(page, (t) => t.session.setMeta({ refusedLink: 'editor' }));
+    await expect(status).toHaveText('Not syncing: link refused');
+    await expect(status).toHaveCSS('color', amber);
+    await status.hover();
+    await expect(page.getByRole('tooltip')).toHaveText(
+      'The server did not accept this project’s link. Open Share to try it again.',
+    );
+    await status.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    expect(await tandem(page, (t) => t.ui.getState().dialog)).toBe('share');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    // A shared project the server has stopped taking changes for says why.
+    const why =
+      'This project has reached the size the server allows. Changes made here are kept on this device but are not being saved to the server.';
+    await tandem(page, (t) => t.session.setMeta({ refusedLink: null, shared: true, status: 'connected' }));
+    await expect(status).toHaveText('All changes synced');
+    await page.evaluate((why) => (window as any).tandem.session.setMeta({ notSaving: why }), why);
+    await expect(status).toHaveText('Not saving to the server');
+    await expect(status).toHaveCSS('color', amber);
+    await page.mouse.move(700, 300);
+    await status.hover();
+    await expect(page.getByRole('tooltip')).toHaveText(why);
+    await page.evaluate(() => (window as any).tandem.session.setMeta({ notSaving: null }));
+    await expect(status).toHaveText('All changes synced');
+  });
+
+  test('the menu lists the editing commands under the names the shortcut sheet gives them', async ({
+    page,
+  }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await sample(page);
+    const menu = page.getByRole('menu');
+    const open = async () => {
+      await page.getByRole('button', { name: 'Edit commands', exact: true }).click();
+      await expect(menu).toBeVisible();
+    };
+    const entry = (name: string) => menu.getByRole('menuitem', { name: new RegExp(`^${name}`) });
+    await open();
+    for (const name of [
+      'Select clip under playhead',
+      'Select next clip',
+      'Select previous clip',
+      'Mark clip',
+      'Go to in',
+      'Go to out',
+      'Trim nearest edge left',
+      'Trim nearest edge right',
+      'Extend edit to playhead',
+      'Add default transition',
+      'Markers follow ripple edits',
+    ])
+      await expect(entry(name)).toBeEnabled();
+    // Nothing has been copied yet, so there is nothing to paste a part of.
+    for (const part of ['grade', 'effects', 'transform and crop', 'volume, pan and fades'])
+      await expect(entry(`Paste attributes: ${part} only`)).toBeDisabled();
+    // The whole menu fits the window it opens in, and so does the file menu beside it.
+    const fits = () =>
+      menu.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return r.top >= 0 && r.bottom <= window.innerHeight;
+      });
+    expect(await fits()).toBe(true);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Menu', exact: true }).click();
+    await expect(menu.getByRole('menuitem', { name: /^Export…/ })).toBeVisible();
+    expect(await fits()).toBe(true);
+    await page.keyboard.press('Escape');
+    await open();
+
+    // An entry runs its command: the clip under the playhead is selected, then marked.
+    await entry('Select clip under playhead').click();
+    expect(await tandem(page, (t) => t.ui.getState().selection.length)).toBeGreaterThan(0);
+    await open();
+    await entry('Mark clip').click();
+    expect(await tandem(page, (t) => t.session.player.getState().range)).not.toBeNull();
+    await tandem(page, (t) => t.cmd.copyAttributes());
+    await open();
+    await expect(entry('Paste attributes: grade only')).toBeEnabled();
+    await expect(entry('Paste attributes: volume, pan and fades only')).toBeDisabled();
+    await entry('Markers follow ripple edits').click();
+    await expect(toast(page, 'Markers stay where they are through ripple edits.')).toBeVisible();
   });
 });
 
@@ -631,6 +784,214 @@ test.describe('library', () => {
     await expect(second).toBeFocused();
     await page.keyboard.press('Escape');
     expect(await shown()).toBeNull();
+  });
+
+  test('files are selected in the pool and go to the timeline together', async ({ page }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await localProject(page);
+    await importFixtures(page, ['testsrc.mp4', 'red.webm', 'green.png', 'tone.ogg']);
+    const cards = page.locator('.asset');
+    await expect(cards).toHaveCount(4);
+    const names = await cards.evaluateAll((all) => all.map((c) => c.getAttribute('aria-label')!));
+    const card = (i: number) => page.locator('.asset', { hasText: names[i] });
+    const selected = () =>
+      cards.evaluateAll((all) =>
+        all
+          .filter((c) => c.getAttribute('aria-selected') === 'true')
+          .map((c) => c.getAttribute('aria-label')),
+      );
+    /** Every clip as `name@start+duration`, in the order they stand on the timeline. */
+    const cut = (): Promise<string[]> =>
+      tandem(page, (t) =>
+        (Object.values(t.session.store.get().clips) as any[])
+          .sort((a, b) => a.start - b.start || a.type.localeCompare(b.type))
+          .map((c) => `${c.name}@${c.start}+${c.duration}`),
+      );
+    await expect(page.getByRole('grid', { name: 'Media' })).toHaveAttribute('aria-multiselectable', 'true');
+
+    // A press selects, Shift takes the run up to it, Ctrl takes one out or puts one in.
+    await card(0).click();
+    expect(await selected()).toEqual([names[0]]);
+    await card(2).click({ modifiers: ['Shift'] });
+    expect(await selected()).toEqual(names.slice(0, 3));
+    await card(1).click({ modifiers: ['ControlOrMeta'] });
+    expect(await selected()).toEqual([names[0], names[2]]);
+    await card(1).click({ modifiers: ['ControlOrMeta'] });
+    // Ctrl+A with a card in hand is every file shown, and the clips of the timeline are not touched.
+    await page.keyboard.press('ControlOrMeta+a');
+    expect(await selected()).toEqual(names);
+    expect(await tandem(page, (t) => t.ui.getState().selection)).toEqual([]);
+    // A press beside the cards lets go; a double-click still opens the file, and selects it.
+    const grid = await box(page.locator('.pool__grid'));
+    await page.mouse.click(grid.x + grid.width / 2, grid.y + grid.height - 6);
+    expect(await selected()).toEqual([]);
+    await card(3).dblclick();
+    expect(await tandem(page, (t) => t.ui.getState().sourceAsset)).toBe(
+      await card(3).getAttribute('data-asset'),
+    );
+    await page.keyboard.press('Escape');
+    expect(await selected()).toEqual([names[3]]);
+
+    // Three files, one drag: they land end to end where the first is dropped, as one undo step.
+    await card(0).click();
+    await card(2).click({ modifiers: ['Shift'] });
+    const steps = await undoSteps(page);
+    const from = await box(card(1));
+    const lane = await box(page.locator('.lane').nth(1));
+    await page.mouse.move(from.x + from.width / 2, from.y + 20);
+    await page.mouse.down();
+    await page.mouse.move(from.x + from.width / 2 + 30, from.y + 60, { steps: 4 });
+    await expect(page.locator('.drag-ghost')).toHaveText('3 files');
+    await page.mouse.move(lane.x + 200, lane.y + lane.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await expect.poll(async () => (await cut()).length).toBeGreaterThanOrEqual(3);
+    const placed = (await tandem(page, (t) => Object.values(t.session.store.get().clips))) as any[];
+    const order = names.slice(0, 3).map((name) => placed.filter((c) => c.name === name));
+    expect(order.every((clips) => clips.length >= 1)).toBe(true);
+    // Each begins where the one picked before it ends.
+    for (let i = 1; i < 3; i++)
+      expect(order[i][0].start).toBe(order[i - 1][0].start + order[i - 1][0].duration);
+    expect(await undoSteps(page)).toBe(steps + 1);
+    expect((await tandem(page, (t) => t.ui.getState().selection)).length).toBe(placed.length);
+    await tandem(page, (t) => t.cmd.undo());
+    expect(await cut()).toEqual([]);
+
+    // The + of a selected card adds all of them at the playhead; that of another card only its own.
+    await card(0).hover();
+    const add = card(0).locator('.asset__add');
+    await expect(add).toHaveAccessibleName('Add 3 selected files to timeline');
+    await add.click();
+    const added = (await tandem(page, (t) => Object.values(t.session.store.get().clips))) as any[];
+    expect(new Set(added.map((c) => c.name))).toEqual(new Set(names.slice(0, 3)));
+    expect(Math.min(...added.map((c) => c.start))).toBe(0);
+    expect(await undoSteps(page)).toBe(steps + 1);
+    await tandem(page, (t) => t.cmd.undo());
+    await card(3).hover();
+    await expect(card(3).locator('.asset__add')).toHaveAccessibleName(`Add ${names[3]} to timeline`);
+
+    // The menu is about the selection, and asks before it removes several files.
+    await card(1).click({ button: 'right' });
+    await expect(page.getByRole('menuitem')).toHaveText(['Add 3 files to timeline', 'Remove 3 files…']);
+    await answer(page, () => page.getByRole('menuitem', { name: 'Remove 3 files…' }).click(), 'Remove');
+    await expect(cards).toHaveCount(1);
+    expect(await tandem(page, (t) => t.ui.getState().poolSelection)).toEqual([]);
+    // Asked for on a card outside the selection, it is that card's own menu.
+    await tandem(page, (t) => t.cmd.undo());
+    await expect(cards).toHaveCount(4);
+    await card(0).click();
+    await card(3).click({ button: 'right' });
+    expect(await selected()).toEqual([names[3]]);
+    await expect(page.getByRole('menuitem', { name: 'Open in source monitor' })).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    // From the keyboard: Space takes the card with the focus ring into the selection or out of it.
+    await page.locator('.chips .chip').last().focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Home');
+    await expect(card(0)).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Space');
+    expect(await selected()).toEqual([names[1], names[3]]);
+    await page.keyboard.press('Space');
+    expect(await selected()).toEqual([names[3]]);
+    expect(await tandem(page, (t) => t.session.player.getState().playing)).toBe(false);
+  });
+
+  test('effects and transitions are found by either spelling of their names', async ({ page }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await localProject(page);
+    await page.getByRole('tab', { name: 'Effects' }).click();
+    const tiles = page.locator('.fx-grid .fx');
+    const search = page.getByLabel('Search effects');
+    await search.fill('color');
+    await expect(tiles.filter({ hasText: 'Colour Overlay' })).toHaveCount(1);
+    await search.fill('posterize');
+    await expect(tiles).toHaveText(['Posterise']);
+    // Half a word is still looked for as it was typed.
+    await search.fill('colou');
+    await expect(tiles.filter({ hasText: 'Colour Overlay' })).toHaveCount(1);
+    await search.fill('posteriz');
+    await expect(tiles).toHaveText(['Posterise']);
+    await page.getByRole('tab', { name: 'Transitions' }).click();
+    await page.getByLabel('Search transitions').fill('pixelize');
+    await expect(tiles).toHaveText(['Pixelise']);
+  });
+
+  test('only a file that has just come in arrives; the pool shown again is simply there', async ({
+    page,
+  }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await sample(page);
+    await page.evaluate(() => {
+      const started: string[] = ((window as any).started = []);
+      document.addEventListener(
+        'animationstart',
+        (e) => {
+          if ((e.target as Element).closest('.asset, .scope, .tabs')) started.push(e.animationName);
+        },
+        true,
+      );
+    });
+    const started = (): Promise<string[]> => page.evaluate(() => (window as any).started.splice(0));
+    await expect(page.locator('.asset')).toHaveCount(4);
+    // Another tab and back, another workspace and back, a filter and back: nothing arrives.
+    await page.getByRole('tab', { name: 'Effects' }).click();
+    await page.getByRole('tab', { name: 'Media' }).click();
+    await expect(page.locator('.asset')).toHaveCount(4);
+    await setUI(page, { workspace: 'audio' });
+    await setUI(page, { workspace: 'edit' });
+    await page.locator('.chips .chip', { hasText: 'Audio' }).click();
+    await expect(page.locator('.asset')).toHaveCount(1);
+    await page.locator('.chips .chip', { hasText: 'All' }).click();
+    await expect(page.locator('.asset')).toHaveCount(4);
+    await page.waitForTimeout(300);
+    expect(await started()).toEqual([]);
+    // A file that is imported does, once, and briefly.
+    await importFixtures(page, ['green.png']);
+    const card = page.locator('.asset', { hasText: 'green.png' });
+    await expect(card).toHaveAttribute('data-added', 'true');
+    await expect.poll(started).toEqual(['pop-in']);
+    expect(
+      await card.evaluate((el) => parseFloat(getComputedStyle(el).animationDuration)),
+    ).toBeLessThanOrEqual(0.2);
+    await page.locator('.chips .chip', { hasText: 'Audio' }).click();
+    await page.locator('.chips .chip', { hasText: 'All' }).click();
+    await expect(card).toBeVisible();
+    await page.waitForTimeout(300);
+    expect(await started()).toEqual([]);
+    // The underline of the tabs and the scopes move within the time the rest of the interface takes.
+    const ink = page.locator('.lib__tabs .tabs__ink');
+    expect(
+      await ink.evaluate((el) => parseFloat(getComputedStyle(el).transitionDuration)),
+    ).toBeLessThanOrEqual(0.2);
+    await setUI(page, { workspace: 'color' });
+    const scope = page.locator('.scope').first();
+    expect(
+      await scope.evaluate((el) => parseFloat(getComputedStyle(el).animationDuration)),
+    ).toBeLessThanOrEqual(0.2);
+  });
+
+  test('the tabs are stepped through with the arrow keys and name their panel', async ({ page }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await localProject(page);
+    const tabs = page.locator('.lib__tabs [role="tab"]');
+    await expect(panel(page, 'Library').getByRole('tabpanel')).toHaveAccessibleName('Media');
+    // One stop for Tab: the open tab. From there the arrows open the others.
+    await page.getByLabel('Project name').focus();
+    for (let i = 0; i < 12 && !(await tabs.first().evaluate((el) => el === document.activeElement)); i++)
+      await page.keyboard.press('Tab');
+    await expect(tabs.first()).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    await expect(tabs.nth(1)).toBeFocused();
+    await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+    await expect(panel(page, 'Library').getByRole('tabpanel')).toHaveAccessibleName('Titles');
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('ArrowLeft');
+    await expect(tabs.nth(3)).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Home');
+    await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => !!document.activeElement!.closest('[role="tabpanel"]'))).toBe(true);
   });
 
   test('a tile on its way to the timeline leaves the tiles it passes alone', async ({ page }) => {
@@ -1064,7 +1425,8 @@ test.describe('home screen', () => {
     await watchToasts(page);
     await page.locator('.pcard__open').click();
     await editorReady(page);
-    await expect(page.locator('.conn')).toContainText('Saved on this device');
+    // Nothing is said again, but the status does not pass the project off as a local one.
+    await expect(page.locator('.conn')).toHaveText('Not syncing: link refused');
     await page.waitForTimeout(1500);
     expect(await toastsWith(page, 'no longer accepts')).toBe(0);
     expect(asked).toBe(1);
@@ -1117,9 +1479,28 @@ test.describe('home screen', () => {
       await expect(page.locator('.pcard')).toHaveCount(3);
     }
 
+    // Such a project can be tried again from where it failed: every opening asks the server anew.
+    let asked = 0;
+    await page.route('**/api/projects/crowded01', (route) => {
+      asked++;
+      return route.fulfill({ status: 503, json: { error: 'Busy' } });
+    });
+    await page.locator('.pcard__open', { hasText: 'Crowded' }).click();
+    await expect(notAvailable).toBeVisible();
+    const first = asked;
+    expect(first).toBeGreaterThan(0);
+    await notAvailable.getByRole('button', { name: 'Try again' }).click();
+    await expect.poll(() => asked).toBeGreaterThan(first);
+    await expect(notAvailable).toBeVisible();
+    expect(await ids()).toEqual(['crowded01', 'deleted01', 'unreached1']);
+    await notAvailable.getByRole('button', { name: 'Back to projects' }).click();
+    await expect(page.locator('.pcard')).toHaveCount(3);
+
     // A refusal is final: the screen says what became of the card, and it is gone from the list.
     await page.locator('.pcard__open', { hasText: 'Deleted' }).click();
     await expect(notAvailable).toContainText(removed);
+    // There is nothing left to try: the card is gone.
+    await expect(notAvailable.getByRole('button', { name: 'Try again' })).toHaveCount(0);
     expect(await ids()).toEqual(['crowded01', 'unreached1']);
     await notAvailable.getByRole('button', { name: 'Back to projects' }).click();
     await expect(page.locator('.pcard')).toHaveCount(2);
@@ -1205,6 +1586,7 @@ test.describe('shared project', () => {
   test('someone who may not edit is told which access they do have', async ({ page, browser }) => {
     await sharedProject(page);
     await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Shared' }));
+    await importFixtures(page, ['green.png']);
     await expect(page.locator('.conn')).toContainText('All changes synced');
     for (const role of ['commenter', 'viewer']) {
       const link: string = await page.evaluate(
@@ -1218,6 +1600,12 @@ test.describe('shared project', () => {
         () => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 1,
       );
       expect(await tandem(guest, (t) => t.session.getMeta().role)).toBe(role);
+      // The owner sees who has come in, and with which access.
+      await page.locator('.avatars .avatar:not(.avatar--me)').hover();
+      await expect(page.getByRole('tooltip')).toContainText(
+        role === 'commenter' ? ' · can comment · ' : ' · can view · ',
+      );
+      await page.mouse.move(700, 300);
       await watchToasts(guest);
       // A key, and two commands that check the access for themselves.
       await guest.keyboard.press('t');
@@ -1228,6 +1616,46 @@ test.describe('shared project', () => {
       // Nobody on a comment link is told they can only view, and nothing was edited.
       expect(await toastsWith(guest, ' access to this project.')).toBe(3);
       expect(await clipTypes(guest)).toEqual(['text']);
+
+      // What may not be changed is out of reach, for the keyboard as for the pointer, and every
+      // panel says why in the same words.
+      const side = panel(guest, 'Inspector');
+      const outOfReach = (selector: string): Promise<boolean> =>
+        side
+          .locator(selector)
+          .evaluateAll((all) => all.length > 0 && all.every((el) => (el as HTMLElement).inert));
+      await guest.evaluate(() => {
+        const { session, ui } = (window as any).tandem;
+        ui.getState().select(Object.keys(session.store.get().clips));
+      });
+      await expect(side.getByText('Read only')).toBeVisible();
+      await expect(side.locator('.section__body').first()).toBeVisible();
+      expect(await outOfReach('.section__body')).toBe(true);
+      // A field in a section does not take the keyboard, so nothing can be typed to be thrown away.
+      const taken = await side
+        .locator('.section__body input')
+        .first()
+        .evaluate((el: HTMLElement) => {
+          el.focus();
+          return document.activeElement === el;
+        });
+      expect(taken).toBe(false);
+      // A section can still be folded away and read again.
+      const head = side.locator('.section__head').first();
+      await head.click();
+      await expect(head).toHaveAttribute('aria-expanded', 'false');
+      await head.click();
+      await setUI(guest, { selection: [] });
+      expect(await outOfReach('.form')).toBe(true);
+      await setUI(guest, { workspace: 'color' });
+      await expect(side.getByText('Read only')).toBeVisible();
+      expect(await outOfReach('.color__scroll')).toBe(true);
+      await setUI(guest, { workspace: 'audio' });
+      await expect(side.getByText('Read only')).toBeVisible();
+      expect(await outOfReach('.strip:not(.strip--master)')).toBe(true);
+      await setUI(guest, { workspace: 'edit' });
+      await expect(panel(guest, 'Library').locator('.asset__add')).toBeDisabled();
+      expect(await toastsWith(guest, ' access to this project.')).toBe(3);
       await context.close();
     }
   });

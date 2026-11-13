@@ -8,6 +8,7 @@ import { nitsToPq } from '@tandem/core';
 import { usePlayer, useProject } from '../../session/hooks';
 import { useUI } from '../../state/ui';
 import { MenuButton } from '../../ui/core';
+import { LABEL_PX, labelBaselines, levelLine } from './graticule';
 
 type ScopeKind = 'waveform' | 'parade' | 'vectorscope' | 'histogram';
 
@@ -37,8 +38,8 @@ function toImage(acc: Float32Array, img: ImageData, gain: number): void {
   }
 }
 
-function drawWaveform(f: Frame, img: ImageData, mode: 'luma' | 'parade'): void {
-  const acc = new Float32Array(N * N * 3);
+function drawWaveform(f: Frame, img: ImageData, acc: Float32Array, mode: 'luma' | 'parade'): void {
+  acc.fill(0);
   const { data, width, height } = f;
   const cols = mode === 'parade' ? Math.floor(N / 3) : N;
   for (let y = 0; y < height; y++) {
@@ -68,8 +69,8 @@ function drawWaveform(f: Frame, img: ImageData, mode: 'luma' | 'parade'): void {
   toImage(acc, img, (N / (width * height)) * (mode === 'parade' ? 5 : 9));
 }
 
-function drawVectorscope(f: Frame, img: ImageData): void {
-  const acc = new Float32Array(N * N * 3);
+function drawVectorscope(f: Frame, img: ImageData, acc: Float32Array): void {
+  acc.fill(0);
   const { data, width, height } = f;
   for (let i = 0; i < width * height; i++) {
     const o = i * 4;
@@ -116,32 +117,40 @@ function drawHistogram(f: Frame, ctx: CanvasRenderingContext2D, w: number, h: nu
   ctx.globalCompositeOperation = 'source-over';
 }
 
+/**
+ * The level marks of a waveform, the ones to keep first: where a scope is too low for all its
+ * labels, those further down the list are left out and only their lines are drawn. PQ levels are
+ * in nits (the panel's head says so), with diffuse white at 203; SDR levels are per cent.
+ */
+const PQ_MARKS = [10000, 203, 1000, 10, 100, 4000, 1];
+const SDR_MARKS = [100, 0, 50, 25, 75];
+
 /** Graticule: level lines for waveforms; targets and skin-tone line for the vectorscope. */
 function graticule(ctx: CanvasRenderingContext2D, kind: ScopeKind, w: number, h: number, pq: boolean): void {
   ctx.save();
-  ctx.font = '500 9px "JetBrains Mono Variable", ui-monospace, monospace';
+  ctx.font = `500 ${LABEL_PX}px "JetBrains Mono Variable", ui-monospace, monospace`;
   ctx.lineWidth = 1;
   if (kind === 'waveform' || kind === 'parade') {
     const marks: [number, string][] = pq
-      ? [1, 10, 100, 203, 1000, 4000, 10000].map(
-          (n) => [nitsToPq(n), n >= 1000 ? `${n / 1000}k` : String(n)] as [number, string],
-        )
-      : [0, 25, 50, 75, 100].map((p) => [p / 100, String(p)] as [number, string]);
-    for (const [v, label] of marks) {
-      const y = Math.round((1 - v) * (h - 1)) + 0.5;
+      ? PQ_MARKS.map((n) => [nitsToPq(n), n >= 1000 ? `${n / 1000}k` : String(n)])
+      : SDR_MARKS.map((p) => [p / 100, String(p)]);
+    const baselines = labelBaselines(
+      marks.map(([v]) => v),
+      h,
+    );
+    marks.forEach(([v, label], i) => {
+      const y = levelLine(v, h);
       ctx.strokeStyle =
         v === 1 || v === 0 || label === '203' ? 'rgba(198,248,79,0.28)' : 'rgba(255,255,255,0.1)';
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(w, y);
       ctx.stroke();
+      const baseline = baselines[i];
+      if (baseline === null) return;
       ctx.fillStyle = 'rgba(200,200,210,0.6)';
-      ctx.fillText(label, 3, Math.min(h - 3, Math.max(9, y - 2)));
-    }
-    if (pq) {
-      ctx.fillStyle = 'rgba(200,200,210,0.45)';
-      ctx.fillText('nits', w - 24, 10);
-    }
+      ctx.fillText(label, 3, baseline);
+    });
   } else if (kind === 'vectorscope') {
     const cx = w / 2;
     const cy = h / 2;
@@ -198,7 +207,8 @@ function Scope({
   version: React.RefObject<number>;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const scratch = useRef<{ canvas: HTMLCanvasElement; img: ImageData } | null>(null);
+  // One picture and one buffer of hits per scope, used again for every frame.
+  const scratch = useRef<{ canvas: HTMLCanvasElement; img: ImageData; acc: Float32Array } | null>(null);
   useEffect(() => {
     let raf = 0;
     let seen = -1;
@@ -222,11 +232,11 @@ function Scope({
         const c = document.createElement('canvas');
         c.width = N;
         c.height = N;
-        scratch.current = { canvas: c, img: new ImageData(N, N) };
+        scratch.current = { canvas: c, img: new ImageData(N, N), acc: new Float32Array(N * N * 3) };
       }
       const s = scratch.current;
-      if (kind === 'vectorscope') drawVectorscope(f, s.img);
-      else drawWaveform(f, s.img, kind === 'parade' ? 'parade' : 'luma');
+      if (kind === 'vectorscope') drawVectorscope(f, s.img, s.acc);
+      else drawWaveform(f, s.img, s.acc, kind === 'parade' ? 'parade' : 'luma');
       s.canvas.getContext('2d')!.putImageData(s.img, 0, 0);
       ctx.clearRect(0, 0, w, h);
       ctx.imageSmoothingEnabled = true;
@@ -239,7 +249,16 @@ function Scope({
       ctx.setTransform(1, 0, 0, 1, 0, 0);
     };
     raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    // A scope whose box changes (another scope is shown or hidden beside it) is drawn again at
+    // its new size from the frame that is held: no new frame need arrive for that.
+    const resized = new ResizeObserver(() => {
+      seen = -1;
+    });
+    if (canvasRef.current) resized.observe(canvasRef.current);
+    return () => {
+      cancelAnimationFrame(raf);
+      resized.disconnect();
+    };
   }, [kind, frameRef, version]);
   return (
     <div className="scope" data-kind={kind}>
@@ -261,13 +280,19 @@ export function Scopes() {
     if (!player) return;
     let stop = false;
     let timer: ReturnType<typeof setTimeout>;
+    // The count of drawn frames the scopes were last read at. Reading the picture back costs a
+    // pass and a transfer, and every scope then goes over all its pixels: none of it is done while
+    // the viewer has drawn nothing new, so a picture at rest costs the scopes nothing.
+    let read = -1;
     const tick = async () => {
       if (stop) return;
-      if (document.visibilityState === 'visible') {
+      const drawn = player.drawnFrames;
+      if (document.visibilityState === 'visible' && drawn !== read) {
         const f = await player.readScope(256).catch(() => null);
         if (f && !stop) {
           frameRef.current = f;
           version.current++;
+          read = drawn;
         }
       }
       // ~12 Hz while playing; a slower heartbeat when idle still catches grade tweaks immediately

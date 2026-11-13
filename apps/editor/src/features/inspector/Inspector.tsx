@@ -118,11 +118,18 @@ export function Inspector() {
   const transClip = useLiveSelect((p) => (selTrans ? p.clips[selTrans.clipId] : undefined));
   const settings = useLiveSelect((p) => p.settings);
   usePlayheadTick(clips.some((c) => Object.values(c.keyframes).some((keys) => keys.length > 0)));
-  // An effect that was asked to be shown has been by now, if it is on the clip in the panel.
+  // An effect that was asked to be shown is shown by the effects section, which then takes the
+  // request away. One that is not on the clip in the panel has nowhere to be shown: it is dropped
+  // here, or it would move the panel whenever that clip is selected next.
   const revealed = useUI((s) => s.revealEffects);
+  const visual = clips.filter((c) => c.type !== 'audio');
+  const shows =
+    !(selTrans && transClip) &&
+    visual.length === 1 &&
+    visual[0].effects.some((fx) => revealed.includes(fx.id));
   useEffect(() => {
-    if (revealed.length) useUI.getState().set({ revealEffects: [] });
-  }, [revealed]);
+    if (revealed.length && !shows) useUI.getState().set({ revealEffects: [] });
+  }, [revealed, shows]);
 
   let title = 'Project';
   let body: React.ReactNode;
@@ -216,8 +223,11 @@ function ClipSection({ clips, settings: s }: { clips: Clip[]; settings: ProjectS
           />
         </Row>
       )}
+      {/* A field stands for the clips it was drawn for: with other clips it is another field, and
+          what was being typed into it is not theirs. */}
       <Row label="Start">
         <TimecodeField
+          key={ids.join(' ')}
           value={Math.min(...clips.map((c) => c.start))}
           fps={s}
           onCommit={(frame) => cmd.moveTo(frame, ids)}
@@ -226,6 +236,7 @@ function ClipSection({ clips, settings: s }: { clips: Clip[]; settings: ProjectS
       </Row>
       <Row label="Duration">
         <TimecodeField
+          key={ids.join(' ')}
           value={first.duration}
           mixed={clips.some((c) => c.duration !== first.duration)}
           min={1}
@@ -760,7 +771,11 @@ function EffectsSection({ clip }: { clip: Clip }) {
   // the panel: an effect a collaborator adds, or one an undo brings back, leaves it where it is.
   const asked = useUI((s) => s.revealEffects);
   const shown = clip.effects.find((fx) => asked.includes(fx.id))?.id;
-  const reveal = useCallback((el: HTMLDivElement | null) => el?.scrollIntoView({ block: 'nearest' }), []);
+  const reveal = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    el.scrollIntoView({ block: 'nearest' });
+    useUI.getState().set({ revealEffects: [] });
+  }, []);
   const move = (i: number, dir: -1 | 1) => {
     const list = clip.effects.slice();
     const j = i + dir;

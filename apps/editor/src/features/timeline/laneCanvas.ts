@@ -209,7 +209,7 @@ const LEVEL_FLOOR = -48;
 const LEVEL_CEILING = 12;
 
 /** How far up a clip's body the level line runs for a gain: 0 at the floor, 1 at the ceiling. */
-export function levelHeight(gain: number): number {
+function levelHeight(gain: number): number {
   const db = Math.min(LEVEL_CEILING, Math.max(LEVEL_FLOOR, gainToDb(gain)));
   return (db - LEVEL_FLOOR) / (LEVEL_CEILING - LEVEL_FLOOR);
 }

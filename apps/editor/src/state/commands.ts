@@ -60,7 +60,9 @@ import {
 import { AudioBufferSink, renderStill, VoiceRecorder } from '@tandem/engine';
 import { navigate } from '../App';
 import { fitPanels, windowSize } from '../features/editor/layout';
+import { placeAssets } from '../features/library/pool';
 import { keyframeTimes } from '../features/timeline/keyframes';
+import { clipMarks, markedRange, rememberSource } from '../features/viewer/sourceMarks';
 import { currentSession } from '../session/hooks';
 import { copyProjectMedia } from '../session/mediaStore';
 import { createProject } from '../session/projects';
@@ -496,7 +498,8 @@ export const cmd = {
   },
   /**
    * Match frame: open the source monitor on the media under the playhead, at the frame the
-   * timeline is showing. A clip named by a menu that is not under the playhead opens at its start.
+   * timeline is showing and with its marks around what the clip uses of the file. A clip named by
+   * a menu that is not under the playhead opens at its start.
    */
   matchFrame(clipId?: ID): void {
     const s = session();
@@ -514,6 +517,8 @@ export const cmd = {
       return;
     }
     const assetId = m.clip.assetId!;
+    const marks = clipMarks(m.clip, p);
+    if (marks) rememberSource(assetId, marks);
     ui().set({ sourceAsset: assetId, sourceCue: { assetId, time: m.time } });
   },
   /**
@@ -905,6 +910,8 @@ export const cmd = {
       insert?: boolean;
       /** Only the picture, or only the sound, of a video that has both. */
       only?: 'video' | 'audio';
+      /** Leave the selection as it is instead of selecting what was added. */
+      keepSelection?: boolean;
     } = {},
   ): void {
     editing((s, p) => {
@@ -927,9 +934,42 @@ export const cmd = {
       }
       const r = addAssetToTimeline(working, asset, { frame: at, ...opts });
       s.store.commit([...pre, ...r.edits]);
-      ui().select(r.created);
+      if (!opts.keepSelection) ui().select(r.created);
       const end = Math.max(...r.created.map((id) => clipEnd(s.store.get().clips[id])));
       if (opts.frame === undefined) cmd.seek(end);
+    });
+  },
+  /**
+   * Three-point editing: put what is marked of the file in the source monitor on the timeline at
+   * the playhead, which then stands after it, ready for the next piece. With `insert` what is
+   * there makes way. The monitor stays open and keeps the keys for its file, so the selection is
+   * left alone: a clip the user did not select is not what Delete should go on to remove.
+   */
+  addFromSource(insert: boolean): void {
+    editing((_s, p) => {
+      const asset = p.assets[ui().sourceAsset ?? ''];
+      if (!asset) {
+        toast(
+          'Nothing is open in the source monitor. Double-click a file in the media pool to open it there.',
+          'info',
+        );
+        return;
+      }
+      const marked = markedRange(ui().sourceMarks[asset.id], asset.duration);
+      cmd.addAsset(asset, { ...marked, insert, keepSelection: true });
+    });
+  },
+  /**
+   * Put several files on the timeline one after another from the playhead, as one step: what a
+   * selection in the media pool does when it is added (see `placeAssets`).
+   */
+  addAssets(assets: Asset[]): void {
+    editing((s, p) => {
+      const r = placeAssets(p, assets, { frame: frame() });
+      if (!r.created.length) return;
+      s.store.commit(r.edits);
+      ui().select(r.created);
+      cmd.seek(Math.max(...r.created.map((id) => clipEnd(s.store.get().clips[id]))));
     });
   },
   addText(text: Partial<TextProps> = {}, init: Partial<Clip> = {}): void {

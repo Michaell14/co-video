@@ -164,6 +164,15 @@
   background: conic-gradient(from 210deg, #ff5d5d, #ffd43b, #51cf66, #22d3ee, #9775fa, #ff5d5d);
   color: #fff;
 }
+/* Selected: the frame of its picture and its name say so, under the pointer or not. */
+.asset[aria-selected='true'] .asset__thumb,
+.asset[aria-selected='true']:hover .asset__thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.asset[aria-selected='true'] .asset__name {
+  color: var(--accent);
+}
 /* Asked for from the timeline: the card is held up for a moment, then settles back. */
 .asset[data-revealed] .asset__thumb {
   animation: asset-reveal 1600ms ease-out;

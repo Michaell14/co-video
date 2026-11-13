@@ -203,13 +203,7 @@ export function ColorPanel() {
           <RotateCcw />
         </IconButton>
       </div>
-      <div
-        className="panel__body color"
-        role="tabpanel"
-        id={`${id}-panel`}
-        aria-labelledby={`${id}-${tab}`}
-        data-readonly={frozen}
-      >
+      <div className="panel__body color" role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${tab}`}>
         {!clip ? (
           <div className="empty">
             <Palette />
@@ -274,7 +268,8 @@ function wheelToPuck(w: Wheel): { x: number; y: number } {
 function puckToWheel(x: number, y: number, master: number): Wheel {
   const r = Math.min(1, Math.hypot(x, y));
   const a = Math.atan2(x, -y); // clockwise from the top, matching the conic gradient
-  const round = (v: number) => Math.round(v * 10000) / 10000;
+  // Rounded to what is worth storing, and never a negative zero: a neutral wheel is all zeroes.
+  const round = (v: number) => Math.round(v * 10000) / 10000 || 0;
   return [
     round(r * WHEEL_RANGE * Math.cos(a - PHI[0])),
     round(r * WHEEL_RANGE * Math.cos(a - PHI[1])),
@@ -674,7 +669,11 @@ function movePoint(
   const lo = i === 0 ? 0 : next[i - 1][0] + POINT_GAP;
   const hi = i === last ? 1 : next[i + 1][0] - POINT_GAP;
   const x =
-    i === 0 && !flat ? Math.min(to[0], hi) : i === last && !flat ? Math.max(to[0], lo) : Math.min(hi, Math.max(lo, to[0]));
+    i === 0 && !flat
+      ? Math.min(to[0], hi)
+      : i === last && !flat
+        ? Math.max(to[0], lo)
+        : Math.min(hi, Math.max(lo, to[0]));
   next[i] = [x, to[1]];
   if (flat && (i === 0 || i === last)) {
     next[i][0] = i === 0 ? 0 : 1;
@@ -816,8 +815,7 @@ function CurveEditor({
     return d;
   }, [sorted]);
   useLayoutEffect(() => {
-    if (focusPoint)
-      ref.current?.querySelector<SVGElement>(`[data-point="${focusPoint.index}"]`)?.focus();
+    if (focusPoint) ref.current?.querySelector<SVGElement>(`[data-point="${focusPoint.index}"]`)?.focus();
   }, [focusPoint]);
 
   const at = (e: { clientX: number; clientY: number }): CurvePoint => {

@@ -230,17 +230,19 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   // Setting up, rendering and the result are one dialog whose buttons come and go. The button
   // that was pressed leaves with its state and would take the keyboard with it, out of the dialog.
-  // It goes to the button that carries on: Done, or Export again after a failure. While the export
-  // runs it rests on the dialog itself, where neither Enter nor a habitual Space cancels the render;
-  // Cancel is one Tab away.
+  // With each new state it goes to the button that carries on: Done, or Export again after a
+  // failure. While the export runs it rests on the dialog itself, where neither Enter nor a
+  // habitual Space cancels the render; Cancel is one Tab away.
+  const placed = useRef(phase.kind);
   useLayoutEffect(() => {
+    if (placed.current === phase.kind) return;
+    placed.current = phase.kind;
     const dialog = content.current?.closest<HTMLElement>('[role="dialog"]');
-    if (!dialog || dialog.contains(document.activeElement)) return;
     const next =
       phase.kind === 'running'
         ? null
-        : dialog.querySelector<HTMLElement>('.dialog__foot .btn--primary:not(:disabled)');
-    (next ?? dialog).focus();
+        : dialog?.querySelector<HTMLElement>('.dialog__foot .btn--primary:not(:disabled)');
+    (next ?? dialog)?.focus();
   }, [phase.kind]);
 
   const audioOnly = draft.container === 'wav';
@@ -462,6 +464,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         icon={<span className="spinner" />}
         footer={
           <Button
+            key="cancel"
             variant={phase.warnings.length ? 'danger' : 'default'}
             onClick={() => abort.current?.abort()}
           >
@@ -541,11 +544,11 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         footer={
           <>
             {phase.blob && (
-              <Button icon={<Download />} onClick={() => downloadBlob(phase.blob!, phase.name)}>
+              <Button key="again" icon={<Download />} onClick={() => downloadBlob(phase.blob!, phase.name)}>
                 Download again
               </Button>
             )}
-            <Button variant="primary" onClick={close} aria-describedby={summary}>
+            <Button key="done" variant="primary" onClick={close} aria-describedby={summary}>
               Done
             </Button>
           </>

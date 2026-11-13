@@ -33,6 +33,15 @@ export interface AttributeClipboard {
   sound: Pick<Clip, 'volume' | 'pan' | 'fadeIn' | 'fadeOut'> | null;
 }
 
+/** What the source monitor keeps of a file between two looks at it, in seconds into the file. */
+export interface SourceMarks {
+  in: number;
+  /** Null while no out point is marked: the file then runs to its end. */
+  out: number | null;
+  /** Where the file was being watched when the monitor last left it; null until it has. */
+  at: number | null;
+}
+
 export interface UIState {
   selection: ID[];
   selectedTransition: { clipId: ID; side: 'in' | 'out' } | null;
@@ -72,6 +81,11 @@ export interface UIState {
   sourceAsset: ID | null;
   /** Match frame: the source monitor holds this asset at `time` seconds instead of playing it. */
   sourceCue: { assetId: ID; time: number } | null;
+  /**
+   * The marks and the position of each file the source monitor has shown, so that closing the
+   * monitor or looking at another file loses neither. The user's own, like the playhead.
+   */
+  sourceMarks: Record<ID, SourceMarks>;
   /** Asset the media pool is asked to bring into view; the pool clears it once it has. */
   revealAsset: ID | null;
   /** Effects just added by hand, for the inspector to bring into view; it clears them once it has looked. */
@@ -185,6 +199,7 @@ export const useUI = create<UIState>((set, get) => ({
   attributes: null,
   sourceAsset: null,
   sourceCue: null,
+  sourceMarks: {},
   revealAsset: null,
   revealEffects: [],
   poolSelection: [],

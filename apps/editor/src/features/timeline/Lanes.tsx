@@ -1032,9 +1032,12 @@ export function Lanes({ lanes, height, width, live }: Props) {
       Enter: () => goTo(p, clip, e.shiftKey),
       ' ': () => {
         // Space takes a selected clip out of a selection of several, as a press with Shift does.
+        // The keyboard stays on the clip it was pressed on: here focus does not follow the selection.
         const group = effectiveSelection(p, [id]);
-        if (e.shiftKey && selectedSet.has(id)) ui().select(ui().selection.filter((s) => !group.includes(s)));
-        else goTo(p, clip, e.shiftKey);
+        if (e.shiftKey && selectedSet.has(id)) {
+          carry.current = 0;
+          ui().select(ui().selection.filter((s) => !group.includes(s)));
+        } else goTo(p, clip, e.shiftKey);
       },
     };
     if (!Object.hasOwn(go, e.key)) return;

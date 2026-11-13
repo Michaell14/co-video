@@ -82,11 +82,6 @@ export class FilmstripCache extends Emitter {
     this.view++;
   }
 
-  /** How many thumbnails are still to be made. */
-  get waiting(): number {
-    return this.pending.size;
-  }
-
   /** Step size to use for tiles that each cover `tileSeconds` of media. */
   static stepFor(tileSeconds: number): number {
     for (let i = STEPS.length - 1; i >= 0; i--) if (STEPS[i] >= tileSeconds * 0.75) return STEPS[i];

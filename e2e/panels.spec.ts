@@ -402,7 +402,9 @@ test.describe('inspector', () => {
     await insp.locator('.section__head', { hasText: 'Text style' }).click();
     await page.getByRole('switch', { name: 'Outline' }).click();
     const outline = insp.locator('.subrows').first();
-    await expect(outline.locator('.row__label')).toHaveText(['Colour', 'Width']);
+    // Read out, each row carries the name of its group; on screen only its own words show.
+    await expect(outline.locator('.row__label')).toHaveText(['Outline Colour', 'Outline Width']);
+    await expect(outline.locator('.row__label .sr-only')).toHaveText(['Outline', 'Outline']);
     const inner = await box(outline.locator('.row__ctrl').first());
     const outer = await box(insp.locator('.row', { hasText: 'Outline' }).first().locator('.row__ctrl'));
     expect(inner.x).toBe(outer.x);
@@ -414,6 +416,241 @@ test.describe('inspector', () => {
     const rate = await box(insp.locator('.row', { hasText: 'Frame rate' }).locator('.select'));
     expect(Math.abs(w.width - h.width)).toBeLessThanOrEqual(1);
     expect(Math.round(h.x + h.width)).toBe(Math.round(rate.x + rate.width));
+  });
+
+  test('controls take their names from the rows they stand in', async ({ page }) => {
+    await sample(page);
+    const dusk = await clip(page, 'dusk.mp4');
+    const title = await clip(page, 'title');
+    const insp = inspector(page);
+    const one = (role: 'button' | 'textbox' | 'slider' | 'group' | 'switch', name: string) =>
+      expect(page.getByRole(role, { name, exact: true })).toHaveCount(1);
+
+    await select(page, [dusk.id]);
+    await one('button', 'Blend mode Normal');
+    await one('slider', 'Scale');
+    await one('textbox', 'Scale');
+    // A slider says its value the way the field beside it shows it.
+    await insp.locator('.section__head', { hasText: 'Speed' }).click();
+    await expect(insp.getByRole('slider', { name: 'Speed', exact: true })).toHaveAttribute(
+      'aria-valuetext',
+      '100%',
+    );
+
+    // A title has a colour of its own, and one for each part of its style that is switched on.
+    await select(page, [title.id]);
+    await one('group', 'Align');
+    await insp.locator('.section__head', { hasText: 'Text style' }).click();
+    for (const name of ['Outline', 'Shadow']) {
+      const part = page.getByRole('switch', { name, exact: true });
+      if ((await part.getAttribute('aria-checked')) === 'false') await part.click();
+    }
+    await one('textbox', 'Colour Hex colour');
+    await one('textbox', 'Outline Colour Hex colour');
+    await one('textbox', 'Shadow Colour Hex colour');
+    await one('slider', 'Shadow Opacity');
+
+    await set(page, { selection: [] });
+    await one('textbox', 'Size W');
+    await one('textbox', 'Size H');
+
+    await set(page, { workspace: 'color', selection: [dusk.id] });
+    for (const name of ['Temp', 'Lift master', 'Lift colour balance']) await one('slider', name);
+
+    await set(page, { workspace: 'audio' });
+    for (const name of ['Pan, A1', 'Volume, A1']) await one('slider', name);
+    await one('textbox', 'Volume, A1');
+    await expect(page.getByRole('slider', { name: 'Pan, A1' })).toHaveAttribute('aria-valuetext', 'C');
+    await page.locator('.strip').first().getByRole('button', { name: 'FX' }).click();
+    for (const name of ['EQ high', 'Compressor threshold', 'Compressor make-up gain'])
+      await one('slider', name);
+
+    await set(page, { workspace: 'edit', dialog: 'export' });
+    await expect(page.locator('.exp .spinner')).toHaveCount(0);
+    await one('button', 'Codec H.264 (AVC)');
+    await one('group', 'Quality');
+    await expect(page.getByRole('option', { name: /· project$/ })).toHaveCount(0);
+    await page.locator('.exp .row', { hasText: 'Resolution' }).locator('.select').click();
+    await expect(page.getByRole('option', { name: '1920×1080 · project' })).toHaveCount(1);
+  });
+
+  test('the speed controls ripple with ripple editing, and offer room without it', async ({ page }) => {
+    await sample(page);
+    const dusk = await clip(page, 'dusk.mp4');
+    await select(page, [dusk.id]);
+    await inspector(page).locator('.section__head', { hasText: 'Speed' }).click();
+    const speed = inspector(page).locator('.section', { hasText: 'Presets' });
+    const field = speed.getByRole('textbox', { name: 'Speed', exact: true });
+    const places = async () => (await layout(page)).filter((c) => c.startsWith('V1:'));
+    const before = await places();
+    expect(before).toEqual(['V1:aurora.mp4@240+120', 'V1:dusk.mp4@0+120', 'V1:fractal.mp4@120+120']);
+    const depth = await undoDepth(page);
+
+    // Without ripple editing the next clip holds dusk at its length: the panel says so, as the
+    // presets do, and offers to make the room.
+    await enter(field, '50');
+    expect(await clip(page, 'dusk.mp4')).toMatchObject({ speed: 0.5, duration: 120 });
+    const offer = toast(page, 'The next clip is in the way');
+    await expect(offer).toBeVisible();
+    await offer.getByRole('button', { name: 'Make room' }).click();
+    expect(await places()).toEqual(['V1:aurora.mp4@360+120', 'V1:dusk.mp4@0+240', 'V1:fractal.mp4@240+120']);
+    await undo(page);
+    await undo(page);
+    expect(await places()).toEqual(before);
+    expect(await undoDepth(page)).toBe(depth);
+
+    // With it, what follows moves with the end of the clip, from the field and from the slider.
+    await set(page, { rippleMode: true });
+    await enter(field, '50');
+    expect(await places()).toEqual(['V1:aurora.mp4@360+120', 'V1:dusk.mp4@0+240', 'V1:fractal.mp4@240+120']);
+    expect(await undoDepth(page)).toBe(depth + 1);
+    const slider = speed.getByRole('slider', { name: 'Speed', exact: true });
+    await slider.focus();
+    await page.keyboard.press('Delete');
+    expect(await clip(page, 'dusk.mp4')).toMatchObject({ speed: 1, duration: 120 });
+    expect(await places()).toEqual(before);
+    await page.waitForTimeout(900);
+    await expect(toast(page, 'The next clip is in the way')).toHaveCount(0);
+  });
+
+  test('an effect added by hand is brought into view, and removing one keeps the keyboard in the list', async ({
+    page,
+  }) => {
+    await sample(page);
+    const dusk = await clip(page, 'dusk.mp4');
+    await select(page, [dusk.id]);
+    const insp = inspector(page);
+    const body = insp.locator('.panel__body');
+    const effects = insp.locator('.section', { has: page.locator('.section__head', { hasText: 'Effects' }) });
+    await expect(effects.locator('.fxitem')).toHaveCount(dusk.effects.length);
+    expect(await body.evaluate((el) => el.scrollTop)).toBe(0);
+    await expect(effects.locator('.fxitem').last()).not.toBeInViewport();
+
+    // From the library: the section is the last of the panel, and the new effect is shown.
+    await page.getByRole('tab', { name: 'Effects' }).click();
+    await page.getByLabel('Search effects').fill('invert');
+    await page.locator('.fx', { hasText: 'Invert' }).click();
+    const added = effects.locator('.fxitem', { hasText: 'Invert' });
+    await expect(added).toBeInViewport({ ratio: 1 });
+
+    // An effect that arrives from someone else leaves the panel where the person has it.
+    await body.evaluate((el) => (el.scrollTop = 0));
+    await page.evaluate((id) => {
+      const { store } = (window as any).tandem.session;
+      const effects = store.get().clips[id].effects;
+      store.commit([
+        {
+          op: 'updateClip',
+          id,
+          patch: { effects: [...effects, { id: 'theirs', type: 'sepia', enabled: true, params: {} }] },
+        },
+      ]);
+    }, dusk.id);
+    await expect(effects.locator('.fxitem')).toHaveCount(dusk.effects.length + 2);
+    expect(await body.evaluate((el) => el.scrollTop)).toBe(0);
+
+    // A folded section is opened for the effect it is given.
+    const head = effects.locator('.section__head');
+    await head.click();
+    await expect(head).toHaveAttribute('aria-expanded', 'false');
+    await page.getByLabel('Search effects').fill('vignette');
+    await page.locator('.fx', { hasText: 'Vignette' }).first().click();
+    await expect(head).toHaveAttribute('aria-expanded', 'true');
+    await expect(effects.locator('.fxitem', { hasText: 'Vignette' }).last()).toBeInViewport({ ratio: 1 });
+
+    // Remove them one by one from the keyboard: the focus moves to the next, then to where
+    // effects come from.
+    const count = await effects.locator('.fxitem').count();
+    const remove = effects.getByRole('button', { name: 'Remove effect' });
+    await remove.first().focus();
+    for (let left = count; left > 1; left--) {
+      await page.keyboard.press('Enter');
+      await expect(effects.locator('.fxitem')).toHaveCount(left - 1);
+      await expect(remove.first()).toBeFocused();
+    }
+    await page.keyboard.press('Enter');
+    await expect(effects.locator('.fxitem')).toHaveCount(0);
+    await expect(effects.getByRole('button', { name: 'Browse effects', exact: true })).toBeFocused();
+    expect((await clip(page, 'dusk.mp4')).effects).toEqual([]);
+  });
+
+  test('a typed timecode goes to the clip as it is when applied, and goes with a clip that leaves', async ({
+    page,
+  }) => {
+    await sample(page);
+    const aurora = await clip(page, 'aurora.mp4');
+    const fractal = await clip(page, 'fractal.mp4');
+    await select(page, [aurora.id]);
+    const start = inspector(page).getByLabel('Start', { exact: true });
+
+    // Twelve frames on, typed while someone else moves the clip: twelve on from where it is now.
+    await start.click();
+    await start.pressSequentially('+12');
+    await page.evaluate((id) => {
+      const { doc } = (window as any).tandem.session.store;
+      doc.transact(() => doc.getMap('clips').get(id).set('start', 400), 'peer');
+    }, aurora.id);
+    await start.press('Enter');
+    expect((await clip(page, 'aurora.mp4')).start).toBe(412);
+
+    // An entry whose clip leaves the panel by other means than a press is not applied to anything.
+    await start.click();
+    await start.pressSequentially('100');
+    await select(page, [fractal.id]);
+    await expect(start).toHaveValue('00:00:04:00');
+    expect((await clip(page, 'aurora.mp4')).start).toBe(412);
+    expect((await clip(page, 'fractal.mp4')).start).toBe(120);
+
+    // A press on another clip ends the entry first: it goes to the clip it was typed for.
+    await select(page, [aurora.id]);
+    await start.click();
+    await start.pressSequentially('+5');
+    await page.locator(`[data-clip="${fractal.id}"]`).click();
+    expect((await clip(page, 'aurora.mp4')).start).toBe(417);
+    expect((await clip(page, 'fractal.mp4')).start).toBe(120);
+  });
+
+  test('headings and labels are spelt the way the rest of the interface is', async ({ page }) => {
+    await sample(page);
+    const fractal = await clip(page, 'fractal.mp4');
+    await set(page, { selection: [], selectedTransition: { clipId: fractal.id, side: 'in' } });
+    await inspector(page).locator('.row', { hasText: 'Type' }).locator('.select').click();
+    await expect(page.locator('.popover .menu-label')).toHaveText(['Dissolve', 'Wipe', 'Motion', 'Stylise']);
+    await page.keyboard.press('Escape');
+
+    const music = await clip(page, 'pulse.ogg');
+    await select(page, [music.id]);
+    await expect(inspector(page).getByRole('button', { name: 'Normalise loudness' })).toHaveText(
+      'Normalise…',
+    );
+    await set(page, { dialog: 'palette' });
+    await page.keyboard.type('normali');
+    await expect(page.getByRole('option', { name: /Normalise loudness to −14 LUFS/ })).toBeVisible();
+    await expect(page.getByText('Normalize')).toHaveCount(0);
+  });
+
+  test('the ring of a button in a row’s label is not cut off, and a long label ends in an ellipsis', async ({
+    page,
+  }) => {
+    await sample(page);
+    const dusk = await clip(page, 'dusk.mp4');
+    await select(page, [dusk.id]);
+    const diamond = inspector(page).getByRole('button', { name: 'Toggle keyframe for Position X' });
+    // The ring is drawn four pixels out from the button: nothing between it and the panel clips.
+    const clipped = await diamond.evaluate((el) => {
+      const own = el.getBoundingClientRect();
+      const body = el.closest('.panel__body')!;
+      for (let up = el.parentElement!; up !== body; up = up.parentElement!) {
+        if (getComputedStyle(up).overflow === 'visible') continue;
+        const r = up.getBoundingClientRect();
+        if (own.left - 4 < r.left || own.top - 4 < r.top || own.bottom + 4 > r.bottom) return up.className;
+      }
+      return null;
+    });
+    expect(clipped).toBeNull();
+    const words = inspector(page).locator('.row__label > span').first();
+    await expect(words).toHaveCSS('text-overflow', 'ellipsis');
+    await expect(words).toHaveCSS('overflow', 'hidden');
   });
 
   test('a new frame rate takes comments, the marked range and the playhead with it', async ({ page }) => {
@@ -538,6 +775,29 @@ test.describe('colour', () => {
     await paste.click();
     expect((await clip(page, 'aurora.mp4')).grade.temperature).toBe(0.4);
 
+    // With the clip it shows among several selected ones, the grade goes onto all of them, and
+    // the button says so. Onto a single selected clip it is the plain paste.
+    const dusk0 = await clip(page, 'dusk.mp4');
+    const title = await clip(page, 'title');
+    await select(page, [dusk0.id]);
+    await expect(page.locator('.color__clip')).toContainText('dusk.mp4');
+    await expect(paste).toHaveCount(1);
+    await select(page, [dusk0.id, title.id]);
+    const pasteAll = page.getByRole('button', { name: 'Paste grade onto the selected clips' });
+    await pasteAll.click();
+    await expect(toast(page, 'pasted onto 2 clips')).toBeVisible();
+    expect((await clip(page, 'dusk.mp4')).grade.temperature).toBe(0.4);
+    expect((await clip(page, 'title')).grade.temperature).toBe(0.4);
+    // What was copied from a sound clip holds no look: there is nothing to paste as a grade.
+    const music = await clip(page, 'pulse.ogg');
+    await page.evaluate((id) => (window as any).tandem.cmd.copyAttributes(id), music.id);
+    await expect(pasteAll).toBeDisabled();
+    await page.evaluate((id) => (window as any).tandem.cmd.copyAttributes(id), dusk0.id);
+    await expect(pasteAll).toBeEnabled();
+    await set(page, { selection: [] });
+    await seek(page, 300);
+    await expect(page.locator('.color__clip')).toContainText('aurora.mp4');
+
     // A lock covers the clip under the playhead too, and the panel says why nothing moves.
     await page.evaluate(() => {
       const { session } = (window as any).tandem;
@@ -604,6 +864,184 @@ test.describe('colour', () => {
     await page.mouse.dblclick(fader.x + fader.width / 2, fader.y + fader.height * 0.2);
     expect((await clip(page, 'dusk.mp4')).grade.zones.mid).toBe(0);
     expect(await undoDepth(page)).toBe(depth + 1);
+  });
+
+  test('wheels, curve points and zone faders are worked from the keyboard', async ({ page }) => {
+    await sample(page);
+    const dusk = await clip(page, 'dusk.mp4');
+    await set(page, { workspace: 'color' });
+    await select(page, [dusk.id]);
+    const grade = async () => (await clip(page, 'dusk.mp4')).grade;
+    const frame = () => page.evaluate(() => (window as any).tandem.session.player.getFrame());
+    const at = await frame();
+    const clipCount = (await clips(page)).length;
+
+    // The tabs: arrows move through them once the keyboard is on one.
+    const tabs = page.locator('section[aria-label="Inspector"] [role="tab"]');
+    await expect(page.getByRole('tabpanel')).toHaveAccessibleName('Wheels');
+    await page.locator('.color__clip').focus();
+    await page.keyboard.press('Shift+Tab');
+    for (let i = 0; i < 6 && !(await tabs.first().evaluate((el) => el === document.activeElement)); i++)
+      await page.keyboard.press('Shift+Tab');
+    await expect(tabs.first()).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    await expect(tabs.nth(1)).toBeFocused();
+    await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('tabpanel')).toHaveAccessibleName('Curves');
+    await page.keyboard.press('End');
+    await expect(tabs.nth(3)).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Home');
+    await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+    // A tab that was only clicked leaves the arrows to the playhead.
+    await tabs.first().click();
+    await page.keyboard.press('ArrowRight');
+    await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+    expect(await frame()).toBe(at + 1);
+    await page.keyboard.press('ArrowLeft');
+
+    // A wheel: Tab reaches its puck and the arrows move it across the wheel.
+    const lift = page.getByRole('slider', { name: 'Lift colour balance' });
+    await expect(lift).toHaveAttribute('aria-valuetext', 'Neutral');
+    await page.locator('.color__clip').focus();
+    await page.keyboard.press('Tab');
+    await expect(lift).toBeFocused();
+    for (const key of ['ArrowRight', 'ArrowRight', 'Shift+ArrowUp']) await page.keyboard.press(key);
+    await expect(lift).toHaveAttribute('aria-valuetext', '20% toward red');
+    expect((await grade()).lift[0]).toBeGreaterThan(0.09);
+    // End takes it to the rim along its hue, Page Down a tenth of the way back.
+    await page.keyboard.press('End');
+    await expect(lift).toHaveAttribute('aria-valuetext', '100% toward red');
+    await page.keyboard.press('PageDown');
+    await expect(lift).toHaveAttribute('aria-valuetext', '90% toward red');
+    // Delete puts the puck back, and is the wheel's: no clip is deleted, the playhead stays.
+    await page.keyboard.press('Delete');
+    await expect(lift).toHaveAttribute('aria-valuetext', 'Neutral');
+    expect((await grade()).lift).toEqual([0, 0, 0, 0]);
+    expect((await clips(page)).length).toBe(clipCount);
+    expect(await frame()).toBe(at);
+    // A run of presses is one undo step, as one drag is; after a rest the next press begins another.
+    await page.waitForTimeout(800);
+    const depth = await undoDepth(page);
+    for (const key of ['ArrowLeft', 'ArrowLeft', 'ArrowDown', 'Shift+ArrowLeft'])
+      await page.keyboard.press(key);
+    expect(await undoDepth(page)).toBe(depth + 1);
+    await page.waitForTimeout(800);
+    await page.keyboard.press('ArrowLeft');
+    expect(await undoDepth(page)).toBe(depth + 2);
+    await undo(page);
+    await undo(page);
+    expect((await grade()).lift).toEqual([0, 0, 0, 0]);
+    // A drag leaves the keyboard where it was: the arrows are the playhead's again.
+    const disc = await box(page.locator('.wheel__disc').first());
+    await page.mouse.move(disc.x + disc.width / 2, disc.y + disc.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(disc.x + disc.width / 2 + 12, disc.y + disc.height / 2, { steps: 3 });
+    await page.mouse.up();
+    await expect(lift).not.toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    expect(await frame()).toBe(at + 1);
+    await page.keyboard.press('ArrowLeft');
+
+    // A curve: a point is added from the keyboard, moved with the arrows and removed with Delete.
+    await page.getByRole('tab', { name: 'Curves' }).click();
+    await expect(page.getByRole('group', { name: 'Master curve' })).toBeVisible();
+    await page.getByRole('button', { name: 'Add point' }).focus();
+    await page.keyboard.press('Enter');
+    const point = page.getByRole('slider', { name: 'Point 2 of 3' });
+    await expect(point).toBeFocused();
+    await expect(point).toHaveAttribute('aria-valuetext', 'Input 50%, output 50%');
+    const before = await undoDepth(page);
+    for (const key of ['ArrowUp', 'ArrowUp', 'Shift+ArrowLeft']) await page.keyboard.press(key);
+    await expect(point).toHaveAttribute('aria-valuetext', 'Input 40%, output 52%');
+    expect((await grade()).curves.m).toEqual([
+      [0, 0],
+      [0.4, 0.52],
+      [1, 1],
+    ]);
+    expect(await undoDepth(page)).toBe(before + 1);
+    // An end of the curve is not removed; a point between the ends is.
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.getByRole('slider', { name: 'Point 1 of 3' })).toBeFocused();
+    await page.keyboard.press('Delete');
+    expect((await grade()).curves.m).toHaveLength(3);
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Delete');
+    expect((await grade()).curves.m).toEqual([
+      [0, 0],
+      [1, 1],
+    ]);
+    expect((await clips(page)).length).toBe(clipCount);
+    // A press on a point drags it and leaves the keyboard alone.
+    const dot = await box(page.locator('.curve__pt').last());
+    await page.mouse.click(dot.x + dot.width / 2, dot.y + dot.height / 2);
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+
+    // A zone fader: a vertical slider in stops.
+    await page.getByRole('tab', { name: 'HDR' }).click();
+    const mid = page.getByRole('slider', { name: 'Mid zone' });
+    await expect(mid).toHaveAttribute('aria-orientation', 'vertical');
+    await mid.focus();
+    const zones = await undoDepth(page);
+    for (const key of ['ArrowUp', 'ArrowUp', 'Shift+ArrowUp', 'PageDown']) await page.keyboard.press(key);
+    // Two steps of 0.05 and one of 0.5 up, then a tenth of the eight stops down.
+    expect((await grade()).zones.mid).toBe(-0.2);
+    await expect(mid).toHaveAttribute('aria-valuetext', '−0.20 stops');
+    expect(await undoDepth(page)).toBe(zones + 1);
+    await page.keyboard.press('Home');
+    expect((await grade()).zones.mid).toBe(-4);
+    await page.keyboard.press('Delete');
+    expect((await grade()).zones.mid).toBe(0);
+    expect(await frame()).toBe(at);
+  });
+
+  test('scopes are read again only when the viewer has drawn a frame', async ({ page }) => {
+    await sample(page);
+    await set(page, { workspace: 'color' });
+    await expect(page.locator('.scope canvas').first()).toBeVisible();
+    // Count the frames the scopes read back, and note which drawn frame each belongs to.
+    await page.evaluate(() => {
+      const { player } = (window as any).tandem.session;
+      const read = player.readScope.bind(player);
+      const seen = ((window as any).reads = { count: 0, drawn: -1 });
+      player.readScope = async (...args: unknown[]) => {
+        const drawn = player.drawnFrames;
+        const frame = await read(...args);
+        if (frame) Object.assign(seen, { count: seen.count + 1, drawn });
+        return frame;
+      };
+    });
+    // Once the frame that was drawn last has been read, a viewer at rest costs the scopes nothing:
+    // no read-back, and with it none of the work each scope does on a frame.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as any).reads.drawn === (window as any).tandem.session.player.drawnFrames,
+        ),
+      )
+      .toBe(true);
+    const rest = await page.evaluate(async () => {
+      const { player } = (window as any).tandem.session;
+      const before = { reads: (window as any).reads.count, drawn: player.drawnFrames };
+      await new Promise((done) => setTimeout(done, 1500));
+      return { reads: (window as any).reads.count - before.reads, drawn: player.drawnFrames - before.drawn };
+    });
+    expect(rest.reads).toBeLessThanOrEqual(rest.drawn);
+    // A new frame is read at the next beat.
+    const read = await page.evaluate(() => (window as any).reads.count);
+    await seek(page, 200);
+    await expect.poll(() => page.evaluate(() => (window as any).reads.count)).toBeGreaterThan(read);
+    // And a scope that is switched on is drawn from the frame that is held.
+    await page.getByRole('button', { name: 'Choose scopes' }).click();
+    await page.getByRole('menuitem', { name: 'Histogram' }).click();
+    const histogram = page.locator('.scope[data-kind="histogram"] canvas');
+    await expect
+      .poll(() =>
+        histogram.evaluate((canvas: HTMLCanvasElement) => {
+          const { data } = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height);
+          return data.some((v) => v > 0);
+        }),
+      )
+      .toBe(true);
   });
 });
 
@@ -677,6 +1115,41 @@ test.describe('mixer', () => {
       await button.click();
       await expect(button).toHaveAttribute('aria-pressed', 'false');
     }
+  });
+
+  test('a fader is a slider for the keyboard, in decibels', async ({ page }) => {
+    await sample(page);
+    await set(page, { workspace: 'audio' });
+    const a1 = () =>
+      page.evaluate(() => {
+        const p = (window as any).tandem.session.store.get();
+        return (Object.values(p.tracks) as any[]).find((t) => t.kind === 'audio' && t.order === 0);
+      });
+    const frame = () => page.evaluate(() => (window as any).tandem.session.player.getFrame());
+    const at = await frame();
+    const fader = page.getByRole('slider', { name: 'Volume, A1' });
+    await expect(fader).toHaveAttribute('aria-orientation', 'vertical');
+    await expect(fader).toHaveAttribute('aria-valuetext', '0.0 dB');
+    await fader.focus();
+    const depth = await undoDepth(page);
+    for (const key of ['ArrowDown', 'ArrowDown', 'Shift+ArrowDown']) await page.keyboard.press(key);
+    expect((await a1()).volume).toBe(-6);
+    await expect(fader).toHaveAttribute('aria-valuetext', '−6.0 dB');
+    await page.keyboard.press('End');
+    expect((await a1()).volume).toBe(12);
+    expect(await undoDepth(page)).toBe(depth + 1);
+    await page.keyboard.press('Delete');
+    expect((await a1()).volume).toBe(0);
+    expect(await frame()).toBe(at);
+    await undo(page);
+    expect((await a1()).volume).toBe(0);
+    expect(await undoDepth(page)).toBe(depth);
+    // A drag on the fader does not leave the keyboard on it.
+    const track = await box(page.locator('.fader').first());
+    await page.mouse.click(track.x + 10, track.y + track.height * 0.5);
+    await expect(fader).not.toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    expect(await frame()).toBe(at + 1);
   });
 });
 
@@ -867,5 +1340,60 @@ test.describe('export', () => {
     // The settings are still there to be changed and tried again.
     await expect(exportButton(page)).toBeEnabled();
     await expect(close).toBeVisible();
+  });
+  test('the keyboard stays in the dialog from the first press to Done', async ({ page }) => {
+    await newLocal(page);
+    await page.evaluate(() => {
+      const { session, cmd, ui } = (window as any).tandem;
+      session.store.commit([{ op: 'settings', patch: { width: 320, height: 180 } }]);
+      cmd.addSolid('#c04020');
+      const solid = Object.values(session.store.get().clips)[0] as any;
+      session.store.commit([{ op: 'updateClip', id: solid.id, patch: { duration: 12 } }]);
+      ui.getState().set({ dialog: 'export' });
+    });
+    await expect(page.locator('.exp')).toBeVisible();
+    await probed(page);
+    const dialog = page.getByRole('dialog');
+    const inside = () => dialog.evaluate((el) => el.contains(document.activeElement));
+    // Hold the export in its first frames, to look at the dialog while it runs.
+    await page.evaluate(() => {
+      const Real = (window as any).VideoEncoder;
+      const hold = new Promise<void>((go) => ((window as any).letGo = go));
+      (window as any).VideoEncoder = class extends Real {
+        async flush() {
+          await hold;
+          return super.flush();
+        }
+      };
+    });
+    const download = page.waitForEvent('download');
+    await exportButton(page).focus();
+    await page.keyboard.press('Enter');
+
+    await expect(page.locator('.exp__run')).toBeVisible();
+    // The button that was pressed is gone. The keyboard rests on the dialog, where a second Enter
+    // or a Space cancels nothing, and Cancel is the next stop.
+    expect(await inside()).toBe(true);
+    await expect(dialog).toBeFocused();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    await expect(page.locator('.exp__run')).toBeVisible();
+    const bar = dialog.getByRole('progressbar', { name: 'Export progress' });
+    await expect(bar).toHaveAttribute('aria-valuemax', '100');
+    await expect(bar).toHaveAttribute('aria-valuenow', /^\d+$/);
+    await expect(bar).toHaveAttribute('aria-valuetext', /%, (preparing|rendering|writing file)$/);
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Cancel export' })).toBeFocused();
+
+    await page.evaluate(() => (window as any).letGo());
+    await download;
+    await expect(page.getByText('Export complete')).toBeVisible({ timeout: 100_000 });
+    // The result is announced, Done has the keyboard and says what was made, and Enter closes.
+    const done = dialog.getByRole('button', { name: 'Done' });
+    await expect(done).toBeFocused();
+    await expect(dialog.getByRole('status')).toContainText('Untitled project.mp4');
+    await expect(done).toHaveAccessibleDescription(/Untitled project\.mp4.*rendered in/);
+    await page.keyboard.press('Enter');
+    await expect(dialog).toHaveCount(0);
   });
 });
