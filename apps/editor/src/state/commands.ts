@@ -86,6 +86,7 @@ import {
   pasteable,
   rippleDeleteClips,
   rippleDeleteRange,
+  replaceEdits,
   rippleTrimToFrame,
   selectionAtFrame,
   trackNudge,
@@ -358,6 +359,28 @@ function focusTextField(clipId: ID, tries = 12): void {
       if (head.textContent?.trim() === 'Text') head.click();
     }
     if (tries > 0) focusTextField(clipId, tries - 1);
+  });
+}
+
+/**
+ * Paste the copied clips at the playhead. They overwrite what is there, or with `insert` what is
+ * there is pushed later first by as much as the clips span, cut where a clip lies across the
+ * playhead: the room an insert from the source monitor makes.
+ */
+function pasteClipboard(insert: boolean): void {
+  editing((s, p) => {
+    if (!ui().clipboard.length) return;
+    const { clips, missing } = pasteable(p, ui().clipboard, ui().clipboardFps);
+    if (missing) {
+      const what = missing === 1 ? 'One clip was' : `${missing} clips were`;
+      toast(`${clips.length ? `${what} left out` : 'Nothing was pasted'}: the media is not in this project.`);
+    }
+    if (!clips.length) return;
+    const span = Math.max(...clips.map(clipEnd)) - Math.min(...clips.map((c) => c.start));
+    const room = insert ? openGapAt(p, frame(), span) : null;
+    const r = pasteClips(room ? applyPreview(p, room.edits) : p, clips, frame());
+    s.store.commit(room ? [...withMarkers(p, room), ...r.edits] : r.edits);
+    ui().select(r.created);
   });
 }
 
@@ -648,20 +671,11 @@ export const cmd = {
     cmd.delete(false);
   },
   paste(): void {
-    editing((s, p) => {
-      if (!ui().clipboard.length) return;
-      const { clips, missing } = pasteable(p, ui().clipboard, ui().clipboardFps);
-      if (missing) {
-        const what = missing === 1 ? 'One clip was' : `${missing} clips were`;
-        toast(
-          `${clips.length ? `${what} left out` : 'Nothing was pasted'}: the media is not in this project.`,
-        );
-      }
-      if (!clips.length) return;
-      const r = pasteClips(p, clips, frame());
-      s.store.commit(r.edits);
-      ui().select(r.created);
-    });
+    pasteClipboard(false);
+  },
+  /** Paste at the playhead and push what is there later, on every unlocked track, instead of overwriting it. */
+  pasteInsert(): void {
+    pasteClipboard(true);
   },
   duplicate(): void {
     editing((s, p) => {
@@ -824,6 +838,28 @@ export const cmd = {
       const r = moveEdits(p, effectiveSelection(p, clipIds), frame);
       if (r.edits.length) s.store.commit(r.edits);
       if (r.limited) toast('Another clip is in the way, so the move stops there.', 'info');
+    });
+  },
+  /**
+   * Put another file from the pool behind a clip where it stands, keeping what was done to the
+   * clip (see `replaceEdits`). This swaps one clip's media; `replaceMedia` swaps the file itself.
+   */
+  replaceClip(clipId: ID, assetId: ID, sourceIn = 0): void {
+    editing((s, p) => {
+      const asset = p.assets[assetId];
+      if (!p.clips[clipId] || !asset) return;
+      if (!unlocked(p, [clipId]).length) {
+        toast(LOCKED_TRACK, 'info');
+        return;
+      }
+      const r = replaceEdits(p, clipId, asset, sourceIn);
+      if (r.refused) {
+        toast(r.refused, 'info');
+        return;
+      }
+      s.store.commit(r.edits);
+      ui().select(effectiveSelection(s.store.get(), [clipId]));
+      if (r.shortened) toast(`“${asset.name}” is shorter than the clip was, so the clip now ends earlier.`, 'info');
     });
   },
   updateSelected(patch: Partial<Clip>, merge = false): void {

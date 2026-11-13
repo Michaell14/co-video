@@ -207,7 +207,8 @@
   resize: none;
   transition: box-shadow var(--dur-1) ease;
 }
-.composer textarea:enabled:placeholder-shown {
+/* Empty, the box is known by its edge alone. Weighted so that the focused state below still wins. */
+.composer textarea:where(:enabled:placeholder-shown) {
   box-shadow: inset 0 0 0 1px var(--line-control);
 }
 .composer textarea:focus {

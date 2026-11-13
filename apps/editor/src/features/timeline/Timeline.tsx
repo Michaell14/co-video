@@ -6,6 +6,7 @@ import {
   EyeOff,
   Film,
   Flag,
+  FlagTriangleRight,
   Hand,
   Link2,
   Lock,
@@ -25,7 +26,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   clamp,
   editPoints,
@@ -34,7 +35,6 @@ import {
   moveTrack,
   sequenceEnd,
   snapTo,
-  trackLabel,
   tracksOf,
   type Marker,
   type Project,
@@ -50,7 +50,8 @@ import {
   useSession,
 } from '../../session/hooks';
 import { cmd, setTimelineWidth } from '../../state/commands';
-import { commit } from '../../state/props';
+import { beginGesture, commit } from '../../state/props';
+import { shortcutOf } from '../../state/shortcuts';
 import { clampPpf, MAX_PPF, MIN_PPF, useUI } from '../../state/ui';
 import {
   IconButton,
@@ -67,6 +68,8 @@ import { canvasTheme } from './canvasTheme';
 import { EdgeScroller, timeAxis } from './edgeScroll';
 import { Lanes } from './Lanes';
 import { HEADER_W, LABEL_H, LABEL_TINT, layoutLanes, RULER_H, tickInterval, type Lane } from './layout';
+import { watchLevels } from './levels';
+import { LostClips } from './LostClips';
 import './timeline.css';
 
 /** The layout constants the stylesheet needs as well, handed to it as custom properties. */
@@ -76,12 +79,15 @@ const LAYOUT_VARS = {
   '--tl-label-tint': `${LABEL_TINT * 100}%`,
 } as React.CSSProperties;
 
+/**
+ * The timeline. A drag in the lanes shows a new project with every move of the pointer, and each
+ * of those renders this component. What it draws besides the lanes is therefore memoised and given
+ * only the parts of the project it shows, which a drag leaves as they are; and nothing here reads
+ * the zoom or the scroll position, which the parts that need them follow by themselves.
+ */
 export function Timeline() {
-  const session = useSession();
   const player = usePlayer();
   const live = useLiveProject((p) => p);
-  const ppf = useUI((s) => s.ppf);
-  const scrollX = useUI((s) => s.scrollX);
   const set = useUI((s) => s.set);
   const bodyRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLDivElement>(null);
@@ -158,12 +164,12 @@ export function Timeline() {
           <TrackAdder />
         </div>
         <div className="tl__area" ref={areaRef}>
-          <Ruler width={width} project={live} />
+          <Ruler width={width} settings={live.settings} markers={live.markers} />
         </div>
         <div className="tl__body" ref={bodyRef}>
           <div className="tl__headers" style={{ width: HEADER_W, height }}>
             {lanes.map((lane) => (
-              <TrackHeader key={lane.track.id} lane={lane} project={live} />
+              <TrackHeader key={lane.track.id} lane={lane} />
             ))}
           </div>
           <div className="tl__lanes">
@@ -181,18 +187,20 @@ export function Timeline() {
             </span>
           </div>
         )}
+        <LostClips />
       </div>
-      <Scrollbar width={width} end={end} ppf={ppf} scrollX={scrollX} />
+      <Scrollbar width={width} end={end} />
     </div>
   );
 }
 
 // ───────────────────────────────────────────────────────────── toolbar ──
 
-function Toolbar() {
+const Toolbar = memo(function Toolbar() {
   const tool = useUI((s) => s.tool);
   const snapping = useUI((s) => s.snapping);
   const ripple = useUI((s) => s.rippleMode);
+  const markersFollow = useUI((s) => s.markersFollow);
   const linked = useUI((s) => s.linkedSelection);
   const ppf = useUI((s) => s.ppf);
   const hasSel = useUI((s) => s.selection.length > 0 || !!s.selectedTransition);
@@ -281,6 +289,14 @@ function Toolbar() {
         <ArrowDownUp style={{ transform: 'rotate(90deg)' }} />
       </IconButton>
       <IconButton
+        label="Markers follow ripple edits"
+        tipPlace="top"
+        active={markersFollow}
+        onClick={() => set({ markersFollow: !markersFollow })}
+      >
+        <FlagTriangleRight />
+      </IconButton>
+      <IconButton
         label="Linked selection"
         keys="mod+shift+l"
         tipPlace="top"
@@ -320,13 +336,15 @@ function Toolbar() {
       </IconButton>
     </div>
   );
-}
+});
 
-function TrackAdder() {
+const TrackAdder = memo(function TrackAdder() {
   return (
     <div className="tl__adder">
       <button
+        type="button"
         className="btn btn--ghost btn--sm"
+        aria-label="Add video track"
         onClick={() => cmd.addTrack('video')}
         {...tip('Add video track')}
       >
@@ -334,7 +352,9 @@ function TrackAdder() {
         <Film />
       </button>
       <button
+        type="button"
         className="btn btn--ghost btn--sm"
+        aria-label="Add audio track"
         onClick={() => cmd.addTrack('audio')}
         {...tip('Add audio track')}
       >
@@ -343,11 +363,17 @@ function TrackAdder() {
       </button>
     </div>
   );
-}
+});
 
 // ─────────────────────────────────────────────────────────────── ruler ──
 
-function Ruler({ width, project }: { width: number; project: Project }) {
+interface RulerProps {
+  width: number;
+  settings: Project['settings'];
+  markers: Project['markers'];
+}
+
+const Ruler = memo(function Ruler({ width, settings, markers: markerMap }: RulerProps) {
   const session = useSession();
   const player = usePlayer();
   const range = usePlayerState().range;
@@ -372,7 +398,6 @@ function Ruler({ width, project }: { width: number; project: Project }) {
   const pressed = useRef<string | null>(null);
   /** Runs the scrub in progress again where the pointer last was. */
   const rerun = useRef<() => void>(() => {});
-  const settings = project.settings;
   const fps = settings.fpsNum / settings.fpsDen;
 
   const scroller = useMemo(
@@ -427,6 +452,8 @@ function Ruler({ width, project }: { width: number; project: Project }) {
     const r = canvasRef.current!.getBoundingClientRect();
     let f = Math.max(0, Math.round((clientX - r.left + useUI.getState().scrollX) / useUI.getState().ppf));
     if (snapEdits && useUI.getState().snapping) {
+      // The project as it is when the pointer asks: this component is not drawn again for clips.
+      const project = session.store.get();
       const pts = [...editPoints(project), ...Object.values(project.markers).map((m) => m.frame)].sort(
         (a, b) => a - b,
       );
@@ -483,7 +510,7 @@ function Ruler({ width, project }: { width: number; project: Project }) {
     setEditing({ marker, rect: el.getBoundingClientRect() });
   };
 
-  const markers = Object.values(project.markers);
+  const markers = Object.values(markerMap);
   return (
     <div
       ref={rulerRef}
@@ -498,7 +525,7 @@ function Ruler({ width, project }: { width: number; project: Project }) {
         pressed.current = mk ?? null;
         if (mk) {
           scrub.current = { kind: 'marker', id: mk, x0: e.clientX, moved: false };
-          cmd.seek(project.markers[mk].frame, false);
+          cmd.seek(markerMap[mk].frame, false);
         } else if (edge) scrub.current = { kind: 'range', edge };
         else {
           scrub.current = { kind: 'seek' };
@@ -519,7 +546,7 @@ function Ruler({ width, project }: { width: number; project: Project }) {
       }}
       onContextMenu={(e) => {
         const id = (e.target as HTMLElement).closest<HTMLElement>('[data-marker]')?.dataset.marker;
-        const marker = id ? project.markers[id] : undefined;
+        const marker = id ? markerMap[id] : undefined;
         // Snapped like a click on the ruler, unless that lands on a marker that is already there.
         const snapped = frameAt(e.clientX, true);
         const at = markers.some((m) => m.frame === snapped) ? frameAt(e.clientX, false) : snapped;
@@ -533,9 +560,28 @@ function Ruler({ width, project }: { width: number; project: Project }) {
               }
             : { label: 'Add marker here', onSelect: () => cmd.addMarker(at) },
           'separator',
-          { label: 'Mark in', keys: 'i', onSelect: () => cmd.markIn() },
-          { label: 'Mark out', keys: 'o', onSelect: () => cmd.markOut() },
-          { label: 'Clear in / out', keys: 'alt+x', onSelect: () => cmd.clearRange(), disabled: !range },
+          { label: 'Mark in', keys: shortcutOf('mark-in'), onSelect: () => cmd.markIn() },
+          { label: 'Mark out', keys: shortcutOf('mark-out'), onSelect: () => cmd.markOut() },
+          { label: 'Mark clip', keys: shortcutOf('mark-clip'), onSelect: () => cmd.markClip() },
+          {
+            label: 'Clear in / out',
+            keys: shortcutOf('clear-range'),
+            onSelect: () => cmd.clearRange(),
+            disabled: !range,
+          },
+          { label: 'Go to in', keys: shortcutOf('go-in'), onSelect: () => cmd.goToRange('in') },
+          { label: 'Go to out', keys: shortcutOf('go-out'), onSelect: () => cmd.goToRange('out') },
+          'separator',
+          {
+            label: 'Add default transition',
+            keys: shortcutOf('default-transition'),
+            onSelect: () => cmd.addDefaultTransition(),
+          },
+          {
+            label: 'Extend edit to playhead',
+            keys: shortcutOf('extend-edit'),
+            onSelect: () => cmd.extendEdit(),
+          },
         ]);
       }}
     >
@@ -550,26 +596,37 @@ function Ruler({ width, project }: { width: number; project: Project }) {
         </div>
       )}
       {markers.map((m) => (
-        <div
+        <button
           key={m.id}
+          type="button"
           className="marker"
           data-marker={m.id}
+          aria-label={`Marker ${m.name}, ${formatTimecode(m.frame, settings)}${m.note ? `: ${m.note}` : ''}`}
           style={{ left: m.frame * ppf - scrollX, ['--c' as string]: m.color }}
           {...(editing?.marker.id === m.id
             ? {}
             : tip(m.note ? `${m.name} — ${m.note}` : m.name, undefined, 'top'))}
+          onClick={(e) => {
+            // A press of the pointer is the ruler's (it seeks, drags, and edits on the second
+            // press), so only a click that no pointer made is acted on here: Enter or Space.
+            if (e.detail !== 0) return;
+            cmd.seek(m.frame);
+            editMarker(m.id);
+          }}
         >
-          <svg viewBox="0 0 10 12" width="10" height="12">
+          <svg viewBox="0 0 10 12" width="10" height="12" aria-hidden>
             <path d="M1 1h8v7L5 11 1 8z" fill="var(--c)" stroke="rgba(0,0,0,0.5)" strokeWidth="1" />
           </svg>
-        </div>
+        </button>
       ))}
       {comments
         .filter((c) => !c.resolved)
         .map((c) => (
           <button
             key={c.id}
+            type="button"
             className="ruler__comment"
+            aria-label={`Comment by ${c.authorName} at ${formatTimecode(c.frame, settings)}`}
             style={{ left: c.frame * ppf - scrollX, background: c.authorColor }}
             {...tip(`${c.authorName}: ${c.text.slice(0, 80)}`, undefined, 'top')}
             onPointerDown={(e) => {
@@ -587,7 +644,7 @@ function Ruler({ width, project }: { width: number; project: Project }) {
       )}
     </div>
   );
-}
+});
 
 /** What the marker colours are called, in the order of `MARKER_COLORS`. */
 const MARKER_COLOR_NAMES = ['Amber', 'Red', 'Green', 'Blue', 'Purple', 'Pink', 'White'];
@@ -595,24 +652,41 @@ const MARKER_COLOR_NAMES = ['Amber', 'Red', 'Green', 'Blue', 'Purple', 'Pink', '
 function MarkerEditor({ marker, rect, onClose }: { marker: Marker; rect: DOMRect; onClose: () => void }) {
   const session = useSession();
   const m = useProject((p) => p.markers[marker.id]) ?? marker;
-  const update = (patch: Partial<Marker>) => {
+  /**
+   * Typing is one undo step for each visit to a field, as in the inspector's text fields: `typed`
+   * joins a change to the step that the visit began. A colour is a step of its own.
+   */
+  const update = (patch: Partial<Marker>, typed = false) => {
     // Someone else may have deleted the marker while this was open: there is nothing left to edit.
     const current = session.store.get().markers[marker.id];
-    if (current) commit([{ op: 'setMarker', marker: { ...current, ...patch } }]);
+    if (current) commit([{ op: 'setMarker', marker: { ...current, ...patch } }], typed);
   };
+  // The name field has the keyboard as the editor opens, but through the popover, which takes the
+  // focus itself first: a step that began only on focus could be missed, and the first letter
+  // typed would then join the step before it, which is usually the one that made the marker.
+  useEffect(() => beginGesture(), []);
   return (
     <Popover anchor={rect} onClose={onClose} style={{ width: 240, padding: 8 }}>
-      <div className="marker-ed">
+      <div
+        className="marker-ed"
+        onKeyDownCapture={(e) => {
+          // Enter in the name closes the editor, and focus is back on the marker before the key
+          // has had its own effect, which on a button is to press it: the editor would open again.
+          if (e.key === 'Enter' && e.target instanceof HTMLInputElement) e.preventDefault();
+        }}
+      >
         <TextField
           value={m.name}
-          onChange={(name) => update({ name })}
+          onChange={(name) => update({ name }, true)}
+          onFocus={beginGesture}
           autoFocus
           ariaLabel="Marker name"
           onEnter={onClose}
         />
         <TextField
           value={m.note}
-          onChange={(note) => update({ note })}
+          onChange={(note) => update({ note }, true)}
+          onFocus={beginGesture}
           multiline
           rows={2}
           placeholder="Note"
@@ -623,6 +697,7 @@ function MarkerEditor({ marker, rect, onClose }: { marker: Marker; rect: DOMRect
             {MARKER_COLORS.map((c, i) => (
               <button
                 key={c}
+                type="button"
                 className="menu-swatch"
                 role="radio"
                 aria-checked={m.color === c}
@@ -651,7 +726,7 @@ function MarkerEditor({ marker, rect, onClose }: { marker: Marker; rect: DOMRect
 
 // ──────────────────────────────────────────────────────────── playhead ──
 
-function Playhead({ left, width }: { left: number; width: number }) {
+const Playhead = memo(function Playhead({ left, width }: { left: number; width: number }) {
   const player = usePlayer();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -681,9 +756,9 @@ function Playhead({ left, width }: { left: number; width: number }) {
       </svg>
     </div>
   );
-}
+});
 
-function RemotePlayheads({ left, width }: { left: number; width: number }) {
+const RemotePlayheads = memo(function RemotePlayheads({ left, width }: { left: number; width: number }) {
   const peers = usePeers();
   const ppf = useUI((s) => s.ppf);
   const scrollX = useUI((s) => s.scrollX);
@@ -706,11 +781,11 @@ function RemotePlayheads({ left, width }: { left: number; width: number }) {
       })}
     </>
   );
-}
+});
 
 // ────────────────────────────────────────────────────────────── headers ──
 
-function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
+const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
   const session = useSession();
   const player = usePlayer();
   const t = lane.track;
@@ -719,30 +794,22 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
   const discard = useRef(false);
   const meter = useRef<HTMLDivElement>(null);
   const update = (patch: Partial<Track>) => commit([{ op: 'updateTrack', id: t.id, patch }]);
-  const label = trackLabel(project, t);
+  const label = lane.label;
   const resize = useRef<{ y: number; h: number } | null>(null);
   const nameTip = tip(t.name);
 
   // Live level meter for audio tracks.
   useEffect(() => {
     if (t.kind !== 'audio' || !player) return;
-    let raf = 0;
     let shown = 0;
-    const loop = () => {
-      raf = requestAnimationFrame(loop);
-      const level = player.levels().tracks[t.id] ?? 0;
+    return watchLevels(player, (levels) => {
+      const level = levels.tracks[t.id] ?? 0;
       // Fast attack, slow release — the way meters are meant to move.
       shown = level > shown ? level : shown * 0.9;
       const db = shown > 0.0005 ? 20 * Math.log10(shown) : -60;
       if (meter.current) meter.current.style.transform = `scaleX(${clamp((db + 48) / 48, 0, 1)})`;
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    });
   }, [player, t.id, t.kind]);
-
-  const { video, audio } = tracksOf(project);
-  const list = t.kind === 'video' ? video : audio;
-  const idx = list.findIndex((x) => x.id === t.id);
 
   return (
     <div
@@ -750,22 +817,35 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
       data-kind={t.kind}
       data-locked={t.locked}
       style={{ top: lane.top, height: lane.height }}
-      onContextMenu={(e) =>
+      onContextMenu={(e) => {
+        // The header is drawn again only when its own track changes, so what the menu offers is
+        // worked out from the project as it is when the menu is asked for.
+        const project = session.store.get();
+        const list = tracksOf(project)[t.kind];
+        const idx = list.findIndex((x) => x.id === t.id);
+        // Picture tracks stack upwards and sound tracks are listed downwards.
+        const [up, down] = t.kind === 'video' ? ([1, -1] as const) : ([-1, 1] as const);
+        const move = (dir: 1 | -1) => commit(moveTrack(session.store.get(), t.id, dir));
         openContextMenu(e, [
           { label: 'Rename', onSelect: () => setRenaming(t.name || label) },
           {
-            label: t.kind === 'video' ? 'Move up' : 'Move up',
-            disabled: t.kind === 'video' ? idx >= list.length - 1 : idx <= 0,
-            onSelect: () => commit(moveTrack(project, t.id, t.kind === 'video' ? 1 : -1)),
+            label: 'Move up',
+            disabled: !list[idx + up],
+            onSelect: () => move(up),
           },
           {
             label: 'Move down',
-            disabled: t.kind === 'video' ? idx <= 0 : idx >= list.length - 1,
-            onSelect: () => commit(moveTrack(project, t.id, t.kind === 'video' ? -1 : 1)),
+            disabled: !list[idx + down],
+            onSelect: () => move(down),
           },
           'separator',
           { label: 'Add video track', onSelect: () => cmd.addTrack('video') },
           { label: 'Add audio track', onSelect: () => cmd.addTrack('audio') },
+          t.kind === 'video' && 'separator',
+          t.kind === 'video' && {
+            label: 'Export captions from this track',
+            onSelect: () => cmd.exportSubtitles(t.id),
+          },
           'separator',
           {
             label: 'Delete track',
@@ -773,8 +853,8 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
             disabled: list.length <= 1,
             onSelect: () => cmd.removeTrack(t.id),
           },
-        ])
-      }
+        ]);
+      }}
     >
       <div className="th__row">
         <span className="th__tag mono">{label}</span>
@@ -827,15 +907,18 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
               small
               label={t.muted ? 'Unmute track' : 'Mute track'}
               active={t.muted}
+              className={cx(t.muted && 'th__mute--on')}
               onClick={() => update({ muted: !t.muted })}
             >
               {t.muted ? <VolumeX /> : <Volume2 />}
             </IconButton>
             <button
+              type="button"
               className={cx('th__solo', t.solo && 'th__solo--on')}
               onClick={() => update({ solo: !t.solo })}
+              aria-label="Solo track"
               aria-pressed={t.solo}
-              {...tip('Solo')}
+              {...tip('Solo track')}
             >
               S
             </button>
@@ -874,21 +957,13 @@ function TrackHeader({ lane, project }: { lane: Lane; project: Project }) {
       />
     </div>
   );
-}
+});
 
 // ──────────────────────────────────────────────────────────── scrollbar ──
 
-function Scrollbar({
-  width,
-  end,
-  ppf,
-  scrollX,
-}: {
-  width: number;
-  end: number;
-  ppf: number;
-  scrollX: number;
-}) {
+const Scrollbar = memo(function Scrollbar({ width, end }: { width: number; end: number }) {
+  const ppf = useUI((s) => s.ppf);
+  const scrollX = useUI((s) => s.scrollX);
   const set = useUI((s) => s.set);
   const drag = useRef<{ x: number; scroll: number } | null>(null);
   // Leave half a screen of empty time past the last clip to drop things into.
@@ -934,7 +1009,7 @@ function Scrollbar({
       </div>
     </div>
   );
-}
+});
 
 /** Starts and stops a voiceover take; while recording it shows the running time and input level. */
 function VoiceoverButton() {

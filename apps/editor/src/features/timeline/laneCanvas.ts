@@ -10,6 +10,8 @@ export interface LaneView {
   width: number;
   height: number;
   dpr: number;
+  /** The assets whose file cannot be had right now: their clips are marked like those without one. */
+  offline: ReadonlySet<string>;
 }
 
 /** `hex` at `alpha`, darkened towards black by `keep` (1 leaves it as it is). */
@@ -25,8 +27,9 @@ export function drawLane(
   view: LaneView,
   media: TimelineMedia,
 ): void {
-  const { scrollX, ppf, width, height, dpr } = view;
+  const { scrollX, ppf, width, height, dpr, offline } = view;
   const theme = canvasTheme(ctx.canvas);
+  media.film.viewing(scrollX, ppf);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
   const fps = project.settings.fpsNum / project.settings.fpsDen;
@@ -58,7 +61,8 @@ export function drawLane(
     // short clips keeps its band of colour instead of breaking into darker gaps. It is the strip
     // of a clip with room for its name in every respect: red when the media is missing.
     if (!compact && boxW <= LABEL_MIN_W) {
-      ctx.fillStyle = clip.assetId && !asset ? theme.offlineLabel : tint(color, 1, LABEL_TINT);
+      const missing = !!clip.assetId && (!asset || offline.has(clip.assetId));
+      ctx.fillStyle = missing ? theme.offlineLabel : tint(color, 1, LABEL_TINT);
       ctx.fillRect(visL, 0, visR - visL, LABEL_H);
     }
 

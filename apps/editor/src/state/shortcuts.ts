@@ -113,6 +113,13 @@ export const COMMANDS: Command[] = [
   { id: 'cut', title: 'Cut', group: 'Edit', keys: ['mod+x'], run: () => cmd.cut() },
   { id: 'copy', title: 'Copy', group: 'Edit', keys: ['mod+c'], run: () => cmd.copy() },
   { id: 'paste', title: 'Paste at playhead', group: 'Edit', keys: ['mod+v'], run: () => cmd.paste() },
+  {
+    id: 'paste-insert',
+    title: 'Paste insert at playhead',
+    group: 'Edit',
+    keys: ['mod+shift+v'],
+    run: () => cmd.pasteInsert(),
+  },
   { id: 'duplicate', title: 'Duplicate', group: 'Edit', keys: ['mod+d'], run: () => cmd.duplicate() },
   {
     id: 'copy-attrs',
@@ -630,6 +637,11 @@ export const COMMANDS: Command[] = [
 
 const index = new Map<string, Command>();
 for (const c of COMMANDS) for (const k of c.keys ?? []) index.set(k, c);
+
+/** The shortcut a menu entry or a tooltip shows for the command `id`: its first one, if it has any. */
+export function shortcutOf(id: string): string | undefined {
+  return COMMANDS.find((c) => c.id === id)?.keys?.[0];
+}
 
 export function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;

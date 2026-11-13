@@ -56,6 +56,10 @@ async function select(page: Page, type: string): Promise<void> {
 const row = (page: Page, label: string): Locator =>
   page.locator('[aria-label="Inspector"] .row', { hasText: label }).first();
 
+/** Where a select's open list is drawn. The timeline's lanes are lists of clips too: not those. */
+const entries = (page: Page): Locator => page.locator('.popover');
+const openList = (page: Page): Locator => entries(page).getByRole('listbox');
+
 const focusIsIn = (page: Page, selector: string): Promise<boolean> =>
   page.evaluate((selector) => !!document.activeElement?.closest(selector), selector);
 
@@ -202,10 +206,10 @@ test.describe('dialogs', () => {
     const format = dialog.locator('.select').first();
     await format.focus();
     await page.keyboard.press('ArrowDown');
-    await expect(page.getByRole('listbox')).toBeVisible();
-    await expect(page.getByRole('option', { selected: true })).toBeFocused();
+    await expect(openList(page)).toBeVisible();
+    await expect(entries(page).getByRole('option', { selected: true })).toBeFocused();
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('listbox')).toHaveCount(0);
+    await expect(openList(page)).toHaveCount(0);
     await expect(dialog).toBeVisible();
     await expect(format).toBeFocused();
 
@@ -213,11 +217,11 @@ test.describe('dialogs', () => {
     // the dialog. No shortcut is live here, so the arrow keys are the select's, and Tab goes on
     // from it.
     await format.click();
-    await page.getByRole('option', { selected: true }).click();
-    await expect(page.getByRole('listbox')).toHaveCount(0);
+    await entries(page).getByRole('option', { selected: true }).click();
+    await expect(openList(page)).toHaveCount(0);
     await expect(format).toBeFocused();
     await page.keyboard.press('ArrowDown');
-    await expect(page.getByRole('option', { selected: true })).toBeFocused();
+    await expect(entries(page).getByRole('option', { selected: true })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(format).toBeFocused();
     await page.keyboard.press('Tab');
@@ -253,12 +257,12 @@ test.describe('dialogs', () => {
     // Held Escape closes one thing: the list, and not the dialog under it as well.
     await dialog.locator('.select').first().focus();
     await page.keyboard.press('ArrowDown');
-    await expect(page.getByRole('listbox')).toBeVisible();
+    await expect(openList(page)).toBeVisible();
     await page.keyboard.down('Escape');
     await page.keyboard.down('Escape');
     await page.keyboard.down('Escape');
     await page.keyboard.up('Escape');
-    await expect(page.getByRole('listbox')).toHaveCount(0);
+    await expect(openList(page)).toHaveCount(0);
     await expect(dialog).toBeVisible();
   });
 
@@ -389,17 +393,17 @@ test.describe('menus and selects', () => {
     await sample(page);
     await select(page, 'video');
     const blend = row(page, 'Blend mode').locator('.select');
-    const list = page.getByRole('listbox');
+    const list = openList(page);
     const before = await frame(page);
 
     await blend.focus();
     await page.keyboard.press('Enter');
-    await expect(page.getByRole('option', { name: 'Normal' })).toBeFocused();
+    await expect(entries(page).getByRole('option', { name: 'Normal' })).toBeFocused();
     await page.keyboard.press('ArrowDown');
-    await expect(page.getByRole('option', { selected: true })).not.toBeFocused();
-    expect(await focusIsIn(page, '[role="listbox"]')).toBe(true);
+    await expect(entries(page).getByRole('option', { selected: true })).not.toBeFocused();
+    expect(await focusIsIn(page, '.popover [role="listbox"]')).toBe(true);
     await page.keyboard.type('scr');
-    await expect(page.getByRole('option', { name: 'Screen' })).toBeFocused();
+    await expect(entries(page).getByRole('option', { name: 'Screen' })).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(list).toHaveCount(0);
     expect((await clipOf(page, 'video')).blend).toBe('screen');
@@ -408,7 +412,7 @@ test.describe('menus and selects', () => {
 
     // An arrow key opens it again on the current option; Tab closes it and stays on the control.
     await page.keyboard.press('ArrowDown');
-    await expect(page.getByRole('option', { name: 'Screen' })).toBeFocused();
+    await expect(entries(page).getByRole('option', { name: 'Screen' })).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(list).toHaveCount(0);
     await expect(blend).toBeFocused();
@@ -421,8 +425,8 @@ test.describe('menus and selects', () => {
     await blend.click();
     await expect(list).toHaveCount(0);
     await blend.click();
-    await page.getByRole('option', { name: 'Multiply' }).hover();
-    await expect(page.getByRole('option', { name: 'Multiply' })).toBeFocused();
+    await entries(page).getByRole('option', { name: 'Multiply' }).hover();
+    await expect(entries(page).getByRole('option', { name: 'Multiply' })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(list).toHaveCount(0);
     expect((await clipOf(page, 'video')).blend).toBe('screen');
@@ -432,11 +436,11 @@ test.describe('menus and selects', () => {
     await sample(page);
     await select(page, 'video');
     const blend = row(page, 'Blend mode').locator('.select');
-    const list = page.getByRole('listbox');
+    const list = openList(page);
     const menu = page.getByRole('menu');
 
     await blend.click();
-    await page.getByRole('option', { name: 'Screen' }).click();
+    await entries(page).getByRole('option', { name: 'Screen' }).click();
     await expect(list).toHaveCount(0);
     expect((await clipOf(page, 'video')).blend).toBe('screen');
     const steps = await undoSteps(page);
@@ -480,7 +484,7 @@ test.describe('menus and selects', () => {
     await page.keyboard.press('Tab');
     await expect(blend).toBeFocused();
     await page.keyboard.press('ArrowDown');
-    await expect(page.getByRole('option', { name: 'Screen' })).toBeFocused();
+    await expect(entries(page).getByRole('option', { name: 'Screen' })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(blend).toBeFocused();
     await expectRing(blend);
@@ -512,12 +516,12 @@ test.describe('menus and selects', () => {
     await sample(page);
     await select(page, 'video');
     const blend = row(page, 'Blend mode').locator('.select');
-    const list = page.getByRole('listbox');
+    const list = openList(page);
 
     // Enter held on the select opens the list and leaves the choice to the next press.
     await blend.focus();
     await page.keyboard.down('Enter');
-    await expect(page.getByRole('option', { name: 'Normal' })).toBeFocused();
+    await expect(entries(page).getByRole('option', { name: 'Normal' })).toBeFocused();
     await page.keyboard.down('Enter');
     await page.keyboard.down('Enter');
     await expect(list).toBeVisible();
@@ -537,12 +541,12 @@ test.describe('menus and selects', () => {
 
     // Inside the list a held arrow key goes on stepping.
     await page.keyboard.press('Enter');
-    await expect(page.getByRole('option', { selected: true })).toBeFocused();
+    await expect(entries(page).getByRole('option', { selected: true })).toBeFocused();
     await page.keyboard.down('ArrowDown');
     await page.keyboard.down('ArrowDown');
     await page.keyboard.down('ArrowDown');
     await page.keyboard.up('ArrowDown');
-    await expect(page.getByRole('option').nth(4)).toBeFocused();
+    await expect(entries(page).getByRole('option').nth(4)).toBeFocused();
     await page.keyboard.press('Escape');
   });
 
@@ -617,7 +621,7 @@ test.describe('menus and selects', () => {
     const blend = row(page, 'Blend mode').locator('.select');
     await blend.scrollIntoViewIfNeeded();
     await blend.click();
-    const chosen = page.getByRole('option', { selected: true });
+    const chosen = entries(page).getByRole('option', { selected: true });
     await expect(chosen).toBeFocused();
     // Measured at rest: the list grows into place, and the readings are taken one after another.
     await popover.evaluate((el) => Promise.all(el.getAnimations().map((entrance) => entrance.finished)));
@@ -861,7 +865,7 @@ test.describe('names', () => {
     await blend.focus();
     await page.keyboard.press('Enter');
     await expect(page.getByRole('listbox', { name: 'Blend mode' })).toBeVisible();
-    await page.getByRole('option', { name: 'Screen' }).click();
+    await entries(page).getByRole('option', { name: 'Screen' }).click();
     await expect(blend).toHaveAccessibleName('Blend mode Screen');
 
     // Only the words of the label: the keyframe button beside them has a name of its own.
@@ -919,7 +923,7 @@ test.describe('names', () => {
       'Full HD 1080p · 1920×1080',
     );
     await settings.locator('.row', { hasText: 'Colour' }).locator('.select').first().click();
-    expect(await page.getByRole('option').allTextContents()).toEqual(modes);
+    expect(await entries(page).getByRole('option').allTextContents()).toEqual(modes);
     await page.keyboard.press('Escape');
     await expect(page.locator('.topbar')).toContainText('1920×1080 · 30 fps');
   });
@@ -936,7 +940,22 @@ test.describe('names', () => {
     expect(await edgeContrast(page.locator('.topbar .seg__thumb'))).toBeGreaterThanOrEqual(3);
     expect(await edgeContrast(row(page, 'Align').locator('.seg__thumb'))).toBeGreaterThanOrEqual(3);
     await page.evaluate(() => (window as any).tandem.ui.getState().set({ commentsOpen: true }));
-    expect(await edgeContrast(page.locator('.composer textarea'))).toBeGreaterThanOrEqual(3);
+    const composer = page.locator('.composer textarea');
+    expect(await edgeContrast(composer)).toBeGreaterThanOrEqual(3);
+    // With the keyboard in it, an empty field still shows the accent like any other.
+    const accented = (field: Locator) =>
+      field.evaluate((el) => {
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--accent-line)';
+        document.body.appendChild(probe);
+        const accent = getComputedStyle(probe).color;
+        probe.remove();
+        return getComputedStyle(el).boxShadow.includes(accent);
+      });
+    await composer.focus();
+    await expect.poll(() => accented(composer)).toBe(true);
+    await search.locator('input').focus();
+    await expect.poll(() => accented(search)).toBe(true);
     // A field that holds something keeps the quiet line: what it holds says what it is.
     await search.locator('input').fill('dusk');
     await search.locator('input').blur();

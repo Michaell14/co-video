@@ -29,11 +29,13 @@ import {
   rollEdit,
   sameRate,
   setTransition,
+  sourcePerFrame,
   sourceTimeAt,
   trackLabel,
   tracksOf,
   trimClips,
   trimRange,
+  type Asset,
   type Clip,
   type Edge,
   type Edit,
@@ -837,4 +839,86 @@ export function attributePatch(
   for (const [path, kfs] of Object.entries(clip.keyframes)) if (!dropped.has(path)) keyframes[path] = kfs;
   if (Object.keys(keyframes).length !== Object.keys(clip.keyframes).length) patch.keyframes = keyframes;
   return patch;
+}
+
+// ───────────────────────────────────────────────────────── replacing media ──
+
+/** Whether `asset` can stand in for what `clip` shows: video for video, a still for a still, sound for sound. */
+const takes = (clip: Clip, asset: Asset): boolean =>
+  clip.type === 'video'
+    ? asset.kind === 'video' && asset.hasVideo
+    : clip.type === 'image'
+      ? asset.kind === 'image'
+      : clip.type === 'audio' && (asset.kind === 'audio' || (asset.kind === 'video' && asset.hasAudio));
+
+const REPLACED_BY: Record<string, string> = {
+  video: 'A video clip can only be replaced by a video file.',
+  image: 'A still can only be replaced by another image.',
+  audio: 'A sound clip can only be replaced by a file that has sound.',
+};
+
+export interface Replaced {
+  edits: Edit[];
+  /** The new media is shorter than the clip was, so the clip (or its sound) now ends earlier. */
+  shortened: boolean;
+  /** Why this clip cannot show that file. Nothing is changed then. */
+  refused: string | null;
+}
+
+/** The patch that puts `asset` behind `clip` from `sourceIn` seconds on, and whether that cut the clip short. */
+function swapped(p: Project, clip: Clip, asset: Asset, sourceIn: number): { patch: Partial<Clip>; shortened: boolean } {
+  const before = clip.assetId ? p.assets[clip.assetId] : undefined;
+  const from = clip.type === 'image' ? 0 : Math.max(0, sourceIn);
+  const patch: Partial<Clip> = { assetId: asset.id, sourceIn: from };
+  // A name the clip took from its media follows the media; one it was given by hand stays.
+  if (!before || clip.name === before.name) patch.name = asset.name;
+  const per = sourcePerFrame(clip, p);
+  const room =
+    clip.type === 'image' || per <= 0 || asset.duration <= 0
+      ? Infinity
+      : Math.floor((asset.duration - from) / per + 1e-6);
+  const duration = Math.max(1, Math.min(clip.duration, room));
+  if (duration === clip.duration) return { patch, shortened: false };
+  patch.duration = duration;
+  if (clip.fadeIn > duration) patch.fadeIn = duration;
+  if (clip.fadeOut > duration) patch.fadeOut = duration;
+  if (clip.transIn && clip.transIn.duration > duration) patch.transIn = { ...clip.transIn, duration };
+  if (clip.transOut && clip.transOut.duration > duration) patch.transOut = { ...clip.transOut, duration };
+  return { patch, shortened: true };
+}
+
+/**
+ * Put another file behind a clip, where it stands: the clip keeps its place, its length, its speed,
+ * its grade, effects, transform, keyframes and transitions, and shows `asset` from `sourceIn`
+ * seconds on. Where the new media is shorter than the clip, the clip ends where the media does.
+ * The sound that belongs to a picture (its linked audio from the same file) is replaced with it,
+ * keeping the offset it had, and removed when the new file has no sound.
+ */
+export function replaceEdits(p: Project, clipId: ID, asset: Asset, sourceIn = 0): Replaced {
+  const clip = p.clips[clipId];
+  if (!clip) return { edits: [], shortened: false, refused: null };
+  if (!takes(clip, asset)) {
+    return { edits: [], shortened: false, refused: REPLACED_BY[clip.type] ?? 'This clip has no media to replace.' };
+  }
+  const own = swapped(p, clip, asset, sourceIn);
+  let shortened = own.shortened;
+  const edits: Edit[] = [];
+  const group = linkedIds(p, clipId);
+  let left = group.length;
+  for (const id of clip.type === 'video' ? group : []) {
+    const sound = p.clips[id];
+    if (id === clipId || sound.type !== 'audio' || sound.assetId !== clip.assetId) continue;
+    if (p.tracks[sound.trackId]?.locked) continue;
+    if (takes(sound, asset)) {
+      const part = swapped(p, sound, asset, sourceIn + (sound.sourceIn - clip.sourceIn));
+      shortened ||= part.shortened;
+      edits.push({ op: 'updateClip', id, patch: part.patch });
+    } else {
+      edits.push({ op: 'removeClip', id });
+      left--;
+    }
+  }
+  // A link group of one is not a link.
+  if (clip.linkId && left === 1) own.patch.linkId = null;
+  return { edits: [{ op: 'updateClip', id: clipId, patch: own.patch }, ...edits], shortened, refused: null };
 }

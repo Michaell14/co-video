@@ -1,3 +1,9 @@
+/* What a muted and a soloed track look like, wherever a track has the two buttons: its header here
+   and its strip in the mixer, which are on screen together in the audio workspace. */
+:root {
+  --track-mute: var(--red);
+  --track-solo: var(--amber);
+}
 .tl {
   /* Values of the timeline's own, each derived from the shared tokens. The ruler and the lane
      canvases read these from here, so what they paint follows the tokens as well. The header
@@ -125,6 +131,29 @@
 .tl__hint .kbd {
   margin: 0 3px;
 }
+/* Clips that no track shows: said over the lanes, where they would have been. */
+.tl__lost {
+  position: absolute;
+  left: calc(var(--tl-header-w) + 10px);
+  bottom: 10px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - var(--tl-header-w) - 20px);
+  padding: 6px 6px 6px 12px;
+  border-radius: var(--r-md);
+  background: var(--bg-4);
+  box-shadow:
+    inset 0 0 0 1px var(--line-2),
+    var(--shadow-2);
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+  animation: fade-in var(--dur-2) var(--ease-out);
+}
+.tl__lost span {
+  margin-right: 4px;
+}
 .tl__scroll {
   display: flex;
   height: 12px;
@@ -192,9 +221,12 @@
 .marker {
   position: absolute;
   bottom: 0;
+  /* Above the room a comment pin at the same frame keeps around itself. */
+  z-index: 1;
   width: 10px;
   margin-left: -5px;
   height: 12px;
+  border-radius: var(--r-xs);
   cursor: grab;
   transition: transform var(--dur-1) var(--ease-spring);
   transform-origin: 50% 100%;
@@ -217,6 +249,13 @@
 }
 .ruler__comment:hover {
   transform: scale(1.5);
+}
+/* Eight pixels are too few to hit: the pin takes the press on 24 by 24 around it, down from the
+   top edge of the ruler. */
+.ruler__comment::before {
+  content: '';
+  position: absolute;
+  inset: -3px -8px -13px;
 }
 
 /* ──────────────────────────────────────────────────────────── playhead ── */
@@ -374,7 +413,12 @@
 }
 .th__solo--on,
 .th__solo--on:hover {
-  background: var(--amber);
+  background: var(--track-solo);
+  color: var(--accent-ink);
+}
+.th .icon-btn.th__mute--on,
+.th .icon-btn.th__mute--on:hover {
+  background: var(--track-mute);
   color: var(--accent-ink);
 }
 .th__meter {
@@ -458,6 +502,13 @@
 .clip[data-narrow='true'] {
   border-radius: var(--tl-clip-r-narrow);
 }
+/* A clip that has the keyboard keeps its own outline: the ring that says so is one of the rings
+   below, drawn inside the clip where the lane does not cut it off. */
+.clip:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--c) 70%, transparent),
+    inset 0 1px 0 var(--line-2);
+}
 .clip[data-type='video'],
 .clip[data-type='image'],
 .clip[data-type='audio'] {
@@ -498,6 +549,9 @@
 }
 .clip[data-disabled='true'] .clip__name {
   text-decoration: line-through;
+}
+.clip[data-overlap='true']:not([data-selected='true']) {
+  box-shadow: inset 0 0 0 1px var(--amber);
 }
 .clip[data-missing='true'] {
   background: repeating-linear-gradient(
@@ -543,6 +597,30 @@
 .clip[data-hint='all']::after {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 2px var(--accent);
+}
+/* The keyboard is on this clip. White says selected and the accent says focused, so a clip that is
+   both shows both, and one that Tab has only come to is told from the ones that are selected. */
+.clip[data-focus='true']::after {
+  box-shadow:
+    inset 0 0 0 2px var(--accent),
+    inset 0 0 0 4px var(--peer);
+}
+.clip[data-focus='true'][data-selected='true']::after {
+  box-shadow:
+    inset 0 0 0 1.5px var(--fg-1),
+    inset 0 0 0 3.5px var(--accent),
+    inset 0 0 0 5.5px var(--peer);
+}
+/* Shares frames with another clip of its track: a corner that shows on the narrowest clip too. */
+.clip__overlap {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  border: 4px solid var(--amber);
+  border-left-color: transparent;
+  border-bottom-color: transparent;
+  pointer-events: none;
 }
 .clip__peer {
   position: absolute;
@@ -619,6 +697,10 @@
 .clip__chip svg {
   width: 9px;
   height: 9px;
+}
+.clip__chip--warn {
+  background: var(--amber);
+  color: var(--accent-ink);
 }
 .clip__trim {
   position: absolute;
@@ -765,8 +847,24 @@
   background: var(--accent);
   transform: rotate(45deg);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-0) 60%, transparent);
+  /* A handle like the trim and fade handles: it is dragged along the clip to move its keyframes. */
+  z-index: 3;
+  cursor: ew-resize;
+}
+/* Six pixels are too few to take hold of: the mark takes the press on the square around it. */
+.clip__kf::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+.clip__kf:hover {
+  background: var(--accent-hover);
+  transform: rotate(45deg) scale(1.3);
+}
+.lanes[data-tool='blade'] .clip__kf,
+.lanes[data-tool='slip'] .clip__kf,
+.lanes[data-tool='hand'] .clip__kf {
   pointer-events: none;
-  z-index: 2;
 }
 /* Where a press of the blade would cut. Script moves it with the pointer, so nothing here eases. */
 .blade {
@@ -779,6 +877,24 @@
   pointer-events: none;
   visibility: hidden;
   z-index: 4;
+}
+/* What a drop will do when a modifier key makes it something other than an overwrite. Script puts
+   it beside the pointer, so nothing here eases. */
+.drop-mode {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 6;
+  padding: 1px 7px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
 }
 /* Shown and taken away as the drag snaps: it is part of the drag and does not fade. */
 .snapline {

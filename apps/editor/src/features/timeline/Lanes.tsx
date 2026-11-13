@@ -2,10 +2,12 @@ import {
   AudioLines,
   Blend,
   CircleAlert,
+  FileWarning,
   Film,
   Gauge,
   Image as ImageIcon,
   Layers,
+  Layers2,
   Link2,
   Shapes,
   Snowflake,
@@ -13,7 +15,7 @@ import {
   Square,
   Type,
 } from 'lucide-react';
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   addAssetToTimeline,
   addGenerator,
@@ -27,11 +29,14 @@ import {
   cutTransitionWindow,
   LABEL_COLORS,
   maxTransitionDuration,
+  neighbors,
+  overlappingClips,
   placeClips,
   pasteClips,
   rippleCloseGap,
   rippleTrim,
   rollEdit,
+  separateClips,
   slipClips,
   snapPoints,
   snapTo,
@@ -48,14 +53,27 @@ import {
   type OpResult,
   type Project,
 } from '@tandem/core';
-import { usePeers, useProject, useSession } from '../../session/hooks';
-import { cmd, effectiveSelection } from '../../state/commands';
-import { transitionTarget } from '../../state/edits';
+import { usePeers, useProject, useSession, useSessionMeta } from '../../session/hooks';
+import { cmd, effectiveSelection, revealFrame, withMarkers } from '../../state/commands';
+import {
+  edgeCuts,
+  edgeRange,
+  openGapAt,
+  transitionTarget,
+  trimSpans,
+  type Cut,
+  type RippleSpan,
+} from '../../state/edits';
+import { mediaAvailable } from '../../state/media';
 import { commit } from '../../state/props';
+import { shortcutOf, spaceOperates } from '../../state/shortcuts';
 import { useUI } from '../../state/ui';
 import { openContextMenu, toast, type MenuEntry } from '../../ui/core';
 import { insideRect, onDrop, useDrag, type DragPayload } from '../../ui/dnd';
+import { usingKeyboard } from '../../ui/layers';
+import { describeClip, describeSelection } from './describe';
 import { EdgeScroller, laneAxis, timeAxis } from './edgeScroll';
+import { keyframeTimes, moveKeyframes, removeKeyframes } from './keyframes';
 import { drawLane } from './laneCanvas';
 import {
   clipWidth,
@@ -67,6 +85,7 @@ import {
   NARROW_W,
   type Lane,
 } from './layout';
+import { insertMove } from './moves';
 
 const ICONS: Record<ClipType, typeof Film> = {
   video: Film,
@@ -110,7 +129,11 @@ type Drag =
       edge: Edge;
       f0: number;
       restore: number;
-      roll: [ID, ID] | null;
+      /**
+       * The cuts a roll moves: the one that was taken hold of and, with linked selection on, the
+       * cuts of its linked clips that lie at the same frame.
+       */
+      roll: Cut[] | null;
       ripple: boolean;
       /** Frames the edge is moved by as of the last pointer position, after limits and snapping. */
       delta: number;
@@ -132,6 +155,17 @@ type Drag =
       moved: boolean;
     }
   | { kind: 'trans'; id: ID; side: 'in' | 'out'; f0: number; base: number }
+  | {
+      kind: 'keyframe';
+      id: ID;
+      /** Where the keyframes that are held stand now, in frames from the clip's start. */
+      t: number;
+      /** Where they stood when they were taken hold of, and the frame the pointer was at. */
+      t0: number;
+      f0: number;
+      x0: number;
+      moved: boolean;
+    }
   | { kind: 'marquee'; x0: number; y0: number; keep: ID[]; moved: boolean; frame: number }
   | { kind: 'pan'; x0: number; scroll0: number };
 
@@ -148,6 +182,32 @@ interface Pointer {
   clientY: number;
   altKey: boolean;
   shiftKey: boolean;
+  /** Ctrl or ⌘ is down: what is dropped goes in between the clips there instead of over them. */
+  insert: boolean;
+}
+
+const pointerOf = (e: React.PointerEvent): Pointer => ({
+  clientX: e.clientX,
+  clientY: e.clientY,
+  altKey: e.altKey,
+  shiftKey: e.shiftKey,
+  insert: e.ctrlKey || e.metaKey,
+});
+
+/**
+ * The modifier keys that are down, as the last key or pointer event anywhere in the window had
+ * them. A drag from the library is run by the library and says only where the pointer is, and a
+ * key pressed or let go while the pointer holds still changes what a drop will do all the same.
+ */
+const held = { alt: false, insert: false };
+if (typeof window !== 'undefined') {
+  const note = (e: KeyboardEvent | PointerEvent) => {
+    held.alt = e.altKey;
+    held.insert = e.ctrlKey || e.metaKey;
+  };
+  for (const type of ['keydown', 'keyup', 'pointerdown', 'pointermove', 'pointerup'] as const) {
+    window.addEventListener(type, note, true);
+  }
 }
 
 /**
@@ -171,9 +231,23 @@ interface DropPlan {
   line?: number | null;
   /** A track opened by this drag that holds all it would add, and so is worth scrolling to. */
   opened?: ID;
+  /** The clip whose media the dropped file takes the place of, when the drop is that. */
+  replace?: ID;
+  /** What the drop does to time when it pushes clips along, for the markers that follow them. */
+  spans?: RippleSpan[];
+  /** What kind of drop this is, when it is not the plain one that overwrites. */
+  mode?: string;
 }
 
 const isAddTrack = (e: Edit): e is AddTrack => e.op === 'addTrack';
+
+/** Those of `cuts` that are still cuts in `p`: both clips are there and the one ends where the other begins. */
+const standingCuts = (p: Project, cuts: Cut[]): Cut[] =>
+  cuts.filter(([left, right]) => {
+    const a = p.clips[left];
+    const b = p.clips[right];
+    return !!a && !!b && a.trackId === b.trackId && clipEnd(a) === b.start;
+  });
 
 export function Lanes({ lanes, height, width, live }: Props) {
   const session = useSession();
@@ -202,11 +276,29 @@ export function Lanes({ lanes, height, width, live }: Props) {
   const rerun = useRef<() => void>(() => {});
   /** The line that shows where the blade would cut. It is placed by hand, on every pointer move. */
   const blade = useRef<HTMLDivElement>(null);
+  /** Says beside the pointer what a drop will do when a modifier key makes it something else. */
+  const modeTip = useRef<HTMLDivElement>(null);
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [dropHint, setDropHint] = useState<DropHint | null>(null);
   /** The fade handle that is held, and whether it has been taken anywhere yet. */
   const [fading, setFading] = useState<{ id: ID; side: 'in' | 'out'; moved: boolean } | null>(null);
   const selectedSet = useMemo(() => new Set(selection), [selection]);
+  const offline = useOfflineAssets(live.assets);
+  useSyncExternalStore(session.thumbs.subscribeFaults, session.thumbs.getFaultsVersion);
+  // Empty unless two people placed clips on the same frames at the same moment.
+  const overlapping = useMemo(() => overlappingClips(live), [live.clips, live.tracks]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** The clip that has the keyboard, and whether the keyboard brought it there or a press of the pointer. */
+  const [focus, setFocus] = useState<{ id: ID; keyboard: boolean } | null>(null);
+  /** The clip that had the keyboard last: where Tab comes back to. */
+  const [lastFocus, setLastFocus] = useState<ID | null>(null);
+  /** A clip that is to be given the keyboard as soon as it is drawn. */
+  const wantFocus = useRef<ID | null>(null);
+  /** Set for the length of a key press made on a clip: where the selection goes, focus follows. */
+  const carry = useRef(false);
+  /** Set while focus is being moved here by script, on behalf of a key. */
+  const moving = useRef(false);
+  /** What the selection is, in words, after the keyboard changed it. */
+  const [said, setSaid] = useState('');
 
   const ui = () => useUI.getState();
   const store = () => session.store.get();
@@ -334,16 +426,27 @@ export function Lanes({ lanes, height, width, live }: Props) {
     return best ?? { adjust: 0, line: null };
   };
 
+  /** Show beside the pointer what the drop in progress would do, or with `null` take that away. */
+  const showMode = (text: string | null, at?: { clientX: number; clientY: number }) => {
+    const el = modeTip.current;
+    const r = ref.current?.getBoundingClientRect();
+    if (!el || !r) return;
+    if (text === null || !at) {
+      el.style.visibility = 'hidden';
+      return;
+    }
+    el.textContent = text;
+    el.style.transform = `translate3d(${at.clientX - r.left + 14}px, ${at.clientY - r.top + 18}px, 0)`;
+    el.style.visibility = 'visible';
+  };
+
   const setPreview = (edits: Edit[] | null, line: number | null = null) => {
     if (!edits) ui().set({ preview: null, snapLine: null });
     else ui().set({ preview: edits.length ? applyEdits(store(), edits) : null, snapLine: line });
   };
 
   // ─────────────────────────────────────────────────────── move planning ──
-  const planMove = (
-    d: Extract<Drag, { kind: 'move' }>,
-    e: { clientX: number; clientY: number; altKey: boolean; shiftKey: boolean },
-  ) => {
+  const planMove = (d: Extract<Drag, { kind: 'move' }>, e: Pointer) => {
     const base = store();
     const moving = new Set(d.ids);
     const clips = d.ids.map((id) => base.clips[id]).filter(Boolean);
@@ -355,6 +458,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
         line: null as number | null,
         placements: [],
         opened: null as ID | null,
+        spans: null as RippleSpan[] | null,
+        refused: null as string | null,
       };
     let delta = Math.round(toFrame(e.clientX) - d.f0);
     const minStart = Math.min(...clips.map((c) => c.start));
@@ -414,16 +519,25 @@ export function Lanes({ lanes, height, width, live }: Props) {
       return { id: c.id, start: c.start + delta, trackId };
     });
     const used = extra && placements.some((m) => m.trackId === extra.trackId) ? extra : null;
-    const placed = placeClips(p, placements);
+    // With Ctrl or ⌘ the clips go in between the others, which close up where they came from.
+    // Alt, which leaves a copy behind, keeps to overwriting.
+    const between = e.insert && !e.altKey ? insertMove(p, placements) : null;
+    const place = (on: Project): Edit[] =>
+      between ? insertMove(on, placements).edits : placeClips(on, placements);
+    const placed = between ? between.edits : placeClips(p, placements);
     return {
       edits: extra ? [...extra.edits, ...placed] : placed,
       // The track is only created if something actually landed on it.
-      commit: used ? [...used.edits, ...placed] : extra ? placeClips(base, placements) : placed,
+      commit: used ? [...used.edits, ...placed] : extra ? place(base) : placed,
       project: used ? p : base,
       prefix: used ? used.edits : [],
-      line: s.line,
-      placements,
+      line: between ? (between.refused ? null : between.at) : s.line,
+      placements: between
+        ? placements.map((m) => ({ ...m, start: m.start - Math.min(...placements.map((x) => x.start)) + between.at }))
+        : placements,
       opened: used ? used.trackId : null,
+      spans: between ? between.spans : null,
+      refused: between ? between.refused : null,
     };
   };
 
@@ -471,6 +585,13 @@ export function Lanes({ lanes, height, width, live }: Props) {
         }
         return;
       }
+      if (handle === 'keyframe') {
+        // The keyframes at one time, on whichever properties, are one mark and move as one.
+        const t = Number(target.closest<HTMLElement>('[data-handle]')!.dataset.t);
+        if (editable) session.store.beginGesture();
+        drag.current = { kind: 'keyframe', id: clip.id, t, t0: t, f0: f, x0: e.clientX, moved: false };
+        return;
+      }
       if ((handle === 'fade-in' || handle === 'fade-out') && editable) {
         const side = handle === 'fade-in' ? 'in' : 'out';
         session.store.beginGesture();
@@ -489,14 +610,14 @@ export function Lanes({ lanes, height, width, live }: Props) {
       if ((handle === 'start' || handle === 'end') && editable) {
         if (!selectedSet.has(clip.id)) ui().select(group);
         // Ctrl/⌘ on a cut between two touching clips rolls the edit instead of trimming one side.
-        let roll: [ID, ID] | null = null;
+        // The linked clips that are cut at the same frame roll with it, so that picture and sound
+        // stay cut together; one whose cut is elsewhere (a split edit) is left as it is.
+        let roll: Cut[] | null = null;
         if (e.metaKey || e.ctrlKey) {
-          const list = clipsOnTrack(p, clip.trackId);
-          const i = list.findIndex((c) => c.id === clip.id);
-          if (handle === 'start' && i > 0 && clipEnd(list[i - 1]) === clip.start)
-            roll = [list[i - 1].id, clip.id];
-          if (handle === 'end' && i < list.length - 1 && list[i + 1].start === clipEnd(clip))
-            roll = [clip.id, list[i + 1].id];
+          const at = handle === 'start' ? clip.start : clipEnd(clip);
+          const { cuts } = edgeCuts(p, group, handle);
+          const here = cuts.filter(([, right]) => p.clips[right].start === at);
+          if (here.some((cut) => cut.includes(clip.id))) roll = here;
         }
         drag.current = {
           kind: 'trim',
@@ -568,6 +689,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
         const plan = planMove(d, e);
         setOpened(plan.opened);
         setPreview(plan.edits, plan.line);
+        showMode(e.altKey ? 'Duplicate' : !e.insert ? null : plan.refused ? 'No room to insert' : 'Insert', e);
         session.setPresence({
           dragging: plan.placements.map((m) => ({
             id: m.id,
@@ -582,12 +704,20 @@ export function Lanes({ lanes, height, width, live }: Props) {
       case 'trim': {
         d.wanted = Math.round(toFrame(e.clientX) - d.f0);
         if (d.roll) {
-          const cut = p.clips[d.roll[1]]?.start ?? 0;
-          const s = snap(p, new Set(d.roll), [cut + d.wanted], e.shiftKey);
-          d.delta = d.wanted + s.adjust;
-          setPreview(rollEdit(p, d.roll[0], d.roll[1], d.delta), s.line);
-          const pv = ui().preview;
-          if (pv?.clips[d.roll[1]]) session.player?.seek(pv.clips[d.roll[1]].start);
+          const cuts = standingCuts(p, d.roll);
+          if (!cuts.length) return 'time';
+          const lead = cuts[0][1];
+          // Every cut moves by the same amount, so the tightest of their limits holds for all.
+          const range = edgeRange(p, d.edge, cuts, []);
+          const wanted = clamp(d.wanted, range.min, range.max);
+          const s = snap(p, new Set(cuts.flat()), [p.clips[lead].start + wanted], e.shiftKey);
+          d.delta = clamp(Math.round(wanted + s.adjust), range.min, range.max);
+          setPreview(
+            cuts.flatMap(([left, right]) => rollEdit(p, left, right, d.delta)),
+            s.line,
+          );
+          const pv = ui().preview ?? p;
+          if (pv.clips[lead]) session.player?.seek(pv.clips[lead].start);
           return 'time';
         }
         const first = p.clips[d.ids[0]];
@@ -628,6 +758,21 @@ export function Lanes({ lanes, height, width, live }: Props) {
           [{ op: 'updateClip', id: d.id, patch: d.side === 'in' ? { fadeIn: v } : { fadeOut: v } }],
           true,
         );
+        return 'time';
+      }
+      case 'keyframe': {
+        const c = p.clips[d.id];
+        if (!c || !session.canEdit) return 'none';
+        // A press that goes nowhere is a click on the mark, which takes the playhead to it.
+        if (!d.moved && Math.abs(e.clientX - d.x0) < 3) return 'none';
+        d.moved = true;
+        const patch = moveKeyframes(c, d.t, d.t0 + Math.round(toFrame(e.clientX) - d.f0));
+        const moved = patch.keyframes && keyframeTimes({ ...c, keyframes: patch.keyframes });
+        if (!patch.keyframes || !moved) return 'time';
+        // Where the held keys are now: the one time the clip did not have keys at before.
+        const before = new Set(keyframeTimes(c));
+        d.t = moved.find((t) => !before.has(t)) ?? d.t;
+        commit([{ op: 'updateClip', id: d.id, patch }], true);
         return 'time';
       }
       case 'trans': {
@@ -689,7 +834,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
     }
     if (tool === 'blade') showCut(e);
     if (!drag.current) return;
-    pointer.current = { clientX: e.clientX, clientY: e.clientY, altKey: e.altKey, shiftKey: e.shiftKey };
+    pointer.current = pointerOf(e);
     follow(pointer.current);
   };
 
@@ -702,6 +847,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
     noteScroll();
     setOpened(null);
     setFading(null);
+    showMode(null);
     if (e) (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
     const p = store();
     switch (d.kind) {
@@ -711,10 +857,12 @@ export function Lanes({ lanes, height, width, live }: Props) {
           if (d.reselect && !cancelled)
             ui().select(ui().linkedSelection ? withLinked(p, [d.anchor]) : [d.anchor]);
         } else if (!cancelled && e) {
-          const plan = planMove(d, e);
+          const plan = planMove(d, pointerOf(e));
           // A track that was scrolled to and is now kept stays in view.
           if (plan.opened) reveal.current = null;
-          if (e.altKey) {
+          if (plan.refused) toast(plan.refused);
+          else if (plan.spans) commit(withMarkers(p, { edits: plan.commit, spans: plan.spans }));
+          else if (e.altKey) {
             // Alt-drop duplicates instead of moving.
             const copies = plan.placements.map((m) => ({
               ...p.clips[m.id],
@@ -732,11 +880,17 @@ export function Lanes({ lanes, height, width, live }: Props) {
         // The preview dates from the last pointer move and knows nothing of what has been
         // committed since, by a collaborator for one. So the edit is planned again, from the
         // distance the edge was dragged, on the project as it is now.
-        if (!cancelled && d.roll) commit(rollEdit(p, d.roll[0], d.roll[1], d.delta));
-        else if (!cancelled) {
+        if (!cancelled && d.roll) {
+          const cuts = standingCuts(p, d.roll);
+          const range = edgeRange(p, d.edge, cuts, []);
+          const delta = clamp(d.delta, range.min, range.max);
+          commit(cuts.flatMap(([left, right]) => rollEdit(p, left, right, delta)));
+        } else if (!cancelled) {
           const range = trimRange(p, d.ids, d.edge, d.ripple);
           const delta = clamp(d.delta, range.min, range.max);
-          commit(trimClips(p, d.ids, d.edge, delta, d.ripple));
+          const edits = trimClips(p, d.ids, d.edge, delta, d.ripple);
+          // What a ripple does to time, the markers on the shots that move go through as well.
+          commit(d.ripple ? withMarkers(p, { edits, spans: trimSpans(p, d.ids, d.edge, delta) }) : edits);
           // A ripple that could not move at all looks like a stuck handle: say what holds it.
           const held = d.ripple && delta === 0 && d.wanted !== 0;
           const refused = held ? rippleTrim(p, d.ids, d.edge, d.wanted).refused : null;
@@ -747,6 +901,9 @@ export function Lanes({ lanes, height, width, live }: Props) {
       case 'slip':
         if (!cancelled) commit(slipClips(p, d.ids, d.delta));
         session.player?.seek(d.restore);
+        break;
+      case 'keyframe':
+        if (!d.moved && !cancelled && p.clips[d.id]) cmd.seek(p.clips[d.id].start + d.t, false);
         break;
       case 'marquee':
         setMarquee(null);
@@ -763,14 +920,171 @@ export function Lanes({ lanes, height, width, live }: Props) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && drag.current) {
+      if (e.type === 'keydown' && e.key === 'Escape' && drag.current) {
         e.stopPropagation();
         finish(null, true);
+        return;
       }
+      // A modifier pressed or let go while the pointer holds still: what the drop would do is
+      // worked out again, as if the pointer had moved.
+      if (e.key !== 'Alt' && e.key !== 'Control' && e.key !== 'Meta') return;
+      if (drag.current?.kind === 'move' && pointer.current) {
+        pointer.current = { ...pointer.current, altKey: e.altKey, insert: e.ctrlKey || e.metaKey };
+        follow(pointer.current);
+      } else if (drop.current) hover();
     };
     window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
+    window.addEventListener('keyup', onKey, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('keyup', onKey, true);
+    };
   });
+
+  // ────────────────────────────────────────────────────────── the keyboard ──
+  const clipElement = (id: ID): HTMLElement | null =>
+    Array.from(ref.current?.querySelectorAll<HTMLElement>('[data-clip]') ?? []).find(
+      (el) => el.dataset.clip === id,
+    ) ?? null;
+
+  /** Select `to` (with what selecting it selects), bring it into view and give it the keyboard. */
+  const goTo = (p: Project, to: Clip | null | undefined, extend: boolean) => {
+    const ids = to ? effectiveSelection(p, [to.id]) : [];
+    if (!to || !ids.length) return;
+    ui().select(ids, extend);
+    revealFrame(to.start);
+    wantFocus.current = to.id;
+  };
+
+  /** The clip nearest `from` in time on the next lane that has clips, upwards (-1) or downwards. */
+  const clipOnLane = (p: Project, from: Clip, dir: 1 | -1): Clip | null => {
+    const at = lanes.findIndex((l) => l.track.id === from.trackId);
+    for (let i = at + dir; at >= 0 && i >= 0 && i < lanes.length; i += dir) {
+      if (lanes[i].track.locked) continue;
+      const clips = clipsOnTrack(p, lanes[i].track.id);
+      if (!clips.length) continue;
+      const distance = (c: Clip) => (c.start <= from.start && from.start < clipEnd(c) ? -1 : Math.abs(c.start - from.start));
+      return clips.reduce((best, c) => (distance(c) < distance(best) ? c : best));
+    }
+    return null;
+  };
+
+  /** The menu of the clip that has the keyboard, opened where the clip is. */
+  const openClipMenu = (el: HTMLElement, id: ID) => {
+    if (!selectedSet.has(id)) ui().select(ui().linkedSelection ? withLinked(store(), [id]) : [id]);
+    const r = el.getBoundingClientRect();
+    const view = viewRect() ?? r;
+    openContextMenu(
+      {
+        clientX: clamp(r.left, view.left, view.right) + 8,
+        clientY: clamp(r.top + r.height / 2, view.top, view.bottom),
+        preventDefault: () => {},
+      },
+      clipMenu(store(), id),
+    );
+  };
+
+  /**
+   * Keys on a clip that has the keyboard. Each lane is a list of its clips: the arrow keys go from
+   * clip to clip and the selection goes with them, as in any list, and Enter or Space selects.
+   * That holds for a clip the keyboard came to. One that only kept the focus of the press that
+   * selected it leaves every key to the editor: the arrows go on stepping through frames and cuts.
+   */
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const el = e.target as HTMLElement;
+    const id = el.dataset.clip;
+    const p = store();
+    const clip = id ? p.clips[id] : undefined;
+    if (!id || !clip) return;
+    // Whatever this key makes of the selection (it may be a command of the editor's), the clip
+    // that is selected afterwards is the one that has the keyboard.
+    carry.current = true;
+    setTimeout(() => (carry.current = false));
+    if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      openClipMenu(el, id);
+      return;
+    }
+    if (!focus?.keyboard || e.altKey || e.ctrlKey || e.metaKey) return;
+    const { prev, next } = neighbors(p, clip);
+    const row = clipsOnTrack(p, clip.trackId);
+    const go: Record<string, () => void> = {
+      ArrowLeft: () => goTo(p, prev, e.shiftKey),
+      ArrowRight: () => goTo(p, next, e.shiftKey),
+      ArrowUp: () => goTo(p, clipOnLane(p, clip, -1), e.shiftKey),
+      ArrowDown: () => goTo(p, clipOnLane(p, clip, 1), e.shiftKey),
+      Home: () => goTo(p, row[0], e.shiftKey),
+      End: () => goTo(p, row[row.length - 1], e.shiftKey),
+      Enter: () => goTo(p, clip, e.shiftKey),
+      ' ': () => {
+        // Space takes a selected clip out of a selection of several, as a press with Shift does.
+        const group = effectiveSelection(p, [id]);
+        if (e.shiftKey && selectedSet.has(id)) ui().select(ui().selection.filter((s) => !group.includes(s)));
+        else goTo(p, clip, e.shiftKey);
+      },
+    };
+    const act = go[e.key];
+    if (!act) return;
+    e.preventDefault();
+    e.stopPropagation();
+    act();
+  };
+
+  // Which clip has the keyboard. The page is listened to directly: focus that a closing menu hands
+  // back arrives while React is busy taking the menu out, and its own focus events are not sent then.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onFocusIn = (e: FocusEvent) => {
+      const id = (e.target as HTMLElement).dataset.clip;
+      if (!id) return;
+      // A clip the keyboard came to: by Tab or an arrow key, or here, following the selection.
+      setFocus({ id, keyboard: moving.current || spaceOperates(e.target) });
+      setLastFocus(id);
+    };
+    const onFocusOut = (e: FocusEvent) => {
+      if ((e.target as HTMLElement).dataset.clip) setFocus(null);
+    };
+    el.addEventListener('focusin', onFocusIn);
+    el.addEventListener('focusout', onFocusOut);
+    return () => {
+      el.removeEventListener('focusin', onFocusIn);
+      el.removeEventListener('focusout', onFocusOut);
+    };
+  }, []);
+
+  // Focus follows the selection for as long as the keyboard is in the lanes: to the clip a key
+  // has just gone to, and to the one a command of the editor's selected from here.
+  useLayoutEffect(() => {
+    let id = wantFocus.current;
+    if (!id && carry.current && lastFocus) {
+      const p = store();
+      const from = p.clips[lastFocus];
+      if (!from) id = tabStop;
+      else if (selection.length && !selectedSet.has(lastFocus))
+        id = selection.find((s) => p.clips[s]?.trackId === from.trackId) ?? selection[0];
+    }
+    const el = id ? clipElement(id) : null;
+    if (!el) return;
+    wantFocus.current = null;
+    carry.current = false;
+    if (document.activeElement === el) return;
+    moving.current = true;
+    el.focus();
+    moving.current = false;
+  });
+
+  // Say what is selected when the keyboard changed it and nothing else says so: focus on the
+  // selected clip is read out by itself, and a press of the pointer is seen where it lands.
+  const announced = useRef(selection);
+  useEffect(() => {
+    if (announced.current === selection) return;
+    announced.current = selection;
+    const active = document.activeElement as HTMLElement | null;
+    const onClip = !!active?.dataset.clip && selectedSet.has(active.dataset.clip);
+    setSaid(usingKeyboard() && !onClip ? describeSelection(store(), selection) : '');
+  }, [selection]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─────────────────────────────────────────────── drops from the library ──
   const dropPlan = (payload: DragPayload, x: number, y: number, pinned: AddTrack[]): DropPlan | null => {
@@ -821,6 +1135,19 @@ export function Lanes({ lanes, height, width, live }: Props) {
       if (!asset || asset.kind === 'lut') {
         return over && over.type !== 'audio' ? { ...none, hint: { clipId: over.id, side: 'all' } } : none;
       }
+      // With Alt over a clip of its kind the file takes that clip's place, and the clip keeps
+      // everything that was done to it.
+      const fits =
+        !!over &&
+        !p.tracks[over.trackId]?.locked &&
+        (over.type === 'video'
+          ? asset.kind === 'video'
+          : over.type === 'image'
+            ? asset.kind === 'image'
+            : over.type === 'audio' && asset.kind !== 'image');
+      if (held.alt && over && fits) {
+        return { ...none, hint: { clipId: over.id, side: 'all' }, replace: over.id, mode: 'Replace' };
+      }
       const len =
         asset.kind === 'image'
           ? Math.round(5 * (p.settings.fpsNum / p.settings.fpsDen))
@@ -834,7 +1161,16 @@ export function Lanes({ lanes, height, width, live }: Props) {
           visual && lane?.track.kind === 'video' && !lane.track.locked ? lane.track.id : undefined,
         audioTrackId: lane?.track.kind === 'audio' && !lane.track.locked ? lane.track.id : undefined,
       };
-      return placed((on) => addAssetToTimeline(on, asset, target), s.line);
+      if (!held.insert) return placed((on) => addAssetToTimeline(on, asset, target), s.line);
+      // With Ctrl or ⌘ what is there makes way: everything from the frame on moves later by the
+      // length of the clip, on every unlocked track, as for an insert from the source monitor.
+      const span = { from: frame, by: Math.max(1, len) };
+      const plan = placed((on) => {
+        const room = openGapAt(on, span.from, span.by).edits;
+        const added = addAssetToTimeline(applyEdits(on, room), asset, target);
+        return { edits: [...room, ...added.edits], created: added.created };
+      }, s.line);
+      return { ...plan, spans: [span], mode: 'Insert' };
     }
     const s = snap(p, new Set(), [frame], false);
     frame = Math.max(0, Math.round(frame + s.adjust));
@@ -858,6 +1194,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
     setOpened(null);
     setDropHint(null);
     setPreview(null);
+    showMode(null);
   };
 
   /**
@@ -877,6 +1214,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
     setOpened(plan.opened ?? null);
     setDropHint(plan.hint ?? null);
     setPreview(plan.edits, plan.line ?? null);
+    showMode(plan.mode ?? null, { clientX: s.x, clientY: s.y });
     scroller.track(s.x, plan.opened ? null : s.y);
   };
 
@@ -887,6 +1225,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
     // A track that was scrolled to and is now kept stays in view.
     if (plan.opened) reveal.current = null;
     endDrop();
+    if (plan.replace && payload.kind === 'asset') {
+      cmd.replaceClip(plan.replace, payload.assetId);
+      return true;
+    }
     if (plan.hint) {
       if (payload.kind === 'effect') cmd.applyEffect(payload.type, [plan.hint.clipId]);
       else if (payload.kind === 'transition')
@@ -898,7 +1240,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
       return true;
     }
     if (plan.edits.length) {
-      commit(plan.edits);
+      commit(plan.spans ? withMarkers(store(), { edits: plan.edits, spans: plan.spans }) : plan.edits);
       if (payload.kind === 'text' && plan.select?.length) cmd.editText(plan.select[0]);
       else if (plan.select) ui().select(plan.select);
     }
@@ -935,6 +1277,26 @@ export function Lanes({ lanes, height, width, live }: Props) {
 
   const viewL = scrollX - 300;
   const viewR = scrollX + width + 300;
+  const drawn = (c: Clip): boolean => !(c.start * ppf + c.duration * ppf < viewL || c.start * ppf > viewR);
+  /**
+   * The one clip Tab stops at, so that the lanes are a single stop however many clips they hold:
+   * the clip that had the keyboard last while it is selected or nothing else is, else a selected
+   * clip, else the first one in view.
+   */
+  const tabStop = ((): ID | null => {
+    const shown = (id: ID | null): id is ID => {
+      const c = id ? live.clips[id] : undefined;
+      return !!c && drawn(c) && lanes.some((l) => l.track.id === c.trackId);
+    };
+    const selected = selection.find(shown);
+    if (shown(lastFocus) && (selectedSet.has(lastFocus) || !selected)) return lastFocus;
+    if (selected) return selected;
+    for (const lane of lanes) {
+      const first = clipsOnTrack(live, lane.track.id).find(drawn);
+      if (first) return first.id;
+    }
+    return null;
+  })();
   const cursor =
     tool === 'blade' ? 'crosshair' : tool === 'hand' ? 'grab' : tool === 'slip' ? 'ew-resize' : undefined;
 
@@ -942,8 +1304,11 @@ export function Lanes({ lanes, height, width, live }: Props) {
     <div
       ref={ref}
       className="lanes"
+      role="group"
+      aria-label="Tracks"
       data-tool={tool}
       style={{ height, cursor }}
+      onKeyDown={onKeyDown}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={(e) => finish(e, false)}
@@ -963,6 +1328,28 @@ export function Lanes({ lanes, height, width, live }: Props) {
       onContextMenu={(e) => {
         const clipEl = (e.target as HTMLElement).closest<HTMLElement>('[data-clip]');
         const id = clipEl?.dataset.clip;
+        // Asked for from the keyboard, the menu opens at the clip and not where the pointer was left.
+        if (clipEl && id && e.button !== 2 && !e.ctrlKey && document.activeElement === clipEl) {
+          e.preventDefault();
+          openClipMenu(clipEl, id);
+          return;
+        }
+        const mark = (e.target as HTMLElement).closest<HTMLElement>('[data-handle="keyframe"]');
+        if (id && mark) {
+          const t = Number(mark.dataset.t);
+          openContextMenu(e, [
+            { label: 'Go to keyframe', onSelect: () => cmd.seek((store().clips[id]?.start ?? 0) + t, false) },
+            {
+              label: 'Delete keyframe',
+              danger: true,
+              onSelect: () => {
+                const c = store().clips[id];
+                if (c) commit([{ op: 'updateClip', id, patch: removeKeyframes(c, t) }]);
+              },
+            },
+          ]);
+          return;
+        }
         if (id && !selectedSet.has(id)) ui().select(ui().linkedSelection ? withLinked(store(), [id]) : [id]);
         const lane = laneAt(lanes, toY(e.clientY));
         const at = Math.max(0, Math.floor(toFrame(e.clientX)));
@@ -987,21 +1374,37 @@ export function Lanes({ lanes, height, width, live }: Props) {
               height={lane.height}
               scrollX={scrollX}
               ppf={ppf}
+              offline={offline}
             />
-            <div className="lane__clips" style={{ transform: `translate3d(${-scrollX}px, 0, 0)` }}>
+            <div
+              className="lane__clips"
+              // A list of the lane's clips to assistive technology; a lane without any is no list.
+              role={clips.length ? 'listbox' : undefined}
+              aria-multiselectable={clips.length ? true : undefined}
+              aria-label={
+                clips.length
+                  ? `Clips on ${lane.track.name ? `${lane.label}, ${lane.track.name}` : lane.label}`
+                  : undefined
+              }
+              style={{ transform: `translate3d(${-scrollX}px, 0, 0)` }}
+            >
               {clips.map((c, i) => {
-                const x = c.start * ppf;
-                const w = c.duration * ppf;
-                if (x + w < viewL || x > viewR) return null;
+                if (!drawn(c)) return null;
                 const prev = i > 0 && clipEnd(clips[i - 1]) === c.start ? clips[i - 1] : null;
                 const win = prev && c.transIn ? cutTransitionWindow(prev, c) : null;
                 const peer = peerSel.get(c.id);
+                const fault = c.assetId ? session.thumbs.fault(c.assetId) : null;
                 return (
                   <ClipView
                     key={c.id}
                     clip={c}
                     ppf={ppf}
                     height={lane.height}
+                    track={lane.label}
+                    settings={live.settings}
+                    locked={lane.track.locked}
+                    tabStop={c.id === tabStop}
+                    focused={focus?.id === c.id && focus.keyboard}
                     selected={selectedSet.has(c.id)}
                     transSel={selectedTransition?.clipId === c.id ? selectedTransition.side : null}
                     transBefore={win ? win.before : 0}
@@ -1011,7 +1414,9 @@ export function Lanes({ lanes, height, width, live }: Props) {
                     hint={dropHint?.clipId === c.id ? dropHint.side : null}
                     fading={fading?.id === c.id ? fading.side : null}
                     fadeMoved={fading?.id === c.id && fading.moved}
-                    missing={!!c.assetId && !live.assets[c.assetId]}
+                    missing={!!c.assetId && (!live.assets[c.assetId] || offline.has(c.assetId))}
+                    undecodable={!!fault && (c.type === 'audio' ? fault.sound : fault.picture)}
+                    overlapping={overlapping.has(c.id)}
                   />
                 );
               })}
@@ -1022,12 +1427,13 @@ export function Lanes({ lanes, height, width, live }: Props) {
 
       {/* Clips other people are dragging right now. */}
       {peers.flatMap((peer) =>
-        (peer.dragging ?? []).map((g) => {
+        (peer.dragging ?? []).map((g, i) => {
           const lane = lanes.find((l) => l.track.id === g.trackId);
           if (!lane) return null;
           return (
             <div
-              key={`${peer.clientId}:${g.id}`}
+              // By place in the list: what a peer announces may name one clip twice.
+              key={`${peer.clientId}:${i}`}
               className="peer-ghost"
               style={{
                 left: g.start * ppf - scrollX,
@@ -1071,6 +1477,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
       })}
 
       {tool === 'blade' && <div ref={blade} className="blade" />}
+      <div ref={modeTip} className="drop-mode" />
       {snapLine !== null && <div className="snapline" style={{ left: snapLine * ppf - scrollX }} />}
       {marquee && (
         <div
@@ -1078,8 +1485,32 @@ export function Lanes({ lanes, height, width, live }: Props) {
           style={{ left: marquee.x - scrollX, top: marquee.y, width: marquee.w, height: marquee.h }}
         />
       )}
+      <div className="sr-only" role="status">
+        {said}
+      </div>
     </div>
   );
+}
+
+/**
+ * The assets whose file cannot be had right now (see `mediaAvailable`). The set is the same object
+ * for as long as it holds the same assets: the status of the media changes with every step of an
+ * upload, and the lanes are painted again only when what they show does.
+ */
+function useOfflineAssets(assets: Project['assets']): ReadonlySet<ID> {
+  const session = useSession();
+  const { shared } = useSessionMeta();
+  const version = useSyncExternalStore(session.media.subscribe, session.media.getVersion);
+  const last = useRef<ReadonlySet<ID>>(new Set());
+  return useMemo(() => {
+    const now = new Set<ID>();
+    for (const a of Object.values(assets)) {
+      if (a.kind !== 'lut' && !mediaAvailable(a, session.media.get(a.id), shared)) now.add(a.id);
+    }
+    const same = now.size === last.current.size && [...now].every((id) => last.current.has(id));
+    if (!same) last.current = now;
+    return last.current;
+  }, [assets, shared, version, session]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 // ───────────────────────────────────────────────────────────────── menus ──
@@ -1103,10 +1534,17 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
   if (!c) return [];
   const ui = useUI.getState();
   const timed = (c.type === 'video' || c.type === 'audio') && !c.freeze;
+  const picture = c.type !== 'audio';
   return [
     { label: 'Cut', keys: 'mod+x', onSelect: cmd.cut },
     { label: 'Copy', keys: 'mod+c', onSelect: cmd.copy },
     { label: 'Paste', keys: 'mod+v', onSelect: cmd.paste, disabled: !ui.clipboard.length },
+    {
+      label: 'Paste insert',
+      keys: shortcutOf('paste-insert'),
+      onSelect: cmd.pasteInsert,
+      disabled: !ui.clipboard.length,
+    },
     { label: 'Duplicate', keys: 'mod+d', onSelect: cmd.duplicate },
     'separator',
     { label: 'Split at playhead', keys: 'mod+b', onSelect: cmd.split },
@@ -1142,14 +1580,45 @@ function clipMenu(p: Project, id: ID): MenuEntry[] {
     c.type === 'audio'
       ? { label: 'Normalize loudness (−14 LUFS)', onSelect: () => void cmd.normalizeLoudness(-14) }
       : null,
+    // Only there for a clip that shares frames with another: two people placed them at one moment.
+    overlappingClips(p).has(id)
+      ? { label: 'Move to a free track', onSelect: () => commit(separateClips(p, [id])) }
+      : null,
     'separator',
-    { label: 'Copy attributes', keys: 'mod+alt+c', onSelect: cmd.copyAttributes },
+    { label: 'Mark clip', keys: shortcutOf('mark-clip'), onSelect: cmd.markClip },
+    { label: 'Go to in', keys: shortcutOf('go-in'), onSelect: () => cmd.goToRange('in') },
+    { label: 'Go to out', keys: shortcutOf('go-out'), onSelect: () => cmd.goToRange('out') },
+    picture
+      ? {
+          label: 'Add default transition',
+          keys: shortcutOf('default-transition'),
+          onSelect: cmd.addDefaultTransition,
+        }
+      : null,
+    { label: 'Extend edit to playhead', keys: shortcutOf('extend-edit'), onSelect: cmd.extendEdit },
+    'separator',
+    { label: 'Copy attributes', keys: shortcutOf('copy-attrs'), onSelect: () => cmd.copyAttributes() },
+    { heading: 'Paste attributes' },
     {
-      label: 'Paste attributes',
-      keys: 'mod+alt+v',
+      label: 'Everything',
+      keys: shortcutOf('paste-attrs'),
       onSelect: () => cmd.pasteAttributes('all'),
       disabled: !ui.attributes,
     },
+    { label: 'Grade only', onSelect: () => cmd.pasteAttributes('grade'), disabled: !ui.attributes?.look },
+    { label: 'Effects only', onSelect: () => cmd.pasteAttributes('effects'), disabled: !ui.attributes?.look },
+    {
+      label: 'Transform and crop only',
+      onSelect: () => cmd.pasteAttributes('transform'),
+      disabled: !ui.attributes?.look,
+    },
+    c.type === 'audio'
+      ? {
+          label: 'Volume, pan and fades only',
+          onSelect: () => cmd.pasteAttributes('sound'),
+          disabled: !ui.attributes?.sound,
+        }
+      : null,
     'separator',
     { heading: 'Label' },
     {
@@ -1169,6 +1638,12 @@ function laneMenu(p: Project, lane: Lane | null, at: number): MenuEntry[] {
   const gap = lane && !lane.track.locked ? rippleCloseGap(p, lane.track.id, at) : null;
   return [
     { label: 'Paste', keys: 'mod+v', onSelect: cmd.paste, disabled: !ui.clipboard.length },
+    {
+      label: 'Paste insert',
+      keys: shortcutOf('paste-insert'),
+      onSelect: cmd.pasteInsert,
+      disabled: !ui.clipboard.length,
+    },
     {
       label: 'Close gap here',
       // A gap that cannot be closed stays on offer: choosing it says why.
@@ -1193,12 +1668,14 @@ interface LaneCanvasProps {
   height: number;
   scrollX: number;
   ppf: number;
+  offline: ReadonlySet<ID>;
 }
 
 /**
  * Whether two renders of a lane would paint the same picture. Every commit and every tick of a
  * drag preview makes a new project and a new clip list for every lane, but the store keeps what
- * did not change identical, and the painting reads only the clips, the assets and the frame rate.
+ * did not change identical, and the painting reads only the clips, the assets, the frame rate and
+ * which of the assets are offline.
  */
 function sameLanePicture(a: LaneCanvasProps, b: LaneCanvasProps): boolean {
   return (
@@ -1206,6 +1683,7 @@ function sameLanePicture(a: LaneCanvasProps, b: LaneCanvasProps): boolean {
     a.height === b.height &&
     a.scrollX === b.scrollX &&
     a.ppf === b.ppf &&
+    a.offline === b.offline &&
     a.project.assets === b.project.assets &&
     a.project.settings === b.project.settings &&
     a.clips.length === b.clips.length &&
@@ -1220,6 +1698,7 @@ const LaneCanvas = memo(function LaneCanvas({
   height,
   scrollX,
   ppf,
+  offline,
 }: LaneCanvasProps) {
   const session = useSession();
   const ref = useRef<HTMLCanvasElement>(null);
@@ -1244,8 +1723,8 @@ const LaneCanvas = memo(function LaneCanvas({
     if (canvas.width !== w) canvas.width = w;
     if (canvas.height !== h) canvas.height = h;
     const ctx = canvas.getContext('2d');
-    if (ctx) drawLane(ctx, project, clips, { scrollX, ppf, width, height, dpr }, session.thumbs);
-  }, [project, clips, width, height, scrollX, ppf, bump, session]);
+    if (ctx) drawLane(ctx, project, clips, { scrollX, ppf, width, height, dpr, offline }, session.thumbs);
+  }, [project, clips, width, height, scrollX, ppf, offline, bump, session]);
 
   if (!hasMedia) return null;
   return <canvas ref={ref} className="lane__canvas" style={{ width, height }} />;
@@ -1257,6 +1736,15 @@ interface ClipViewProps {
   clip: Clip;
   ppf: number;
   height: number;
+  /** What the clip's track is called by its place: V1, A2. */
+  track: string;
+  settings: Project['settings'];
+  /** The track is locked: the clip is there to be read, not to be selected. */
+  locked: boolean;
+  /** This is the clip Tab stops at. */
+  tabStop: boolean;
+  /** The keyboard is on this clip, and was brought there by the keyboard. */
+  focused: boolean;
   selected: boolean;
   transSel: 'in' | 'out' | null;
   /** Frames of the incoming transition that sit before this clip's start (two-sided cuts). */
@@ -1269,13 +1757,23 @@ interface ClipViewProps {
   fading: 'in' | 'out' | null;
   /** Whether that handle has been taken anywhere yet. From then on it marks the end of the fade. */
   fadeMoved: boolean;
+  /** The media is not in the project any more, or its file is on neither this device nor the server. */
   missing: boolean;
+  /** This browser has no decoder for what the clip shows of its media. */
+  undecodable: boolean;
+  /** The clip shares frames with another clip of its track. */
+  overlapping: boolean;
 }
 
 const ClipView = memo(function ClipView({
   clip,
   ppf,
   height,
+  track,
+  settings,
+  locked,
+  tabStop,
+  focused,
   selected,
   transSel,
   transBefore,
@@ -1286,6 +1784,8 @@ const ClipView = memo(function ClipView({
   fading,
   fadeMoved,
   missing,
+  undecodable,
+  overlapping,
 }: ClipViewProps) {
   const w = clipWidth(clip.duration, ppf);
   const Icon = ICONS[clip.type];
@@ -1296,25 +1796,29 @@ const ClipView = memo(function ClipView({
   const grip = Math.min(6, w * 0.3);
   const fx = clip.effects.length > 0;
   const graded = !!clip.grade && clip.grade.enabled;
-  const keyTimes = useMemo(() => {
-    if (!selected) return [];
-    const s = new Set<number>();
-    for (const list of Object.values(clip.keyframes))
-      for (const k of list) if (k.t >= 0 && k.t <= clip.duration) s.add(k.t);
-    return Array.from(s);
-  }, [clip.keyframes, clip.duration, selected]);
+  const keyTimes = useMemo(
+    () => (selected ? keyframeTimes(clip) : []),
+    [clip.keyframes, clip.duration, selected], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const label =
     clip.type === 'text' && clip.text ? clip.text.content.replace(/\s+/g, ' ') : clip.name || clip.type;
 
   return (
     <div
       className="clip"
+      role="option"
+      aria-label={describeClip(clip, track, settings, { offline: missing, undecodable, overlapping })}
+      aria-selected={selected}
+      aria-disabled={locked || undefined}
+      tabIndex={tabStop ? 0 : -1}
       data-clip={clip.id}
       data-type={clip.type}
       data-selected={selected}
+      data-focus={focused || undefined}
       data-disabled={!clip.enabled}
       data-hint={hint ?? undefined}
       data-missing={missing}
+      data-overlap={overlapping || undefined}
       data-compact={height < 40}
       data-narrow={w < NARROW_W}
       style={{
@@ -1333,6 +1837,18 @@ const ClipView = memo(function ClipView({
             <span className="clip__chip">
               <CircleAlert />
               Offline
+            </span>
+          )}
+          {undecodable && !missing && (
+            <span className="clip__chip">
+              <FileWarning />
+              Unsupported
+            </span>
+          )}
+          {overlapping && (
+            <span className="clip__chip clip__chip--warn">
+              <Layers2 />
+              Overlap
             </span>
           )}
           {clip.linkId && <Link2 className="clip__flag" />}
@@ -1394,11 +1910,13 @@ const ClipView = memo(function ClipView({
           />
         </>
       )}
-      {keyTimes.map((t) => (
-        <i key={t} className="clip__kf" style={{ left: t * ppf }} />
-      ))}
       <div className="clip__trim clip__trim--l" data-handle="start" />
       <div className="clip__trim clip__trim--r" data-handle="end" />
+      {/* After the trim handles, so that a keyframe at the very edge of the clip can be taken hold of. */}
+      {keyTimes.map((t) => (
+        <i key={t} className="clip__kf" data-handle="keyframe" data-t={t} style={{ left: t * ppf }} />
+      ))}
+      {overlapping && <i className="clip__overlap" />}
       {peerColor && <span className="clip__peer">{peerName}</span>}
     </div>
   );

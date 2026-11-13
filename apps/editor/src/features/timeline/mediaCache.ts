@@ -329,18 +329,58 @@ export class WaveformCache extends Emitter {
   }
 }
 
+/** What of an asset's file this browser has no decoder for. */
+export interface DecodeFault {
+  picture: boolean;
+  sound: boolean;
+}
+
 /** Caches for one open project. */
 export class TimelineMedia {
   readonly library: MediaLibrary;
   readonly film: FilmstripCache;
   readonly wave: WaveformCache;
   private readonly posters = new Map<string, HTMLImageElement>();
+  private readonly faults = new Map<string, DecodeFault>();
+  private readonly faultListeners = new Set<Listener>();
+  private faultsVersion = 0;
 
   constructor(resolver: MediaResolver) {
     this.library = new MediaLibrary(resolver);
-    this.film = new FilmstripCache(this.library);
-    this.wave = new WaveformCache(this.library);
+    const opened: Opened = (assetId, media) => this.noteFault(assetId, media);
+    this.film = new FilmstripCache(this.library, opened);
+    this.wave = new WaveformCache(this.library, opened);
   }
+
+  /**
+   * Whether the file can be decoded is known once it has been opened, which the caches do for
+   * every asset the timeline shows. The verdict is kept by asset, so that what draws a clip can
+   * say why its picture is black or its sound silent without opening the file itself.
+   */
+  private noteFault(assetId: string, media: OpenMedia): void {
+    const fault = {
+      picture: !!media.video && !media.videoDecodable,
+      sound: !!media.audio && !media.audioDecodable,
+    };
+    const before = this.faults.get(assetId);
+    if ((before?.picture ?? false) === fault.picture && (before?.sound ?? false) === fault.sound) return;
+    if (fault.picture || fault.sound) this.faults.set(assetId, fault);
+    else this.faults.delete(assetId);
+    this.faultsVersion++;
+    for (const fn of Array.from(this.faultListeners)) fn();
+  }
+
+  /** What this browser cannot decode of the asset's file, as far as the file has been opened. */
+  fault(assetId: string): DecodeFault | null {
+    return this.faults.get(assetId) ?? null;
+  }
+
+  subscribeFaults = (fn: Listener): (() => void) => {
+    this.faultListeners.add(fn);
+    return () => this.faultListeners.delete(fn);
+  };
+
+  getFaultsVersion = (): number => this.faultsVersion;
 
   /** The asset's embedded poster frame, decoded once. Used until real thumbnails arrive. */
   poster(assetId: string, dataUrl: string | null): HTMLImageElement | null {

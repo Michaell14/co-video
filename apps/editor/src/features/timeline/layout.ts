@@ -1,4 +1,4 @@
-import { displayTracks, type Project, type Track } from '@tandem/core';
+import { displayTracks, trackLabel, type Project, type Track } from '@tandem/core';
 
 export const HEADER_W = 156;
 export const RULER_H = 30;
@@ -20,6 +20,8 @@ export const clipWidth = (duration: number, ppf: number): number => Math.max(2, 
 
 export interface Lane {
   track: Track;
+  /** What the track is called by its place: V2, A1. */
+  label: string;
   top: number;
   height: number;
 }
@@ -31,7 +33,7 @@ export function layoutLanes(project: Project): { lanes: Lane[]; height: number }
   let prevKind: string | null = null;
   for (const track of displayTracks(project)) {
     if (prevKind && prevKind !== track.kind) y += GROUP_GAP;
-    lanes.push({ track, top: y, height: track.height });
+    lanes.push({ track, label: trackLabel(project, track), top: y, height: track.height });
     y += track.height + LANE_GAP;
     prevKind = track.kind;
   }
