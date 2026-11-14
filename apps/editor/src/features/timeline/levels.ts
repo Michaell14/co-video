@@ -6,7 +6,8 @@
 import type { Player } from '@tandem/engine';
 
 export type Levels = ReturnType<Player['levels']>;
-type Listener = (levels: Levels) => void;
+/** Told the levels, and how many milliseconds have passed since it was last told them. */
+type Listener = (levels: Levels, elapsed: number) => void;
 
 /** The part of a player the meters need. */
 export type Metered = Pick<Player, 'levels' | 'getState' | 'subscribe'>;
@@ -16,6 +17,20 @@ export type Metered = Pick<Player, 'levels' | 'getState' | 'subscribe'>;
  * the time is for the meters to fall back and for a peak that is held to let go.
  */
 export const LEVELS_TAIL_MS = 1500;
+
+/** What a falling meter keeps of its reading over one frame at sixty a second. */
+const FALL = 0.9;
+const FALL_MS = 1000 / 60;
+
+/**
+ * What a meter shows next: a louder level at once, a quieter one only after falling to it, the way
+ * meters are meant to move. The fall goes by the time that has passed and not by the frames drawn
+ * in it. However few those are (a busy page, a slow display), a meter falls as fast, and the time
+ * it is told for after playback has stopped brings it to rest from full scale.
+ */
+export function meterFall(shown: number, level: number, elapsed: number): number {
+  return Math.max(level, shown * FALL ** (elapsed / FALL_MS));
+}
 
 interface Watch {
   listeners: Set<Listener>;
@@ -27,21 +42,27 @@ const watches = new WeakMap<Metered, Watch>();
 
 /**
  * Call `fn` with the player's levels on every animation frame while it plays, and for a moment
- * after it stops. All watchers of one player share one loop and one reading, and nothing runs
- * while the player is at rest. Returns the function that stops the watching.
+ * after it stops: until LEVELS_TAIL_MS have passed, however few frames are drawn in that time.
+ * All watchers of one player share one loop and one reading, and nothing runs while the player is
+ * at rest. Returns the function that stops the watching.
  */
 export function watchLevels(player: Metered, fn: Listener): () => void {
   let watch = watches.get(player);
   if (!watch) {
     const listeners = new Set<Listener>();
     let quietSince: number | null = null;
+    /** When the watchers were last told, while the loop runs. */
+    let told: number | null = null;
     const tick = () => {
       const now = performance.now();
       if (player.getState().playing) quietSince = null;
       else quietSince ??= now;
       const levels = player.levels();
-      for (const listener of Array.from(listeners)) listener(levels);
-      created.frame = now - (quietSince ?? now) < LEVELS_TAIL_MS ? requestAnimationFrame(tick) : 0;
+      const elapsed = now - (told ?? now);
+      for (const listener of Array.from(listeners)) listener(levels, elapsed);
+      const more = now - (quietSince ?? now) < LEVELS_TAIL_MS;
+      told = more ? now : null;
+      created.frame = more ? requestAnimationFrame(tick) : 0;
     };
     const wake = () => {
       if (!created.frame && player.getState().playing) created.frame = requestAnimationFrame(tick);

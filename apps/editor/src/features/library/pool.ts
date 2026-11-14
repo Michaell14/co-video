@@ -1,14 +1,19 @@
 /** A selection of files in the media pool, and taking it to the timeline. */
 import {
   addAssetToTimeline,
+  addTrack,
   applyEdits,
   clipEnd,
+  findFreeTrack,
+  isRegionFree,
   type AddAssetOptions,
   type Asset,
+  type Clip,
   type Edit,
   type ID,
   type OpResult,
   type Project,
+  type TrackKind,
 } from '@tandem/core';
 import { openGapAt, type RippleSpan } from '../../state/edits';
 
@@ -35,52 +40,70 @@ export interface Placed extends OpResult {
   spans: RippleSpan[];
 }
 
+/** The files as clips from `target.frame`, each starting where the one before it ends. */
+function endToEnd(on: Project, assets: Asset[], target: AddAssetOptions): OpResult & { clips: Clip[] } {
+  const edits: Edit[] = [];
+  const clips: Clip[] = [];
+  let frame = target.frame;
+  for (const asset of assets) {
+    const r = addAssetToTimeline(on, asset, { ...target, frame });
+    on = applyEdits(on, r.edits);
+    edits.push(...r.edits);
+    for (const id of r.created) {
+      clips.push(on.clips[id]);
+      frame = Math.max(frame, clipEnd(on.clips[id]));
+    }
+  }
+  return { edits, created: clips.map((c) => c.id), clips };
+}
+
 /**
  * Several files on the timeline one after another from `target.frame`: each starts where the one
- * before it ends, on the tracks the first of them took, so that a track made for the first is the
- * one the rest go to. With `insert`, what is there from that frame on moves later by their length
- * together and makes room for them. LUTs are not clips and are passed over.
+ * before it ends. Nothing that is there is replaced. Their pictures go to one track that is free
+ * for the whole stretch of them, and so do their sounds: the track `target` names where it has that
+ * room, else the first that has, else a new one. A track that is free for the first file alone is
+ * not enough: the files after it would be laid over what stands further along it. With `insert`,
+ * what is there from that frame on moves later by their length together and makes room for them.
+ * LUTs are not clips and are passed over.
  */
 export function placeAssets(p: Project, assets: Asset[], target: AddAssetOptions, insert = false): Placed {
-  const start = Math.max(0, Math.round(target.frame));
-  const chain = (on: Project): OpResult & { end: number } => {
-    const edits: Edit[] = [];
-    const created: ID[] = [];
-    let { videoTrackId, audioTrackId } = target;
-    let end = start;
-    for (const asset of assets) {
-      if (asset.kind === 'lut') continue;
-      const r = addAssetToTimeline(on, asset, { ...target, frame: end, videoTrackId, audioTrackId });
-      on = applyEdits(on, r.edits);
-      edits.push(...r.edits);
-      created.push(...r.created);
-      for (const id of r.created) {
-        const clip = on.clips[id];
-        end = Math.max(end, clipEnd(clip));
-        if (clip.type === 'audio') audioTrackId ??= clip.trackId;
-        else videoTrackId ??= clip.trackId;
-      }
-    }
-    return { edits, created, end };
+  const media = assets.filter((a) => a.kind !== 'lut');
+  const frame = Math.max(0, Math.round(target.frame));
+  // Where each clip comes to lie does not depend on its track, so the files are laid out twice:
+  // once to measure them, and then on the tracks that have room for what was measured.
+  const measured = endToEnd(p, media, { ...target, frame, videoTrackId: null, audioTrackId: null }).clips;
+  if (!measured.length) return { edits: [], created: [], spans: [] };
+  const room = insert
+    ? openGapAt(p, frame, Math.max(...measured.map(clipEnd)) - frame)
+    : { edits: [], spans: [] };
+  const edits = [...room.edits];
+  let on = applyEdits(p, edits);
+  const trackFor = (kind: TrackKind, named: ID | null | undefined): ID | undefined => {
+    const run = measured.filter((c) => (c.type === 'audio') === (kind === 'audio'));
+    if (!run.length) return undefined;
+    const from = Math.min(...run.map((c) => c.start));
+    const to = Math.max(...run.map(clipEnd));
+    const wanted = named ? on.tracks[named] : undefined;
+    if (wanted?.kind === kind && !wanted.locked && isRegionFree(on, wanted.id, from, to)) return wanted.id;
+    const free = findFreeTrack(on, kind, from, to);
+    if (free) return free.id;
+    const made = addTrack(on, kind);
+    edits.push(...made.edits);
+    on = applyEdits(on, made.edits);
+    return made.trackId;
   };
-  if (!insert) {
-    const { edits, created } = chain(p);
-    return { edits, created, spans: [] };
-  }
-  // How long they are together is known once they have been laid out: on the timeline as it is
-  // first, to measure, then on the one that has made room.
-  const length = chain(p).end - start;
-  if (length <= 0) return { edits: [], created: [], spans: [] };
-  const room = openGapAt(p, start, length);
-  const { edits, created } = chain(applyEdits(p, room.edits));
-  return { edits: [...room.edits, ...edits], created, spans: room.spans };
+  const videoTrackId = trackFor('video', target.videoTrackId);
+  const audioTrackId = trackFor('audio', target.audioTrackId);
+  const placed = endToEnd(on, media, { ...target, frame, videoTrackId, audioTrackId });
+  return { edits: [...edits, ...placed.edits], created: placed.created, spans: room.spans };
 }
 
 /**
  * What follows the first file of a selection that was dragged to the timeline. The timeline places
  * the file the drag carries; `before` and `after` are the project around that drop. The clips it
- * made of `first` say where the rest go: straight after them, on their tracks. Null when the drop
- * made no clip (it missed the timeline, was called off, or replaced a clip's media).
+ * made of `first` say where the rest go: straight after them, and on their tracks where those have
+ * room for all that follows (see `placeAssets`). Null when the drop made no clip (it missed the
+ * timeline, was called off, or replaced a clip's media).
  */
 export function restOfDrop(
   before: Project,

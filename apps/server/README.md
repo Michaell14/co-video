@@ -60,15 +60,21 @@ The server speaks plain HTTP, and **the editor only works over HTTPS** unless it
 `localhost`: browsers switch off WebCodecs, the private file system, service workers, the clipboard
 and the microphone on every other page that came over plain HTTP. At `http://your-server:8787/app/`
 the editor loads and then decodes nothing, stores nothing on the device and does not open offline.
-So put the server behind a reverse proxy that terminates TLS (and compresses the static files). The
-proxy must pass WebSocket upgrades and should not buffer request bodies of uploads. With
-[Caddy](https://caddyserver.com) that is:
+So put the server behind a reverse proxy that terminates TLS. The proxy must pass WebSocket upgrades
+and should not buffer request bodies of uploads. Have it compress as well: this server sends every
+file as it is on disk, the editor's code included. With [Caddy](https://caddyserver.com) that is:
 
 ```
 tandem.example.com {
+	encode zstd gzip
 	reverse_proxy localhost:8787
 }
 ```
+
+Naming the site is what makes Caddy get and renew a certificate for it, and `reverse_proxy` passes
+WebSocket upgrades on and does not buffer uploads. Compression is the `encode` line and nothing
+else: without it the editor's code reaches every visitor uncompressed. With it Caddy compresses
+pages, scripts and stylesheets and leaves media as it is.
 
 Behind a proxy every request arrives from the proxy's address. Unless `TRUST_PROXY` is on, all clients
 then share one rate limit and `MAX_CONNECTIONS_PER_IP` caps the whole server, so turn `TRUST_PROXY` on

@@ -69,7 +69,7 @@ import { canvasTheme } from './canvasTheme';
 import { EdgeScroller, timeAxis } from './edgeScroll';
 import { Lanes } from './Lanes';
 import { HEADER_W, LABEL_H, LABEL_TINT, layoutLanes, RULER_H, tickInterval, type Lane } from './layout';
-import { watchLevels } from './levels';
+import { meterFall, watchLevels } from './levels';
 import { LostClips } from './LostClips';
 import './timeline.css';
 
@@ -814,10 +814,8 @@ const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
   useEffect(() => {
     if (t.kind !== 'audio' || !player) return;
     let shown = 0;
-    return watchLevels(player, (levels) => {
-      const level = levels.tracks[t.id] ?? 0;
-      // Fast attack, slow release — the way meters are meant to move.
-      shown = level > shown ? level : shown * 0.9;
+    return watchLevels(player, (levels, elapsed) => {
+      shown = meterFall(shown, levels.tracks[t.id] ?? 0, elapsed);
       const db = shown > 0.0005 ? 20 * Math.log10(shown) : -60;
       if (meter.current) meter.current.style.transform = `scaleX(${clamp((db + 48) / 48, 0, 1)})`;
     });

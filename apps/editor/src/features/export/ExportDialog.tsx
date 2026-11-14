@@ -32,6 +32,7 @@ import { cmd, downloadBlob } from '../../state/commands';
 import { useUI } from '../../state/ui';
 import { Button, Dialog, NumberField, Segmented, Select, tip } from '../../ui/core';
 import { describeSize } from '../../ui/labels';
+import { spendKeys } from '../../ui/layers';
 import { Row } from '../inspector/controls';
 import { groupProblems, hasUnseen, usableCodec, type ProblemPlace } from './plan';
 import './export.css';
@@ -232,16 +233,21 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   // that was pressed leaves with its state and would take the keyboard with it, out of the dialog.
   // With each new state it goes to the button that carries on: Done, or Export again after a
   // failure. While the export runs it rests on the dialog itself, where neither Enter nor a
-  // habitual Space cancels the render; Cancel is one Tab away.
+  // habitual Space cancels the render; Cancel is one Tab away. It rests there after a cancel as
+  // well: stopping takes a moment to come through, and a second press by someone who is waiting
+  // for it must not land on Export and start the render again.
   const placed = useRef(phase.kind);
   useLayoutEffect(() => {
     if (placed.current === phase.kind) return;
     placed.current = phase.kind;
     const dialog = content.current?.closest<HTMLElement>('[role="dialog"]');
     const next =
-      phase.kind === 'running'
-        ? null
-        : dialog?.querySelector<HTMLElement>('.dialog__foot .btn--primary:not(:disabled)');
+      phase.kind === 'done' || phase.kind === 'error'
+        ? dialog?.querySelector<HTMLElement>('.dialog__foot .btn--primary:not(:disabled)')
+        : null;
+    // The key that brought the state about may still be down and has done its work: held, it does
+    // not go on to press the button the keyboard is handed to.
+    spendKeys();
     (next ?? dialog)?.focus();
   }, [phase.kind]);
 

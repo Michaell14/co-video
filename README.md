@@ -67,8 +67,9 @@ with projects stored in your browser.
 - Subtitles: import `.srt` / `.vtt` as editable captions, export `.srt` (captions only: titles and
   lower thirds are not subtitles)
 - 18 blend modes, rectangular and elliptical masks with feathering, on-canvas transform handles
-- A source monitor with in / out marking, insert and overwrite, driven by the same transport keys
-  as the timeline; **match frame** opens it on the very frame under the playhead
+- A source monitor with in / out marking, driven by the same transport keys as the timeline. What
+  is marked is inserted at the playhead or added there on a free track; **match frame** opens the
+  monitor on the very frame under the playhead
 - Replace or relink the file behind any asset; every clip follows, in one undo step. “Reveal in
   media pool” finds the file behind a clip, and a video can be added as picture only or sound only
 - Projects save to a portable `.tandem` file. Opening one makes a new project, from the home screen
@@ -147,34 +148,34 @@ with projects stored in your browser.
 Press `?` in the editor for the full list; it is generated from the same table that drives the
 shortcuts and the command palette (`Ctrl+K`). The ones worth learning first:
 
-|                                                  |                                             |
-| ------------------------------------------------ | ------------------------------------------- |
-| Play / pause · shuttle back, stop, forwards      | `Space` · `J` `K` `L`                       |
-| Step a frame · a second                          | `←` `→` · `Shift+←` `Shift+→`               |
-| Previous / next edit · start / end               | `↑` `↓` · `Home` `End`                      |
-| Mark in / out · mark the clip · clear the range  | `I` `O` · `X` · `Alt+X`                     |
-| Go to the in / out point                         | `Shift+I` `Shift+O`                         |
-| Match frame                                      | `F`                                         |
-| Insert · add (overwrite) from the source monitor | `F9` · `F10`                                |
-| Select the clip under the playhead               | `Shift+V`                                   |
-| Select the next / previous clip · add it         | `Ctrl+↓` `Ctrl+↑` · with `Shift`            |
-| Select everything right / left of the playhead   | `Shift+End` · `Shift+Home`                  |
-| Split · delete · ripple delete                   | `S` or `Ctrl+B` · `Delete` · `Shift+Delete` |
-| Ripple trim the start / end to the playhead      | `Q` `W`                                     |
-| Trim the nearest edge by a frame · by five       | `Ctrl+←` `Ctrl+→` · with `Shift`            |
-| Extend the edit to the playhead                  | `E`                                         |
-| Add the default transition to the selected cuts  | `Shift+D`                                   |
-| Close the gap at the playhead                    | `Shift+G`                                   |
-| Nudge the selection by a frame · by ten          | `,` `.` · `Shift+,` `Shift+.`               |
-| Move the selection up / down a track             | `Alt+↑` `Alt+↓`                             |
-| Marker: add or remove · next · previous          | `M` · `Shift+M` · `Ctrl+Shift+M` or `Alt+M` |
-| Tools: select · blade · slip · hand              | `V` · `B` · `Y` · `H`                       |
-| Zoom the timeline · fit it · zoom to selection   | `+` `-` · `Shift+Z` · `Z`                   |
-| Add a title                                      | `T`                                         |
-| Edit · Colour · Audio workspace                  | `Shift+1` · `Shift+2` · `Shift+3`           |
-| Comments                                         | `Shift+C`                                   |
-| Import · export · export the frame as a PNG      | `Ctrl+I` · `Ctrl+E` · `Ctrl+Shift+E`        |
-| Save a project file · open one as a new project  | `Ctrl+S` · `Ctrl+O`                         |
+|                                                 |                                             |
+| ----------------------------------------------- | ------------------------------------------- |
+| Play / pause · shuttle back, stop, forwards     | `Space` · `J` `K` `L`                       |
+| Step a frame · a second                         | `←` `→` · `Shift+←` `Shift+→`               |
+| Previous / next edit · start / end              | `↑` `↓` · `Home` `End`                      |
+| Mark in / out · mark the clip · clear the range | `I` `O` · `X` · `Alt+X`                     |
+| Go to the in / out point                        | `Shift+I` `Shift+O`                         |
+| Match frame                                     | `F`                                         |
+| Source monitor: insert · add on a free track    | `F9` · `F10`                                |
+| Select the clip under the playhead              | `Shift+V`                                   |
+| Select the next / previous clip · add it        | `Ctrl+↓` `Ctrl+↑` · with `Shift`            |
+| Select everything right / left of the playhead  | `Shift+End` · `Shift+Home`                  |
+| Split · delete · ripple delete                  | `S` or `Ctrl+B` · `Delete` · `Shift+Delete` |
+| Ripple trim the start / end to the playhead     | `Q` `W`                                     |
+| Trim the nearest edge by a frame · by five      | `Ctrl+←` `Ctrl+→` · with `Shift`            |
+| Extend the edit to the playhead                 | `E`                                         |
+| Add the default transition to the selected cuts | `Shift+D`                                   |
+| Close the gap at the playhead                   | `Shift+G`                                   |
+| Nudge the selection by a frame · by ten         | `,` `.` · `Shift+,` `Shift+.`               |
+| Move the selection up / down a track            | `Alt+↑` `Alt+↓`                             |
+| Marker: add or remove · next · previous         | `M` · `Shift+M` · `Ctrl+Shift+M` or `Alt+M` |
+| Tools: select · blade · slip · hand             | `V` · `B` · `Y` · `H`                       |
+| Zoom the timeline · fit it · zoom to selection  | `+` `-` · `Shift+Z` · `Z`                   |
+| Add a title                                     | `T`                                         |
+| Edit · Colour · Audio workspace                 | `Shift+1` · `Shift+2` · `Shift+3`           |
+| Comments                                        | `Shift+C`                                   |
+| Import · export · export the frame as a PNG     | `Ctrl+I` · `Ctrl+E` · `Ctrl+Shift+E`        |
+| Save a project file · open one as a new project | `Ctrl+S` · `Ctrl+O`                         |
 
 `Ctrl` is `⌘` on a Mac. A few of these are narrower than their names: `Q` and `W` trim one shot,
 the selected clip or else the picture under the playhead, and leave a music bed or a title under
@@ -183,7 +184,11 @@ the same frame alone; `Shift+G` closes one gap, the picture's, and the other tra
 presses the button.
 
 While the source monitor is open, `Space`, `J` `K` `L`, the arrow keys (with `Shift` for a second),
-`Home`, `End`, `I` and `O` drive it instead of the timeline, and `Esc` closes it.
+`Home`, `End`, `I` and `O` drive it instead of the timeline; `Shift+I` and `Shift+O` go to its
+marks and `Alt+X` clears them. `,` and `.` do not nudge then: like `F9` and `F10` they put what is
+marked (the whole file when nothing is) on the timeline at the playhead. `,` inserts it: every
+unlocked track is cut at the playhead and what follows moves later to make room. `.` adds it on a
+free track and changes nothing else. The monitor stays open after either, and `Esc` closes it.
 
 ## Browser support
 
@@ -221,12 +226,14 @@ docker run -p 8787:8787 -v tandem-data:/data tandem
 private file system, service workers, the clipboard and the microphone only to pages that came
 over HTTPS (or from `localhost`). Opened at `http://your-server:8787/app/` the editor loads, shows
 a black viewer, decodes nothing, stores nothing on the device and does not open offline. The server
-itself speaks plain HTTP, so put a reverse proxy that terminates TLS in front of it. With
-[Caddy](https://caddyserver.com), which gets the certificate by itself and passes WebSocket
-upgrades on, this is the whole configuration:
+itself speaks plain HTTP and compresses nothing, so put a reverse proxy that terminates TLS in
+front of it. With [Caddy](https://caddyserver.com), which gets the certificate by itself and passes
+WebSocket upgrades on, this is the whole configuration (the `encode` line is what compresses the
+editor's code on its way out):
 
 ```
 tandem.example.com {
+	encode zstd gzip
 	reverse_proxy localhost:8787
 }
 ```

@@ -297,12 +297,18 @@ export function Lanes({ lanes, height, width, live }: Props) {
   /** A clip that is to be given the keyboard as soon as it is drawn. */
   const wantFocus = useRef<ID | null>(null);
   /**
-   * The key press (as counted by `presses`) that was made on a clip, if the last press was one:
-   * where that key takes the selection, focus follows.
+   * The key press (as counted by `presses`) that was made on a clip the keyboard had come to, if
+   * the last press was one, with the clip and the selection as they were then: where that key
+   * takes the selection, focus follows, and it is not lost if the key takes the clip away.
    */
-  const carry = useRef(0);
+  const carry = useRef<{ press: number; clip: Clip; selection: ID[] } | null>(null);
   /** Set while focus is being moved here by script, on behalf of a key. */
   const focusing = useRef(false);
+  /**
+   * The clip the keyboard was last brought to. Focus that comes back to it by itself (its menu
+   * closes, the window returns) finds it as it was; a press of the pointer forgets it.
+   */
+  const walked = useRef<ID | null>(null);
   /** What the selection is, in words, after the keyboard changed it. */
   const [said, setSaid] = useState('');
 
@@ -1002,7 +1008,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
    * Keys on a clip that has the keyboard. Each lane is a list of its clips: the arrow keys go from
    * clip to clip and the selection goes with them, as in any list, and Enter or Space selects.
    * That holds for a clip the keyboard came to. One that only kept the focus of the press that
-   * selected it leaves every key to the editor: the arrows go on stepping through frames and cuts.
+   * selected it leaves every key to the editor: the arrows go on stepping through frames and
+   * cuts, Space plays, and no key pressed there brings the keyboard to another clip.
    */
   const onKeyDown = (e: React.KeyboardEvent) => {
     const el = e.target as HTMLElement;
@@ -1010,16 +1017,17 @@ export function Lanes({ lanes, height, width, live }: Props) {
     const p = store();
     const clip = id ? p.clips[id] : undefined;
     if (!id || !clip) return;
-    // Whatever this key makes of the selection (it may be a command of the editor's), the clip
-    // that is selected afterwards is the one that has the keyboard.
-    carry.current = presses;
     if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
       e.preventDefault();
       e.stopPropagation();
       openClipMenu(el, id);
       return;
     }
-    if (!focus?.keyboard || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (!focus?.keyboard) return;
+    // Whatever this key makes of the selection (it may be a command of the editor's), the clip
+    // that is selected afterwards is the one that has the keyboard.
+    carry.current = { press: presses, clip, selection: ui().selection };
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
     const { prev, next } = neighbors(p, clip);
     const row = clipsOnTrack(p, clip.trackId);
     const go: Record<string, () => void> = {
@@ -1035,7 +1043,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
         // The keyboard stays on the clip it was pressed on: here focus does not follow the selection.
         const group = effectiveSelection(p, [id]);
         if (e.shiftKey && selectedSet.has(id)) {
-          carry.current = 0;
+          carry.current = null;
           ui().select(ui().selection.filter((s) => !group.includes(s)));
         } else goTo(p, clip, e.shiftKey);
       },
@@ -1054,36 +1062,65 @@ export function Lanes({ lanes, height, width, live }: Props) {
     const onFocusIn = (e: FocusEvent) => {
       const id = (e.target as HTMLElement).dataset.clip;
       if (!id) return;
-      // A clip the keyboard came to: by Tab or an arrow key, or here, following the selection.
-      setFocus({ id, keyboard: focusing.current || spaceOperates(e.target) });
+      // A clip the keyboard came to: by Tab or an arrow key, or here, following the selection. And
+      // one it had come to before, when focus returns there without anything having brought it.
+      const keyboard = focusing.current || spaceOperates(e.target) || walked.current === id;
+      walked.current = keyboard ? id : null;
+      setFocus({ id, keyboard });
       setLastFocus(id);
     };
     const onFocusOut = (e: FocusEvent) => {
       if ((e.target as HTMLElement).dataset.clip) setFocus(null);
     };
+    // A press of the pointer gives the keys back to the editor wherever it lands: on the clip
+    // that has the keyboard it moves no focus, and so would not be heard of otherwise.
+    const onPress = () => {
+      if (!walked.current) return;
+      walked.current = null;
+      setFocus((f) => (f?.keyboard ? { ...f, keyboard: false } : f));
+    };
     el.addEventListener('focusin', onFocusIn);
     el.addEventListener('focusout', onFocusOut);
+    window.addEventListener('pointerdown', onPress, true);
     return () => {
       el.removeEventListener('focusin', onFocusIn);
       el.removeEventListener('focusout', onFocusOut);
+      window.removeEventListener('pointerdown', onPress, true);
     };
   }, []);
 
   // Focus follows the selection for as long as the keyboard is in the lanes: to the clip a key
-  // has just gone to, and to the one a command of the editor's selected from here.
+  // has just gone to, and to the one a command of the editor's selected from here. Nor does a key
+  // that takes the clip out from under the keyboard leave it nowhere: it stays with a clip that
+  // went to another lane, and from one that is gone it goes on to the clip that follows.
   useLayoutEffect(() => {
     let id = wantFocus.current;
-    if (!id && carry.current === presses && lastFocus) {
+    const held = carry.current;
+    if (!id && held?.press === presses) {
       const p = store();
-      const from = p.clips[lastFocus];
-      if (!from) id = tabStop;
-      else if (selection.length && !selectedSet.has(lastFocus))
-        id = selection.find((s) => p.clips[s]?.trackId === from.trackId) ?? selection[0];
+      const now = p.clips[held.clip.id];
+      const elsewhere =
+        selection !== held.selection && selection.length > 0 && !(now && selectedSet.has(now.id));
+      if (elsewhere) {
+        const lane = (now ?? held.clip).trackId;
+        id = selection.find((s) => p.clips[s]?.trackId === lane) ?? selection[0];
+      } else if (now && now.trackId !== held.clip.trackId) {
+        id = now.id;
+      } else if (!now) {
+        const row = clipsOnTrack(p, held.clip.trackId);
+        const next =
+          row.find((c) => c.start >= held.clip.start) ??
+          row[row.length - 1] ??
+          clipOnLane(p, held.clip, 1) ??
+          clipOnLane(p, held.clip, -1);
+        if (next) revealFrame(next.start);
+        id = next?.id ?? null;
+      }
     }
     const el = id ? clipElement(id) : null;
     if (!el) return;
     wantFocus.current = null;
-    carry.current = 0;
+    carry.current = null;
     if (document.activeElement === el) return;
     focusing.current = true;
     el.focus();
@@ -1292,17 +1329,23 @@ export function Lanes({ lanes, height, width, live }: Props) {
 
   const viewL = scrollX - 300;
   const viewR = scrollX + width + 300;
-  const drawn = (c: Clip): boolean => !(c.start * ppf + c.duration * ppf < viewL || c.start * ppf > viewR);
+  const inView = (c: Clip): boolean => !(c.start * ppf + c.duration * ppf < viewL || c.start * ppf > viewR);
+  /**
+   * Whether the clip is put in the page. The one that has the keyboard stays there while it is
+   * scrolled out of view: taken out, it would let the keyboard fall back to the page as a whole.
+   */
+  const drawn = (c: Clip): boolean => inView(c) || c.id === focus?.id;
   /**
    * The one clip Tab stops at, so that the lanes are a single stop however many clips they hold:
-   * the clip that had the keyboard last while it is selected or nothing else is, else a selected
-   * clip, else the first one in view.
+   * the clip that has the keyboard; without one, the clip that had it last while it is selected
+   * or nothing else is, else a selected clip, else the first one in view.
    */
   const tabStop = ((): ID | null => {
     const shown = (id: ID | null): id is ID => {
       const c = id ? live.clips[id] : undefined;
       return !!c && drawn(c) && lanes.some((l) => l.track.id === c.trackId);
     };
+    if (focus && shown(focus.id)) return focus.id;
     const selected = selection.find(shown);
     if (shown(lastFocus) && (selectedSet.has(lastFocus) || !selected)) return lastFocus;
     if (selected) return selected;
@@ -1638,7 +1681,7 @@ function clipMenu(p: Project, id: ID, at: MenuAt): MenuEntry[] {
     timed ? { label: 'Speed: 100%', onSelect: () => cmd.setSpeed(1) } : null,
     timed ? { label: 'Speed: 200%', onSelect: () => cmd.setSpeed(2) } : null,
     c.type === 'audio'
-      ? { label: 'Normalize loudness (−14 LUFS)', onSelect: () => void cmd.normalizeLoudness(-14) }
+      ? { label: 'Normalise loudness (−14 LUFS)', onSelect: () => void cmd.normalizeLoudness(-14) }
       : null,
     // Only there for a clip that shares frames with another: two people placed them at one moment.
     overlappingClips(p).has(id)

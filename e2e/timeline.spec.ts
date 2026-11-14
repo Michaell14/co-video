@@ -1711,6 +1711,154 @@ test.describe('timeline: keyboard, drops and marks', () => {
     await expect.poll(said).toBe('No clip selected');
   });
 
+  test('a command pressed on a clicked clip leaves the keys to the editor, and in the list the keyboard keeps its place', async ({
+    page,
+  }) => {
+    await sample(page);
+    // More tracks than fit, with a clip on the last of them, and the lanes scrolled down to it.
+    await page.evaluate(() => {
+      const { cmd, session } = (window as any).tandem;
+      for (let i = 0; i < 8; i++) cmd.addTrack('audio');
+      const p = session.store.get();
+      const last = (Object.values(p.tracks) as any[])
+        .filter((t) => t.kind === 'audio')
+        .sort((a, b) => b.order - a.order)[0];
+      const music = (Object.values(p.clips) as any[]).find((c) => c.type === 'audio');
+      session.store.commit([
+        { op: 'addClip', clip: { ...music, id: 'lastlaneclip01', trackId: last.id, name: 'bed.ogg' } },
+      ]);
+    });
+    await expect(page.locator('.clip')).toHaveCount(6);
+    const state = () =>
+      page.evaluate(() => {
+        const { session, ui } = (window as any).tandem;
+        const p = session.store.get();
+        const id = (document.activeElement as HTMLElement | null)?.dataset.clip;
+        return {
+          focus: id ? (p.clips[id]?.name ?? 'gone') : null,
+          ring: Array.from(document.querySelectorAll<HTMLElement>('.clip[data-focus="true"]')).map(
+            (el) => p.clips[el.dataset.clip!].name,
+          ),
+          selected: ui.getState().selection.map((id: string) => p.clips[id].name),
+          frame: Math.floor(session.player.getFrame()),
+          down: document.querySelector('.tl__body')!.scrollTop,
+        };
+      });
+    const playing = () =>
+      page.evaluate(() => (window as any).tandem.session.player.getState().playing as boolean);
+    /** The keys are the editor's: an arrow steps one frame and Space plays. */
+    const keysAreTheEditors = async () => {
+      const { frame } = await state();
+      await page.keyboard.press('ArrowRight');
+      expect(await state()).toMatchObject({ frame: frame + 1, ring: [] });
+      await page.keyboard.press('Space');
+      await expect.poll(playing).toBe(true);
+      await page.keyboard.press('Space');
+      await expect.poll(playing).toBe(false);
+    };
+    const click = async (name: string) => {
+      const at = await clipBox(page, name);
+      await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+    };
+
+    // Delete on a clip the pointer selected: the keyboard goes to no other clip, the lanes stay
+    // where they were scrolled to, and the keys go on being the editor's.
+    const body = page.locator('.tl__body');
+    await body.evaluate((el) => (el.scrollTop = el.scrollHeight));
+    const down = (await state()).down;
+    expect(down).toBeGreaterThan(0);
+    await click('bed.ogg');
+    expect(await state()).toMatchObject({ focus: 'bed.ogg', ring: [], selected: ['bed.ogg'], down });
+    await page.keyboard.press('Delete');
+    await expect(page.locator('.clip')).toHaveCount(5);
+    expect(await state()).toMatchObject({ focus: null, ring: [], selected: [], down });
+    await keysAreTheEditors();
+
+    // The same after the other commands that change what is selected.
+    await body.evaluate((el) => (el.scrollTop = 0));
+    await page.evaluate(() => (window as any).tandem.cmd.seek(180));
+    await click('fractal.mp4');
+    await page.keyboard.press('Control+B');
+    await expect(page.locator('.clip')).toHaveCount(6);
+    expect((await state()).ring).toEqual([]);
+    await keysAreTheEditors();
+    await undo(page);
+    await click('aurora.mp4');
+    await page.keyboard.press('Control+D');
+    await expect(page.locator('.clip')).toHaveCount(6);
+    expect((await state()).ring).toEqual([]);
+    await keysAreTheEditors();
+    await undo(page);
+    await click('dusk.mp4');
+    await page.keyboard.press('Control+ArrowDown');
+    expect(await state()).toMatchObject({ focus: 'dusk.mp4', ring: [], selected: ['fractal.mp4'] });
+    await keysAreTheEditors();
+
+    // A press of the pointer on the very clip the keyboard is on gives the keys back as well.
+    await page.locator('.th .icon-btn').last().focus();
+    await page.keyboard.press('Tab');
+    expect(await state()).toMatchObject({ focus: 'fractal.mp4', ring: ['fractal.mp4'] });
+    await click('fractal.mp4');
+    expect(await state()).toMatchObject({ focus: 'fractal.mp4', ring: [], selected: ['fractal.mp4'] });
+    await keysAreTheEditors();
+    expect((await state()).selected).toEqual(['fractal.mp4']);
+
+    // In the list, the keyboard stays on a clip that a command of the editor's brought it to when
+    // the clip's menu has been open in between.
+    await page.locator('.th .icon-btn').last().focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Home');
+    await page.keyboard.press('Control+ArrowDown');
+    expect(await state()).toMatchObject({ focus: 'fractal.mp4', ring: ['fractal.mp4'] });
+    await page.keyboard.press('Shift+F10');
+    await expect(menuItem(page, 'Split at playhead')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[role="menu"]')).toHaveCount(0);
+    expect(await state()).toMatchObject({ focus: 'fractal.mp4', ring: ['fractal.mp4'] });
+    const { frame } = await state();
+    await page.keyboard.press('ArrowRight');
+    expect(await state()).toMatchObject({ focus: 'aurora.mp4', selected: ['aurora.mp4'], frame });
+
+    // A clip moved to another track takes the keyboard along, and one that is deleted hands it to
+    // the clip that follows: the last of a lane to the one before, the only one to the next lane.
+    await page.keyboard.press('Alt+ArrowUp');
+    expect((await layout(page)).filter((c) => c.startsWith('V2'))).toEqual([
+      'V2:text@18+90',
+      'V2:video@240+120',
+    ]);
+    expect(await state()).toMatchObject({ focus: 'aurora.mp4', ring: ['aurora.mp4'] });
+    await page.keyboard.press('Alt+ArrowDown');
+    expect(await state()).toMatchObject({ focus: 'aurora.mp4', ring: ['aurora.mp4'] });
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('Delete');
+    await expect(page.locator('.clip')).toHaveCount(4);
+    expect(await state()).toMatchObject({ focus: 'aurora.mp4', ring: ['aurora.mp4'], selected: [] });
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Delete');
+    expect(await state()).toMatchObject({ focus: 'dusk.mp4', ring: ['dusk.mp4'], selected: [] });
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Delete');
+    await expect(page.locator('.clip')).toHaveCount(2);
+    expect(await state()).toMatchObject({ focus: 'pulse.ogg', ring: ['pulse.ogg'] });
+
+    // Scrolled out of view, the clip the keyboard is on keeps it, and the next arrow goes on from there.
+    await undo(page);
+    await undo(page);
+    await undo(page);
+    await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('Home');
+    expect(await state()).toMatchObject({ focus: 'dusk.mp4', ring: ['dusk.mp4'] });
+    await page.evaluate(() => {
+      const { cmd, ui } = (window as any).tandem;
+      cmd.zoom(6);
+      ui.getState().set({ scrollX: 6000 });
+    });
+    await expect.poll(async () => (await view(page)).scrollX).toBe(6000);
+    expect(await state()).toMatchObject({ focus: 'dusk.mp4' });
+    await page.keyboard.press('ArrowRight');
+    expect(await state()).toMatchObject({ focus: 'fractal.mp4', ring: ['fractal.mp4'] });
+  });
+
   test('timeline buttons have names, markers open from the keyboard, and mute is one colour everywhere', async ({
     page,
   }) => {

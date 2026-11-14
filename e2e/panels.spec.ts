@@ -1420,4 +1420,65 @@ test.describe('export', () => {
     await page.keyboard.press('Enter');
     await expect(dialog).toHaveCount(0);
   });
+
+  test('the key that cancels an export does not go on to start it again', async ({ page }) => {
+    await newLocal(page);
+    await page.evaluate(() => {
+      const { session, cmd, ui } = (window as any).tandem;
+      session.store.commit([{ op: 'settings', patch: { width: 320, height: 180 } }]);
+      cmd.addSolid('#c04020');
+      const solid = Object.values(session.store.get().clips)[0] as any;
+      session.store.commit([{ op: 'updateClip', id: solid.id, patch: { duration: 12 } }]);
+      ui.getState().set({ dialog: 'export' });
+    });
+    await expect(page.locator('.exp')).toBeVisible();
+    await probed(page);
+    const dialog = page.getByRole('dialog');
+    // Hold the export in its first frames: stopping it then takes as long as the test says.
+    await page.evaluate(() => {
+      const Real = (window as any).VideoEncoder;
+      const hold = new Promise<void>((go) => ((window as any).letGo = go));
+      (window as any).VideoEncoder = class extends Real {
+        async flush() {
+          await hold;
+          return super.flush();
+        }
+      };
+    });
+    await exportButton(page).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.exp__run')).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Cancel export' })).toBeFocused();
+
+    // Enter goes down on Cancel and stays down while the export winds up.
+    await page.keyboard.down('Enter');
+    await page.evaluate(() => (window as any).letGo());
+    await expect(page.locator('.exp__presets')).toBeVisible({ timeout: 60_000 });
+    // The keyboard is in the dialog and not on Export: neither the key that is still held nor an
+    // impatient second press starts the render again.
+    await expect(dialog).toBeFocused();
+    await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    await expect(exportButton(page)).toHaveText('Export');
+    await expect(page.locator('.exp__run')).toHaveCount(0);
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Shift+Tab');
+    await expect(exportButton(page)).toBeFocused();
+
+    // After a failure the next thing to do is to try again, and Export has the keyboard.
+    await page.evaluate(() => {
+      (window as any).VideoEncoder = class {
+        static isConfigSupported = () => Promise.resolve({ supported: true });
+        constructor() {
+          throw new Error('No encoder to be had');
+        }
+      };
+    });
+    await page.keyboard.press('Enter');
+    await expect(dialog.getByText('Export failed.')).toBeVisible({ timeout: 60_000 });
+    await expect(exportButton(page)).toBeFocused();
+  });
 });

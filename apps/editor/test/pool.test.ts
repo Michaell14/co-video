@@ -110,6 +110,69 @@ describe('placing several files on the timeline', () => {
     expect(lane(after, v1)).toEqual(['@0-300']);
   });
 
+  it('replaces nothing: a track with room for the first file alone is not taken', () => {
+    const { p, v1, a1 } = fixture();
+    // The playhead stands before a clip with its sound: the first file fits in front of it, the
+    // three together do not.
+    const cut = applyEdits(p, [
+      {
+        op: 'addClip',
+        clip: makeClip('video', v1.id, { name: 'there', assetId: 'one', start: 90, duration: 300 }),
+      },
+      {
+        op: 'addClip',
+        clip: makeClip('audio', a1.id, { name: 'there', assetId: 'one', start: 90, duration: 300 }),
+      },
+    ]);
+    const r = placeAssets(cut, [cut.assets.one, cut.assets.two, cut.assets.mute], { frame: 0 });
+    const after = applyEdits(cut, r.edits);
+    // The pictures run on to frame 210 and take a new track together. The sounds end at 90,
+    // where the clip that is there begins, and fit in front of it.
+    expect(lane(after, v1)).toEqual(['there@90-390']);
+    expect(lane(after, a1)).toEqual(['one.mp4@0-60', 'two.mp4@60-90', 'there@90-390']);
+    const made = Object.values(after.tracks).filter((t) => !cut.tracks[t.id]);
+    expect(made.map((t) => t.kind)).toEqual(['video']);
+    expect(lane(after, made[0])).toEqual(['one.mp4@0-60', 'two.mp4@60-90', 'mute.mp4@90-210']);
+    expect(r.edits.filter((e) => e.op !== 'addTrack' && e.op !== 'addClip')).toEqual([]);
+  });
+
+  it('takes the pictures and the sounds each to a track that is free for all of theirs', () => {
+    const { p, v1, a1 } = fixture();
+    // Something stands on the sound track where the second file would come; the picture track is clear.
+    const cut = applyEdits(p, [
+      {
+        op: 'addClip',
+        clip: makeClip('audio', a1.id, { name: 'music', assetId: 'song', start: 70, duration: 90 }),
+      },
+    ]);
+    const r = placeAssets(cut, [cut.assets.one, cut.assets.two], { frame: 0 });
+    const after = applyEdits(cut, r.edits);
+    expect(lane(after, v1)).toEqual(['one.mp4@0-60', 'two.mp4@60-90']);
+    expect(lane(after, a1)).toEqual(['music@70-160']);
+    const made = Object.values(after.tracks).filter((t) => !cut.tracks[t.id]);
+    expect(made.map((t) => t.kind)).toEqual(['audio']);
+    expect(lane(after, made[0])).toEqual(['one.mp4@0-60', 'two.mp4@60-90']);
+  });
+
+  it('keeps to a named track that has the room, and leaves one that has not', () => {
+    const { p, v1, a1 } = fixture();
+    const v2 = makeTrack('video', 1);
+    const two = applyEdits(p, [{ op: 'addTrack', track: v2 }]);
+    const named = placeAssets(two, [two.assets.mute, two.assets.still], { frame: 0, videoTrackId: v2.id });
+    expect(lane(applyEdits(two, named.edits), v2)).toEqual(['mute.mp4@0-120', 'still.png@120-270']);
+    const busy = applyEdits(two, [
+      {
+        op: 'addClip',
+        clip: makeClip('video', v2.id, { name: 'there', assetId: 'one', start: 200, duration: 30 }),
+      },
+    ]);
+    const moved = placeAssets(busy, [busy.assets.mute, busy.assets.still], { frame: 0, videoTrackId: v2.id });
+    const after = applyEdits(busy, moved.edits);
+    expect(lane(after, v2)).toEqual(['there@200-230']);
+    expect(lane(after, v1)).toEqual(['mute.mp4@0-120', 'still.png@120-270']);
+    expect(lane(after, a1)).toEqual([]);
+  });
+
   it('makes room for all of them together when they are inserted', () => {
     const { p, v1, a1 } = fixture();
     const cut = applyEdits(p, [
@@ -158,6 +221,28 @@ describe('the rest of a selection dragged to the timeline', () => {
     expect(lane(after, v1)).toEqual(['one.mp4@30-90', 'two.mp4@90-120']);
     expect(lane(after, a1)).toEqual(['one.mp4@30-90', 'two.mp4@90-120', 'song.ogg@120-210']);
     expect(rest!.dropped.sort()).toEqual([...first.created].sort());
+  });
+
+  it('replaces nothing with the files that follow', () => {
+    const { p, v1, a1 } = fixture();
+    // The sound of the first file went to a track that was free for its length; further along
+    // that track there is music, where the sound of the second would come.
+    const cut = applyEdits(p, [
+      {
+        op: 'addClip',
+        clip: makeClip('audio', a1.id, { name: 'music', assetId: 'song', start: 100, duration: 90 }),
+      },
+    ]);
+    const first = addAssetToTimeline(cut, cut.assets.one, { frame: 30, videoTrackId: v1.id });
+    const dropped = applyEdits(cut, first.edits);
+    expect(lane(dropped, a1)).toEqual(['one.mp4@30-90', 'music@100-190']);
+    const rest = restOfDrop(cut, dropped, 'one', [cut.assets.two, cut.assets.mute], false);
+    const after = applyEdits(dropped, rest!.edits);
+    expect(lane(after, v1)).toEqual(['one.mp4@30-90', 'two.mp4@90-120', 'mute.mp4@120-240']);
+    expect(lane(after, a1)).toEqual(['one.mp4@30-90', 'music@100-190']);
+    const made = Object.values(after.tracks).filter((t) => !cut.tracks[t.id]);
+    expect(made.map((t) => t.kind)).toEqual(['audio']);
+    expect(lane(after, made[0])).toEqual(['two.mp4@90-120']);
   });
 
   it('is nothing when the drop made no clip of that file', () => {

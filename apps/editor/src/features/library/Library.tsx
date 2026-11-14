@@ -54,7 +54,7 @@ import { useUI, type LibraryTab } from '../../state/ui';
 import { confirm } from '../../ui/confirm';
 import { Button, cx, hideTip, IconButton, openContextMenu, tip } from '../../ui/core';
 import { beginDrag, useDrag, type DragPayload } from '../../ui/dnd';
-import { usingKeyboard } from '../../ui/layers';
+import { handFocus, usingKeyboard } from '../../ui/layers';
 import { onTabListKey } from '../editor/tabs';
 import { FxThumb } from './fxPreview';
 import { picked, restOfDrop, type PickMode } from './pool';
@@ -100,13 +100,19 @@ function TileGrid({
   className,
   children,
   onSpace,
+  onKeyDown,
   ...rest
 }: {
   className: string;
   children: ReactNode;
   /** Space on a tile that is being worked from the keyboard, where it does more than press it. */
   onSpace?: (tile: HTMLElement) => void;
-} & Pick<HTMLAttributes<HTMLDivElement>, 'role' | 'aria-label' | 'aria-multiselectable' | 'onKeyDown'>) {
+  /**
+   * A key pressed in the grid, and whether its tiles are being worked from the keyboard: false
+   * while the tile that has the focus only kept it from a click.
+   */
+  onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>, worked: boolean) => void;
+} & Pick<HTMLAttributes<HTMLDivElement>, 'role' | 'aria-label' | 'aria-multiselectable'>) {
   const grid = useRef<HTMLDivElement>(null);
   const stop = useRef<HTMLElement | null>(null);
   const space = useRef(onSpace);
@@ -184,6 +190,7 @@ function TileGrid({
         // A click that no pointer made comes from Enter or Space.
         if (e.detail === 0) byPointer.current = false;
       }}
+      onKeyDown={onKeyDown && ((e) => onKeyDown(e, !byPointer.current))}
     >
       {children}
     </div>
@@ -318,10 +325,42 @@ function removeAssets(ids: ID[]): void {
 }
 
 /**
+ * Whether files the person asked to remove may go. They are asked first when more goes with the
+ * press than one file that nothing uses: several files, or the clips and grades that use them.
+ */
+async function mayRemove(ids: ID[]): Promise<boolean> {
+  const session = currentSession();
+  if (!session) return false;
+  // Someone who may not edit is told so by the attempt, as for any other edit, and is not asked
+  // about what it would take along.
+  if (!session.canEdit) return true;
+  const { assets, clips } = session.store.get();
+  const inUse = usedAssets(clips);
+  const files = ids.flatMap((id) => (assets[id] ? [assets[id]] : []));
+  const used = files.filter((a) => inUse.has(a.id));
+  if (files.length < 2 && !used.length) return true;
+  const several = files.length > 1;
+  return confirm({
+    title: several
+      ? `Remove ${files.length} files from the project?`
+      : `Remove ${files[0].name} from the project?`,
+    message: !used.length
+      ? 'Nothing on the timeline uses them. Undo brings them back.'
+      : used.every((a) => a.kind === 'lut')
+        ? `The clips graded with ${several ? 'a LUT among them' : 'it'} go back to having no LUT. Undo brings all of it back.`
+        : `Clips that use ${several ? 'them' : 'it'} are taken off the timeline as well. Undo brings all of it back.`,
+    confirmLabel: 'Remove',
+    danger: true,
+  });
+}
+
+/**
  * A drag takes one file to the timeline, which places it where it is dropped. When the card is
  * one of several selected ones, the drag carries the first of them and the others follow it: once
- * the timeline has placed that one, they are laid out after it on its tracks, in the order they
- * were picked, as part of the same undo step. Call it right after `beginDrag`, for the same press.
+ * the timeline has placed that one, they are laid out after it in the order they were picked, as
+ * part of the same undo step. They stay on its tracks where those have room for them, and replace
+ * nothing: the lanes showed the person what the first file would cover, and no more than that.
+ * Call it right after `beginDrag`, for the same press.
  */
 function followDrop(carried: ID[]): void {
   const session = currentSession();
@@ -356,6 +395,11 @@ interface Pool {
    * is one of them, in the order they were picked, and otherwise the card's own.
    */
   carried: (id: ID) => ID[];
+  /**
+   * Those of them that go to the timeline as clips. A LUT does not: it is applied to a clip that
+   * is there, so it is not counted among the files a card adds or a drag takes along.
+   */
+  placed: (id: ID) => ID[];
 }
 
 function MediaPool() {
@@ -405,20 +449,29 @@ function MediaPool() {
   const shown = list.map((a) => a.id);
   // The handlers of a card outlive the render they were made in (a press ends in a later one),
   // so they read the list and the selection as they are when they are called.
-  const live = useRef(shown);
-  live.current = shown;
-  const [cards] = useState<Pool>(() => ({
-    known,
-    pick: (id, how) => {
-      const ui = useUI.getState();
-      ui.set({ poolSelection: picked(live.current, ui.poolSelection, anchor.current, id, how) });
-      if (how !== 'range') anchor.current = id;
-    },
-    carried: (id) => {
-      const selected = useUI.getState().poolSelection.filter((s) => live.current.includes(s));
+  const live = useRef(list);
+  live.current = list;
+  const [cards] = useState<Pool>(() => {
+    const carried = (id: ID): ID[] => {
+      const there = new Set(live.current.map((a) => a.id));
+      const selected = useUI.getState().poolSelection.filter((s) => there.has(s));
       return selected.length > 1 && selected.includes(id) ? selected : [id];
-    },
-  }));
+    };
+    return {
+      known,
+      pick: (id, how) => {
+        const ui = useUI.getState();
+        const ids = live.current.map((a) => a.id);
+        ui.set({ poolSelection: picked(ids, ui.poolSelection, anchor.current, id, how) });
+        if (how !== 'range') anchor.current = id;
+      },
+      carried,
+      placed: (id) => {
+        const luts = new Set(live.current.flatMap((a) => (a.kind === 'lut' ? [a.id] : [])));
+        return carried(id).filter((s) => !luts.has(s));
+      },
+    };
+  });
 
   if (total === 0) {
     return (
@@ -497,13 +550,53 @@ function MediaPool() {
           aria-label="Media"
           aria-multiselectable
           onSpace={(tile) => tile.dataset.asset && cards.pick(tile.dataset.asset, 'toggle')}
-          onKeyDown={(e) => {
-            // With a card in hand, Ctrl+A is every file the pool shows. The clips in the timeline
-            // keep their own selection meanwhile.
-            if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'a') return;
+          onKeyDown={(e, worked) => {
+            // With a card in hand, the keys that act on a selection are about the files, and the
+            // clips in the timeline keep theirs meanwhile. Ctrl+A is every file the pool shows.
+            if (e.altKey) return;
+            const from = e.target as HTMLElement;
+            const card = from.closest<HTMLElement>('[data-asset]');
+            if (e.ctrlKey || e.metaKey) {
+              if (e.shiftKey || e.key.toLowerCase() !== 'a') return;
+              e.preventDefault();
+              e.stopPropagation();
+              useUI.getState().set({ poolSelection: shown });
+              return;
+            }
+            if (!card || (e.key !== 'Delete' && e.key !== 'Backspace')) return;
+            // Delete removes the selected files. With none selected it removes the card the
+            // keyboard is on. A card that only kept the focus of a click which took it out of the
+            // selection shows neither, and leaves the key to the clips selected in the timeline.
+            const selected = selection.filter((id) => shown.includes(id));
+            const chosen = selected.length ? selected : worked ? [card.dataset.asset!] : [];
+            if (!chosen.length) return;
             e.preventDefault();
             e.stopPropagation();
-            useUI.getState().set({ poolSelection: shown });
+            // The file that is open in the source monitor stays. Its card is selected by opening
+            // it, and the keys pressed while it shows are about what is marked of it: Delete with
+            // that file in mind is not a wish to lose the file.
+            const ids = chosen.filter((id) => id !== useUI.getState().sourceAsset);
+            // Held down, the key removes what it was pressed for and not what comes after it.
+            if (e.repeat || !ids.length) return;
+            const panel = card.closest<HTMLElement>('.lib');
+            const ahead = tilesIn(e.currentTarget).filter(
+              (t) =>
+                !ids.includes(t.dataset.asset!) &&
+                t.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING,
+            ).length;
+            void mayRemove(ids).then((ok) => {
+              if (!ok) return;
+              // The card goes with its file. The keyboard moves on to the card that takes its
+              // place, or to the last one, or to the top of a pool that has none left to show.
+              handFocus(card, () => {
+                const left = panel ? tilesIn(panel) : [];
+                return (
+                  left[Math.min(ahead, left.length - 1)] ??
+                  panel?.querySelector<HTMLElement>('input, button:not(:disabled)')
+                );
+              });
+              removeAssets(ids);
+            });
           }}
         >
           {list.map((a) => (
@@ -560,14 +653,18 @@ function AssetCard({
     if (asset.kind === 'lut') cmd.applyLut(asset.id);
     else useUI.getState().set({ sourceAsset: asset.id });
   };
+  /** The files a drag or the add button of this card takes to the timeline: see `Pool.placed`. */
+  const placed = (): Asset[] => {
+    const assets = session.store.get().assets;
+    return pool.placed(asset.id).flatMap((id) => (assets[id] ? [assets[id]] : []));
+  };
   /** Add the card's file at the playhead, or every selected file when it is one of them. */
   const add = () => {
-    const ids = pool.carried(asset.id);
-    if (ids.length < 2) return cmd.addAsset(asset);
-    const assets = session.store.get().assets;
-    cmd.addAssets(ids.flatMap((id) => (assets[id] ? [assets[id]] : [])));
+    const files = placed();
+    if (files.length > 1) cmd.addAssets(files);
+    else if (files.length) cmd.addAsset(files[0]);
   };
-  const many = selected ? pool.carried(asset.id).length : 1;
+  const many = selected ? pool.placed(asset.id).length : 1;
 
   return (
     <div
@@ -588,7 +685,9 @@ function AssetCard({
         // become carries it. One on a selected card leaves the selection to be dragged, and
         // selects the card alone only if it stays a click.
         if (how !== 'only' || !selected) pool.pick(asset.id, how);
-        const carried = pool.carried(asset.id);
+        // A LUT is dragged onto a clip, by itself. Any other card takes the selected files that
+        // become clips, and the first of those is the one the timeline places.
+        const carried = asset.kind === 'lut' ? [asset.id] : pool.placed(asset.id);
         beginDrag(
           e,
           { kind: 'asset', assetId: carried[0] },
@@ -611,21 +710,22 @@ function AssetCard({
         if (!selected) pool.pick(asset.id, 'only');
         const ids = pool.carried(asset.id);
         if (ids.length > 1) {
+          const files = placed();
           openContextMenu(e, [
-            { label: `Add ${ids.length} files to timeline`, icon: <Plus />, onSelect: add },
-            'separator',
+            files.length > 0 && {
+              label:
+                files.length > 1
+                  ? `Add ${files.length} files to timeline`
+                  : `Add ${files[0].name} to timeline`,
+              icon: <Plus />,
+              onSelect: add,
+            },
+            files.length > 0 && 'separator',
             {
               label: `Remove ${ids.length} files…`,
               icon: <Trash2 />,
               danger: true,
-              onSelect: () =>
-                void confirm({
-                  title: `Remove ${ids.length} files from the project?`,
-                  message:
-                    'Clips that use them are taken off the timeline as well. Undo brings all of it back.',
-                  confirmLabel: 'Remove',
-                  danger: true,
-                }).then((ok) => ok && removeAssets(ids)),
+              onSelect: () => void mayRemove(ids).then((ok) => ok && removeAssets(ids)),
             },
           ]);
           return;

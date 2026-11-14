@@ -140,8 +140,9 @@ let keyboardTip: Element | null = null;
  * another window. `arrived` is a tip asked for by the keyboard arriving at the element.
  */
 function watchTip(anchor: Element, arrived: boolean): void {
-  // The pointer coming over an element the keyboard has just been brought to (scrolled into
-  // view, it may come to lie under a pointer that never moved) leaves the tip the keyboard's.
+  // The pointer coming over the element the keyboard was brought to leaves the tip the
+  // keyboard's. It need not have moved for that: scrolled into view, the element may come to
+  // lie under a pointer that was resting there.
   const byKeyboard = arrived || keyboardTip === anchor;
   unwatchTip();
   keyboardTip = byKeyboard ? anchor : null;

@@ -6,6 +6,11 @@
 .color__scroll[inert] {
   opacity: 0.7;
 }
+/* The project's settings on the HDR tab are out of reach themselves for someone who may not edit.
+   They are dimmed with the page they stand in, not once more on top of that. */
+.color__scroll[inert] .form[inert] {
+  opacity: 1;
+}
 /* In the head, where the grade's actions stand for someone who may edit. */
 .color__access {
   flex: none;

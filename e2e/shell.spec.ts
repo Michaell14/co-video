@@ -897,6 +897,148 @@ test.describe('library', () => {
     expect(await tandem(page, (t) => t.session.player.getState().playing)).toBe(false);
   });
 
+  test('a selection replaces nothing on the timeline, and Delete with a card in hand is about the files', async ({
+    page,
+  }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await localProject(page);
+    await importFixtures(page, ['testsrc.mp4', 'red.webm', 'green.png', 'warm.cube']);
+    const cards = page.locator('.asset');
+    await expect(cards).toHaveCount(4);
+    const card = (name: string) => page.locator(`.asset[aria-label="${name}"]`);
+    const add = (name: string) => card(name).locator('.asset__add');
+    const clips = (): Promise<any[]> =>
+      tandem(page, (t) =>
+        (Object.values(t.session.store.get().clips) as any[])
+          .map(({ id, name, type, trackId, start, duration }) => ({
+            id,
+            name,
+            type,
+            trackId,
+            start,
+            duration,
+          }))
+          .sort((a, b) => a.start - b.start || a.type.localeCompare(b.type)),
+      );
+    const selectClips = () =>
+      tandem(page, (t) => t.ui.getState().select(Object.keys(t.session.store.get().clips)));
+    // A clip and its sound stand further along the first tracks, and the playhead in front of them.
+    await tandem(page, (t) => {
+      const file = Object.values(t.session.store.get().assets).find((a: any) => a.name === 'testsrc.mp4');
+      t.cmd.addAsset(file, { frame: 200 });
+      t.cmd.seek(0);
+      t.ui.getState().select([]);
+    });
+    const there = await clips();
+    expect(there.map((c) => `${c.type}@${c.start}+${c.duration}`)).toEqual([
+      'audio@200+120',
+      'video@200+120',
+    ]);
+    const kept = async () => (await clips()).filter((c) => there.some((o) => o.id === c.id));
+
+    // Three files are added at the playhead. The first alone would fit in front of the clip that
+    // is there; together they take a track that has room for all of them, and nothing is cut.
+    await card('red.webm').click();
+    await card('green.png').click({ modifiers: ['ControlOrMeta'] });
+    await card('testsrc.mp4').click({ modifiers: ['ControlOrMeta'] });
+    const steps = await undoSteps(page);
+    await card('red.webm').hover();
+    await add('red.webm').click();
+    await expect.poll(async () => (await clips()).length).toBe(6);
+    expect(await kept()).toEqual(there);
+    const pictures = (await clips()).filter((c) => c.type !== 'audio' && !there.some((o) => o.id === c.id));
+    expect(pictures.map((c) => `${c.name}@${c.start}+${c.duration}`)).toEqual([
+      'red.webm@0+60',
+      'green.png@60+150',
+      'testsrc.mp4@210+120',
+    ]);
+    expect(new Set(pictures.map((c) => c.trackId)).size).toBe(1);
+    expect(await undoSteps(page)).toBe(steps + 1);
+    await tandem(page, (t) => {
+      t.cmd.undo();
+      t.cmd.seek(0);
+    });
+    expect(await clips()).toEqual(there);
+
+    // A LUT among the selected files does not become a clip, and is not counted as one that does.
+    await card('warm.cube').click();
+    await card('red.webm').click({ modifiers: ['ControlOrMeta'] });
+    await card('red.webm').hover();
+    await expect(add('red.webm')).toHaveAccessibleName('Add red.webm to timeline');
+    await card('green.png').click({ modifiers: ['ControlOrMeta'] });
+    await card('red.webm').hover();
+    await expect(add('red.webm')).toHaveAccessibleName('Add 2 selected files to timeline');
+    await card('green.png').click({ button: 'right' });
+    await expect(page.getByRole('menuitem')).toHaveText(['Add 2 files to timeline', 'Remove 3 files…']);
+    await page.keyboard.press('Escape');
+    // Dragged by one of the others, they go to the timeline without it. The first lands where it
+    // is dropped. The next would reach into the clip further along that track, and goes to one
+    // that has room for it.
+    const from = await box(card('red.webm'));
+    const lane = await box(page.locator('.lane').nth(1));
+    await page.mouse.move(from.x + from.width / 2, from.y + 20);
+    await page.mouse.down();
+    await page.mouse.move(from.x + from.width / 2 + 30, from.y + 60, { steps: 4 });
+    await expect(page.locator('.drag-ghost')).toHaveText('2 files');
+    await page.mouse.move(lane.x + 12, lane.y + lane.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await expect.poll(async () => (await clips()).length).toBe(4);
+    expect(await kept()).toEqual(there);
+    const dropped = await clips();
+    const red = dropped.find((c) => c.name === 'red.webm');
+    const green = dropped.find((c) => c.name === 'green.png');
+    expect(red.trackId).toBe(there.find((c) => c.type === 'video').trackId);
+    expect(green.start).toBe(red.start + red.duration);
+    expect(green.trackId).not.toBe(red.trackId);
+    expect(await undoSteps(page)).toBe(steps + 1);
+
+    // The file that is open in the source monitor has its card selected, and Delete there is
+    // about neither: the file stays, and so do the clips.
+    await selectClips();
+    await card('red.webm').dblclick();
+    await expect(page.locator('.source')).toBeVisible();
+    await page.keyboard.press('Delete');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(cards).toHaveCount(4);
+    expect(await clips()).toHaveLength(4);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.source')).toHaveCount(0);
+    // With a card in hand Delete is about the files: the clips selected in the timeline stay.
+    await card('warm.cube').click();
+    await page.keyboard.press('Delete');
+    await expect(cards).toHaveCount(3);
+    expect(await clips()).toHaveLength(4);
+    // A file that is used takes its clips along, and that is asked about first.
+    await card('testsrc.mp4').click();
+    await page.keyboard.press('Backspace');
+    const ask = page.getByRole('dialog');
+    await expect(ask).toContainText('Remove testsrc.mp4 from the project?');
+    await ask.getByRole('button', { name: 'Remove', exact: true }).click();
+    await expect(cards).toHaveCount(2);
+    expect((await clips()).map((c) => c.name)).toEqual(['red.webm', 'green.png']);
+    // A card that was taken out of the selection again has nothing to show for itself, and leaves
+    // the key to the clips.
+    await card('green.png').click();
+    await card('green.png').click({ modifiers: ['ControlOrMeta'] });
+    expect(await tandem(page, (t) => t.ui.getState().poolSelection)).toEqual([]);
+    await selectClips();
+    await page.keyboard.press('Delete');
+    expect(await clips()).toEqual([]);
+    await expect(cards).toHaveCount(2);
+    // From the keyboard the card with the focus ring goes, and the ring moves to the one that
+    // takes its place, or out of a pool that has none left.
+    await page.locator('.chips .chip').last().focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Home');
+    await expect(cards.first()).toBeFocused();
+    await page.keyboard.press('Delete');
+    await expect(cards).toHaveCount(1);
+    await expect(cards.first()).toBeFocused();
+    await page.keyboard.press('Delete');
+    await expect(cards).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Import media' })).toBeFocused();
+  });
+
   test('effects and transitions are found by either spelling of their names', async ({ page }) => {
     await page.context().routeWebSocket(/\/\?token=/, () => {});
     await localProject(page);
@@ -1650,6 +1792,21 @@ test.describe('shared project', () => {
       await setUI(guest, { workspace: 'color' });
       await expect(side.getByText('Read only')).toBeVisible();
       expect(await outOfReach('.color__scroll')).toBe(true);
+      // The project's settings on the HDR tab are dimmed with the page they stand in, and not
+      // once more for themselves: they are what a viewer may still read there.
+      await side.getByRole('tab', { name: 'HDR' }).click();
+      await expect(side.locator('.color__scroll .form')).toBeVisible();
+      const dimmed = await side.locator('.color__scroll').evaluate((page) => {
+        const within = (el: Element | null): number => {
+          let opacity = 1;
+          for (; el && el !== page.parentElement; el = el.parentElement)
+            opacity *= Number(getComputedStyle(el).opacity);
+          return opacity;
+        };
+        return [within(page.querySelector('.form .row__label')), within(page.querySelector('.color__note'))];
+      });
+      expect(dimmed[0]).toBe(dimmed[1]);
+      expect(dimmed[0]).toBeLessThan(1);
       await setUI(guest, { workspace: 'audio' });
       await expect(side.getByText('Read only')).toBeVisible();
       expect(await outOfReach('.strip:not(.strip--master)')).toBe(true);
