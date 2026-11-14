@@ -374,7 +374,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     };
   }, []);
 
-  const start = async () => {
+  /** One export, from the press of the button to the file or to whatever stopped it. */
+  const run = async () => {
     // Settings the encoder refuses are not started: the dialog says what to change. When its
     // answer is in, nothing is awaited for it.
     if (encoding && !(verdict ?? (await askEncoder(encoding))).accepted) return;
@@ -471,6 +472,21 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       }
     } finally {
       abort.current = null;
+    }
+  };
+
+  // A press starts one export, and until that one has ended another press starts nothing. The
+  // button can still be pressed for a while after it was: while the encoder's answer is awaited,
+  // and again between the save prompt and the render. An export started then would run beside
+  // the first, where Cancel stops only the later of the two.
+  const exporting = useRef(false);
+  const start = async () => {
+    if (exporting.current) return;
+    exporting.current = true;
+    try {
+      await run();
+    } finally {
+      exporting.current = false;
     }
   };
 

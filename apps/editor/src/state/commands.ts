@@ -886,8 +886,11 @@ export const cmd = {
       }
       s.store.commit(r.edits);
       ui().select(effectiveSelection(s.store.get(), [clipId]));
-      if (r.shortened)
-        toast(`“${asset.name}” is shorter than the clip was, so the clip now ends earlier.`, 'info');
+      if (r.shortened) {
+        // Taken from an in point, a file as long as the clip still runs out before the clip does.
+        const media = sourceIn > 0 ? `What is left of “${asset.name}” after its in point` : `“${asset.name}”`;
+        toast(`${media} is shorter than the clip was, so the clip now ends earlier.`, 'info');
+      }
     });
   },
   updateSelected(patch: Partial<Clip>, merge = false): void {

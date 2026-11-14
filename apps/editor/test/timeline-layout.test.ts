@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { applyEdits, emptyProject, makeTrack } from '@tandem/core';
-import { clipWidth, GROUP_GAP, LANE_GAP, layoutLanes, tickInterval } from '../src/features/timeline/layout';
+import { applyEdits, emptyProject, makeClip, makeTrack, type Edit } from '@tandem/core';
+import {
+  clipAt,
+  clipWidth,
+  GROUP_GAP,
+  LANE_GAP,
+  layoutLanes,
+  tickInterval,
+} from '../src/features/timeline/layout';
 
 describe('ruler ticks', () => {
   it('fall on whole frames at every zoom level, for the usual frame rates', () => {
@@ -67,5 +74,45 @@ describe('layoutLanes', () => {
     expect(own.lanes[1].track).toBe(project.tracks[a1.id]);
     expect(layoutLanes(project, null)).toEqual(plain);
     expect(layoutLanes(project, {})).toEqual(plain);
+  });
+});
+
+describe('clipAt', () => {
+  const v1 = makeTrack('video', 0);
+  const a1 = makeTrack('audio', 0);
+  const shot = makeClip('video', v1.id, { start: 50, duration: 30 });
+  const next = makeClip('video', v1.id, { start: 80, duration: 30 });
+  const sound = makeClip('audio', a1.id, { start: 50, duration: 30 });
+  const edits: Edit[] = [
+    ...[v1, a1].map((track): Edit => ({ op: 'addTrack', track })),
+    ...[shot, next, sound].map((clip): Edit => ({ op: 'addClip', clip })),
+  ];
+  const project = applyEdits(emptyProject(), edits);
+  const { lanes } = layoutLanes(project);
+  const ppf = 4;
+  const at = (x: number, y: number) => clipAt(project, lanes, x, y, ppf)?.id ?? null;
+  const [top, low] = lanes.map((l) => l.top);
+
+  it('finds the clip whose box the point is in, on the lane the point is in', () => {
+    expect(at(50 * ppf, top)).toBe(shot.id);
+    expect(at(65 * ppf, top + v1.height - 1)).toBe(shot.id);
+    expect(at(65 * ppf, low + 10)).toBe(sound.id);
+    expect(at(49 * ppf, top + 10)).toBeNull();
+    expect(at(120 * ppf, top + 10)).toBeNull();
+  });
+
+  it('gives the pixel between two clips, and the gap between two lanes, to neither', () => {
+    expect(at(80 * ppf - 1.5, top + 10)).toBe(shot.id);
+    expect(at(80 * ppf - 0.5, top + 10)).toBeNull();
+    expect(at(80 * ppf, top + 10)).toBe(next.id);
+    expect(at(65 * ppf, top + v1.height)).toBeNull();
+    expect(at(65 * ppf, top - 1)).toBeNull();
+  });
+
+  it('takes the later of two clips that lie over each other, as it is the one drawn on top', () => {
+    const over = makeClip('video', v1.id, { start: 70, duration: 30 });
+    const both = applyEdits(project, [{ op: 'addClip', clip: over }]);
+    expect(clipAt(both, lanes, 75 * ppf, top + 10, ppf)?.id).toBe(over.id);
+    expect(clipAt(both, lanes, 60 * ppf, top + 10, ppf)?.id).toBe(shot.id);
   });
 });

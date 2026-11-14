@@ -1441,10 +1441,17 @@ test.describe('mixer', () => {
     expect(playing.calls).toBeLessThanOrEqual(playing.frames + 1);
 
     // Stopped, the bars fall back and the peak marks let go. The levels are read for a moment
-    // longer than that takes, and then not at all.
+    // longer than that takes, and then not at all. That moment is over when a frame is drawn
+    // without them being read: while it lasts they are read on every frame. Time without a
+    // reading does not show it, as a busy machine can let half a second pass between two frames.
     await page.evaluate(() => (window as any).tandem.session.player.pause());
     await expect.poll(shown).toEqual({ bars: Array(5).fill('scaleY(0)'), peaks: Array(5).fill('0%') });
-    await expect.poll(async () => (await reads(500)).calls).toBe(0);
+    await expect
+      .poll(async () => {
+        const quiet = await reads(500);
+        return quiet.calls === 0 && quiet.frames > 0;
+      })
+      .toBe(true);
     expect((await reads(1000)).calls).toBe(0);
     expect(await shown()).toEqual({ bars: Array(5).fill('scaleY(0)'), peaks: Array(5).fill('0%') });
   });
@@ -1873,12 +1880,61 @@ test.describe('export', () => {
     await expect(refused).toHaveCount(0);
     expect(await started()).toBe(0);
 
+    // Export pressed twice while the answer for a number just typed is still out: one export is
+    // started, and Cancel stops all there is of it. What the encoder is asked is kept back to see
+    // that: the dialog's question until both presses are in, and then the question every export
+    // puts at its first frame, where it is neither over nor past stopping when Cancel is pressed.
+    const downloads: string[] = [];
+    page.on('download', (file) => downloads.push(file.suggestedFilename()));
+    await page.evaluate(() => {
+      const real = VideoEncoder.isConfigSupported.bind(VideoEncoder);
+      const asking = ((window as any).asking = {
+        kept: 0,
+        until: Promise.resolve(),
+        letGo: () => {},
+        /** Answer what has been kept back, and keep back what is asked from now on. */
+        keepNext() {
+          const letGo = asking.letGo;
+          asking.kept = 0;
+          asking.until = new Promise<void>((go) => (asking.letGo = go));
+          letGo();
+        },
+      });
+      asking.keepNext();
+      VideoEncoder.isConfigSupported = async (config) => {
+        asking.kept++;
+        await asking.until;
+        return real(config);
+      };
+    });
+    const kept = (): Promise<number> => page.evaluate(() => (window as any).asking.kept);
+    await bitrate.click();
+    await bitrate.press('Control+a');
+    await bitrate.pressSequentially('7.3');
+    const twice = await box(exportButton(page));
+    await page.mouse.click(twice.x + twice.width / 2, twice.y + twice.height / 2);
+    await page.mouse.click(twice.x + twice.width / 2, twice.y + twice.height / 2);
+    // The dialog's question is the one that is out, and nothing was started without its answer.
+    expect(await kept()).toBe(1);
+    expect(await started()).toBe(0);
+    await page.evaluate(() => (window as any).asking.keepNext());
+    await expect(page.locator('.exp__run')).toBeVisible();
+    // One export has come to its first frame: a second one would be asking beside it.
+    await expect.poll(kept).toBe(1);
+    await dialog.getByRole('button', { name: 'Cancel export' }).click();
+    await page.evaluate(() => (window as any).asking.letGo());
+    await expect(page.locator('.exp__presets')).toBeVisible({ timeout: 60_000 });
+    await expect(bitrate).toHaveValue('7.3');
+
     // A bitrate that is not a whole number of bits once multiplied out is exported like any other.
+    // Its file is the only one there is: nothing of the cancelled export was left running to
+    // write one of its own.
     await enter(bitrate, '4.1');
     const download = page.waitForEvent('download');
     await exportButton(page).click();
     await download;
     await expect(page.getByText('Export complete')).toBeVisible({ timeout: 100_000 });
+    expect(downloads).toEqual(['Untitled project.mp4']);
   });
 
   test('a save prompt that fails is said with its reason, and the export is downloaded instead', async ({

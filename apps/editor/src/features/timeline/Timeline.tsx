@@ -867,19 +867,28 @@ const TrackHeader = memo(function TrackHeader({ lane, onOwnHeight }: TrackHeader
   const resize = useRef<{ y: number; h: number } | null>(null);
   const nameTip = tip(t.name);
   const name = useRef<HTMLSpanElement>(null);
-  /** The header is too narrow to show all of the name. */
-  const [cut, setCut] = useState(false);
+  /**
+   * The name is a stop for Tab: the header is too narrow to show all of it. A name the keyboard is
+   * on stays one until the keyboard leaves, whatever the name becomes meanwhile: a stop taken away
+   * from under the keyboard drops it to the page.
+   */
+  const [stop, setStop] = useState(false);
   const named = renaming === null;
+  const measure = useCallback(() => {
+    const el = name.current;
+    setStop(!!el && (el.scrollWidth > el.clientWidth || el === document.activeElement));
+  }, []);
   useLayoutEffect(() => {
-    const measure = () => {
-      const el = name.current;
-      setCut(!!el && el.scrollWidth > el.clientWidth);
-    };
     measure();
     // The name is as wide as its typeface makes it, and that can arrive after the header.
     document.fonts.addEventListener('loadingdone', measure);
     return () => document.fonts.removeEventListener('loadingdone', measure);
-  }, [t.name, label, named]);
+  }, [measure, t.name, label, named]);
+  // The tip quotes the name: left up while the name changes under it, it would show the old one.
+  useLayoutEffect(() => {
+    const el = name.current;
+    if (el && (el === document.activeElement || el.matches(':hover'))) hideTip();
+  }, [t.name]);
   /** Shows the whole name, where the header is too narrow for it, and nothing otherwise. */
   const whenCut =
     <E extends React.SyntheticEvent>(show: (e: E) => void) =>
@@ -972,7 +981,8 @@ const TrackHeader = memo(function TrackHeader({ lane, onOwnHeight }: TrackHeader
             className="th__name"
             // A name that is cut off is a stop for Tab: the keyboard asks for the rest by resting
             // there, as the pointer does.
-            tabIndex={cut ? 0 : undefined}
+            tabIndex={stop ? 0 : undefined}
+            onBlur={measure}
             onDoubleClick={() => session.canEdit && setRenaming(t.name || label)}
             {...nameTip}
             onPointerEnter={whenCut(nameTip.onPointerEnter)}

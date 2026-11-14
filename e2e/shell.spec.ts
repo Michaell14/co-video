@@ -1211,6 +1211,12 @@ test.describe('library', () => {
   }) => {
     await page.context().routeWebSocket(/\/\?token=/, () => {});
     await sample(page);
+    // The sample's own files have just come in, and the last of their cards may still be arriving
+    // when its clips are on the timeline. What is watched for begins once they have arrived.
+    await expect(page.locator('.asset')).toHaveCount(4);
+    await page.waitForFunction(() =>
+      Array.from(document.querySelectorAll('.asset')).every((card) => card.getAnimations().length === 0),
+    );
     await page.evaluate(() => {
       const started: string[] = ((window as any).started = []);
       document.addEventListener(
@@ -1222,7 +1228,6 @@ test.describe('library', () => {
       );
     });
     const started = (): Promise<string[]> => page.evaluate(() => (window as any).started.splice(0));
-    await expect(page.locator('.asset')).toHaveCount(4);
     // Another tab and back, another workspace and back, a filter and back: nothing arrives.
     await page.getByRole('tab', { name: 'Effects' }).click();
     await page.getByRole('tab', { name: 'Media' }).click();

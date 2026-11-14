@@ -420,6 +420,29 @@ test.describe('source monitor', () => {
     await page.mouse.up();
     await page.keyboard.up('Alt');
     await expect.poll(() => cut(page)).toEqual([`A1:audio@${first}+30<90`, `V1:video@${first}+30<90`]);
+    await expect(toast(page, 'ends earlier')).toHaveCount(0);
+
+    // Half a second further in, less of the file is left than the clip is long: the clip ends where
+    // the file does, and what is said names the in point, since the file itself is long enough.
+    for (let i = 0; i < 15; i++) await page.keyboard.press('ArrowRight');
+    await expect.poll(() => source(page)).toEqual({ frame: 105, paused: true });
+    await page.keyboard.press('i');
+    await expect(markIn(page)).toContainText('0:03.50');
+    // Carried without Alt it would overwrite the second half of the clip, and is drawn there, under
+    // the pointer. Alt pressed with the pointer at rest still finds the clip that is to be replaced.
+    await carry('.source__grip', onClip);
+    await expect.poll(ghost).toEqual([15, 15, 15, 30]);
+    await page.keyboard.down('Alt');
+    await expect(page.locator('.drop-mode')).toBeVisible();
+    await expect(page.locator('.drop-mode')).toHaveText('Replace');
+    await page.mouse.up();
+    await page.keyboard.up('Alt');
+    await expect.poll(() => cut(page)).toEqual([`A1:audio@${first}+15<105`, `V1:video@${first}+15<105`]);
+    await expect(toast(page, 'ends earlier')).toHaveText(
+      'What is left of “testsrc.mp4” after its in point is shorter than the clip was, so the clip now ends earlier.',
+    );
+    await page.keyboard.press('ControlOrMeta+z');
+    await expect.poll(() => cut(page)).toEqual([`A1:audio@${first}+30<90`, `V1:video@${first}+30<90`]);
 
     // From the pool the same file still goes to the timeline whole.
     await page.keyboard.press('Escape');

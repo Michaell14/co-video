@@ -1,4 +1,12 @@
-import { displayTracks, trackLabel, type ID, type Project, type Track } from '@tandem/core';
+import {
+  clipsOnTrack,
+  displayTracks,
+  trackLabel,
+  type Clip,
+  type ID,
+  type Project,
+  type Track,
+} from '@tandem/core';
 
 export const HEADER_W = 156;
 export const RULER_H = 30;
@@ -50,6 +58,21 @@ export function layoutLanes(
 export function laneAt(lanes: Lane[], y: number): Lane | null {
   for (const l of lanes) if (y >= l.top - LANE_GAP / 2 && y < l.top + l.height + LANE_GAP / 2) return l;
   return null;
+}
+
+/**
+ * The clip of `project` drawn at a point of its lanes: `x` in pixels from frame 0 and `y` from the
+ * top of the lanes. It is the box the clip is drawn in that counts, so the pixel a clip stops
+ * short of its neighbour belongs to neither, and neither does the gap between two lanes.
+ */
+export function clipAt(project: Project, lanes: Lane[], x: number, y: number, ppf: number): Clip | null {
+  const lane = lanes.find((l) => y >= l.top && y < l.top + l.height);
+  let found: Clip | null = null;
+  // Where clips lie over each other the later one is drawn on top.
+  for (const c of lane ? clipsOnTrack(project, lane.track.id) : []) {
+    if (x >= c.start * ppf && x < c.start * ppf + clipWidth(c.duration, ppf)) found = c;
+  }
+  return found;
 }
 
 /** Ruler tick spacing: returns major interval in frames and number of minor subdivisions. */

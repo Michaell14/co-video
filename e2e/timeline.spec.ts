@@ -1983,7 +1983,10 @@ test.describe('timeline: keyboard, drops and marks', () => {
     await page.keyboard.press('Escape');
 
     // A track name too long for its header is a stop for Tab, and the keyboard that rests there
-    // is shown all of it, as the pointer is. A name that fits is no stop.
+    // is shown all of it, as the pointer is. A name that fits is no stop. The pointer is taken
+    // off the header first: left where it opened the menu, it would lie on the name once that is
+    // long, and ask for the name's tip in its own time, over whichever tip the keyboard has up.
+    await page.locator('.viewer__frame').hover();
     const [v1, a1] = await page.evaluate(() => {
       const tracks = Object.values((window as any).tandem.session.store.get().tracks) as any[];
       return ['video', 'audio'].map((kind) => tracks.find((t) => t.kind === kind && t.order === 0).id);
@@ -2002,6 +2005,18 @@ test.describe('timeline: keyboard, drops and marks', () => {
     await page.keyboard.press('Tab');
     await expect(page.getByRole('button', { name: 'Mute track' }).first()).toBeFocused();
     await expect(page.getByRole('tooltip')).toHaveText('Mute track');
+    // A name that someone makes short while the keyboard is on it keeps the keyboard, and the tip
+    // that showed the old name goes. It is a stop no longer once the keyboard has left.
+    await page.keyboard.press('Shift+Tab');
+    await expect(long).toBeFocused();
+    await expect(page.getByRole('tooltip')).toHaveText('Interview with the director, second take');
+    await commit(page, [{ op: 'updateTrack', id: a1, patch: { name: 'Mix' } }]);
+    const short = page.locator('.th__name', { hasText: 'Mix' });
+    await expect(short).toBeFocused();
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'Mute track' }).first()).toBeFocused();
+    await expect(short).not.toHaveAttribute('tabindex');
 
     // Muted is red and soloed amber, in the track's header and on its strip in the mixer.
     await page.evaluate(() => (window as any).tandem.ui.getState().set({ workspace: 'audio' }));

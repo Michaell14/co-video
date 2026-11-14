@@ -77,6 +77,7 @@ import { EdgeScroller, laneAxis, timeAxis } from './edgeScroll';
 import { keyframeRange, keyframeTimes, moveKeyframes, removeKeyframes } from './keyframes';
 import { drawLane } from './laneCanvas';
 import {
+  clipAt,
   clipWidth,
   LABEL_MIN_W,
   LANE_GAP,
@@ -1290,9 +1291,12 @@ export function Lanes({ lanes, height, width, live }: Props) {
     // As in a move, the pointer is read against the lanes of the project as committed. A track
     // the plan opens moves the lanes of the preview, and a plan that followed them would change
     // under a pointer that has not moved: an overwrite of whichever lane slid there.
-    const lane = laneAt(layoutLanes(p).lanes, laneY(y));
-    const clipEl = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-clip]');
-    const over = clipEl ? p.clips[clipEl.dataset.clip!] : null;
+    const committed = layoutLanes(p).lanes;
+    const lane = laneAt(committed, laneY(y));
+    // So is the clip under it. The clips on the page are those of the preview: where the plan
+    // before this one cuts into a clip, what it would drop lies over that part of the clip, and
+    // a modifier pressed there to do something to the clip instead would find no clip.
+    const over = clipAt(p, committed, toFrame(x) * ui().ppf, laneY(y), ui().ppf);
     if (payload.kind === 'effect') {
       if (!over || over.type === 'audio') return none;
       return { ...none, hint: { clipId: over.id, side: 'all' } };
