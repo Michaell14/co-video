@@ -262,6 +262,12 @@ other clip is.
 Internal buffers store row 0 at the top of the picture and are never flipped; only the final blit
 to the canvas flips. `readPixels` therefore returns rows in image order.
 
+The scopes work on a small copy of the last frame, read back through a pixel buffer and a fence
+that is looked at from a timer (`gl/fence.ts`), so that a read does not hold up the render loop. A
+fence is not waited for without end. One that has not signalled after two seconds is given up if
+frames were drawn meanwhile, because the picture asked for is no longer the last, and its pixels are
+fetched regardless if the picture was at rest, because nothing else would bring them.
+
 **Losing the context.** A browser may take the graphics context away at any time (a GPU reset, too
 many contexts, memory pressure). Programs, render targets and source textures go with it. The
 player stops the decoders that fed those textures, draws nothing meanwhile, and when the context is
@@ -497,7 +503,7 @@ bundle; the editor chunk is warmed in the background while you choose a project.
 | Engine  | all shaders compile and draw, geometry and colour, frame accuracy, HDR code values, memory held, context loss, exports inspected with ffprobe | `e2e/engine*.spec.ts`, `packages/engine/test`                            |
 | Editor  | the parts that are plain functions: panel layout, layers and focus, access, the transfer queue, timing, shortcuts, the service worker         | `apps/editor/test`                                                       |
 | Product | mouse-driven editing, reload persistence, panels and dialogs from the keyboard, export, multi-user sessions with roles                        | `e2e/editor.spec.ts`, `e2e/collab.spec.ts` and the other specs in `e2e/` |
-| Build   | the production build in a browser: site, editor under `/app/`, security headers, service worker, a start with no network                      | `e2e/smoke` (`pnpm test:smoke`)                                          |
+| Build   | the production build in a browser: the site, its menu and notices, the editor under `/app/`, security headers, service worker, no network     | `e2e/smoke` (`pnpm test:smoke`)                                          |
 
 The engine tests run through a bare "lab" page (`apps/editor/lab.html`) that exposes the engine
 without the editor around it. WebGL runs on SwiftShader, so the suite needs no GPU.

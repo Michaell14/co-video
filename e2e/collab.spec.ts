@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { clips, importFixtures, newProject, trackErrors } from './helpers';
+import { chooserOnKey, clips, importFixtures, newProject, trackErrors } from './helpers';
 
 /** Everything a person's view counts in frames, and the comments everyone shares. */
 const view = (p: Page) =>
@@ -422,11 +422,10 @@ test.describe('collaboration', () => {
     await page.keyboard.press('Control+k');
     await expect(page.locator('.palette input')).toBeFocused();
     await page.locator('.palette input').fill('replace this project');
-    // Enter runs the highlighted entry, and the highlight settles on the one result a moment after
-    // the list has shrunk to it.
+    // Enter runs the highlighted entry: the one result.
     await expect(page.locator('.palette__item')).toHaveCount(1);
     await expect(page.locator('.palette__item')).toHaveAttribute('data-active', 'true');
-    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.keyboard.press('Enter')]);
+    const chooser = await chooserOnKey(page, 'Enter');
     await chooser.setFiles(file);
     await page.getByRole('button', { name: 'Replace project' }).click();
     await expect.poll(() => view(page)).toEqual(at30);

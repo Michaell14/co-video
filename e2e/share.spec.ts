@@ -229,9 +229,12 @@ test.describe('sharing and review', () => {
 
   test('a view link from the Share dialog lets a guest read the comments and write none', async ({
     page,
+    context,
     browser,
   }) => {
     await noReloads(page);
+    // A link is copied as it is made, and one that could not be is left in its field instead.
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await newProject(page);
     const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
     test.skip(!meta.online || !meta.shared, 'collaboration server not reachable');

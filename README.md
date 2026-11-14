@@ -44,7 +44,12 @@ Requires Node 20+ and pnpm 10. Use a Chromium-based browser (Chrome, Edge, Arc, 
 
 The website's “Open the editor” leads to port 5173, so the editor's dev server takes that port or
 none: when it is in use, starting fails and says so. To run the editor on another port, tell the
-website where it is: `pnpm dev:editor --port 5199` and `VITE_EDITOR_URL=http://localhost:5199/ pnpm dev:site`.
+website where it is:
+
+```bash
+pnpm dev:editor --port 5199
+VITE_EDITOR_URL=http://localhost:5199/ pnpm dev:site
+```
 
 No server? The editor also works entirely offline: `pnpm dev:editor` gives you a local-only editor
 with projects stored in your browser.
@@ -79,19 +84,22 @@ with projects stored in your browser.
   lower thirds are not subtitles)
 - 18 blend modes, rectangular and elliptical masks with feathering, on-canvas transform handles
 - A source monitor with in / out marking, driven by the same transport keys as the timeline. What
-  is marked is inserted at the playhead or added there on a free track; **match frame** opens the
-  monitor on the very frame under the playhead. It stays open from one select to the next, and
-  while the project is open it remembers the marks and the position of every file it has shown
+  is marked is inserted at the playhead, added there on a free track, or dragged to the timeline by
+  the file's name; **match frame** opens the monitor on the very frame under the playhead. It stays
+  open from one select to the next, and while the project is open it remembers the marks and the
+  position of every file it has shown
 - The media pool has a selection like a file manager's (click, `Shift`, `Ctrl`, `Ctrl+A`, `Space`
   from the keyboard). A drag or the `+` takes the selected files to the timeline end to end, and
   `Delete` removes them, after asking when there are several or one is in use
 - Replace or relink the file behind any asset; every clip follows, in one undo step. A file dropped
   on a clip with `Alt` held takes the place of that one clip's media and keeps everything that was
-  done to the clip. “Reveal in media pool” finds the file behind a clip, and a video can be added
-  as picture only or sound only
+  done to the clip, as does “Replace selected clip with this” in the file's menu. “Reveal in media
+  pool” finds the file behind a clip, and a video can be added as picture only or sound only
 - A clip says what is wrong with it where it lies: **Offline** when its file is on neither this
   device nor the server, **Unsupported** when this browser cannot decode it, **Overlap** when it
-  shares frames with another clip of its track (its menu has “Move to a free track”)
+  shares frames with another clip of its track (its menu has “Move to a free track”). The viewer
+  says in a line why the picture under the playhead is black, the inspector says it of the selected
+  clip, and the media pool marks a file this browser cannot decode
 - Projects save to a portable `.tandem` file. Opening one makes a new project, from the home screen
   or the editor; replacing the open project with one is a separate command that asks first
 - The home screen renames, duplicates and deletes the projects on your device
@@ -122,6 +130,9 @@ with projects stored in your browser.
 
 - Per-clip gain, pan and equal-power fades (all keyframeable); per-track fader, pan, mute, solo,
   three-band EQ and compressor; live peak meters; waveforms on the timeline
+- A sound clip's level is drawn over its waveform as a line. On a selected clip the line is dragged
+  up or down to set the level, a `Ctrl`-click on it makes a volume keyframe, and a keyframe on it is
+  dragged like the line
 - **Loudness normalisation** to −14, −16 or −23 LUFS, measured to ITU-R BS.1770 with a peak
   ceiling (the meter agrees with `ffmpeg -af ebur128` to the tenth of a LU)
 - **Voiceover recording** straight onto the timeline: the take lands on a free track where the
@@ -135,8 +146,8 @@ with projects stored in your browser.
 - Live cursors, playheads, selections and in-flight drags; follow someone's playhead with one click
 - Time-coded comments with replies and resolve
 - Share links with **editor**, **commenter** and **viewer** roles, enforced by the server. For
-  someone who may not edit, the inspector, the colour page and the mixer say “Read only” and
-  their controls are out of reach
+  someone who may not edit, the inspector, the colour page and the mixer say “Read only”, and
+  their controls and the timeline's editing buttons are out of reach
 - Named versions plus automatic snapshots; restoring one is a single undoable step
 - Offline-first: the editor is an installable web app that opens with no network, projects and
   media live on your device, and changes merge when you reconnect
@@ -170,7 +181,8 @@ with projects stored in your browser.
 - Captions as `.srt`, and the cut itself as a CMX 3600 **EDL** for conforming in Resolve, Premiere
   or Avid
 - Any resolution up to the encoder's limit (8K where the hardware allows) and any frame rate up to
-  240 fps
+  240 fps. The dialog asks the encoder about the chosen codec, size and bitrate before anything is
+  rendered, and says what it would take instead of failing after the file has been named
 - Deterministic, frame-by-frame rendering — a slow machine takes longer but produces the same file
 - Media that is missing or will not decode is listed before the export starts. You can export
   anyway; the result then names every clip that left a gap
@@ -376,6 +388,8 @@ Three ideas carry most of the weight:
 - Tested on Chromium only (see above).
 - The names, roles and keyboard behaviour of the interface are checked against Chromium's
   accessibility tree, by the test suite. Nobody has gone through the editor with a screen reader.
+  For someone who may not edit, the read-only panels are closed to assistive technology together
+  with their controls, so a screen reader does not read out the values in them.
 - No account system: access control is by capability link. Fine for teams; not a public SaaS
   permission model.
 - HDR _display_ preview is tone-mapped to SDR in the viewer; scopes read true PQ nits and exports

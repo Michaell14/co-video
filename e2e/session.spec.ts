@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { clips, importFixtures, newProject } from './helpers';
+import { chooserOnKey, clips, importFixtures, newProject } from './helpers';
 
 /** `track:start+duration` for every clip, sorted, with tracks named V1, A1, … */
 function layout(page: Page): Promise<string[]> {
@@ -79,8 +79,8 @@ const toastCount = (page: Page, text: string): Promise<number> =>
   );
 
 /**
- * Open the command palette, type into it once it has the keyboard, and wait for its one result to
- * be the highlighted entry: that is the one Enter runs, and the highlight follows the list a moment later.
+ * Open the command palette, type into it once it has the keyboard, and wait for its one result,
+ * which is the highlighted entry and so the one Enter runs.
  */
 async function searchPalette(page: Page, query: string): Promise<void> {
   await page.keyboard.press('Control+k');
@@ -1234,7 +1234,7 @@ test.describe('projects, links and media', () => {
     await page.waitForTimeout(1700);
 
     // Ctrl+O: the file opens as a project of its own, with the media this device has for it.
-    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.keyboard.press('Control+o')]);
+    const chooser = await chooserOnKey(page, 'Control+o');
     await chooser.setFiles(file);
     await page.waitForFunction((source) => {
       const s = (window as any).tandem?.session;
@@ -1261,8 +1261,7 @@ test.describe('projects, links and media', () => {
     const question = page.getByRole('dialog', { name: 'Replace “Source cut” with “Source cut”?' });
     const replace = async () => {
       await searchPalette(page, 'replace this project');
-      const [c] = await Promise.all([page.waitForEvent('filechooser'), page.keyboard.press('Enter')]);
-      await c.setFiles(file);
+      await (await chooserOnKey(page, 'Enter')).setFiles(file);
     };
     await replace();
     await expect(question).toContainText('5 clips, 4 tracks and 1 media file');

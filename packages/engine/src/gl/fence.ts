@@ -21,7 +21,12 @@ export type FenceWait = 'signalled' | 'overdue' | 'abandoned';
 /** Between two looks at a fence. */
 const POLL_MS = 4;
 
-type FenceContext = Pick<WebGL2RenderingContext, 'clientWaitSync' | 'TIMEOUT_EXPIRED' | 'WAIT_FAILED'>;
+/** The part of a WebGL2 context a wait uses. */
+interface FenceContext {
+  readonly TIMEOUT_EXPIRED: number;
+  readonly WAIT_FAILED: number;
+  clientWaitSync(sync: WebGLSync, flags: number, timeout: number): number;
+}
 
 /**
  * Resolves when `sync` has signalled, `limitMs` have passed, or `abandoned` answers true, whichever

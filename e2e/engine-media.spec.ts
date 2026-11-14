@@ -2571,6 +2571,7 @@ test.describe('media engine', () => {
     expect(r.v2).toBe(r.v1);
     expect(r.v3).toBeGreaterThan(r.v2);
   });
+
   test('the poster of a picture many times taller than wide is one a project can carry', async ({ page }) => {
     await openLab(page);
     const r = await page.evaluate(async () => {

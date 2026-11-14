@@ -1,4 +1,4 @@
-import { expect, type BrowserContext, type Page } from '@playwright/test';
+import { expect, type BrowserContext, type FileChooser, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +35,19 @@ export async function newProject(page: Page): Promise<void> {
   await page.locator('.starter').first().click();
   await expect(page.locator('.tl')).toBeVisible();
   await page.waitForFunction(() => !!(window as any).tandem?.session?.player);
+}
+
+/**
+ * The file chooser that pressing `key` brings up. A browser hands a chooser to a test only once it
+ * has been told to, and that message and the key reach the page by different routes: a command
+ * that asks for its files within the key press can be there first, and its chooser then opens
+ * where no test sees it. One round trip to the page between the two settles the order.
+ */
+export async function chooserOnKey(page: Page, key: string): Promise<FileChooser> {
+  const asked = page.waitForEvent('filechooser');
+  await page.evaluate(() => undefined);
+  await page.keyboard.press(key);
+  return asked;
 }
 
 export async function importFixtures(page: Page, names: string[]): Promise<void> {

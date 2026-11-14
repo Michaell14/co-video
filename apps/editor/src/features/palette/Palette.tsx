@@ -102,7 +102,8 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     if (!item) return;
     // The palette is out of the page before the command starts, and the command starts within the
     // press that chose it. A dialog the command opens finds the keyboard back where the palette
-    // was called from, and a file chooser is one the browser still takes for the person's own.
+    // was called from, and a file chooser is asked for by the person's own press, which is the
+    // one kind of asking a browser is sure to grant.
     flushSync(onClose);
     item.run();
   };
@@ -257,6 +258,9 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             ['Insert between clips', 'Ctrl / ⌘ + drop'],
             ['Replace a clip’s media', 'Alt + drop a file on it'],
             ['Move a keyframe', 'Drag its mark on the selected clip'],
+            ['Clip volume', 'Drag the level line of a selected clip'],
+            ['Volume keyframe', 'Ctrl / ⌘ + click the level line'],
+            ['Source monitor to timeline', 'Drag the file’s name'],
             ['Disable snapping', 'Hold Shift while dragging'],
             ['Fine control', 'Shift / Alt on number fields'],
             ['Reset a control', 'Double-click it'],

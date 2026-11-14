@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { newProject } from './helpers';
+import { chooserOnKey, newProject } from './helpers';
 
 /**
  * The building blocks every panel is made of: dialogs, menus, selects, fields, sliders, tooltips,
@@ -1722,7 +1722,7 @@ test.describe('command palette', () => {
     await page.keyboard.type('import media');
     await expect(page.locator('.palette__item').first()).toHaveText(/^Import media/);
     await expect(page.locator('.palette__item').first()).toHaveAttribute('data-active', 'true');
-    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.keyboard.press('Enter')]);
+    const chooser = await chooserOnKey(page, 'Enter');
     expect(chooser.isMultiple()).toBe(true);
     expect(await page.evaluate(() => (window as any).__askedDuring)).toBe('keydown');
     await expect(page.locator('.palette')).toHaveCount(0);
@@ -1968,6 +1968,9 @@ test.describe('shortcut sheet and empty states', () => {
     expect(mouse.get('Insert between clips')).toBe('Ctrl / ⌘ + drop');
     expect(mouse.get('Replace a clip’s media')).toBe('Alt + drop a file on it');
     expect(mouse.get('Move a keyframe')).toBe('Drag its mark on the selected clip');
+    expect(mouse.get('Clip volume')).toBe('Drag the level line of a selected clip');
+    expect(mouse.get('Volume keyframe')).toBe('Ctrl / ⌘ + click the level line');
+    expect(mouse.get('Source monitor to timeline')).toBe('Drag the file’s name');
 
     // Every row is one line: what is done on the left, how on the right, nothing cut off.
     const crowded = await sheet
