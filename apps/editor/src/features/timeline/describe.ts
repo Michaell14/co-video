@@ -8,6 +8,8 @@ import {
   type ID,
   type Project,
 } from '@tandem/core';
+import type { DecoderGap } from '@tandem/engine';
+import { faultSpoken } from '../library/fault';
 
 /** A frame as it is read out: minutes, seconds and frames, with hours only when there are any. */
 export function spokenTime(frame: number, settings: Project['settings']): string {
@@ -26,8 +28,10 @@ export function clipName(clip: Clip): string {
 export interface ClipTrouble {
   /** Its media cannot be had, on this device or from the server. */
   offline?: boolean;
-  /** This browser cannot decode its picture, or its sound. */
+  /** Its picture, or its sound, cannot be decoded on this page. */
   undecodable?: boolean;
+  /** What keeps the page from decoding any picture, or any sound, where that is why. */
+  gap?: DecoderGap | null;
   /** It shares frames with another clip of its track. */
   overlapping?: boolean;
 }
@@ -46,7 +50,9 @@ export function describeClip(
   ];
   if (!clip.enabled) parts.push('disabled');
   if (trouble.offline) parts.push('media offline');
-  if (trouble.undecodable) parts.push('cannot be decoded in this browser');
+  if (trouble.undecodable) {
+    parts.push(faultSpoken(clip.type === 'audio' ? 'audio' : 'video', trouble.gap ?? null));
+  }
   if (trouble.overlapping) parts.push('overlaps another clip');
   return parts.join(', ');
 }

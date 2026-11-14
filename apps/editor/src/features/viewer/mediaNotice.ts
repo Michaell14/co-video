@@ -1,9 +1,11 @@
 /** What the viewer says when the picture under the playhead is black for want of its file. */
 import { resolveFrame, type Asset, type Project } from '@tandem/core';
+import { decoderGap, type DecoderGap } from '@tandem/engine';
+import { undecodable } from '../library/fault';
 
 /**
- * Why a file has no picture to give: it is on neither this device nor the server, or this browser
- * has no decoder for it.
+ * Why a file has no picture to give: it is on neither this device nor the server, or this page
+ * cannot decode it.
  */
 export type PictureFault = 'offline' | 'undecodable';
 
@@ -39,6 +41,12 @@ export function missingPictureAt(
   return null;
 }
 
-/** The one line that says it. */
-export const pictureNotice = (missing: MissingPicture): string =>
-  missing.why === 'offline' ? `Media offline: ${missing.name}` : `This browser cannot decode ${missing.name}`;
+/**
+ * The one line that says it. A picture that cannot be decoded is not put down to its file when
+ * the page has no video decoder at all (`gap`): the words are those the pool and the inspector use.
+ */
+export const pictureNotice = (
+  missing: MissingPicture,
+  gap: DecoderGap | null = decoderGap('video'),
+): string =>
+  missing.why === 'offline' ? `Media offline: ${missing.name}` : undecodable(missing.name, 'video', gap);

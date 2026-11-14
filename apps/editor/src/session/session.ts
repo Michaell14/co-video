@@ -818,7 +818,10 @@ export class Session {
       // What the server refused is the token it accepted for this session: the one that is stored.
       this.loseAccess(info);
     } else if (info === 'unreachable') {
-      if (this.store.isEmpty()) this.setMeta({ denied: true, online: false });
+      // A server that does not answer is not known to be keeping a place from us: `busy` is over
+      // until it says so again.
+      if (this.store.isEmpty()) this.setMeta({ denied: true, online: false, busy: false });
+      else if (this.meta.busy) this.setMeta({ busy: false });
     } else {
       // One answer covers every room that was refused while it was on its way.
       for (const room of this.turnedDown) this.judgeRefusal(room, info);

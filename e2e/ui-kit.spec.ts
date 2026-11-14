@@ -693,6 +693,62 @@ test.describe('fields', () => {
     expect(problems).toEqual([]);
   });
 
+  test('an event sent to the window itself is a press outside every field, and breaks nothing', async ({
+    page,
+  }) => {
+    const problems = trackProblems(page);
+    await sample(page);
+    await select(page, 'video');
+    const opacity = row(page, 'Opacity').locator('.num input');
+    // An event of the window's own has no element for a target: it happened nowhere in the page.
+    const toWindow = (type: 'pointerdown' | 'keydown' | 'scroll', key?: string): Promise<void> =>
+      page.evaluate(
+        ({ type, key }) => {
+          const init = { bubbles: true, cancelable: true };
+          const event =
+            type === 'pointerdown'
+              ? new PointerEvent(type, init)
+              : type === 'keydown'
+                ? new KeyboardEvent(type, { ...init, key })
+                : new Event(type);
+          window.dispatchEvent(event);
+        },
+        { type, key },
+      );
+
+    // A press: what was typed is applied, as by a press anywhere outside the field.
+    await opacity.click();
+    await page.keyboard.type('37');
+    await expect(opacity).toHaveAttribute('data-dirty', '');
+    await toWindow('pointerdown');
+    expect((await clipOf(page, 'video')).opacity).toBe(0.37);
+    await expect(opacity).not.toHaveAttribute('data-dirty');
+    await expect(opacity).toHaveValue('37');
+
+    // A menu takes it for a press outside too, and a key that arrives there for one of its own.
+    await page.getByRole('button', { name: 'Menu', exact: true }).click();
+    const menu = page.getByRole('menu');
+    await expect(menu).toBeVisible();
+    await toWindow('keydown', 'ArrowDown');
+    await expect(menu.getByRole('menuitem', { name: 'Import media…' })).toBeFocused();
+    await toWindow('pointerdown');
+    await expect(menu).toHaveCount(0);
+
+    // A dialog closes for Escape wherever the key is sent.
+    await page.evaluate(() => (window as any).tandem.ui.getState().set({ dialog: 'shortcuts' }));
+    const sheet = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    await expect(sheet).toBeVisible();
+    await toWindow('keydown', 'Escape');
+    await expect(sheet).toHaveCount(0);
+
+    // A tip goes when the window says that everything in it has scrolled.
+    await page.getByRole('button', { name: 'Comments', exact: true }).hover();
+    await expect(page.getByRole('tooltip')).toBeVisible();
+    await toWindow('scroll');
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+
   test('one pick in the colour picker is one undo step', async ({ page }) => {
     const problems = trackProblems(page);
     await sample(page);
@@ -2104,6 +2160,60 @@ test.describe('home and profile', () => {
     await expect.poll(() => rings(chosen)).toBe(2);
   });
 
+  test('the way in that was pressed keeps the keyboard while its project is made, and is not pressed twice', async ({
+    page,
+  }) => {
+    // A server that takes its time over a new project and then has no room for it: the project is
+    // made on this device instead, and the real server is asked nothing.
+    await page.route('**/api/health', (route) => route.fulfill({ json: { ok: true } }));
+    let asked = 0;
+    let answer = (): void => {};
+    await page.route('**/api/projects', async (route) => {
+      asked++;
+      await new Promise<void>((resolve) => (answer = resolve));
+      await route.fulfill({ status: 503, json: { error: 'no room for another project' } });
+    });
+    await page.goto('/');
+    await expect(page.locator('.home__status')).toHaveText('Collaboration server connected');
+    const starters = page.locator('.starter');
+    const vertical = starters.nth(1);
+    await vertical.focus();
+    await page.keyboard.press('Enter');
+
+    // It is at work, not switched off: it says so, shows it, and the keyboard is still on it.
+    await expect(vertical).toHaveAttribute('aria-busy', 'true');
+    await expect(vertical).toHaveAttribute('aria-disabled', 'true');
+    await expect(vertical).toBeFocused();
+    await expectRing(vertical);
+    await expect(vertical.locator('.spinner')).toBeVisible();
+    // The other ways of making a project wait for it. Joining one is another matter.
+    for (const other of [0, 2, 3]) await expect(starters.nth(other)).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Custom project…' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Open project file…' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Join with a link…' })).toBeEnabled();
+    await expect.poll(() => asked).toBe(1);
+
+    // Pressed again, by either key, it starts nothing more.
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+    expect(asked).toBe(1);
+    await expect(vertical).toBeFocused();
+
+    answer();
+    await expect(page.locator('.tl')).toBeVisible();
+    await page.waitForFunction(() => !!(window as any).tandem?.session?.player);
+    const made = await page.evaluate(() => {
+      const { width, height } = (window as any).tandem.session.store.get().settings;
+      return `${width}x${height}`;
+    });
+    expect(made).toBe('1080x1920');
+    // One project, and it is this device's own.
+    const list = await page.evaluate(() => JSON.parse(localStorage.getItem('tandem.projects.v1') ?? '[]'));
+    expect(list).toHaveLength(1);
+    expect(list[0].token).toBeNull();
+  });
+
   test('a link that cannot be one is refused at the field, until it is changed', async ({ page }) => {
     const problems = trackProblems(page);
     await page.route('**/api/health', (route) => route.abort());
@@ -2386,6 +2496,34 @@ test.describe('comments', () => {
     expect(across.CommentCard).toBe(2);
     await page.evaluate(() => (window as any).tandem.cmd.seek(220));
     await expect(page.locator('.comment[data-current="true"] .comment__text')).toHaveText(['Note 2']);
+  });
+
+  test('a note posted from its button leaves the keyboard at the box, for the next one', async ({ page }) => {
+    await sample(page);
+    await page.locator('.topbar').getByRole('button', { name: 'Comments' }).focus();
+    await page.keyboard.press('Enter');
+    const box = page.getByRole('textbox', { name: 'Comment at the playhead' });
+    const post = page.locator('.composer').getByRole('button', { name: 'Comment' });
+    await expect(post).toBeDisabled();
+    await box.focus();
+    await page.keyboard.type('Hold this shot');
+    await page.keyboard.press('Tab');
+    await expect(post).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.comment')).toHaveCount(1);
+    // With nothing to post the button is off again. The keyboard did not go down with it.
+    await expect(post).toBeDisabled();
+    await expect(box).toBeFocused();
+    await expect(box).toHaveValue('');
+    await page.keyboard.type('And cut on the beat');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.comment')).toHaveCount(2);
+
+    // Pressed with the pointer it leaves the keys to the editor, as every press of the pointer does.
+    await box.fill('Third');
+    await post.click();
+    await expect(page.locator('.comment')).toHaveCount(3);
+    await expect(box).not.toBeFocused();
   });
 
   test('closing the panel or removing a comment from the keyboard hands the keyboard on', async ({

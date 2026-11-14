@@ -710,6 +710,13 @@ test.describe('projects, links and media', () => {
     await v.evaluate(() => {
       const s = (window as any).tandem.session;
       (window as any).__before = s;
+      // Whether an editor is ever drawn over a document that has nothing of the project in it.
+      (window as any).__emptyEditor = false;
+      new MutationObserver(() => {
+        if (document.querySelector('.tl') && (window as any).tandem.session.store.isEmpty()) {
+          (window as any).__emptyEditor = true;
+        }
+      }).observe(document.body, { childList: true, subtree: true });
       s.doc.transact(() => {
         for (const key of Array.from(s.doc.getMap('clips').keys())) s.doc.getMap('clips').delete(key);
       });
@@ -719,6 +726,8 @@ test.describe('projects, links and media', () => {
       const s = (window as any).tandem?.session;
       return s && s !== (window as any).__before && Object.keys(s.store.get().clips).length === 1;
     });
+    // Between the two the page said that it was opening the project, not that the timeline is empty.
+    expect(await v.evaluate(() => (window as any).__emptyEditor)).toBe(false);
     expect(await toastCount(v, 'Changes made here were not saved: you have view-only access')).toBe(1);
     expect(await clips(page)).toHaveLength(1);
     // Nothing of it is left on the device either.
@@ -754,7 +763,7 @@ test.describe('projects, links and media', () => {
     // Sockets to the collaboration server fail to open while `refuse` is set, the way they do when
     // the server turns the upgrade away. A browser reports that the same whatever the status was.
     await b.addInitScript(() => {
-      const state = ((window as any).__sockets = { refuse: true });
+      const state = ((window as any).__sockets = { refuse: true, emptyEditor: false });
       window.WebSocket = new Proxy(window.WebSocket, {
         construct(target, args) {
           if (!state.refuse || !String(args[0]).includes('/ws/')) return new target(...(args as [string]));
@@ -763,6 +772,12 @@ test.describe('projects, links and media', () => {
           return dead;
         },
       });
+      // Whether an editor is ever drawn over a document that has nothing of the project in it.
+      new MutationObserver(() => {
+        if (document.querySelector('.tl') && (window as any).tandem?.session?.store.isEmpty()) {
+          state.emptyEditor = true;
+        }
+      }).observe(document, { childList: true, subtree: true });
     });
     await b.goto(link);
     // The link is good (the API says so), so this is a full or rate-limited server: keep waiting.
@@ -777,9 +792,46 @@ test.describe('projects, links and media', () => {
     );
     await expect(b.locator('.tl')).toBeVisible();
     expect(await meta(b)).toMatchObject({ busy: false, status: 'connected' });
+    // Until the project had arrived there was no editor to be seen, with an empty timeline in it.
+    expect(await b.evaluate(() => (window as any).__sockets.emptyEditor)).toBe(false);
+
+    // The server stops letting this project in while it still answers. That is not the device
+    // being offline, and the top bar says what the notice says. From here on the network coming
+    // back is announced to the page each time, so that it knocks at once instead of in its own time.
+    await watchToasts(b);
+    const knock = (refuse: boolean): Promise<void> =>
+      b.evaluate((refuse) => {
+        (window as any).__sockets.refuse = refuse;
+        for (const p of (window as any).tandem.session.providers) p.ws?.close();
+        window.dispatchEvent(new Event('online'));
+      }, refuse);
+    const chip = b.locator('.conn');
+    await knock(true);
+    await expect(chip).toHaveText('Waiting for the server — changes will sync');
+    expect(await meta(b)).toMatchObject({ busy: true, shared: true, denied: false });
+    expect(await toastCount(b, 'The collaboration server is busy. Still trying to connect…')).toBe(1);
+    await chip.hover();
+    await expect(b.getByRole('tooltip')).toHaveText(
+      'The collaboration server is busy: it answers, but has not let this project in yet. Your edits are kept on this device and sync as soon as it does.',
+    );
+    await b.mouse.move(720, 450);
+
+    // A server that no longer answers at all is not known to be keeping a place: then it is offline.
+    await b.route(`**/api/projects/${id}`, (route) => route.abort());
+    await knock(true);
+    await expect(chip).toHaveText('Offline — changes will sync');
+    expect(await meta(b)).toMatchObject({ busy: false, shared: true });
+    // It answers again and still has no place. The notice is not given a second time.
+    await b.unroute(`**/api/projects/${id}`);
+    await knock(true);
+    await expect(chip).toHaveText('Waiting for the server — changes will sync');
+    expect(await toastCount(b, 'The collaboration server is busy')).toBe(1);
+    // A place again, and all is as it was.
+    await knock(false);
+    await expect(chip).toHaveText('All changes synced');
+    expect(await meta(b)).toMatchObject({ busy: false, status: 'connected' });
 
     // Now the link really is withdrawn: sockets are turned away and the API says 401.
-    await watchToasts(b);
     await b.route(`**/api/projects/${id}`, (route) =>
       route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"invalid token"}' }),
     );
@@ -952,6 +1004,64 @@ test.describe('projects, links and media', () => {
     await expect(page.locator('.asset__thumb img')).toBeVisible();
   });
 
+  test('a poster that comes out too long for the readers is drawn again before it goes into the project', async ({
+    page,
+  }) => {
+    // The engine keeps its posters within what readers pass on, so nothing it makes today reaches
+    // the session's own guard. Here its encoder is swapped for one that does not compress: the
+    // poster it hands over is the right size in pixels and far too long, as one from another
+    // build could be. Everything else is the app's own route from a file to the project.
+    await page.addInitScript(() => {
+      const encode = OffscreenCanvas.prototype.convertToBlob;
+      (window as any).__posters = [];
+      OffscreenCanvas.prototype.convertToBlob = async function (options) {
+        if (options?.type !== 'image/jpeg') return encode.call(this, options);
+        const lossless = await encode.call(this, { type: 'image/png' });
+        (window as any).__posters.push(lossless.size);
+        return lossless;
+      };
+    });
+    await newLocalProject(page);
+    const poster = await page.evaluate(async () => {
+      const { session } = (window as any).tandem;
+      const noise = new ImageData(320, 2000);
+      let seed = 11;
+      for (let i = 0; i < noise.data.length; i++) {
+        seed = (seed * 16807) % 2147483647;
+        noise.data[i] = i % 4 === 3 ? 255 : seed & 255;
+      }
+      const sheet = new OffscreenCanvas(320, 2000);
+      sheet.getContext('2d')!.putImageData(noise, 0, 0);
+      const file = new File([await sheet.convertToBlob({ type: 'image/png' })], 'long-page.png', {
+        type: 'image/png',
+      });
+      const [asset] = await session.importFiles([file]);
+      const written: string = session.doc.getMap('assets').get(asset.id).get('thumb');
+      const read: string | null = session.store.get().assets[asset.id].thumb;
+      const picture = new Image();
+      picture.src = written;
+      await picture.decode();
+      return {
+        made: (window as any).__posters as number[],
+        written: written.slice(0, written.indexOf(';')),
+        length: written.length,
+        read: read === written,
+        shape: picture.naturalHeight / picture.naturalWidth,
+      };
+    });
+    // What the engine made was one poster, longer than any reader passes on (256 KiB as a data URL).
+    expect(poster.made).toHaveLength(1);
+    expect((poster.made[0] * 4) / 3).toBeGreaterThan(256 * 1024);
+    // What went into the project is that picture encoded again, and every reader passes it on.
+    expect(poster.written).toBe('data:image/jpeg');
+    expect(poster.length).toBeLessThanOrEqual(256 * 1024);
+    expect(poster.read).toBe(true);
+    // It is still the whole picture.
+    expect(poster.shape).toBeGreaterThan(6);
+    expect(poster.shape).toBeLessThan(6.5);
+    await expect(page.locator('.asset__thumb img')).toBeVisible();
+  });
+
   test('publishing takes along imports that are still being saved, and those that could not be', async ({
     page,
   }) => {
@@ -1005,14 +1115,28 @@ test.describe('projects, links and media', () => {
     const created = page.waitForResponse(
       (r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/projects',
     );
-    await page.getByRole('button', { name: 'Share', exact: true }).click();
-    await page.getByRole('button', { name: 'Publish and share' }).click();
+    // From the keyboard: the dialog opens on its one button, which stays under the keyboard for as
+    // long as the publishing takes and is not to be pressed a second time.
+    await page.getByRole('button', { name: 'Share', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    const publish = page.getByRole('dialog', { name: 'Share project' }).getByRole('button');
+    await expect(publish.nth(1)).toHaveText('Publish and share');
+    await expect(publish.nth(1)).toBeFocused();
+    await page.keyboard.press('Enter');
     await expect(toast(page, 'Still saving imported media on this device')).toBeVisible();
+    await expect(publish.nth(1)).toHaveText('Publishing…');
+    await expect(publish.nth(1)).toHaveAttribute('aria-busy', 'true');
+    await expect(publish.nth(1)).toBeFocused();
+    await page.keyboard.press('Enter');
     test.skip(!(await created).ok(), 'the collaboration server is not taking new projects');
     await page.waitForFunction((local) => {
       const s = (window as any).tandem?.session;
       return s && s.id !== local && !!s.player;
     }, local);
+    // The project is open again under the id the server gave it, in an editor made anew: the
+    // keyboard is on its Share button, where it was before the dialog, and one project was made.
+    await expect(page.getByRole('button', { name: 'Share', exact: true })).toBeFocused();
+    expect(await toastCount(page, 'Project published')).toBe(1);
 
     // Under its new id the project has all three: two on the device by now, one still in the page.
     expect(await statuses()).toEqual([
@@ -1337,20 +1461,24 @@ test.describe('projects, links and media', () => {
     expect(await meta(page)).toMatchObject({ shared: false, refusedLink: 'owner' });
 
     // Share says what happened. Asking again is the person's to do, and a second no changes nothing.
-    await page.getByRole('button', { name: 'Share', exact: true }).click();
+    await page.getByRole('button', { name: 'Share', exact: true }).focus();
+    await page.keyboard.press('Enter');
     const share = page.getByRole('dialog', { name: 'Share project' });
     await expect(share).toContainText('The server did not accept this project’s link');
-    await share.getByRole('button', { name: 'Try again' }).click();
+    // Asked from the keyboard, which stays on the button while the server is asked and after.
+    await expect(share.getByRole('button', { name: 'Try again' })).toBeFocused();
+    await page.keyboard.press('Enter');
     await expect(toast(page, 'The server still does not accept the link.')).toBeVisible();
     expect(asked).toBe(2);
     expect(await linkAside(page, id)).toMatchObject({ token });
+    await expect(share.getByRole('button', { name: 'Try again' })).toBeFocused();
 
     // The server is itself again: the same link, the same project, shared as before. Just now the
     // browser has no room for a list with the link in it, so the link stays where it was kept: a
     // reload would find it nowhere else.
     answer = 'real';
     await page.evaluate(() => ((window as any).__full = true));
-    await share.getByRole('button', { name: 'Try again' }).click();
+    await page.keyboard.press('Enter');
     await expect(toast(page, 'this project is shared again')).toBeVisible();
     await expect.poll(async () => (await meta(page)).status).toBe('connected');
     expect(await meta(page)).toMatchObject({ shared: true, role: 'owner', refusedLink: null });
@@ -1358,6 +1486,9 @@ test.describe('projects, links and media', () => {
     expect((await registry(page))[0].token).toBeNull();
     expect(await linkAside(page, id)).toMatchObject({ token, role: 'owner' });
     await expect(share.getByRole('button', { name: 'Copy link' })).toBeVisible();
+    // The button went with the question it asked. The keyboard is on the first control of what
+    // the dialog shows now, as it is when a dialog opens.
+    await expect(share.getByRole('button', { name: 'Can edit', exact: true })).toBeFocused();
     await page.keyboard.press('Escape');
 
     // With room again the next save of the list carries the link.
@@ -1428,10 +1559,12 @@ test.describe('projects, links and media', () => {
     const sure = page.getByRole('dialog', { name: 'Forget the link to the shared project?' });
     await sure.getByRole('button', { name: 'Cancel' }).click();
     expect(await linkAside(page, id)).not.toBeNull();
-    await share.getByRole('button', { name: 'Forget the link' }).click();
-    await sure.getByRole('button', { name: 'Forget link' }).click();
-    // From here on it is an ordinary local project.
-    await expect(share.getByRole('button', { name: 'Publish and share' })).toBeVisible();
+    await share.getByRole('button', { name: 'Forget the link' }).focus();
+    await page.keyboard.press('Enter');
+    await sure.getByRole('button', { name: 'Forget link' }).focus();
+    await page.keyboard.press('Enter');
+    // From here on it is an ordinary local project, and the keyboard is on what the dialog offers now.
+    await expect(share.getByRole('button', { name: 'Publish and share' })).toBeFocused();
     expect(await linkAside(page, id)).toBeNull();
     expect(await meta(page)).toMatchObject({ shared: false, refusedLink: null });
     await page.keyboard.press('Escape');

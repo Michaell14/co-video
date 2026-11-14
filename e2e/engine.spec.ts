@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
 import { ffprobe, hasFfprobe, openLab, trackErrors } from './helpers';
 
@@ -328,8 +328,10 @@ test.describe('render engine', () => {
             height: 180,
             fpsNum: 30,
             fpsDen: 1,
-            videoBitrate: 800_000,
-            audioBitrate: 96_000,
+            // Neither bitrate is a whole number of bits, as a product of two numbers can fail to
+            // be; an encoder is given the nearest that is.
+            videoBitrate: 800_000.4,
+            audioBitrate: 96_000.4,
             range: null,
             includeVideo: true,
             includeAudio: true,
@@ -355,6 +357,141 @@ test.describe('render engine', () => {
       expect(video.color_transfer).toMatch(variant.transfer);
       expect(audio.codec_name).toBe('opus');
       expect(Number(probe.format.duration)).toBeGreaterThan(1.4);
+    });
+  }
+});
+
+test.describe('exporter', () => {
+  /**
+   * In the lab page: a project of one red solid, twelve frames long, and settings to export it
+   * with as a small WebM without sound, as `window.small`.
+   */
+  async function small(page: Page, dynamicRange: 'sdr' | 'pq'): Promise<void> {
+    await openLab(page);
+    await page.evaluate((dynamicRange) => {
+      const { core } = (window as any).lab;
+      const v1 = core.makeTrack('video', 0);
+      const project = core.applyEdits(
+        core.emptyProject({ width: 320, height: 180, colorMode: dynamicRange === 'sdr' ? 'sdr' : 'hdr-pq' }),
+        [
+          { op: 'addTrack', track: v1 },
+          {
+            op: 'addClip',
+            clip: core.makeClip('solid', v1.id, {
+              start: 0,
+              duration: 12,
+              shape: { ...core.DEFAULT_SHAPE, fill: '#ff0000' },
+            }),
+          },
+        ],
+      );
+      const settings = {
+        container: 'webm',
+        videoCodec: 'vp9',
+        audioCodec: 'opus',
+        width: 320,
+        height: 180,
+        fpsNum: 30,
+        fpsDen: 1,
+        videoBitrate: 800_000,
+        audioBitrate: 96_000,
+        range: null,
+        includeVideo: true,
+        includeAudio: false,
+        dynamicRange,
+        keyFrameInterval: 1,
+        hardwareAcceleration: 'no-preference',
+      };
+      (window as any).small = { project, settings };
+    }, dynamicRange);
+  }
+
+  test('a cancel is honoured until the file is finished, and no longer once it is being put in place', async ({
+    page,
+  }) => {
+    const errors = trackErrors(page);
+    const warnings: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'warning') warnings.push(message.text());
+    });
+    await small(page, 'sdr');
+    const r = await page.evaluate(async () => {
+      const { lab, small } = window as any;
+      const directory = await navigator.storage.getDirectory();
+      /** One export, cancelled the moment it reports the phase `at`: into a picked file, or into memory. */
+      const cancelled = async (at: string, picked: boolean) => {
+        const file = picked
+          ? await directory.getFileHandle(`cancelled-at-${at}.webm`, { create: true })
+          : null;
+        const cancel = new AbortController();
+        const phases: string[] = [];
+        let outcome: string;
+        try {
+          const result = await lab.engine.exportProject(small.project, lab.resolver, small.settings, {
+            writable: await file?.createWritable(),
+            signal: cancel.signal,
+            onProgress: (progress: { phase: string }) => {
+              if (!phases.includes(progress.phase)) phases.push(progress.phase);
+              if (progress.phase === at) cancel.abort();
+            },
+          });
+          outcome = result.blob ? 'a file in memory' : 'a file in the place picked';
+        } catch (err) {
+          outcome = err instanceof lab.engine.ExportCancelled ? 'cancelled' : `failed: ${String(err)}`;
+        }
+        return { outcome, phases, size: file ? (await file.getFile()).size : null };
+      };
+      return {
+        memory: await cancelled('finalizing', false),
+        file: await cancelled('finalizing', true),
+        saving: await cancelled('saving', true),
+      };
+    });
+    // Reported as finishing, the file is not out of the exporter's hands yet: nothing is given
+    // back, and nothing of it is in the file that was picked.
+    const unfinished = ['preparing', 'rendering', 'finalizing'];
+    expect(r.memory).toEqual({ outcome: 'cancelled', phases: unfinished, size: null });
+    expect(r.file).toEqual({ outcome: 'cancelled', phases: unfinished, size: 0 });
+    // Reported as being put in place, it is past stopping, and is whole.
+    expect(r.saving.outcome).toBe('a file in the place picked');
+    expect(r.saving.phases).toEqual([...unfinished, 'saving', 'done']);
+    expect(r.saving.size).toBeGreaterThan(500);
+    expect(errors).toEqual([]);
+    expect(warnings.filter((text) => text.includes('finalized'))).toEqual([]);
+  });
+
+  for (const dynamicRange of ['sdr', 'pq'] as const) {
+    test(`the encoder is asked ahead of an export what the export asks it at its first frame (${dynamicRange})`, async ({
+      page,
+    }) => {
+      await small(page, dynamicRange);
+      const r = await page.evaluate(async () => {
+        const { lab, small } = window as any;
+        const asked: VideoEncoderConfig[] = [];
+        const real = VideoEncoder.isConfigSupported.bind(VideoEncoder);
+        VideoEncoder.isConfigSupported = (config) => {
+          asked.push({ ...config });
+          return real(config);
+        };
+        // A bitrate that is not a whole number of bits, as a product of two numbers can be.
+        const settings = { ...small.settings, videoBitrate: 0.7 * 1e6 + 0.4 };
+        const accepted: boolean = await lab.engine.encoderAccepts(settings);
+        const ahead = asked.splice(0);
+        const out = await lab.exportBase64(small.project, settings);
+        return { accepted, ahead, during: asked, frames: out.frames as number };
+      });
+      expect(r.accepted).toBe(true);
+      expect(r.frames).toBe(12);
+      expect(r.ahead).toHaveLength(1);
+      expect(r.during).toHaveLength(1);
+      // The export knows one thing more by then, the shape of the pixels of the frame in hand.
+      const { displayWidth, displayHeight, ...first } = r.during[0];
+      expect([displayWidth, displayHeight]).toEqual([320, 180]);
+      expect(r.ahead[0]).toEqual(first);
+      expect(r.ahead[0]).toMatchObject({ width: 320, height: 180, bitrate: 700_000, framerate: 30 });
+      expect(r.ahead[0].codec).toMatch(
+        dynamicRange === 'sdr' ? /^vp09\.00\./ : /^vp09\.02\.31\.10\.01\.09\.16\./,
+      );
     });
   }
 });

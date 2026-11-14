@@ -11,7 +11,7 @@ import {
   type Project,
   type Track,
 } from '@tandem/core';
-import { decodeNotice } from '../src/features/library/fault';
+import { decodeNotice, faultChip, type DecoderGaps } from '../src/features/library/fault';
 import { picked, placeAssets, replaceTarget, restOfDrop } from '../src/features/library/pool';
 import { foldSpelling, search } from '../src/features/library/search';
 import { tabToward } from '../src/features/editor/tabs';
@@ -342,23 +342,66 @@ describe('the clip a file from the pool can replace', () => {
 
 describe('what is said of a file this browser cannot decode', () => {
   const file = { videoCodec: 'apch', audioCodec: 'pcm-s24' };
+  /** A page with both decoders: what cannot be decoded there is refused for what it is. */
+  const BOTH: DecoderGaps = { picture: null, sound: null };
 
   it('names the part that cannot be decoded, and its codec', () => {
-    expect(decodeNotice(file, { picture: true, sound: false })).toBe(
+    expect(decodeNotice(file, { picture: true, sound: false }, BOTH)).toBe(
       'This browser cannot decode the picture of this file (apch)',
     );
-    expect(decodeNotice(file, { picture: false, sound: true })).toBe(
+    expect(decodeNotice(file, { picture: false, sound: true }, BOTH)).toBe(
       'This browser cannot decode the sound of this file (pcm-s24)',
     );
-    expect(decodeNotice(file, { picture: true, sound: true })).toBe(
+    expect(decodeNotice(file, { picture: true, sound: true }, BOTH)).toBe(
       'This browser cannot decode the picture or the sound of this file (apch, pcm-s24)',
     );
   });
 
   it('says so without a codec where the file names none', () => {
-    expect(decodeNotice({ videoCodec: null, audioCodec: null }, { picture: true, sound: false })).toBe(
+    expect(decodeNotice({ videoCodec: null, audioCodec: null }, { picture: true, sound: false }, BOTH)).toBe(
       'This browser cannot decode the picture of this file',
     );
+  });
+
+  it('puts it down to the browser, not the codec, where the browser has no such decoder at all', () => {
+    const none: DecoderGaps = { picture: 'absent', sound: 'absent' };
+    expect(decodeNotice(file, { picture: true, sound: false }, none)).toBe(
+      'This browser has no video decoder to play the picture of this file',
+    );
+    expect(decodeNotice(file, { picture: false, sound: true }, none)).toBe(
+      'This browser has no audio decoder to play the sound of this file',
+    );
+    expect(decodeNotice(file, { picture: true, sound: true }, none)).toBe(
+      'This browser has no video or audio decoder to play the picture and the sound of this file',
+    );
+  });
+
+  it('puts it down to the page where the address is neither HTTPS nor localhost', () => {
+    const off: DecoderGaps = { picture: 'insecure', sound: 'insecure' };
+    expect(decodeNotice(file, { picture: true, sound: false }, off)).toBe(
+      'This page needs HTTPS to play the picture of this file',
+    );
+    expect(decodeNotice(file, { picture: true, sound: true }, off)).toBe(
+      'This page needs HTTPS to play the picture and the sound of this file',
+    );
+  });
+
+  it('gives a picture and a sound that fail for different reasons a sentence each', () => {
+    // A browser that decodes video and has no audio decoder, and a file whose picture it refuses.
+    expect(decodeNotice(file, { picture: true, sound: true }, { picture: null, sound: 'absent' })).toBe(
+      'This browser cannot decode the picture of this file (apch). ' +
+        'This browser has no audio decoder to play the sound of this file',
+    );
+    // A part that is fine is not spoken of, whatever the page lacks for it.
+    expect(decodeNotice(file, { picture: true, sound: false }, { picture: null, sound: 'absent' })).toBe(
+      'This browser cannot decode the picture of this file (apch)',
+    );
+  });
+
+  it('marks the clip in the timeline in a word or two for each of the three', () => {
+    expect(faultChip(null)).toBe('Unsupported');
+    expect(faultChip('absent')).toBe('No decoder');
+    expect(faultChip('insecure')).toBe('Needs HTTPS');
   });
 });
 

@@ -132,6 +132,10 @@
   stroke: var(--accent);
   cursor: move;
 }
+/* The outline of someone who may not edit marks what is selected and moves nothing. */
+.gizmo[data-readonly] .gizmo__body {
+  cursor: auto;
+}
 .gizmo__handle,
 .gizmo__rotate {
   fill: var(--fg-1);

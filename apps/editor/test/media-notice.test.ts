@@ -53,9 +53,10 @@ function add(p: Project, track: Track, assetId: string | null, start: number, in
 const faultOf = (a: Asset): PictureFault | null =>
   a.id === 'away' ? 'offline' : a.id === 'odd' ? 'undecodable' : null;
 
+/** What the viewer says on a page that has a video decoder, as the test browser does. */
 const said = (p: Project, frame: number): string | null => {
   const missing = missingPictureAt(p, frame, faultOf);
-  return missing && pictureNotice(missing);
+  return missing && pictureNotice(missing, null);
 };
 
 describe('missingPictureAt', () => {
@@ -103,6 +104,18 @@ describe('missingPictureAt', () => {
     const f = fixture();
     const p = add(f.p, f.v1, 'gone', 0, { name: 'holiday.mov' });
     expect(said(p, 10)).toBe('Media offline: holiday.mov');
+  });
+
+  it('does not put a picture down to its file where the page has no video decoder at all', () => {
+    const odd = { name: 'odd.mp4', why: 'undecodable' } as const;
+    expect(pictureNotice(odd, null)).toBe('This browser cannot decode odd.mp4');
+    expect(pictureNotice(odd, 'absent')).toBe('This browser has no video decoder to play odd.mp4');
+    expect(pictureNotice(odd, 'insecure')).toBe('This page needs HTTPS to play odd.mp4');
+    // A file that is nowhere to be had is offline whatever the page can decode.
+    const away = { name: 'away.mp4', why: 'offline' } as const;
+    for (const gap of [null, 'absent', 'insecure'] as const) {
+      expect(pictureNotice(away, gap)).toBe('Media offline: away.mp4');
+    }
   });
 
   it('sees both clips of a transition, the incoming one first', () => {

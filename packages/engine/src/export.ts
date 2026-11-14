@@ -54,7 +54,7 @@ export interface ExportSettings {
   height: number;
   fpsNum: number;
   fpsDen: number;
-  /** Bits per second. */
+  /** Bits per second. An encoder takes whole bits only: both are rounded to the nearest. */
   videoBitrate: number;
   audioBitrate: number;
   /** Frames in the project timebase; out is exclusive. Null exports the whole sequence. */
@@ -271,8 +271,15 @@ export interface VideoEncoding {
   frameRate: number;
   /** Whole bits per second: an encoder is configured with nothing else. */
   bitrate: number;
+  /**
+   * Seconds from one key frame to the next. It decides which frames are key frames, and is no
+   * part of what an encoder takes or refuses.
+   */
   keyFrameInterval: number;
-  /** A 10-bit picture is encoded under a full codec string that names its depth and transfer. */
+  /**
+   * Handed on as they are. A 10-bit picture is encoded under a full codec string, which names its
+   * depth and transfer; for an 8-bit one the string is left to be worked out from the rest.
+   */
   options: Pick<VideoEncodingAdditionalOptions, 'hardwareAcceleration' | 'latencyMode' | 'fullCodecString'>;
 }
 
@@ -573,7 +580,7 @@ export async function exportProject(
     audioSource = new AudioBufferSource(
       settings.container === 'wav'
         ? { codec: 'pcm-s16' }
-        : { codec: settings.audioCodec, bitrate: settings.audioBitrate },
+        : { codec: settings.audioCodec, bitrate: Math.round(settings.audioBitrate) },
     );
     output.addAudioTrack(audioSource);
   }
@@ -690,8 +697,9 @@ export async function exportProject(
     await output.finalize();
     const mimeType = await output.getMimeType().catch(() => format.mimeType);
     // Flushing the encoders and writing the end of the file takes its time, and a cancel that
-    // came in meanwhile is one like any other: nothing has been handed over yet. Nothing is
-    // awaited between this look and the result, or the closing of the file.
+    // came in meanwhile is one like any other: nothing has been handed over yet. From this look
+    // on nothing is awaited but the closing of a picked file, so no later cancel goes unseen
+    // while it could still be honoured.
     check();
     if (handle.writable) {
       // What was written so far went to the side; closing is what puts it in the place that was

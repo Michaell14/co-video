@@ -13,6 +13,7 @@ import {
   type CSSProperties,
   type MouseEventHandler,
   type ReactNode,
+  type Ref,
   type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -263,6 +264,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: ReactNode;
   /** What the button's own press began is still under way; see `whileBusy`. */
   busy?: boolean;
+  ref?: Ref<HTMLButtonElement>;
 }
 
 /** A press on a busy button is nobody's: not its own, and not that of whatever it stands in. */
@@ -278,8 +280,11 @@ const swallow: MouseEventHandler = (e) => {
  * page. A busy button stays where it is and says that it is at work. It only does not act: Enter
  * and Space press a button as the pointer does, and none of them reaches `onClick`.
  *
- * `Button` takes this as its `busy`. A button of another kind (a card pressed as a whole) spreads
- * the result itself.
+ * `Button` takes this as its `busy`, and looks then as it does switched off. Nothing turns in it:
+ * most of these buttons stand in dialogs, over a backdrop that is blurred live, and anything that
+ * moves there has the whole page composited again for every frame it moves (see ui.css). A call
+ * site whose work takes long says so in the button's words. A button of another kind (a card
+ * pressed as a whole) spreads the result itself.
  */
 export function whileBusy<T extends Element>(busy: boolean | undefined, onClick?: MouseEventHandler<T>) {
   return busy ? { 'aria-disabled': true, 'aria-busy': true, onClick: swallow } : { onClick };
@@ -308,13 +313,10 @@ export function Button({
         block && 'btn--block',
         className,
       )}
-      // The spinner stands where the icon was, or in place of the words where there is no icon:
-      // either way the button keeps its width (ui.css).
-      data-busy={working ? (icon ? 'icon' : 'label') : undefined}
       {...rest}
       {...whileBusy(working, onClick)}
     >
-      {working ? <span className="spinner" /> : icon}
+      {icon}
       {children}
     </button>
   );

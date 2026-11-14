@@ -53,6 +53,35 @@ const selection = (field: Locator): Promise<string> =>
   field.evaluate((el: HTMLInputElement) => el.value.slice(el.selectionStart!, el.selectionEnd!));
 
 /**
+ * Keep the server's answers to one kind of request back until `answer` is called, so that the page
+ * can be looked at while it waits for them. `asked` says how many such requests have been made;
+ * `answer` with a status sends that failure in the server's place.
+ */
+async function holdBack(
+  page: Page,
+  url: string,
+  method: string,
+): Promise<{ asked: () => number; answer: (status?: number) => void }> {
+  let asked = 0;
+  const waiting: ((status?: number) => void)[] = [];
+  await page.route(url, async (route) => {
+    if (route.request().method() !== method) return route.fallback();
+    asked++;
+    const status = await new Promise<number | undefined>((resolve) => waiting.push(resolve));
+    if (status) await route.fulfill({ status, json: { error: 'not now' } });
+    else await route.fallback();
+  });
+  return { asked: () => asked, answer: (status) => waiting.splice(0).forEach((go) => go(status)) };
+}
+
+/** How wide a control is laid out, whatever the dialog it is in is doing as it opens. */
+const widthOf = (control: Locator): Promise<string> => control.evaluate((el) => getComputedStyle(el).width);
+
+/** Long enough for a press that should start nothing to have started it. */
+const aMoment = (page: Page): Promise<void> =>
+  page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 300)));
+
+/**
  * Make the page what a browser makes of one served over plain HTTP from a name that is not
  * localhost: everything that is kept for HTTPS is missing from it. Call before the page is opened.
  */
@@ -278,5 +307,145 @@ test.describe('sharing and review', () => {
       comment(guest, 'Colour is too warm here').getByRole('button', { name: /Reply|Resolve|Delete/ }),
     ).toHaveCount(0);
     await theirs.close();
+  });
+
+  test('a button that is at work keeps the keyboard, says so and is not pressed twice', async ({
+    page,
+    context,
+  }) => {
+    const thrown: string[] = [];
+    page.on('pageerror', (e) => thrown.push(e.message));
+    await noReloads(page);
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await newProject(page);
+    const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
+    test.skip(!meta.online || !meta.shared, 'collaboration server not reachable');
+    await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Shared' }));
+
+    // ── A link, made and copied from the keyboard ──
+    const share = page.getByRole('button', { name: 'Share', exact: true });
+    await share.focus();
+    await page.keyboard.press('Enter');
+    const dialog = shareDialog(page);
+    const copy = dialog.getByRole('button', { name: 'Copy link' });
+    const field = dialog.getByLabel('Share link');
+    const invites = await holdBack(page, '**/api/projects/*/invites', 'POST');
+    await copy.focus();
+    const width = await widthOf(copy);
+    await page.keyboard.press('Enter');
+    await expect.poll(invites.asked).toBe(1);
+    // While the server is asked the button is not switched off, which would drop the keyboard to
+    // the page: it is at work and says so, dimmed as a button that is off and of the same size.
+    await expect(copy).toBeFocused();
+    await expect(copy).toHaveAttribute('aria-busy', 'true');
+    await expect(copy).toHaveAttribute('aria-disabled', 'true');
+    expect(await widthOf(copy)).toBe(width);
+    // Nothing in it moves: over the dialog's live blur that would be the whole page drawn again
+    // for every frame.
+    await expect.poll(() => copy.evaluate((el) => el.getAnimations({ subtree: true }).length)).toBe(0);
+    // Pressed again, by either key or by the pointer, it asks for no second link.
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    await copy.click({ force: true });
+    await aMoment(page);
+    expect(invites.asked()).toBe(1);
+    await expect(copy).toBeFocused();
+
+    invites.answer();
+    const again = dialog.getByRole('button', { name: 'Copy again' });
+    await expect(again).toBeFocused();
+    await expect(again).not.toHaveAttribute('aria-busy');
+    await expect(again).toBeEnabled();
+    await expect(field).toHaveValue(/#\/p\/[\w-]+\?t=/);
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(await field.inputValue());
+    expect(invites.asked()).toBe(1);
+    // Tab goes on from the button, in both directions: not from the top of the dialog.
+    await page.keyboard.press('Shift+Tab');
+    await expect(field).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(again).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(share).toBeFocused();
+
+    // ── A version, saved from its field and from its button ──
+    const menu = page.getByRole('button', { name: 'Menu', exact: true });
+    await menu.focus();
+    await page.keyboard.press('Enter');
+    await page.getByRole('menuitem', { name: 'Version history…' }).focus();
+    await page.keyboard.press('Enter');
+    const versions = page.getByRole('dialog', { name: 'Version history' });
+    const name = versions.getByLabel('Version name');
+    const save = versions.getByRole('button', { name: 'Save version' });
+    const listed = versions.locator('.version');
+    await expect(name).toBeFocused();
+    await expect(versions).toContainText('No versions yet');
+    const saves = await holdBack(page, '**/api/projects/*/versions', 'POST');
+
+    // Enter in the field asks as the button does, and has no button to be refused by: once.
+    await page.keyboard.type('First cut');
+    await page.keyboard.press('Enter');
+    await expect.poll(saves.asked).toBe(1);
+    await expect(save).toHaveAttribute('aria-busy', 'true');
+    await page.keyboard.press('Enter');
+    await aMoment(page);
+    expect(saves.asked()).toBe(1);
+    saves.answer();
+    await expect(listed).toHaveCount(1);
+    await expect(name).toBeFocused();
+
+    // From the button, which stays where it is and as wide as it was.
+    await page.keyboard.type('Second cut');
+    await page.keyboard.press('Tab');
+    await expect(save).toBeFocused();
+    const wide = await widthOf(save);
+    await page.keyboard.press('Enter');
+    await expect.poll(saves.asked).toBe(2);
+    await expect(save).toBeFocused();
+    await expect(save).toHaveAttribute('aria-busy', 'true');
+    await expect(save).toHaveText('Save version');
+    expect(await widthOf(save)).toBe(wide);
+    // What else the dialog could start waits for it, and those buttons really are off.
+    await expect(listed.getByRole('button', { name: 'Restore' })).toBeDisabled();
+    await expect(listed.getByRole('button', { name: 'Restore' })).not.toHaveAttribute('aria-busy');
+    await page.keyboard.press('Enter');
+    await aMoment(page);
+    expect(saves.asked()).toBe(2);
+    saves.answer();
+    await expect(listed).toHaveCount(2);
+    await expect(save).toBeFocused();
+    await expect(save).not.toHaveAttribute('aria-busy');
+    await page.keyboard.press('Tab');
+    const restore = listed.first().getByRole('button', { name: 'Restore' });
+    await expect(restore).toBeFocused();
+
+    // ── A version restored: the server fails once, then answers ──
+    const loads = await holdBack(page, '**/api/projects/*/versions/*', 'GET');
+    const sure = page.getByRole('dialog', { name: /^Restore / });
+    await page.keyboard.press('Enter');
+    await expect(sure.getByRole('button', { name: 'Restore version' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect.poll(loads.asked).toBe(1);
+    await expect(restore).toBeFocused();
+    await expect(restore).toHaveAttribute('aria-busy', 'true');
+    await expect(save).toBeDisabled();
+    await expect(listed.nth(1).getByRole('button', { name: 'Restore' })).toBeDisabled();
+    loads.answer(500);
+    await expect(page.locator('.toast', { hasText: 'Could not load version (500)' })).toBeVisible();
+    // Nothing happened, and the keyboard is where it was to ask again.
+    await expect(restore).toBeFocused();
+    await expect(restore).not.toHaveAttribute('aria-busy');
+    await expect(save).toBeEnabled();
+    await page.keyboard.press('Enter');
+    await expect(sure.getByRole('button', { name: 'Restore version' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect.poll(loads.asked).toBe(2);
+    loads.answer();
+    // Restored, the dialog closes: the keyboard is back at the menu it was called from.
+    await expect(page.locator('.toast', { hasText: 'Restored' })).toBeVisible();
+    await expect(versions).toHaveCount(0);
+    await expect(menu).toBeFocused();
+    expect(await clipCount(page)).toBe(1);
+    expect(thrown).toEqual([]);
   });
 });

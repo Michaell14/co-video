@@ -37,6 +37,7 @@ import { cmd } from '../../state/commands';
 import { COMMANDS } from '../../state/shortcuts';
 import { useUI } from '../../state/ui';
 import { Button, IconButton, MenuButton, Segmented, tip, type MenuEntry } from '../../ui/core';
+import { usingKeyboard } from '../../ui/layers';
 
 /** What a person in the project may do, as the Share dialog words the access a link gives. */
 const ACCESS: Record<Role, string> = {
@@ -45,6 +46,19 @@ const ACCESS: Record<Role, string> = {
   commenter: 'can comment',
   viewer: 'can view',
 };
+
+/**
+ * The project that was published from the keyboard a moment ago. Publishing closes the Share
+ * dialog and opens the project afresh under the id the server gave it: the Share button the dialog
+ * would hand the keyboard back to goes with the old top bar, so the new one takes the keyboard to
+ * its own.
+ */
+let publishedFromKeyboard: string | null = null;
+
+/** Call as a project has been published, with its new id, before it is opened under that id. */
+export function keepKeyboardOnShare(projectId: string): void {
+  publishedFromKeyboard = usingKeyboard() ? projectId : null;
+}
 
 /**
  * A menu entry for a command of the catalogue: it carries the name and the key the shortcut sheet
@@ -70,6 +84,15 @@ export function TopBar() {
   const [name, setName] = useState(settings.name);
   // Escape leaves the name field by blurring it, and that blur must not store what was typed.
   const abandonName = useRef(false);
+  const share = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (publishedFromKeyboard !== session.id) return;
+    publishedFromKeyboard = null;
+    // Only from where the old top bar left it: the keyboard may have gone elsewhere by now.
+    const active = document.activeElement;
+    if (!active || active === document.body) share.current?.focus();
+  }, [session.id]);
 
   useEffect(() => {
     setName(settings.name);
@@ -78,7 +101,8 @@ export function TopBar() {
 
   // A project whose link the server refused runs as a local one, and one the server has stopped
   // taking changes for still looks connected: both are said first, because in both the work that
-  // seems to be shared is not.
+  // seems to be shared is not. A server that answers and has no place for the project is not the
+  // device being offline: that is said in the words of the notice the session gave when it began.
   const status = !meta.shared
     ? meta.refusedLink !== null
       ? 'refused'
@@ -87,7 +111,9 @@ export function TopBar() {
       ? 'unsaved'
       : !session.canEdit
         ? 'readonly'
-        : meta.status;
+        : meta.busy && meta.status !== 'connected'
+          ? 'waiting'
+          : meta.status;
   // Edits reach the others at once, media only when its upload is through: say which it is.
   const media = useUploads();
   const uploads = status === 'connected' ? media : 'done';
@@ -108,19 +134,23 @@ export function TopBar() {
                 : uploads === 'running'
                   ? 'Uploading media…'
                   : 'All changes synced'
-              : status === 'connecting'
-                ? 'Reconnecting…'
-                : 'Offline — changes will sync';
+              : status === 'waiting'
+                ? 'Waiting for the server — changes will sync'
+                : status === 'connecting'
+                  ? 'Reconnecting…'
+                  : 'Offline — changes will sync';
   const statusTip =
     status === 'refused'
       ? 'The server did not accept this project’s link. Open Share to try it again.'
       : status === 'unsaved'
         ? (meta.notSaving ?? statusLabel)
-        : uploads === 'stopped'
-          ? 'Your edits are synced, but some media has not reached the server. The media pool marks the files; click a mark to try again.'
-          : uploads === 'running'
-            ? 'Your edits are synced. Collaborators see the media as soon as its upload is through.'
-            : statusLabel;
+        : status === 'waiting'
+          ? 'The collaboration server is busy: it answers, but has not let this project in yet. Your edits are kept on this device and sync as soon as it does.'
+          : uploads === 'stopped'
+            ? 'Your edits are synced, but some media has not reached the server. The media pool marks the files; click a mark to try again.'
+            : uploads === 'running'
+              ? 'Your edits are synced. Collaborators see the media as soon as its upload is through.'
+              : statusLabel;
 
   return (
     <header className="topbar">
@@ -335,7 +365,7 @@ export function TopBar() {
           <MessageSquare />
           {open > 0 && <span className="dot-count">{open > 9 ? '9+' : open}</span>}
         </IconButton>
-        <Button icon={<Share2 />} onClick={() => set({ dialog: 'share' })}>
+        <Button ref={share} icon={<Share2 />} onClick={() => set({ dialog: 'share' })}>
           Share
         </Button>
         <Button variant="primary" icon={<Download />} onClick={() => set({ dialog: 'export' })}>

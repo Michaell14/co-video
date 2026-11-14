@@ -302,7 +302,8 @@
   background: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.conn[data-status='connecting'] i {
+.conn[data-status='connecting'] i,
+.conn[data-status='waiting'] i {
   background: var(--amber);
   animation: pulse 1s ease infinite;
 }

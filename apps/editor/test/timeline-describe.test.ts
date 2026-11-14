@@ -59,6 +59,22 @@ describe('what the timeline says about clips', () => {
     ).toBe('dawn.mp4, V1, 0:05.10 to 0:06.10, disabled, media offline, overlaps another clip');
   });
 
+  it('says of a clip that cannot be decoded whether it is the file, the browser or the address', () => {
+    const p = project();
+    const said = (id: string, gap?: 'absent' | 'insecure' | null) =>
+      describeClip(p.clips[id], 'V1', p.settings, { undecodable: true, gap }).split(', ').pop();
+    expect(said('dusk')).toBe('cannot be decoded in this browser');
+    expect(said('dusk', null)).toBe('cannot be decoded in this browser');
+    expect(said('dusk', 'absent')).toBe('no video decoder in this browser');
+    expect(said('dusk-sound', 'absent')).toBe('no audio decoder in this browser');
+    expect(said('dusk', 'insecure')).toBe('needs HTTPS to play');
+    expect(said('dusk-sound', 'insecure')).toBe('needs HTTPS to play');
+    // What the page lacks is no trouble of a clip that decodes.
+    expect(describeClip(p.clips.dusk, 'V1', p.settings, { gap: 'absent' })).toBe(
+      'dusk.mp4, V1, 0:02.00 to 0:05.10',
+    );
+  });
+
   it('describes one selected clip, a clip with what it is linked to, and counts anything else', () => {
     const p = project();
     expect(describeSelection(p, [])).toBe('No clip selected');

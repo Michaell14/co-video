@@ -8,7 +8,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { formatTimecode, initials, type Comment, type ProjectSettings } from '@tandem/core';
 import {
   useComments,
@@ -21,7 +21,7 @@ import {
 import { cmd } from '../../state/commands';
 import { useUI } from '../../state/ui';
 import { Button, cx, IconButton, tip } from '../../ui/core';
-import { handFocus } from '../../ui/layers';
+import { handFocus, usingKeyboard } from '../../ui/layers';
 import './collab.css';
 
 function ago(t: number): string {
@@ -87,6 +87,7 @@ export function CommentsPanel() {
   const open = useMemo(() => comments.filter((c) => !c.resolved), [comments]);
   const list = showResolved ? comments : open;
   const pinned = usePinnedFrame(list);
+  const box = useRef<HTMLTextAreaElement>(null);
 
   const post = () => {
     const body = text.trim();
@@ -153,6 +154,7 @@ export function CommentsPanel() {
       </div>
       <div className="composer">
         <textarea
+          ref={box}
           value={text}
           aria-label="Comment at the playhead"
           placeholder={canComment ? 'Add a comment at the playhead…' : 'You have view-only access'}
@@ -175,7 +177,17 @@ export function CommentsPanel() {
         />
         <div className="composer__foot">
           <PlayheadTimecode settings={settings} />
-          <Button size="sm" variant="primary" disabled={!canComment || !text.trim()} onClick={post}>
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={!canComment || !text.trim()}
+            onClick={() => {
+              // With nothing left to post the button is switched off, under the keyboard that
+              // pressed it: that goes back to the box, where the next note is written.
+              if (usingKeyboard()) box.current?.focus();
+              post();
+            }}
+          >
             Comment
           </Button>
         </div>

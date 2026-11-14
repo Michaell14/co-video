@@ -250,7 +250,8 @@ test.describe('export to a file on disk', () => {
     expect((await picked(page, second)).bytes.subarray(4, 8).toString('latin1')).toBe('ftyp');
     expect((await picked(page, first)).size).toBe(0);
     expect(unexpected(errors)).toEqual([]);
-    // The cancelled export had nothing left to stop, and did not go on to stop it.
+    // The export cancelled with its file finished had no encoder left to stop, and did not ask
+    // for one to be stopped: the library that encodes remarks on that.
     expect(warnings.filter((text) => text.includes('finalized'))).toEqual([]);
   });
 

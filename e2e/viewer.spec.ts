@@ -574,4 +574,133 @@ test.describe('layout handles', () => {
     await page.evaluate(() => (window as any).tandem.cmd.goEnd());
     await expect(page.locator('.gizmo__body')).toHaveCount(0);
   });
+
+  test('someone who may only view sees what is selected outlined, with nothing to move it by', async ({
+    page,
+    browser,
+  }) => {
+    await newProject(page);
+    const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
+    test.skip(!meta.online || !meta.shared, 'no collaboration server, or it is not taking new projects');
+    // A title over a solid that fills the frame.
+    const ids = await page.evaluate(() => {
+      const { cmd, session } = (window as any).tandem;
+      cmd.addSolid();
+      cmd.addText({ content: 'Opening' });
+      const clips = Object.values(session.store.get().clips) as any[];
+      return {
+        solid: clips.find((c) => c.type === 'solid').id as string,
+        title: clips.find((c) => c.type === 'text').id as string,
+      };
+    });
+    await expect(page.locator('.conn')).toContainText('All changes synced');
+    const link: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('viewer'));
+    const context = await browser.newContext();
+    await noReloads(context);
+    const guest = await context.newPage();
+    await guest.goto(link);
+    await guest.waitForFunction(
+      () => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 2,
+    );
+    expect(await guest.evaluate(() => (window as any).tandem.session.getMeta().role)).toBe('viewer');
+
+    const selection = (of: Page): Promise<string[]> =>
+      of.evaluate(() => (window as any).tandem.ui.getState().selection);
+    /** Where the title stands and how it is turned and sized. */
+    const placed = (of: Page): Promise<number[]> =>
+      of.evaluate((id) => {
+        const c = (window as any).tandem.session.store.get().clips[id];
+        return [c.x, c.y, c.scaleX, c.scaleY, c.rotation];
+      }, ids.title);
+    /** What is drawn on the selected layer, and the pointer its outline shows. */
+    const drawn = (of: Page) =>
+      of.evaluate(() => {
+        const count = (selector: string) => document.querySelectorAll(selector).length;
+        const body = document.querySelector('.gizmo__body');
+        return {
+          outline: count('.gizmo__body'),
+          handles: count('.gizmo__handle'),
+          rotate: count('.gizmo__rotate') + count('.gizmo__stem'),
+          cursor: body ? getComputedStyle(body).cursor : null,
+        };
+      });
+    const OUTLINED = { outline: 1, handles: 0, rotate: 0, cursor: 'auto' };
+    const HELD = { outline: 1, handles: 8, rotate: 2, cursor: 'move' };
+    const refusals = toast(guest, 'You have view-only access to this project.');
+    const frame = (await guest.locator('.viewer__frame').boundingBox())!;
+    const centre: [number, number] = [frame.x + frame.width / 2, frame.y + frame.height / 2];
+    const corner: [number, number] = [frame.x + 30, frame.y + 30];
+
+    // Looking is not editing: a press on the picture selects the layer under it, and the layer is
+    // outlined. The outline has no handles, and its pointer does not promise a move.
+    await guest.mouse.click(...centre);
+    await expect.poll(() => selection(guest)).toEqual([ids.title]);
+    await expect.poll(() => drawn(guest)).toEqual(OUTLINED);
+    const before = await placed(guest);
+    await guest.mouse.move(...centre);
+    await guest.mouse.down();
+    await guest.mouse.move(centre[0] + 60, centre[1] + 40, { steps: 5 });
+    await guest.mouse.up();
+    expect(await placed(guest)).toEqual(before);
+    expect(await selection(guest)).toEqual([ids.title]);
+    // Inside the outline of the solid, which reaches everywhere, a press still selects what is
+    // under the pointer.
+    await guest.mouse.click(...corner);
+    await expect.poll(() => selection(guest)).toEqual([ids.solid]);
+    await expect.poll(() => drawn(guest)).toEqual(OUTLINED);
+    await guest.mouse.click(...centre);
+    await expect.poll(() => selection(guest)).toEqual([ids.title]);
+    // A double-click takes whoever may edit to the text of a title. Here it selects, and nothing
+    // is refused because nothing was offered.
+    await guest.mouse.click(...corner);
+    await guest.mouse.dblclick(...centre);
+    await expect.poll(() => selection(guest)).toEqual([ids.title]);
+    await expect.poll(() => drawn(guest)).toEqual(OUTLINED);
+    await expect(refusals).toHaveCount(0);
+
+    // Access can change while the project is open, and the handles come and go with it. A layer
+    // that is held when the access goes is let go of: the pointer that passes over it once the
+    // handles are back does not move it.
+    const access = (role: string) =>
+      guest.evaluate((role) => (window as any).tandem.session.applyRole(role), role);
+    await access('editor');
+    await expect.poll(() => drawn(guest)).toEqual(HELD);
+    await guest.mouse.move(...centre);
+    await guest.mouse.down();
+    await access('viewer');
+    await expect.poll(() => drawn(guest)).toEqual(OUTLINED);
+    await guest.mouse.up();
+    await access('editor');
+    await expect.poll(() => drawn(guest)).toEqual(HELD);
+    await guest.mouse.move(centre[0] + 20, centre[1] + 10, { steps: 4 });
+    expect(await placed(guest)).toEqual(before);
+    await access('viewer');
+    await expect.poll(() => drawn(guest)).toEqual(OUTLINED);
+    await expect(refusals).toHaveCount(0);
+    await context.close();
+
+    // Whoever may edit takes the layer by its handles or its body, as before. Playback that starts
+    // under a held layer takes the handles away as well, and ends the drag the same way.
+    await page.evaluate((id) => (window as any).tandem.ui.getState().select([id]), ids.title);
+    await expect.poll(() => drawn(page)).toEqual(HELD);
+    const body = (await page.locator('.gizmo__body').boundingBox())!;
+    const middle: [number, number] = [body.x + body.width / 2, body.y + body.height / 2];
+    await page.mouse.move(...middle);
+    await page.mouse.down();
+    await page.mouse.move(middle[0] + 20, middle[1] + 10, { steps: 4 });
+    const moved = await placed(page);
+    expect(moved[0]).toBeGreaterThan(0);
+    expect(moved[1]).toBeGreaterThan(0);
+    await page.keyboard.press('Space');
+    await expect(page.locator('.gizmo__body')).toHaveCount(0);
+    await page.mouse.up();
+    await page.evaluate(() => {
+      const { cmd, session } = (window as any).tandem;
+      session.player.pause();
+      cmd.seek(0, false);
+    });
+    await expect.poll(() => drawn(page)).toEqual(HELD);
+    await page.mouse.move(middle[0] + 30, middle[1] + 20, { steps: 4 });
+    expect(await placed(page)).toEqual(moved);
+  });
 });

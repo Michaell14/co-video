@@ -2,15 +2,17 @@
  * The poster of an imported file, as it goes into the project.
  *
  * Whoever reads a project passes on no poster longer than `MAX_THUMB_LENGTH`, and everyone in it
- * reads the same way. The engine makes posters 320 pixels wide and as tall as the picture is, so
- * the poster of a long screenshot comes out longer than that: written as it is, it would travel
- * to everyone and be shown to no one. One that is too long is drawn again with fewer pixels.
+ * reads the same way: one written longer would travel to everyone and be shown to no one. The
+ * engine bounds the posters it makes by their pixels (`posterSize` in its media library), which
+ * keeps them well within that length. This is the guard behind it, for a poster that is too long
+ * all the same, whatever made it so: it is drawn again with fewer pixels, or left out.
  */
 import { MAX_THUMB_LENGTH } from '@tandem/core';
 
 /**
  * How many pixels a poster gets that had to be drawn again: those of a portrait frame at the
- * engine's width. A picture of pure noise that size comes to half of what the readers pass on.
+ * engine's width, which is also the most the engine gives one. A picture of pure noise that size
+ * comes to half of what the readers pass on.
  */
 const REDRAWN_PIXELS = 320 * 569;
 /** The quality the engine encodes posters with. */

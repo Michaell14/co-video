@@ -216,6 +216,7 @@ type DragMode = 'move' | 'rotate' | 'scale' | 'scale-x' | 'scale-y';
 
 function Gizmo({ scale }: { scale: number }) {
   const session = useSession();
+  const editable = useCanEdit();
   const player = usePlayer();
   const playing = usePlayerState().playing;
   const project = useLiveProject((p) => p);
@@ -402,12 +403,23 @@ function Gizmo({ scale }: { scale: number }) {
     if (hit?.clip.type === 'text') cmd.editText(hit.clip.id);
   };
 
+  // The handles belong to laying a picture out. Where it is graded or mixed they would sit on
+  // the very image being judged, so only the Edit workspace draws them.
+  const outlined = !!target && !playing && workspace === 'edit';
+  // A drag is held by what is drawn for it. When that goes while the pointer is still down (the
+  // access to edit is taken away, playback starts), the release never arrives here: the drag is
+  // over then, and is not picked up again by a pointer that merely passes once the handles are back.
+  const held = outlined && editable;
+  useEffect(() => {
+    if (held || !drag.current) return;
+    drag.current = null;
+    setGuides({ v: false, h: false });
+  }, [held]);
+
   const hs = 5 / scale;
   const sw = 1.25 / scale;
   let shape: React.ReactNode = null;
-  // The handles belong to laying a picture out. Where it is graded or mixed they would sit on
-  // the very image being judged, so only the Edit workspace draws them.
-  if (target && !playing && workspace === 'edit') {
+  if (target && outlined) {
     const q = layerCorners(target.box);
     const mid = (a: [number, number], b: [number, number]): [number, number] => [
       (a[0] + b[0]) / 2,
@@ -439,37 +451,45 @@ function Gizmo({ scale }: { scale: number }) {
       />
     );
     const outline = q.map((p) => p.join(',')).join(' ');
+    // Someone who may not edit is shown which layer is selected and is offered nothing to take it
+    // by: the outline stays, and a press on it selects what is under the pointer like any other.
     shape = (
       <g>
         <polygon className="gizmo__halo" points={outline} strokeWidth={sw * 3} />
-        <line className="gizmo__halo" x1={top[0]} y1={top[1]} x2={rh[0]} y2={rh[1]} strokeWidth={sw * 3} />
+        {editable && (
+          <line className="gizmo__halo" x1={top[0]} y1={top[1]} x2={rh[0]} y2={rh[1]} strokeWidth={sw * 3} />
+        )}
         <polygon
           className="gizmo__body"
           points={outline}
           strokeWidth={sw}
-          onPointerDown={pressBody}
-          onPointerMove={move}
-          onPointerUp={end}
+          onPointerDown={editable ? pressBody : undefined}
+          onPointerMove={editable ? move : undefined}
+          onPointerUp={editable ? end : undefined}
         />
-        <line className="gizmo__stem" x1={top[0]} y1={top[1]} x2={rh[0]} y2={rh[1]} strokeWidth={sw} />
-        <circle
-          className="gizmo__rotate"
-          cx={rh[0]}
-          cy={rh[1]}
-          r={hs * 1.1}
-          strokeWidth={sw}
-          onPointerDown={(e) => start(e, 'rotate')}
-          onPointerMove={move}
-          onPointerUp={end}
-        />
-        {handle(q[0], 'scale', 'nwse-resize', 'tl')}
-        {handle(q[1], 'scale', 'nesw-resize', 'tr')}
-        {handle(q[2], 'scale', 'nwse-resize', 'br')}
-        {handle(q[3], 'scale', 'nesw-resize', 'bl')}
-        {handle(left, 'scale-x', 'ew-resize', 'l')}
-        {handle(right, 'scale-x', 'ew-resize', 'r')}
-        {handle(top, 'scale-y', 'ns-resize', 't')}
-        {handle(bottom, 'scale-y', 'ns-resize', 'b')}
+        {editable && (
+          <>
+            <line className="gizmo__stem" x1={top[0]} y1={top[1]} x2={rh[0]} y2={rh[1]} strokeWidth={sw} />
+            <circle
+              className="gizmo__rotate"
+              cx={rh[0]}
+              cy={rh[1]}
+              r={hs * 1.1}
+              strokeWidth={sw}
+              onPointerDown={(e) => start(e, 'rotate')}
+              onPointerMove={move}
+              onPointerUp={end}
+            />
+            {handle(q[0], 'scale', 'nwse-resize', 'tl')}
+            {handle(q[1], 'scale', 'nesw-resize', 'tr')}
+            {handle(q[2], 'scale', 'nwse-resize', 'br')}
+            {handle(q[3], 'scale', 'nesw-resize', 'bl')}
+            {handle(left, 'scale-x', 'ew-resize', 'l')}
+            {handle(right, 'scale-x', 'ew-resize', 'r')}
+            {handle(top, 'scale-y', 'ns-resize', 't')}
+            {handle(bottom, 'scale-y', 'ns-resize', 'b')}
+          </>
+        )}
       </g>
     );
   }
@@ -479,8 +499,9 @@ function Gizmo({ scale }: { scale: number }) {
       ref={svgRef}
       className="gizmo"
       viewBox={`0 0 ${W} ${H}`}
+      data-readonly={!editable || undefined}
       onPointerDown={pick}
-      onDoubleClick={editText}
+      onDoubleClick={editable ? editText : undefined}
     >
       {guides.v && <line className="gizmo__guide" x1={W / 2} y1={0} x2={W / 2} y2={H} strokeWidth={sw} />}
       {guides.h && <line className="gizmo__guide" x1={0} y1={H / 2} x2={W} y2={H / 2} strokeWidth={sw} />}

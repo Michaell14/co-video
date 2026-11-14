@@ -169,6 +169,12 @@ function Workspace() {
     );
   }
 
+  // A shared project of which nothing is on this device yet is on its way from the server: on
+  // first opening its link, and after a copy the server would not take has been thrown away. The
+  // document it will arrive in is not the project. Shown as an editor it says that the timeline is
+  // empty, and whatever was put into it would be merged into the project as that arrives.
+  if (meta.shared && !meta.synced && session.store.isEmpty()) return <Splash label="Opening project" />;
+
   const closeDialog = () => set({ dialog: null });
   const layout = fitPanels(
     { leftWidth: left, rightWidth: right, timelineHeight: tlHeight, commentsOpen: comments, workspace },

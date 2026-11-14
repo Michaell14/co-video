@@ -20,15 +20,21 @@ const settings = (patch: Partial<VideoEncodingSettings> = {}): VideoEncodingSett
 
 describe('videoEncoding', () => {
   it('sets an 8-bit encoder up from the settings and leaves its codec string to be worked out', () => {
-    expect(videoEncoding(settings({ hardwareAcceleration: 'prefer-software', keyFrameInterval: 5 }))).toEqual({
-      codec: 'avc',
-      width: 1920,
-      height: 1080,
-      frameRate: 30000 / 1001,
-      bitrate: 8_000_000,
-      keyFrameInterval: 5,
-      options: { hardwareAcceleration: 'prefer-software', latencyMode: 'quality', fullCodecString: undefined },
-    });
+    expect(videoEncoding(settings({ hardwareAcceleration: 'prefer-software', keyFrameInterval: 5 }))).toEqual(
+      {
+        codec: 'avc',
+        width: 1920,
+        height: 1080,
+        frameRate: 30000 / 1001,
+        bitrate: 8_000_000,
+        keyFrameInterval: 5,
+        options: {
+          hardwareAcceleration: 'prefer-software',
+          latencyMode: 'quality',
+          fullCodecString: undefined,
+        },
+      },
+    );
   });
 
   it('names the depth and the transfer of a 10-bit picture in the codec string', () => {
@@ -40,7 +46,9 @@ describe('videoEncoding', () => {
     expect(string({ videoCodec: 'av1', dynamicRange: 'hlg' })).toBe('av01.0.08M.10.0.110.09.18.09.0');
     expect(string({ videoCodec: 'hevc', dynamicRange: 'pq' })).toBe('hvc1.2.4.L120.B0');
     // The level in it is the one the size and the frame rate of the export need.
-    expect(string({ videoCodec: 'vp9', dynamicRange: 'pq', fpsNum: 60 })).toBe('vp09.02.41.10.01.09.16.09.00');
+    expect(string({ videoCodec: 'vp9', dynamicRange: 'pq', fpsNum: 60 })).toBe(
+      'vp09.02.41.10.01.09.16.09.00',
+    );
     expect(string({ videoCodec: 'vp9', dynamicRange: 'pq', width: 320, height: 180 })).toBe(
       'vp09.02.31.10.01.09.16.09.00',
     );
@@ -60,7 +68,11 @@ describe('videoEncoding', () => {
 });
 
 describe('encoderAccepts', () => {
-  /** A browser's encoder that notes what it is asked and answers with `supported`. */
+  /**
+   * A browser's encoder that notes what it is asked and answers with `supported`. Every answer is
+   * remembered for as long as the page lives (here: this file) by the library that asks, so each
+   * case asks about settings that no other case has.
+   */
   function encoder(supported: (config: VideoEncoderConfig) => boolean): VideoEncoderConfig[] {
     const asked: VideoEncoderConfig[] = [];
     vi.stubGlobal('VideoEncoder', {

@@ -53,6 +53,7 @@ import {
   type OpResult,
   type Project,
 } from '@tandem/core';
+import { decoderGap } from '@tandem/engine';
 import { usePeers, useProject, useSession, useSessionMeta } from '../../session/hooks';
 import { cmd, effectiveSelection, revealFrame, withMarkers } from '../../state/commands';
 import {
@@ -71,6 +72,7 @@ import { useUI } from '../../state/ui';
 import { openContextMenu, toast, type MenuEntry } from '../../ui/core';
 import { insideRect, onDrop, useDrag, type DragPayload } from '../../ui/dnd';
 import { usingKeyboard } from '../../ui/layers';
+import { faultChip } from '../library/fault';
 import { editEntry, useCanEdit } from './access';
 import { describeClip, describeSelection } from './describe';
 import { EdgeScroller, laneAxis, timeAxis } from './edgeScroll';
@@ -2022,7 +2024,7 @@ interface ClipViewProps {
   fadeMoved: boolean;
   /** The media is not in the project any more, or its file is on neither this device nor the server. */
   missing: boolean;
-  /** This browser has no decoder for what the clip shows of its media. */
+  /** What the clip shows of its media cannot be decoded on this page. */
   undecodable: boolean;
   /** The clip shares frames with another clip of its track. */
   overlapping: boolean;
@@ -2059,6 +2061,8 @@ const ClipView = memo(function ClipView({
   const grip = Math.min(6, w * 0.3);
   const fx = clip.effects.length > 0;
   const graded = !!clip.grade && clip.grade.enabled;
+  // A page with no decoder at all is not said to lack the one this file needs.
+  const gap = undecodable ? decoderGap(clip.type === 'audio' ? 'audio' : 'video') : null;
   const keyTimes = useMemo(
     () => (selected ? keyframeTimes(clip) : []),
     [clip.keyframes, clip.duration, selected], // eslint-disable-line react-hooks/exhaustive-deps
@@ -2070,7 +2074,7 @@ const ClipView = memo(function ClipView({
     <div
       className="clip"
       role="option"
-      aria-label={describeClip(clip, track, settings, { offline: missing, undecodable, overlapping })}
+      aria-label={describeClip(clip, track, settings, { offline: missing, undecodable, gap, overlapping })}
       aria-selected={selected}
       aria-disabled={locked || undefined}
       tabIndex={tabStop ? 0 : -1}
@@ -2105,7 +2109,7 @@ const ClipView = memo(function ClipView({
           {undecodable && !missing && (
             <span className="clip__chip">
               <FileWarning />
-              Unsupported
+              {faultChip(gap)}
             </span>
           )}
           {overlapping && (

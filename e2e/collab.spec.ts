@@ -238,11 +238,20 @@ test.describe('collaboration', () => {
     // The hostile path: write straight into the CRDT. The server must drop it.
     await c.evaluate(() => {
       const s = (window as any).tandem.session;
+      (window as any).__before = s;
       s.doc.transact(() => {
         for (const k of Array.from(s.doc.getMap('clips').keys())) s.doc.getMap('clips').delete(k);
       });
     });
-    await page.waitForTimeout(1000);
+    // The viewer's own copy did take it, and is thrown away for that: the project is opened again
+    // from what the server has. Until it has arrived the page holds a document with nothing in it,
+    // and whatever is asked of the session then is asked of that.
+    await c.waitForFunction(() => {
+      const s = (window as any).tandem?.session;
+      return (
+        s && s !== (window as any).__before && !!s.player && Object.keys(s.store.get().clips).length === 3
+      );
+    });
     expect(await clips(page)).toHaveLength(3);
     expect(await clips(b)).toHaveLength(3);
 

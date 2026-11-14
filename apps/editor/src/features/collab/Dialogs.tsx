@@ -9,6 +9,7 @@ import { deleteLocalProject } from '../../session/projects';
 import { confirm } from '../../ui/confirm';
 import { Button, Dialog, Segmented, TextField, toast } from '../../ui/core';
 import { focusables, handFocus } from '../../ui/layers';
+import { keepKeyboardOnShare } from '../editor/TopBar';
 import './collab.css';
 
 const ROLE_COPY: Record<Exclude<Role, 'owner'>, { label: string; text: string }> = {
@@ -74,6 +75,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
       const old = session.id;
       const id = await session.publish();
       toast('Project published — you can now invite people', 'success');
+      keepKeyboardOnShare(id);
       onClose();
       navigate(id);
       // The local-only copy has been moved; forget its old identity.
@@ -84,11 +86,16 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const retry = async (pressed: HTMLElement) => {
-    // Accepted, the link's two buttons give way to what a shared project is shared with: the
-    // keyboard goes on from the first control of that.
+  // The answer about a refused link can put other content in the dialog, under the button that
+  // was pressed for it. The keyboard goes on where it starts when a dialog opens: at the first
+  // control of what stands there now, or at the content where that has none.
+  const handOn = (pressed: HTMLElement) => {
     const content = pressed.closest<HTMLElement>('.dialog__body');
-    handFocus(pressed, () => content && focusables(content)[0]);
+    handFocus(pressed, () => content && (focusables(content)[0] ?? content));
+  };
+
+  const retry = async (pressed: HTMLElement) => {
+    handOn(pressed);
     setBusy(true);
     const answer = await session.retryLink();
     setBusy(false);
@@ -97,7 +104,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     else toast('The collaboration server cannot be reached right now.', 'error');
   };
 
-  const forget = async () => {
+  const forget = async (pressed: HTMLElement) => {
     const sure = await confirm({
       title: 'Forget the link to the shared project?',
       message:
@@ -108,7 +115,9 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
       confirmLabel: 'Forget link',
       danger: true,
     });
-    if (sure) session.forgetLink();
+    if (!sure) return;
+    handOn(pressed);
+    session.forgetLink();
   };
 
   let body: React.ReactNode;
@@ -134,7 +143,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
           >
             {busy ? 'Asking the server…' : 'Try again'}
           </Button>
-          <Button variant="ghost" size="lg" disabled={busy} onClick={() => void forget()}>
+          <Button variant="ghost" size="lg" disabled={busy} onClick={(e) => void forget(e.currentTarget)}>
             Forget the link
           </Button>
         </div>

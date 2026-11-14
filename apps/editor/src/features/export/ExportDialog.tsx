@@ -161,13 +161,6 @@ type Phase =
     }
   | { kind: 'error'; message: string };
 
-/**
- * Whether a running export has gone past the point up to which it can be cancelled: its file is
- * being put in the place that was picked, or has been.
- */
-const pastCancelling = (progress: ExportProgress): boolean =>
-  progress.phase === 'saving' || progress.phase === 'done';
-
 /** How many timecodes one problem lists before the rest are only counted. */
 const MAX_PLACES = 8;
 
@@ -252,8 +245,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   // habitual Space cancels the render; Cancel is one Tab away. It rests there after a cancel as
   // well: stopping takes a moment to come through, and a second press by someone who is waiting
   // for it must not land on Export and start the render again. And it returns there from Cancel
-  // when the file is being put in place, where that button is withdrawn.
-  const step = phase.kind === 'running' && pastCancelling(phase.progress) ? 'saving' : phase.kind;
+  // when the file is being put in the place that was picked: that cannot be cancelled any more,
+  // and the button is withdrawn.
+  const saving = phase.kind === 'running' && phase.progress.phase === 'saving';
+  const step = saving ? 'saving' : phase.kind;
   const placed = useRef(step);
   useLayoutEffect(() => {
     if (placed.current === step) return;
@@ -379,6 +374,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     closed.current = false;
     return () => {
       closed.current = true;
+      // The dialog goes with the editor when the project is left. An export has nobody then to
+      // show its progress to, to cancel it or to hand its file to, and ends there.
+      abort.current?.abort();
     };
   }, []);
 
@@ -458,7 +456,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           // The engine goes on to put the file in place as soon as it has said so, and from then
           // on a cancel changes nothing. Cancel is withdrawn before this returns, so that no press
           // can find the button live and be ignored.
-          if (pastCancelling(progress)) flushSync(show);
+          if (progress.phase === 'saving') flushSync(show);
           else show();
         },
         onWarning: (w) =>
@@ -527,7 +525,6 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   if (phase.kind === 'running') {
     const p = phase.progress;
     const pct = p.totalFrames ? Math.min(100, (p.frame / p.totalFrames) * 100) : 0;
-    const saving = pastCancelling(p);
     const stage =
       p.phase === 'preparing'
         ? 'Preparing'
@@ -605,7 +602,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           )}
           <p className="form__hint">
             {saving
-              ? 'The file is finished and is being saved where you chose. This last step cannot be cancelled.'
+              ? 'The file is finished and is being saved to the location you chose. This last step cannot be cancelled.'
               : 'Rendering happens on this machine, frame by frame, at full quality. Keep this tab visible — browsers slow down background tabs.'}
           </p>
         </div>

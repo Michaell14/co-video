@@ -20,8 +20,9 @@ async function verdictOn(e: VideoEncodingSettings): Promise<EncoderVerdict> {
 }
 
 /**
- * What tells one question to the encoder from another: the set-up the engine would give it, an
- * 8-bit picture or a 10-bit one. Settings that come to the same set-up are the same question.
+ * What tells one question to the encoder from another: the set-up the engine makes of the
+ * settings, the codec string of a 10-bit picture included. Settings that come to the same set-up
+ * are one question.
  */
 export const encodingKey = (e: VideoEncodingSettings): string => JSON.stringify(videoEncoding(e));
 

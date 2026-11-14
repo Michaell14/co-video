@@ -2027,6 +2027,49 @@ test.describe('export', () => {
     expect(downloads).toEqual(['Untitled project.mp4']);
   });
 
+  test('an export ends with its dialog when the project is left, and no file follows', async ({ page }) => {
+    await smallExport(page, 12);
+    const downloads: string[] = [];
+    page.on('download', (file) => downloads.push(file.suggestedFilename()));
+    const finished: string[] = [];
+    page.on('console', (message) => {
+      if (message.text().includes('[export] finished')) finished.push(message.text());
+    });
+    // Held where its encoder is flushed, and seen to let go of the encoder: that is the last an
+    // export does before it hands its file over, or does not.
+    await page.evaluate(() => {
+      const Real = (window as any).VideoEncoder;
+      const held = ((window as any).held = { flushes: 0, closed: 0, letGo: () => {} });
+      const hold = new Promise<void>((go) => (held.letGo = go));
+      (window as any).VideoEncoder = class extends Real {
+        async flush() {
+          held.flushes++;
+          await hold;
+          return super.flush();
+        }
+        close() {
+          held.closed++;
+          super.close();
+        }
+      };
+    });
+    await exportButton(page).click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).held.flushes), { timeout: 60_000 })
+      .toBeGreaterThan(0);
+
+    // Back in the browser leaves the project, and the dialog goes with it.
+    await page.goBack();
+    await expect(page.locator('.home__hero')).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.evaluate(() => (window as any).held.letGo());
+    await expect.poll(() => page.evaluate(() => (window as any).held.closed)).toBeGreaterThan(0);
+    // An export that went on would download its file in the turn after the encoder is closed.
+    await page.waitForTimeout(1000);
+    expect(downloads).toEqual([]);
+    expect(finished).toEqual([]);
+  });
+
   test('a 10-bit export is asked about under its own codec string, before the save prompt', async ({
     page,
   }) => {
