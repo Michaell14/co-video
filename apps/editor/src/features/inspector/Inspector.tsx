@@ -272,10 +272,10 @@ function ClipSection({ clips, settings: s }: { clips: Clip[]; settings: ProjectS
 
 /**
  * Why the clips have no picture to show or no sound to play, where that is the doing of the file
- * they are all of. The timeline marks such a clip Offline or Unsupported; here, where the clip is
- * looked at, it is said in words, by the rule the timeline and the media pool go by. The line is
- * drawn again when its own answer changes, not with every step of an upload or every file that is
- * opened.
+ * they are all of. The timeline marks such a clip with a chip (Offline, Unsupported, No decoder or
+ * Needs HTTPS); here, where the clip is looked at, it is said in words, by the rule the timeline
+ * and the media pool go by. The line is drawn again when its own answer changes, not with every
+ * step of an upload or every file that is opened.
  */
 function MediaTrouble({ assetId, clips }: { assetId: string; clips: Clip[] }) {
   const session = useSession();
