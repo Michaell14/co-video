@@ -4,6 +4,7 @@ import {
   applyEdits,
   ASSET_DEFAULTS,
   clipEnd,
+  DEFAULT_GRADE,
   emptyProject,
   makeClip,
   makeTrack,
@@ -12,7 +13,7 @@ import {
   type Track,
 } from '@tandem/core';
 import { decodeNotice, faultChip, type DecoderGaps } from '../src/features/library/fault';
-import { picked, placeAssets, replaceTarget, restOfDrop } from '../src/features/library/pool';
+import { picked, placeAssets, replaceTarget, restOfDrop, unusedAssets } from '../src/features/library/pool';
 import { foldSpelling, search } from '../src/features/library/search';
 import { tabToward } from '../src/features/editor/tabs';
 
@@ -337,6 +338,87 @@ describe('the clip a file from the pool can replace', () => {
   it('passes over a selected clip that is no longer in the project', () => {
     expect(replaceTarget(cut(), ['gone', 'other'])).toBe('other');
     expect(replaceTarget(cut(), ['gone'])).toBeNull();
+  });
+});
+
+describe('the files of the pool that nothing uses', () => {
+  const ids = (assets: Asset[]): string[] => assets.map((asset) => asset.id).sort();
+
+  it('is every file while the timeline is empty', () => {
+    expect(ids(unusedAssets(fixture().p))).toEqual(['look', 'mute', 'one', 'song', 'still', 'two']);
+    expect(unusedAssets(emptyProject())).toEqual([]);
+  });
+
+  it('leaves out a file that a clip shows or plays, however many do', () => {
+    const { p, v1, a1 } = fixture();
+    const cut = applyEdits(p, [
+      { op: 'addClip', clip: makeClip('video', v1.id, { assetId: 'one', start: 0, duration: 30 }) },
+      { op: 'addClip', clip: makeClip('video', v1.id, { assetId: 'one', start: 30, duration: 30 }) },
+      { op: 'addClip', clip: makeClip('image', v1.id, { assetId: 'still', start: 60, duration: 30 }) },
+      { op: 'addClip', clip: makeClip('audio', a1.id, { assetId: 'song', start: 0, duration: 30 }) },
+    ]);
+    expect(ids(unusedAssets(cut))).toEqual(['look', 'mute', 'two']);
+  });
+
+  it('counts a clip on a track that is locked, hidden or muted like any other', () => {
+    const { p, v1, a1 } = fixture();
+    const cut = applyEdits(p, [
+      { op: 'addClip', clip: makeClip('video', v1.id, { assetId: 'two', start: 0, duration: 30 }) },
+      { op: 'addClip', clip: makeClip('audio', a1.id, { assetId: 'song', start: 0, duration: 30 }) },
+      { op: 'updateTrack', id: v1.id, patch: { locked: true, hidden: true } },
+      { op: 'updateTrack', id: a1.id, patch: { locked: true, muted: true } },
+    ]);
+    expect(ids(unusedAssets(cut))).toEqual(['look', 'mute', 'one', 'still']);
+  });
+
+  it('leaves out a LUT that the grade of a clip uses, whatever kind of clip that is', () => {
+    const { p, v1 } = fixture();
+    const graded = { ...DEFAULT_GRADE, lutId: 'look' };
+    const onShot = applyEdits(p, [
+      {
+        op: 'addClip',
+        clip: makeClip('video', v1.id, { assetId: 'one', start: 0, duration: 30, grade: graded }),
+      },
+    ]);
+    expect(ids(unusedAssets(onShot))).toEqual(['mute', 'song', 'still', 'two']);
+    // An adjustment layer has no file of its own, and a title neither: the LUT is all they use.
+    for (const type of ['adjustment', 'text'] as const) {
+      const cut = applyEdits(p, [
+        { op: 'addClip', clip: makeClip(type, v1.id, { start: 0, duration: 30, grade: graded }) },
+      ]);
+      expect(ids(unusedAssets(cut))).toEqual(['mute', 'one', 'song', 'still', 'two']);
+    }
+    // A grade without a LUT uses none.
+    const plain = applyEdits(p, [
+      {
+        op: 'addClip',
+        clip: makeClip('adjustment', v1.id, { start: 0, duration: 30, grade: DEFAULT_GRADE }),
+      },
+    ]);
+    expect(ids(unusedAssets(plain))).toContain('look');
+  });
+
+  it('leaves out what a clip uses whose track is gone for now, and comes back with an undo', () => {
+    const { p } = fixture();
+    const lost = [
+      makeClip('video', 'removed-track', {
+        assetId: 'mute',
+        start: 0,
+        duration: 30,
+        grade: { ...DEFAULT_GRADE, lutId: 'look' },
+      }),
+    ];
+    expect(ids(unusedAssets(p, lost))).toEqual(['one', 'song', 'still', 'two']);
+  });
+
+  it('lists the files in the order they came into the pool', () => {
+    const p = applyEdits(emptyProject(), [
+      { op: 'addAsset', asset: { ...film('late', 1), createdAt: 30 } },
+      { op: 'addAsset', asset: { ...film('early', 1), createdAt: 10 } },
+      { op: 'addAsset', asset: { ...film('b', 1), createdAt: 20 } },
+      { op: 'addAsset', asset: { ...film('a', 1), createdAt: 20 } },
+    ]);
+    expect(unusedAssets(p).map((asset) => asset.id)).toEqual(['early', 'a', 'b', 'late']);
   });
 });
 

@@ -69,6 +69,39 @@ describe('groupProblems', () => {
       'beach.mp4|video|timeout',
     ]);
   });
+
+  it('keeps sound that is lost in part apart from sound that is lost for good', () => {
+    const failed = (clipId: string, frame: number, lost: ExportWarning['lost']) =>
+      warning(clipId, 'beach.mp4', frame, {
+        part: 'audio',
+        reason: 'decode-error',
+        lost,
+        message: `${lost}`,
+      });
+    const groups = groupProblems([
+      failed('c1', 10, 'stretch'),
+      failed('c2', 90, 'stretch'),
+      failed('c1', 50, 'rest'),
+    ]);
+    expect(groups.map((g) => [g.message, g.places.map((p) => p.frame)])).toEqual([
+      ['stretch', [10, 90]],
+      ['rest', [50]],
+    ]);
+  });
+
+  it('lists what the decoder said under a sentence, each answer once', () => {
+    const failed = (clipId: string, cause?: string) =>
+      warning(clipId, 'beach.mp4', 0, { part: 'audio', reason: 'decode-error', lost: 'all', cause });
+    expect(groupProblems([warning('c0', 'beach.mp4', 0)])[0].causes).toEqual([]);
+    expect(
+      groupProblems([
+        failed('c1', 'EncodingError: Decoding error.'),
+        failed('c2', 'EncodingError: Decoding error.'),
+        failed('c3'),
+        failed('c4', 'NotSupportedError: Unsupported configuration.'),
+      ])[0].causes,
+    ).toEqual(['EncodingError: Decoding error.', 'NotSupportedError: Unsupported configuration.']);
+  });
 });
 
 describe('hasUnseen', () => {

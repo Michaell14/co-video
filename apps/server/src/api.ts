@@ -5,6 +5,7 @@
  * caller is entitled to know:
  *   400  an id in the path is malformed
  *   401  no token, a bad signature, or a token issued for a different project
+ *   410  the token is genuine and its project was deleted by its owner
  *   404  the token is genuine but the project (or the resource in it) does not exist
  *   403  the token's role does not allow the operation
  */
@@ -27,6 +28,7 @@ import {
   streamFile,
 } from './http';
 import type { MediaStore } from './media';
+import { PROJECT_DELETED, WS_CLOSE_PROJECT_DELETED } from './projects';
 import type { ProjectMeta, ProjectStore } from './projects';
 import type { RateLimiter } from './rateLimit';
 import type { RoomManager } from './rooms';
@@ -51,6 +53,8 @@ export interface ApiContext {
   trustProxy: boolean;
   createLimiter: RateLimiter;
   inviteLimiter: RateLimiter;
+  /** Deletions of projects and of versions, counted together per client address. */
+  deleteLimiter: RateLimiter;
 }
 
 interface Caller {
@@ -86,19 +90,86 @@ function enforceRateLimit(limiter: RateLimiter, key: string): void {
 }
 
 export function createApiHandler(ctx: ApiContext) {
-  /** Token → 401, then project existence → 404. Role checks are left to the route. */
+  /** The role a request has on a project by its token, or 401. Says nothing about the project. */
+  function roleOf(req: IncomingMessage, query: URLSearchParams, projectId: string): Role {
+    const payload = ctx.auth.verify(extractToken(req, query), projectId);
+    if (!payload) {
+      throw new HttpError(401, 'missing or invalid token for this project', { 'WWW-Authenticate': 'Bearer' });
+    }
+    return payload.r;
+  }
+
+  /** Token → 401, then a deleted project → 410 and existence → 404. Role checks are left to the route. */
   async function authenticate(
     req: IncomingMessage,
     query: URLSearchParams,
     projectId: string,
   ): Promise<Caller> {
-    const payload = ctx.auth.verify(extractToken(req, query), projectId);
-    if (!payload) {
-      throw new HttpError(401, 'missing or invalid token for this project', { 'WWW-Authenticate': 'Bearer' });
-    }
+    const role = roleOf(req, query, projectId);
     const meta = await ctx.projects.get(projectId);
+    // Asked once the project has been looked for: it may have been deleted meanwhile, and then
+    // that is the answer, not "not found".
+    if (ctx.projects.isDeleted(projectId)) throw new HttpError(410, PROJECT_DELETED);
     if (!meta) throw new HttpError(404, 'project not found');
-    return { role: payload.r, meta };
+    return { role, meta };
+  }
+
+  /** Deletions under way, by project: a second request for the same one waits for the first. */
+  const deletions = new Map<string, Promise<void>>();
+
+  /**
+   * Delete everything the server holds of a project. The record that it is deleted comes first.
+   * From then on every request and connection for the project is refused, so what is still
+   * running can be counted and waited for: the rooms are closed unsaved, with the reason, uploads
+   * and downloads are cut off, a version on its way to the disk lands. Then the directory goes.
+   * Each step can be repeated, and what a crash leaves undone is finished at the next start.
+   */
+  function removeProject(projectId: string): Promise<void> {
+    let removal = deletions.get(projectId);
+    if (!removal) {
+      removal = (async () => {
+        await ctx.projects.markDeleted(projectId);
+        await ctx.rooms.discard(projectId, WS_CLOSE_PROJECT_DELETED, PROJECT_DELETED);
+        await ctx.media.drop(projectId);
+        await ctx.versions.settle(projectId);
+        await ctx.projects.remove(projectId);
+      })().finally(() => deletions.delete(projectId));
+      deletions.set(projectId, removal);
+    }
+    return removal;
+  }
+
+  async function deleteProject(
+    req: IncomingMessage,
+    res: ServerResponse,
+    projectId: string,
+    query: URLSearchParams,
+  ): Promise<void> {
+    const role = roleOf(req, query, projectId);
+    const exists = await ctx.projects.exists(projectId);
+    // Asked again, the owner gets the answer the first request got (or should have got, had it
+    // gone through): the project is gone. Everyone else is told so as by any other route.
+    const deleted = ctx.projects.isDeleted(projectId);
+    if (deleted && role !== 'owner') throw new HttpError(410, PROJECT_DELETED);
+    if (!deleted && !exists) throw new HttpError(404, 'project not found');
+    if (role !== 'owner') throw new HttpError(403, `role "${role}" cannot delete the project`);
+    enforceRateLimit(ctx.deleteLimiter, clientIp(req, ctx.trustProxy));
+    await removeProject(projectId);
+    sendEmpty(res, 204);
+  }
+
+  async function deleteVersion(
+    req: IncomingMessage,
+    res: ServerResponse,
+    projectId: string,
+    versionId: string,
+    caller: Caller,
+  ): Promise<void> {
+    if (!canEdit(caller.role)) throw new HttpError(403, `role "${caller.role}" cannot delete versions`);
+    enforceRateLimit(ctx.deleteLimiter, clientIp(req, ctx.trustProxy));
+    // A version that is not there is as deleted as one that was: the answer is the same.
+    if (await ctx.versions.remove(projectId, versionId)) ctx.projects.touch(projectId);
+    sendEmpty(res, 204);
   }
 
   async function createProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -135,9 +206,12 @@ export function createApiHandler(ctx: ApiContext) {
     const body = await readJsonBody(req);
     const name = textField(body, 'name', MAX_NAME_LENGTH, DEFAULT_VERSION_NAME);
     const author = textField(body, 'author', MAX_AUTHOR_LENGTH, '');
-    // Through the room, so the version reflects edits that have not reached the disk yet.
-    const state = await ctx.rooms.withRoom(projectId, 'project', (room) => room.snapshotForVersion());
-    const info = await ctx.versions.create(projectId, { name, author, auto: false }, state);
+    // Through the room, so the version reflects edits that have not reached the disk yet. And
+    // filed in the turn it is taken in: the sweep of unused media must hear of a version before
+    // anything can happen to the files it refers to.
+    const info = await ctx.rooms.withRoom(projectId, 'project', (room) =>
+      ctx.versions.create(projectId, { name, author, auto: false }, room.snapshotForVersion()),
+    );
     ctx.projects.touch(projectId);
     sendJson(res, 200, info);
   }
@@ -193,7 +267,11 @@ export function createApiHandler(ctx: ApiContext) {
     if (!isValidId(projectId)) throw new HttpError(400, 'invalid project id');
 
     if (segments.length === 2) {
-      allowMethods(req, ['GET']);
+      allowMethods(req, ['GET', 'DELETE']);
+      if (req.method === 'DELETE') {
+        await deleteProject(req, res, projectId, query);
+        return;
+      }
       const { role, meta } = await authenticate(req, query, projectId);
       // A refused WebSocket upgrade tells a browser nothing, so what would be refused is said here.
       const [project, review] = await Promise.all([
@@ -228,9 +306,10 @@ export function createApiHandler(ctx: ApiContext) {
 
     if (resource === 'versions' && segments.length === 4) {
       if (!isValidId(resourceId)) throw new HttpError(400, 'invalid version id');
-      allowMethods(req, ['GET']);
-      await authenticate(req, query, projectId);
-      await sendVersion(res, projectId, resourceId);
+      allowMethods(req, ['GET', 'DELETE']);
+      const caller = await authenticate(req, query, projectId);
+      if (req.method === 'DELETE') await deleteVersion(req, res, projectId, resourceId, caller);
+      else await sendVersion(res, projectId, resourceId);
       return;
     }
 

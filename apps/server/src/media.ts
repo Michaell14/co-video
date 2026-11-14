@@ -4,11 +4,13 @@
  *   <project>/media/<assetId>.part   bytes received so far (upload in progress)
  *   <project>/media/<assetId>        the finished asset
  *   <project>/media/<assetId>.json   { size, type, completedAt }
+ *   <project>/unreferenced.json      { <assetId>: when it was first found to be referred to by
+ *                                    nothing }, kept by the sweep of unused media (sweep.ts)
  *
  * An asset is complete exactly when the extension-less file exists: renaming `.part` to it is
  * the atomic commit of an upload. (Asset ids cannot contain dots, so the three names never clash.)
  */
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, unlinkSync } from 'node:fs';
 import { mkdir, open, readdir, rename, stat, truncate, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -18,6 +20,7 @@ import { pipeline } from 'node:stream/promises';
 import { canEdit } from '@tandem/core';
 import type { Role } from '@tandem/core';
 import { HttpError, parseIntHeader, sendEmpty, streamFile } from './http';
+import { PROJECT_DELETED } from './projects';
 import type { ProjectStore } from './projects';
 import {
   assertValidId,
@@ -26,6 +29,7 @@ import {
   fileSize,
   isNotFound,
   isValidId,
+  KeyedQueue,
   readFileIfExists,
 } from './util';
 
@@ -98,10 +102,21 @@ interface ActiveUpload {
   done: Promise<void>;
 }
 
+/** A finished asset as it lies on disk. */
+export interface StoredAsset {
+  assetId: string;
+  /** When the file was last written: the moment its upload ended. Milliseconds since the epoch. */
+  uploadedAt: number;
+}
+
 export class MediaStore {
   /** The request currently allowed to modify an asset, by `projectId/assetId`. */
   private readonly active = new Map<string, ActiveUpload>();
   private readonly inFlight = new Set<Promise<void>>();
+  /** The downloads under way, by project: they are cut off when their project is deleted. */
+  private readonly serving = new Map<string, Set<ServerResponse>>();
+  /** Writes of `unreferenced.json`, one at a time per project. */
+  private readonly notes = new KeyedQueue();
 
   constructor(
     private readonly projects: ProjectStore,
@@ -161,6 +176,7 @@ export class MediaStore {
       // Held like an upload would hold it, so a request for the asset waits until we are done.
       const release = await this.lock(key, () => undefined);
       try {
+        if (this.projects.isDeleted(projectId)) return removed;
         const part = join(dir, name);
         const info = await stat(part).catch(() => null);
         if (info?.isFile() && info.mtimeMs < before) {
@@ -172,6 +188,99 @@ export class MediaStore {
       }
     }
     return removed;
+  }
+
+  /**
+   * Stop everything that is touching the media of a project that is being deleted: uploads and
+   * downloads under way are cut off. Resolves when none is left that could still write there.
+   * That none begins afterwards is the caller's doing, who recorded the project as deleted first:
+   * a request that gets its turn at an asset from then on refuses itself.
+   */
+  async drop(projectId: string): Promise<void> {
+    for (const res of this.serving.get(projectId) ?? []) res.destroy();
+    const prefix = `${projectId}/`;
+    for (;;) {
+      const holders = [...this.active].flatMap(([key, holder]) => (key.startsWith(prefix) ? [holder] : []));
+      if (holders.length === 0) break;
+      for (const holder of holders) holder.abort();
+      await Promise.all(holders.map((holder) => holder.done));
+    }
+    await this.notes.run(projectId, async () => undefined);
+  }
+
+  /** The finished assets of a project. Uploads in progress are not among them. */
+  async finished(projectId: string): Promise<StoredAsset[]> {
+    const dir = join(this.projects.dir(projectId), 'media');
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch (err) {
+      if (isNotFound(err)) return [];
+      throw err;
+    }
+    const stored: StoredAsset[] = [];
+    // A finished asset is the one name without a dot (see the top of this file).
+    for (const assetId of names.filter(isValidId)) {
+      const info = await stat(join(dir, assetId)).catch(() => null);
+      if (info?.isFile()) stored.push({ assetId, uploadedAt: info.mtimeMs });
+    }
+    return stored;
+  }
+
+  private unreferencedPath(projectId: string): string {
+    return join(this.projects.dir(projectId), 'unreferenced.json');
+  }
+
+  /**
+   * The assets of a project that a sweep found to be referred to by nothing, and when each was
+   * first found so. A file that cannot be read says nothing, which starts every count anew.
+   */
+  async unreferenced(projectId: string): Promise<Map<string, number>> {
+    const since = new Map<string, number>();
+    try {
+      const raw = await readFileIfExists(this.unreferencedPath(projectId));
+      const parsed: unknown = raw ? JSON.parse(raw.toString('utf8')) : null;
+      if (typeof parsed === 'object' && parsed !== null) {
+        for (const [assetId, at] of Object.entries(parsed)) {
+          if (isValidId(assetId) && typeof at === 'number' && Number.isFinite(at)) since.set(assetId, at);
+        }
+      }
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+    }
+    return since;
+  }
+
+  /** Keep what `unreferenced` answers from now on. With nothing to keep, the file goes. */
+  noteUnreferenced(projectId: string, since: ReadonlyMap<string, number>): Promise<void> {
+    return this.notes.run(projectId, async () => {
+      const path = this.unreferencedPath(projectId);
+      if (since.size > 0) await atomicWrite(path, JSON.stringify(Object.fromEntries(since)));
+      else {
+        await unlink(path).catch((err: unknown) => {
+          if (!isNotFound(err)) throw err;
+        });
+      }
+    });
+  }
+
+  /**
+   * Delete a finished asset here and now, in the caller's own turn of the event loop: whoever
+   * has just made sure that nothing refers to the file must not give anything the time to start
+   * referring to it before it is gone. Returns false, with nothing deleted, while a request holds
+   * the asset (it is being uploaded, confirmed or removed): there is a next time.
+   */
+  removeNow(projectId: string, assetId: string): boolean {
+    if (this.active.has(`${projectId}/${assetId}`)) return false;
+    const paths = this.paths(projectId, assetId);
+    for (const path of [paths.file, paths.meta]) {
+      try {
+        unlinkSync(path);
+      } catch (err) {
+        if (!isNotFound(err)) throw err;
+      }
+    }
+    return true;
   }
 
   private async dispatch(
@@ -189,7 +298,7 @@ export class MediaStore {
         // an answer (offset 0), not an error.
         return this.head(res, paths, new URL(req.url ?? '/', 'http://localhost').searchParams.has('probe'));
       case 'GET':
-        return this.get(req, res, paths);
+        return this.get(req, res, projectId, paths);
       case 'PUT':
       case 'DELETE':
         if (!canEdit(role)) throw new HttpError(403, `role "${role}" cannot change media`);
@@ -235,7 +344,12 @@ export class MediaStore {
     });
   }
 
-  private async get(req: IncomingMessage, res: ServerResponse, paths: AssetPaths): Promise<void> {
+  private async get(
+    req: IncomingMessage,
+    res: ServerResponse,
+    projectId: string,
+    paths: AssetPaths,
+  ): Promise<void> {
     // Open first and take the size from the handle, so the headers always describe the very
     // file we are about to stream even if the asset is deleted at the same moment.
     let handle: FileHandle;
@@ -259,6 +373,9 @@ export class MediaStore {
       const start = range ? range.start : 0;
       const end = range ? range.end : size - 1;
       const length = end - start + 1;
+      // Deleted while the file was being opened: nothing of the project is handed out any more.
+      // From here to the note of this download, by which a deletion finds it, nothing is awaited.
+      this.assertThere(projectId);
       res.writeHead(range ? 206 : 200, {
         ...assetHeaders(type),
         'Content-Length': length,
@@ -274,10 +391,26 @@ export class MediaStore {
         return;
       }
       streaming = true; // streamFile closes the handle
-      await streamFile(res, handle, { start, end });
+      const downloads = this.serving.get(projectId) ?? new Set<ServerResponse>();
+      this.serving.set(projectId, downloads.add(res));
+      try {
+        await streamFile(res, handle, { start, end });
+      } finally {
+        downloads.delete(res);
+        if (downloads.size === 0 && this.serving.get(projectId) === downloads) this.serving.delete(projectId);
+      }
     } finally {
       if (!streaming) await handle.close();
     }
+  }
+
+  /**
+   * Refuse to go on for a project that was deleted since the request was let in, while it waited
+   * for its turn at an asset or for a file to open: the directory is going or gone, nothing may
+   * put a file there again, and nothing of it is handed out any more.
+   */
+  private assertThere(projectId: string): void {
+    if (this.projects.isDeleted(projectId)) throw new HttpError(410, PROJECT_DELETED);
   }
 
   /**
@@ -316,6 +449,7 @@ export class MediaStore {
 
     const release = await this.lock(key, () => req.destroy());
     try {
+      this.assertThere(projectId);
       const finished = await fileSize(paths.file);
       if (finished !== null) {
         // Already complete (e.g. the client never saw our final 204): confirm, do not rewrite.
@@ -407,6 +541,7 @@ export class MediaStore {
   ): Promise<void> {
     const release = await this.lock(key, () => undefined);
     try {
+      this.assertThere(projectId);
       for (const path of [paths.part, paths.file, paths.meta]) {
         await unlink(path).catch((err: unknown) => {
           if (!isNotFound(err)) throw err;

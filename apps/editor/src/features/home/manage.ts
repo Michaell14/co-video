@@ -1,14 +1,16 @@
 /**
- * What the home screen does to a project without opening it in the editor: rename it, copy it, or
- * make one from a project file. Each works on the copy this device keeps, so none of it needs the
- * render engine or a connection.
+ * What the home screen does to a project without opening it in the editor: rename it, copy it,
+ * make one from a project file, or delete it from the server for everyone. All but the last work
+ * on the copy this device keeps, so they need neither the render engine nor a connection.
  */
 import { IndexeddbPersistence } from 'y-indexeddb';
 import * as Y from 'yjs';
 import { parseProjectFile, ProjectStore, type Project } from '@tandem/core';
+import { api } from '../../session/api';
 import { copyProjectMedia } from '../../session/mediaStore';
-import { createProject, idbName, whenSynced } from '../../session/projects';
+import { createProject, deleteLocalProject, idbName, whenSynced } from '../../session/projects';
 import { registry, type ProjectEntry } from '../../session/registry';
+import { whyNotDeleted } from './deletion';
 
 /** Run `fn` on the stored copy of a project. Whatever it commits is on the device when this resolves. */
 async function withStored<T>(id: string, fn: (store: ProjectStore) => T): Promise<T> {
@@ -72,4 +74,38 @@ export async function projectFromFile(file: File): Promise<{ id: string; project
   if (!parsed) return null;
   const project = notUploaded(parsed);
   return { id: await createProject(project.settings, project), project };
+}
+
+/** How long the server gets to delete a project before the request counts as unanswered. */
+const DELETE_TIMEOUT_MS = 20_000;
+
+/**
+ * Delete a shared project from the collaboration server, for everyone, with the owner's link.
+ * Resolves once the server has said that the project is gone, and not before: until then nothing
+ * on this device has changed. What stands in the way is thrown as a sentence for the person. To
+ * keep this device's copy there has to be one, which is found out first.
+ */
+export async function deleteFromServer(entry: ProjectEntry, keepCopy: boolean): Promise<void> {
+  if (!entry.token) throw new Error('This project is not shared: nothing of it is on a server.');
+  if (keepCopy && !(await withStored(entry.id, (store) => !store.isEmpty()))) {
+    throw new Error(
+      'Nothing of this project is stored on this device, so there is no copy to keep. Open it once first, or delete it without keeping a copy.',
+    );
+  }
+  try {
+    await api.deleteProject(entry.id, entry.token, AbortSignal.timeout(DELETE_TIMEOUT_MS));
+  } catch (err) {
+    throw new Error(whyNotDeleted(err));
+  }
+}
+
+/**
+ * What becomes of this device's copy of a project its owner has just deleted from the server:
+ * kept, it is a local project like any other from now on; otherwise it goes too. The link goes
+ * either way: there is nothing it leads to.
+ */
+export async function afterDeletedFromServer(entry: ProjectEntry, keepCopy: boolean): Promise<void> {
+  if (!keepCopy) return deleteLocalProject(entry.id);
+  registry.dropLinkAside(entry.id);
+  registry.upsert({ id: entry.id, token: null, role: undefined });
 }

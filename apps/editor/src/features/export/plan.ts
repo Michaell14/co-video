@@ -23,9 +23,13 @@ export interface ProblemGroup {
   message: string;
   /** The clips it affects, in timeline order. */
   places: ProblemPlace[];
+  /** What the decoder said, where it said anything: each different answer once. */
+  causes: string[];
 }
 
-const kindOf = (w: ExportWarning): string => `${w.assetId}|${w.part}|${w.reason}`;
+/** A file and what is wrong with it. Sound lost in part and sound lost for good are told apart. */
+const kindOf = (w: ExportWarning): string =>
+  `${w.assetId}|${w.part}|${w.reason}${w.lost ? `|${w.lost}` : ''}`;
 
 /** Export problems with the clips that share a file and a fault gathered under one sentence. */
 export function groupProblems(warnings: readonly ExportWarning[]): ProblemGroup[] {
@@ -33,8 +37,9 @@ export function groupProblems(warnings: readonly ExportWarning[]): ProblemGroup[
   for (const w of warnings) {
     const key = kindOf(w);
     let g = groups.get(key);
-    if (!g) groups.set(key, (g = { key, message: w.message, places: [] }));
+    if (!g) groups.set(key, (g = { key, message: w.message, places: [], causes: [] }));
     if (!g.places.some((p) => p.clipId === w.clipId)) g.places.push({ clipId: w.clipId, frame: w.frame });
+    if (w.cause && !g.causes.includes(w.cause)) g.causes.push(w.cause);
   }
   const out = Array.from(groups.values());
   for (const g of out) g.places.sort((a, b) => a.frame - b.frame);

@@ -527,6 +527,7 @@ test.describe('media engine', () => {
         const problems = await lab.sources.prepare(project, core.resolveFrame(project, frame), true);
         return {
           reasons: problems.map((p: any) => `${p.part}:${p.reason}`),
+          causes: problems.map((p: any) => p.cause ?? null),
           ms: performance.now() - t0,
           starts: starts - before,
         };
@@ -579,6 +580,7 @@ test.describe('media engine', () => {
           starts,
           warnings: out.warnings.map((w: any) => `${w.part}:${w.reason}@${w.frame}`),
           message: out.warnings[0]?.message,
+          cause: out.warnings[0]?.cause,
         };
       };
       const exported = await exportOf(project, 45);
@@ -611,15 +613,21 @@ test.describe('media engine', () => {
     // Three starts, a redraw for each and for each wait that ended: not one of each per frame.
     expect(r.viewer.starts).toBe(3);
     expect(r.viewer.draws).toBeLessThan(10);
-    expect(r.first).toMatchObject({ reasons: ['video:decode-error'], starts: 3 });
+    // With what the decoder said when it stopped, where it said anything.
+    expect(r.first).toMatchObject({
+      reasons: ['video:decode-error'],
+      causes: ['decoder gave up'],
+      starts: 3,
+    });
     expect(r.first.ms).toBeLessThan(1000);
     expect(r.next).toMatchObject({ reasons: ['video:decode-error'], starts: 0 });
     expect(r.next.ms).toBeLessThan(100);
-    expect(r.empty).toMatchObject({ reasons: ['video:decode-error'], starts: 3 });
+    expect(r.empty).toMatchObject({ reasons: ['video:decode-error'], causes: [null], starts: 3 });
     expect(r.empty.ms).toBeLessThan(1000);
     expect(r.exported.frames).toBe(45);
     expect(r.exported.warnings).toEqual(['video:decode-error@0']);
     expect(r.exported.message).toContain('“testsrc.mp4” stopped decoding');
+    expect(r.exported.cause).toBe('decoder gave up');
     expect(r.exported.starts).toBe(3);
     expect(r.exported.seconds).toBeLessThan(8);
     expect(r.exportedFast).toMatchObject({ frames: 3, warnings: ['video:decode-error@0'], starts: 3 });
@@ -2668,5 +2676,684 @@ test.describe('media engine', () => {
       'The video in “testsrc.webm” will not play: this address is neither HTTPS nor localhost, so the browser has switched off video decoding.',
       'The audio in “testsrc.webm” will not play: this address is neither HTTPS nor localhost, so the browser has switched off audio decoding.',
     ]);
+  });
+});
+
+/**
+ * The media lab with the page's two audio decoders stood in for, as `window.decoders` says.
+ *
+ * `AudioDecoder`: one that is set up for AAC at `rate` (the file under test: an export sets up a
+ * decoder of its own to measure its encoder, and that one is left alone) decodes with the real
+ * decoder. It fails on every chunk (`dead`) or on the chunks whose times are in `bad`
+ * (microseconds), as a decoder does: after what it was given before has come out. From its output
+ * number `after` on it gives twice the samples at twice the rate (`double`) and two channels for
+ * one (`stereo`), as the decoder of a stream that does not declare what it decodes to.
+ *
+ * `decodeAudioData`, given an ADTS stream: `own: 'refuses'` rejects it; `'cuts'` drops the 2112
+ * samples from the front that a browser may take for the priming of Apple's encoder; `'loses'`
+ * leaves a packet's worth out of the middle of every stream longer than the engine's test stream,
+ * as a browser does with a packet it cannot decode.
+ *
+ * `window.sound` reads and measures: see the functions.
+ */
+async function openSoundLab(page: Page): Promise<void> {
+  await openMediaLab(page);
+  await page.evaluate(() => {
+    const { lab, kit } = window as any;
+    const { engine } = lab;
+    const decoders = {
+      rate: 0,
+      dead: false,
+      bad: [] as number[],
+      double: false,
+      stereo: false,
+      after: 0,
+      own: '' as '' | 'refuses' | 'cuts' | 'loses',
+      /** Decoders set up for the file under test. */
+      made: 0,
+    };
+    const Real = (window as any).AudioDecoder;
+    const changed = (data: AudioData): AudioData => {
+      const planes = Array.from({ length: data.numberOfChannels }, (_, c) => {
+        const plane = new Float32Array(data.numberOfFrames);
+        data.copyTo(plane, { planeIndex: c, format: 'f32-planar' });
+        if (!decoders.double) return plane;
+        // Each sample, and between it and the next their mean; behind the last, which has no
+        // next in this buffer, where the line through the last two leads.
+        return Float32Array.from({ length: plane.length * 2 }, (_, i) => {
+          const k = i >> 1;
+          if (i % 2 === 0) return plane[k];
+          return k + 1 < plane.length
+            ? (plane[k] + plane[k + 1]) / 2
+            : plane[k] + (plane[k] - plane[k - 1]) / 2;
+        });
+      });
+      if (decoders.stereo && planes.length === 1) planes.push(planes[0]);
+      const frames = planes[0].length;
+      const all = new Float32Array(frames * planes.length);
+      planes.forEach((plane, c) => all.set(plane, c * frames));
+      const out = new AudioData({
+        format: 'f32-planar',
+        sampleRate: data.sampleRate * (decoders.double ? 2 : 1),
+        numberOfFrames: frames,
+        numberOfChannels: planes.length,
+        timestamp: data.timestamp,
+        data: all,
+      });
+      data.close();
+      return out;
+    };
+    class StandIn {
+      private real: any;
+      private ours = false;
+      private outputs = 0;
+      private failing = false;
+      private failed = false;
+      constructor(private readonly init: { output(d: AudioData): void; error(e: unknown): void }) {
+        this.real = new Real({
+          output: (data: AudioData) => {
+            if (this.failed) return data.close();
+            const change =
+              this.ours && (decoders.double || decoders.stereo) && this.outputs++ >= decoders.after;
+            init.output(change ? changed(data) : data);
+          },
+          error: (e: unknown) => init.error(e),
+        });
+      }
+      get state() {
+        return this.failed ? 'closed' : this.real.state;
+      }
+      get decodeQueueSize() {
+        return this.real.decodeQueueSize;
+      }
+      configure(config: AudioDecoderConfig) {
+        this.ours = config.codec.startsWith('mp4a') && config.sampleRate === decoders.rate;
+        if (this.ours) decoders.made++;
+        this.real.configure(config);
+      }
+      decode(chunk: EncodedAudioChunk) {
+        if (this.failed) throw new DOMException('The decoder is closed.', 'InvalidStateError');
+        if (this.failing) return;
+        if (!this.ours || !(decoders.dead || decoders.bad.includes(chunk.timestamp)))
+          return this.real.decode(chunk);
+        this.failing = true;
+        void this.real
+          .flush()
+          .catch(() => {})
+          .then(() => {
+            this.failed = true;
+            if (this.real.state !== 'closed') this.real.close();
+            this.init.error(new DOMException('Decoding error.', 'EncodingError'));
+          });
+      }
+      flush() {
+        return this.failed
+          ? Promise.reject(new DOMException('The decoder is closed.', 'InvalidStateError'))
+          : this.real.flush();
+      }
+      close() {
+        if (!this.failed) this.real.close();
+      }
+      addEventListener(...args: unknown[]) {
+        this.real.addEventListener(...args);
+      }
+      static isConfigSupported(config: AudioDecoderConfig) {
+        return Real.isConfigSupported(config);
+      }
+    }
+    (window as any).AudioDecoder = StandIn;
+
+    const decode = OfflineAudioContext.prototype.decodeAudioData;
+    OfflineAudioContext.prototype.decodeAudioData = function (this: OfflineAudioContext, bytes: ArrayBuffer) {
+      const head = new Uint8Array(bytes, 0, 2);
+      if (!decoders.own || head[0] !== 0xff || head[1] !== 0xf1) return decode.call(this, bytes);
+      if (decoders.own === 'refuses')
+        return Promise.reject(new DOMException('Unable to decode audio data', 'EncodingError'));
+      const long = bytes.byteLength > 1000;
+      return decode.call(this, bytes).then((whole) => {
+        const [from, to] = decoders.own === 'cuts' ? [0, 2112] : long ? [4096, 5120] : [0, 0];
+        const out = new AudioBuffer({
+          numberOfChannels: whole.numberOfChannels,
+          length: whole.length - (to - from),
+          sampleRate: whole.sampleRate,
+        });
+        for (let c = 0; c < whole.numberOfChannels; c++) {
+          const data = whole.getChannelData(c);
+          out.copyToChannel(data.subarray(0, from), c);
+          out.copyToChannel(data.subarray(to), c, from);
+        }
+        return out;
+      });
+    } as typeof decode;
+
+    const sound = {
+      /** Forget what the page has learnt about decoding the file, and open it anew. */
+      anew(assetId: string) {
+        lab.library.invalidate(assetId);
+      },
+      /** The buffers of `[from, to)` as the mixer gets them: their times, their samples by channel, what was reported. */
+      async read(assetId: string, from?: number, to?: number) {
+        const media = await lab.library.get(assetId);
+        const times: number[] = [];
+        const rates = new Set<number>();
+        const parts: Float32Array[][] = [];
+        const troubles: unknown[] = [];
+        for await (const wb of new engine.Sound(assetId, media.audio).buffers(from, to, (t: unknown) =>
+          troubles.push(t),
+        )) {
+          times.push(wb.timestamp);
+          rates.add(wb.buffer.sampleRate);
+          parts.push(
+            Array.from({ length: wb.buffer.numberOfChannels }, (_, c) => wb.buffer.getChannelData(c).slice()),
+          );
+        }
+        const channels = (parts[0] ?? []).map((_, c) => {
+          const all = new Float32Array(parts.reduce((n, part) => n + part[c].length, 0));
+          let at = 0;
+          for (const part of parts) {
+            all.set(part[c], at);
+            at += part[c].length;
+          }
+          return all;
+        });
+        return { times, rates: [...rates], channels, troubles };
+      },
+      /** The largest difference between two sets of channels, sample for sample, from sample `from` on. */
+      apart(a: Float32Array[], b: Float32Array[], from = 0, to = Infinity): number {
+        if (a.length !== b.length) return Infinity;
+        let most = 0;
+        a.forEach((x, c) => {
+          if (x.length !== b[c].length) most = Infinity;
+          for (let i = from; i < Math.min(x.length, to); i++) most = Math.max(most, Math.abs(x[i] - b[c][i]));
+        });
+        return most;
+      },
+      /** A project that plays the file's sound from its start, on a timeline at `rate`, and its picture if asked. */
+      project(asset: any, rate: number, frames: number, clip = {}) {
+        return kit.project(
+          160,
+          90,
+          [asset],
+          [{ type: 'audio', assetId: asset.id, start: 0, duration: frames, ...clip }],
+          { sampleRate: rate },
+        );
+      },
+      /** The project's sound rendered in one go: both channels, and what the mixer reported. */
+      async render(project: any, seconds: number) {
+        const problems: any[] = [];
+        const rate = project.settings.sampleRate;
+        const out = await engine.renderAudioChunk(
+          project,
+          lab.library,
+          0,
+          seconds,
+          rate,
+          undefined,
+          (p: any) => problems.push(p),
+        );
+        return { channels: [out.getChannelData(0).slice(), out.getChannelData(1).slice()], problems };
+      },
+      /** The project exported as 16-bit PCM, as an export makes it: in chunks of four seconds. */
+      async exported(project: any) {
+        const out = await lab.exportBase64(project, {
+          container: 'wav',
+          videoCodec: 'vp9',
+          audioCodec: 'pcm-s16',
+          width: 160,
+          height: 90,
+          fpsNum: 30,
+          fpsDen: 1,
+          videoBitrate: 300_000,
+          audioBitrate: 96_000,
+          range: null,
+          includeVideo: false,
+          includeAudio: true,
+          dynamicRange: 'sdr',
+          keyFrameInterval: 1,
+          hardwareAcceleration: 'no-preference',
+        });
+        const bytes = Uint8Array.from(atob(out.base64), (c) => c.charCodeAt(0));
+        const view = new DataView(bytes.buffer);
+        // Two channels of 16 bits behind the header, which ends with "data" and a length.
+        let at = 12;
+        while (view.getUint32(at) !== 0x64617461) at += 8 + view.getUint32(at + 4, true);
+        const frames = view.getUint32(at + 4, true) / 4;
+        const channels = [new Float32Array(frames), new Float32Array(frames)];
+        for (let i = 0; i < frames; i++)
+          for (let c = 0; c < 2; c++) channels[c][i] = view.getInt16(at + 8 + (i * 2 + c) * 2, true) / 32768;
+        return { channels, warnings: out.warnings, seconds: out.seconds };
+      },
+      /** The stretches (seconds, from and to) in which `x` stays under `level`, a hundredth of a second or longer. */
+      quiet(x: Float32Array, rate: number, level = 0.02): number[][] {
+        const out: number[][] = [];
+        let start = -1;
+        for (let i = 0; i <= x.length; i++) {
+          if (i < x.length && Math.abs(x[i]) < level) {
+            if (start < 0) start = i;
+          } else if (start >= 0) {
+            if (i - start >= rate / 100) out.push([start / rate, i / rate]);
+            start = -1;
+          }
+        }
+        return out;
+      },
+    };
+    Object.assign(window, { decoders, sound });
+  });
+}
+
+/**
+ * `stereo-441.mp4` is what a phone or a screen recorder writes: H.264 with stereo AAC-LC at
+ * 44.1 kHz, the index behind the media. Six seconds; left a sweep that rises from 300 Hz by 200 Hz
+ * a second, right a 440 Hz tone that is silent from 2.5 s to 2.6 s. Made with
+ *   ffmpeg -f lavfi -i "testsrc=size=160x90:rate=30:duration=6" -f lavfi -i
+ *     "aevalsrc=0.4*sin(2*PI*(300*t+100*t*t))|0.3*sin(2*PI*440*t)*(1-between(t\,2.5\,2.6)):s=44100:d=6"
+ *     -c:v libx264 -profile:v high -pix_fmt yuv420p -preset veryslow -crf 34 -g 60
+ *     -c:a aac -aac_pns 0 -b:a 128k -ar 44100 -ac 2 stereo-441.mp4
+ * Without noise substitution (`-aac_pns 0`), as the encoders of phones write it: every decoder
+ * then gives the same samples for a packet wherever it began. `testsrc.mp4` (mono, 48 kHz) has
+ * bands of noise that a decoder fills with random numbers of its own.
+ */
+test.describe('sound that does not decode as it should', () => {
+  test('a stream that decodes to another rate and other channels than it declares is heard in its place, at its pitch', async ({
+    page,
+  }) => {
+    await openSoundLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, kit, decoders, sound } = window as any;
+      const { engine } = lab;
+      lab.init(160, 90);
+      const stereo = await lab.addFile('stereo', '/fixtures/stereo-441.mp4', 'stereo-441.mp4');
+      const mono = await lab.addFile('mono', '/fixtures/testsrc.mp4', 'testsrc.mp4');
+      const heard = async (asset: any, rate: number, change: Record<string, unknown>) => {
+        Object.assign(
+          decoders,
+          { rate: asset.audioSampleRate, double: false, stereo: false, after: 0 },
+          change,
+        );
+        sound.anew(asset.id);
+        const out = await sound.render(sound.project(asset, rate, 120), 4);
+        return { ...out, problems: out.problems.length };
+      };
+      const files: Record<string, any> = {};
+      for (const rate of [44100, 48000]) {
+        const plain = await heard(stereo, rate, {});
+        // Twice the rate from the first buffer on, and from the third: a decoder that finds out late.
+        const doubled = await heard(stereo, rate, { double: true });
+        const late = await heard(stereo, rate, { double: true, after: 2 });
+        const right = plain.channels[1];
+        files[`stereo at ${rate}`] = {
+          problems: plain.problems + doubled.problems + late.problems,
+          tone: kit.purity(right, 440, rate, 0.3, Math.round(0.5 * rate), Math.round(2.4 * rate)),
+          gap: sound.quiet(right, rate),
+          doubled: sound.apart(plain.channels, doubled.channels, 64, 4 * rate - 64),
+          late: sound.apart(plain.channels, late.channels, 4096, 4 * rate - 64),
+        };
+        const one = await heard(mono, rate, {});
+        const two = await heard(mono, rate, { stereo: true });
+        const both = await heard(mono, rate, { stereo: true, double: true, after: 1 });
+        files[`mono at ${rate}`] = {
+          problems: one.problems + two.problems + both.problems,
+          tone: kit.purity(one.channels[0], 880, rate, 0.125, rate, 3 * rate),
+          two: sound.apart(one.channels, two.channels),
+          both: sound.apart(one.channels, both.channels, 4096, 4 * rate - 64),
+        };
+      }
+
+      // What the mixer asks of a file whose sound has to be converted reaches a little beyond what
+      // plays, and whether it has to be is decided by the rate it decodes to: after a first
+      // buffer has shown that, not by what the file declares.
+      const asked: number[] = [];
+      const sink = engine.AudioBufferSink.prototype;
+      const buffers = sink.buffers;
+      sink.buffers = function (...args: number[]) {
+        asked.push(args[0]);
+        return buffers.apply(this, args);
+      };
+      Object.assign(decoders, { rate: 44100, double: true, stereo: false, after: 0 });
+      sound.anew('stereo');
+      const cut = sound.project(stereo, 44100, 60, { sourceIn: 1 });
+      await sound.render(cut, 2);
+      await sound.render(cut, 2);
+      sink.buffers = buffers;
+      return {
+        files,
+        asked,
+        rate: new engine.Sound('stereo', (await lab.library.get('stereo')).audio).rate,
+      };
+    });
+    for (const rate of [44100, 48000]) {
+      const s = r.files[`stereo at ${rate}`];
+      expect(s.problems, `${rate}`).toBe(0);
+      // The tone at its pitch and its level, and silent where the file is: to within a millisecond.
+      expect(Math.abs(s.tone.gain), `${rate}`).toBeLessThan(0.2);
+      expect(s.tone.rest, `${rate}`).toBeLessThan(-30);
+      expect(s.gap, `${rate}`).toHaveLength(1);
+      expect(Math.abs(s.gap[0][0] - 2.5), `${rate}`).toBeLessThan(0.002);
+      expect(Math.abs(s.gap[0][1] - 2.6), `${rate}`).toBeLessThan(0.002);
+      // Doubled, the same sound in the same place. One of the doubled samples out would be 0.03
+      // at the top of the sweep; putting means between the samples changes it by a tenth of that.
+      expect(s.doubled, `${rate}`).toBeLessThan(0.006);
+      expect(s.late, `${rate}`).toBeLessThan(0.006);
+      const m = r.files[`mono at ${rate}`];
+      expect(m.problems, `${rate}`).toBe(0);
+      expect(Math.abs(m.tone.gain), `${rate}`).toBeLessThan(0.2);
+      // One channel played on both sides is what two equal channels are.
+      expect(m.two, `${rate}`).toBeLessThan(1e-6);
+      expect(m.both, `${rate}`).toBeLessThan(0.006);
+    }
+    expect(r.rate).toBe(88200);
+    // The first render took the file at its word (44.1 kHz on a 44.1 kHz timeline: nothing to
+    // convert) and asked from where the clip begins; the second knew better.
+    expect(r.asked).toHaveLength(2);
+    expect(r.asked[0]).toBeCloseTo(1, 9);
+    expect(r.asked[1]).toBeLessThan(1 - 10 / 88200);
+    expect(r.asked[1]).toBeGreaterThan(1 - 0.01);
+  });
+
+  test('a packet that will not decode costs the sound around it, not the rest of the clip', async ({
+    page,
+  }) => {
+    await openSoundLab(page);
+    const errors = trackErrors(page);
+    const warned: string[] = [];
+    page.on('console', (m) => {
+      if (m.type() === 'warning' && m.text().startsWith('[audio]')) warned.push(m.text().split('\n')[0]);
+    });
+    const r = await page.evaluate(async () => {
+      const { lab, decoders, sound } = window as any;
+      const { engine } = lab;
+      lab.init(160, 90);
+      const asset = await lab.addFile('a', '/fixtures/stereo-441.mp4', 'stereo-441.mp4');
+      const rate = 44100;
+      const packet = 1024 / rate;
+      // The time of packet `n` as the decoder is given it. The first lies one packet before zero.
+      const first = await (await lab.library.get('a')).audio.getFirstTimestamp();
+      const at = (n: number) => Math.max(0, Math.trunc((first + n * packet) * 1e6));
+      const project = sound.project(asset, rate, 180);
+      const clean = await sound.exported(project);
+      // No other decoder to turn to: what is lost is what the one decoder cannot give.
+      Object.assign(decoders, { rate, own: 'refuses' });
+      const broken = async (bad: number[], dead = false) => {
+        Object.assign(decoders, { bad: bad.map(at), dead, made: 0 });
+        sound.anew('a');
+        const out = await sound.exported(project);
+        // Where the export is not the clean one, in packets from the start of the file's sound.
+        const differs: number[] = [];
+        for (let i = 0; i < clean.channels[0].length; i++) {
+          if (clean.channels[0][i] === out.channels[0][i] && clean.channels[1][i] === out.channels[1][i])
+            continue;
+          const n = Math.floor((i / rate - first) / packet);
+          if (differs[differs.length - 1] !== n) differs.push(n);
+        }
+        return {
+          differs,
+          silent: sound
+            .quiet(out.channels[0], rate, 1e-4)
+            .map(([a, b]: number[]) => [Math.round((a - first) / packet), Math.round((b - first) / packet)]),
+          warnings: out.warnings.map(({ clipId: _, assetId: __, ...w }: any) => w),
+          made: decoders.made,
+          seconds: out.seconds,
+        };
+      };
+      const one = await broken([60]);
+      const run = await broken([60, 61, 62, 63, 64, 65, 66, 67, 68, 69]);
+      const two = await broken([40, 200]);
+      const start = await broken([0]);
+      const dead = await broken([], true);
+
+      // The same for a preview: its mixer says which clip is silent, from where, and why.
+      const ctx = new AudioContext();
+      await ctx.resume();
+      const graph = new engine.AudioGraph(ctx, lab.library, true);
+      const problems: any[] = [];
+      graph.onProblem = (p: any) => problems.push(p);
+      sound.anew('a');
+      graph.start(project, { startSec: 0, t0: ctx.currentTime + 0.05, rate: 1, endSec: 6 });
+      void graph.pump();
+      const until = performance.now() + 5000;
+      while (!problems.length && performance.now() < until) await new Promise((res) => setTimeout(res, 20));
+      const level = Math.max(...graph.masterLevels());
+      graph.dispose();
+      await ctx.close();
+      return {
+        one,
+        run,
+        two,
+        start,
+        dead,
+        preview: problems.map(({ clipId: _, ...p }) => p),
+        level,
+      };
+    });
+    const cause = 'EncodingError: Decoding error.';
+    const stretch =
+      'A stretch of the audio in “stereo-441.mp4” could not be decoded, so the export is silent there.';
+    // Packet 60 and the two a decoder started behind it needs to get going: 70 ms, at 1.37 s.
+    expect(r.one.differs).toEqual([60, 61, 62]);
+    expect(r.one.silent).toEqual([[60, 63]]);
+    expect(r.one.warnings).toEqual([
+      { part: 'audio', reason: 'decode-error', lost: 'stretch', frame: 41, message: stretch, cause },
+    ]);
+    // Ten in a row: the decoder is started further on each time, and is past them at the fourth start.
+    expect(r.run.silent).toEqual([[60, 72]]);
+    expect(r.run.warnings).toHaveLength(1);
+    expect(r.run.made).toBe(5);
+    // Two apart, in the first and in the second chunk of the export: two holes, one warning.
+    expect(r.two.silent).toEqual([
+      [40, 43],
+      [200, 203],
+    ]);
+    expect(r.two.warnings).toEqual([
+      { part: 'audio', reason: 'decode-error', lost: 'stretch', frame: 27, message: stretch, cause },
+    ]);
+    // The very first packet: the sound begins three packets in.
+    expect(r.start.silent).toEqual([[1, 4]]);
+    expect(r.start.warnings).toMatchObject([{ lost: 'stretch', frame: 0 }]);
+    // A decoder that fails wherever it is started: a few starts, one warning, and the export is done.
+    expect(r.dead.silent).toEqual([[1, 259]]);
+    expect(r.dead.warnings).toEqual([
+      {
+        part: 'audio',
+        reason: 'decode-error',
+        lost: 'all',
+        frame: 0,
+        message: 'The audio in “stereo-441.mp4” could not be decoded, so it is missing from the export.',
+        cause,
+      },
+    ]);
+    expect(r.dead.made).toBeLessThan(12);
+    expect(r.dead.seconds).toBeLessThan(5);
+    expect(r.preview).toEqual([{ assetId: 'a', reason: 'decode-error', lost: 'all', at: 0, cause }]);
+    expect(r.level).toBe(0);
+    // The console is told what failed once for a file, however often it does, and why the
+    // browser's own decoder is of no help.
+    expect(warned.filter((line) => line.includes('decoding failed'))).toEqual(
+      Array(6).fill('[audio] a: decoding failed (webcodecs) EncodingError: Decoding error.'),
+    );
+    expect(warned.filter((line) => line.includes('cannot stand in'))).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
+  test('sound the WebCodecs decoder fails on comes from the browser’s own decoder, the same to the sample', async ({
+    page,
+  }) => {
+    await openSoundLab(page);
+    const errors = trackErrors(page);
+    const warned: string[] = [];
+    page.on('console', (m) => {
+      if (m.type() === 'warning' && m.text().startsWith('[audio]')) warned.push(m.text().split('\n')[0]);
+    });
+    const r = await page.evaluate(async () => {
+      const { lab, decoders, sound } = window as any;
+      const { engine } = lab;
+      lab.init(160, 90);
+      const stereo = await lab.addFile('stereo', '/fixtures/stereo-441.mp4', 'stereo-441.mp4');
+      const mono = await lab.addFile('mono', '/fixtures/testsrc.mp4', 'testsrc.mp4');
+      // The whole file; its start; across the places where one stretch of 128 packets ends and
+      // the next begins; a short read in the middle (a seek); and from a seek to the end.
+      const ranges: [number | undefined, number | undefined][] = [
+        [undefined, undefined],
+        [-0.1, 1],
+        [0.5, 3.5],
+        [2.9, 3.2],
+        [1.2345, 1.3],
+        [3.3, undefined],
+      ];
+      const compared = async (asset: any) => {
+        const frames = Math.floor(asset.duration * 30);
+        const both = async (dead: boolean) => {
+          Object.assign(decoders, { rate: asset.audioSampleRate, dead, made: 0 });
+          sound.anew(asset.id);
+          const reads = [];
+          for (const [from, to] of ranges) reads.push(await sound.read(asset.id, from, to));
+          const renders = [];
+          for (const rate of [44100, 48000]) {
+            renders.push(await sound.render(sound.project(asset, rate, frames), frames / 30));
+            // A clip that begins a second into the file, ten frames into the timeline.
+            renders.push(await sound.render(sound.project(asset, rate, 60, { start: 10, sourceIn: 1 }), 2.4));
+          }
+          const exported = await sound.exported(sound.project(asset, 48000, frames));
+          return { reads, renders, exported, made: decoders.made };
+        };
+        const direct = await both(false);
+        const other = await both(true);
+        return {
+          buffers: other.reads.map((read) => read.times.length),
+          // Every buffer at the time the WebCodecs decoder gives it, at the same rate.
+          times: other.reads.map(
+            (read, i) => JSON.stringify(read.times) === JSON.stringify(direct.reads[i].times),
+          ),
+          rates: other.reads.map((read) => read.rates),
+          reads: other.reads.map((read, i) => sound.apart(read.channels, direct.reads[i].channels)),
+          troubles: other.reads.flatMap((read) => read.troubles),
+          renders: other.renders.map((render, i) => sound.apart(render.channels, direct.renders[i].channels)),
+          problems: other.renders.flatMap((render) => render.problems),
+          exported: sound.apart(other.exported.channels, direct.exported.channels),
+          warnings: other.exported.warnings,
+          // The WebCodecs decoder was tried once, and not again for any later read of the file.
+          made: [direct.made, other.made],
+          // What it differs from itself by when it is started at another packet.
+          self: sound.apart(
+            direct.reads[2].channels.map((x: Float32Array) => x.subarray(2048, 100_000)),
+            direct.reads[0].channels.map((x: Float32Array) => {
+              const skip = Math.round(
+                (direct.reads[2].times[0] - direct.reads[0].times[0]) * asset.audioSampleRate,
+              );
+              return x.subarray(skip + 2048, skip + 100_000);
+            }),
+          ),
+        };
+      };
+      const exact = await compared(stereo);
+      const noisy = await compared(mono);
+
+      // A preview is heard.
+      const ctx = new AudioContext();
+      await ctx.resume();
+      const graph = new engine.AudioGraph(ctx, lab.library, true);
+      const problems: unknown[] = [];
+      graph.onProblem = (p: unknown) => problems.push(p);
+      graph.start(sound.project(stereo, 44100, 180), {
+        startSec: 0,
+        t0: ctx.currentTime + 0.05,
+        rate: 1,
+        endSec: 6,
+      });
+      void graph.pump();
+      let level = 0;
+      const until = performance.now() + 5000;
+      while (level < 0.1 && performance.now() < until) {
+        level = Math.max(level, ...graph.masterLevels());
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      graph.dispose();
+      await ctx.close();
+
+      // A browser whose own decoder leaves out a packet it cannot decode gives fewer samples than
+      // the packets hold. Where they are missing cannot be known, so nothing of the stretch is
+      // placed, and with the other decoder dead as well the clip is reported as silent.
+      Object.assign(decoders, { rate: 48000, dead: true, own: 'loses' });
+      sound.anew('mono');
+      const lossy = await sound.render(sound.project(mono, 48000, 120), 4);
+      return {
+        exact,
+        noisy,
+        preview: { level, problems },
+        lossy: {
+          problems: lossy.problems.map((p: any) => `${p.lost}: ${p.cause}`),
+          loudest: Math.max(
+            ...lossy.channels.map((x: Float32Array) => x.reduce((m, v) => Math.max(m, Math.abs(v)), 0)),
+          ),
+        },
+      };
+    });
+    for (const [name, file, packets] of [
+      ['stereo-441.mp4', r.exact, 260],
+      ['testsrc.mp4', r.noisy, 189],
+    ] as const) {
+      expect(file.buffers[0], name).toBe(packets);
+      expect(file.times, name).toEqual(Array(6).fill(true));
+      expect(new Set(file.rates.flat()).size, name).toBe(1);
+      expect(file.troubles, name).toEqual([]);
+      expect(file.problems, name).toEqual([]);
+      expect(file.warnings, name).toEqual([]);
+      // Six reads, four renders and an export each start a decoder; with the WebCodecs one dead it
+      // is tried once, and not again for anything that reads the file after that.
+      expect(file.made, name).toEqual([11, 1]);
+    }
+    // Sample for sample: read as buffers, mixed at the file's own rate and converted to another,
+    // and exported. Nothing is rounded on the way but the export's 16 bits.
+    expect(Math.max(...r.exact.reads, ...r.exact.renders)).toBeLessThan(1e-6);
+    expect(r.exact.exported).toBeLessThan(1 / 32768 + 1e-9);
+    expect(r.exact.self).toBeLessThan(1e-6);
+    // In the file with noise bands the two differ by what one decoder differs from itself when it
+    // begins at another packet (3e-4 measured, in a tone of 0.125). One sample out of place would
+    // be 0.014.
+    expect(r.noisy.self).toBeGreaterThan(1e-6);
+    expect(Math.max(...r.noisy.reads, ...r.noisy.renders, r.noisy.exported)).toBeLessThan(2e-3);
+    expect(r.preview.level).toBeGreaterThan(0.1);
+    expect(r.preview.problems).toEqual([]);
+    expect(r.lossy.problems).toEqual(['all: EncodingError: Decoding error.']);
+    expect(r.lossy.loudest).toBe(0);
+    // Said once for each file, with what the WebCodecs decoder said.
+    expect(warned.filter((line) => line.includes('own decoder instead'))).toEqual(
+      ['stereo', 'mono'].map(
+        (id) =>
+          `[audio] ${id}: the WebCodecs decoder failed (EncodingError: Decoding error.); its sound is decoded by the browser’s own decoder instead`,
+      ),
+    );
+    expect(errors).toEqual([]);
+  });
+
+  test('a browser that cuts the priming from the front of a stream itself still gets every sample in its place', async ({
+    page,
+  }) => {
+    await openSoundLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, decoders, sound } = window as any;
+      lab.init(160, 90);
+      const asset = await lab.addFile('a', '/fixtures/stereo-441.mp4', 'stereo-441.mp4');
+      const direct = [await sound.read('a'), await sound.read('a', 2.9, 3.2)];
+      Object.assign(decoders, { rate: 44100, dead: true, own: 'cuts' });
+      sound.anew('a');
+      const other = [await sound.read('a'), await sound.read('a', 2.9, 3.2)];
+      return {
+        times: other.map((read, i) => JSON.stringify(read.times) === JSON.stringify(direct[i].times)),
+        troubles: other.flatMap((read) => read.troubles),
+        // The 2112 samples such a browser drops at the very start of the file stay silent...
+        start: Math.max(
+          ...other[0].channels.map((x: Float32Array) => Math.max(...x.subarray(0, 2112).map(Math.abs))),
+        ),
+        // ...and everything behind them, and every later read, is what the other decoder gives.
+        whole: sound.apart(other[0].channels, direct[0].channels, 2112),
+        seek: sound.apart(other[1].channels, direct[1].channels),
+      };
+    });
+    expect(r.times).toEqual([true, true]);
+    expect(r.troubles).toEqual([]);
+    expect(r.start).toBe(0);
+    expect(r.whole).toBeLessThan(1e-6);
+    expect(r.seek).toBeLessThan(1e-6);
   });
 });

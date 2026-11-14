@@ -12,6 +12,11 @@ export interface ProjectEntry {
   token: string | null;
   /** What `token` allows, as the server last confirmed it. Absent in entries from before it was kept. */
   role?: Role;
+  /**
+   * The shared project this was a copy of was deleted from the server by its owner. What this
+   * device holds of it is all there is: a local project from now on, and its card says why.
+   */
+  deletedByOwner?: boolean;
   /** Poster frame, small data URL. */
   thumb: string | null;
   width: number;

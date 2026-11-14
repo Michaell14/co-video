@@ -60,7 +60,15 @@ export class ApiError extends Error {
 export const isRefusal = (status: number): boolean =>
   status >= 400 && status < 500 && status !== 408 && status !== 429;
 
-async function call<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
+/**
+ * The server's answer to a project that its owner deleted, to whoever still holds a link to it.
+ * Unlike any other refusal this one is for good: the project does not come back under its id.
+ */
+export const isDeleted = (err: unknown): boolean =>
+  err instanceof ApiError && err.answered && err.status === 410;
+
+/** Ask the server; an answer that is not a yes is thrown as an `ApiError`. */
+async function send(path: string, token: string | null, init: RequestInit = {}): Promise<Response> {
   const res = await fetch(`${serverBase()}${path}`, {
     ...init,
     headers: {
@@ -74,7 +82,11 @@ async function call<T>(path: string, token: string | null, init: RequestInit = {
     const said = typeof body?.error === 'string' ? body.error : null;
     throw new ApiError(said ?? `Request failed (${res.status})`, res.status, said !== null);
   }
-  return (await res.json()) as T;
+  return res;
+}
+
+async function call<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
+  return (await (await send(path, token, init)).json()) as T;
 }
 
 export const api = {
@@ -85,6 +97,13 @@ export const api = {
     }),
   projectInfo: (id: string, token: string, signal?: AbortSignal) =>
     call<ProjectInfo>(`/api/projects/${id}`, token, { signal }),
+  /**
+   * Delete a project from the server, for everyone: the owner's link is the only one that may.
+   * Asked a second time, the server answers as it did the first.
+   */
+  async deleteProject(id: string, token: string, signal?: AbortSignal): Promise<void> {
+    await send(`/api/projects/${id}`, token, { method: 'DELETE', signal });
+  },
   invite: (id: string, token: string, role: Role) =>
     call<{ token: string }>(`/api/projects/${id}/invites`, token, {
       method: 'POST',
@@ -102,6 +121,10 @@ export const api = {
     });
     if (!res.ok) throw new Error(`Could not load version (${res.status})`);
     return new Uint8Array(await res.arrayBuffer());
+  },
+  /** Delete a version. One that is already gone is deleted all the same. */
+  async deleteVersion(id: string, token: string, versionId: string): Promise<void> {
+    await send(`/api/projects/${id}/versions/${versionId}`, token, { method: 'DELETE' });
   },
   mediaUrl: (id: string, assetId: string, token: string) =>
     `${serverBase()}/api/projects/${id}/media/${assetId}?t=${encodeURIComponent(token)}`,

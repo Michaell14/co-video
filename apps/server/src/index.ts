@@ -11,6 +11,7 @@ import { DEFAULT_MAX_CONNECTIONS_PER_ROOM } from './rooms';
 import {
   DEFAULT_CREATES_PER_HOUR,
   DEFAULT_MAX_CONNECTIONS_PER_IP,
+  DEFAULT_UNUSED_MEDIA_EXPIRY_HOURS,
   DEFAULT_UPLOAD_EXPIRY_DAYS,
   SERVER_VERSION,
   createTandemServer,
@@ -53,6 +54,7 @@ const server = await createTandemServer({
   siteDist: text('SITE_DIST'),
   maxUploadBytes: integer('MAX_UPLOAD_BYTES', 20 * 1024 ** 3, 1),
   uploadExpiryDays: integer('UPLOAD_EXPIRY_DAYS', DEFAULT_UPLOAD_EXPIRY_DAYS),
+  unusedMediaExpiryHours: integer('UNUSED_MEDIA_EXPIRY_HOURS', DEFAULT_UNUSED_MEDIA_EXPIRY_HOURS),
   openCreate: flag('TANDEM_OPEN_CREATE', true),
   createsPerHour: integer('MAX_CREATES_PER_HOUR', DEFAULT_CREATES_PER_HOUR, 1),
   autoSnapshotMs: integer('AUTO_SNAPSHOT_MS', 10 * 60 * 1000),

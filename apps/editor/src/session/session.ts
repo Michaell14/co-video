@@ -31,7 +31,7 @@ import { ACCESS_NAME, refuseEdit } from '../state/access';
 import { useUI } from '../state/ui';
 import { toast } from '../ui/core';
 import { chooseAccess, claimedRole, entryFate, type Verdict } from './access';
-import { api, ApiError, isRefusal, serverAvailable, wsBase } from './api';
+import { api, ApiError, isDeleted, isRefusal, serverAvailable, wsBase } from './api';
 import { retimeView, withFrameRate } from '../features/inspector/frameRate';
 import { TimelineMedia } from '../features/timeline/mediaCache';
 import { MediaStore, moveProjectMedia, type TransferResult } from './mediaStore';
@@ -94,9 +94,27 @@ const PRESENCE_REPEAT_MS = 1000;
 /** Two rooms that lose their place within this time lost it to the same cause. */
 const WAITING_TOGETHER_MS = 10_000;
 
+/** The server's answer about a link whose project is no more: see `Session.projectDeleted`. */
+type Deleted = 'deleted';
+
 const DISPLACED =
   'This project is full, and your place went to someone with more access. Rejoining as soon as there is room…';
+const DELETED = 'This project was deleted from the collaboration server by its owner.';
 const SERVER_BUSY = 'The collaboration server is busy. Still trying to connect…';
+
+/**
+ * Mark every asset of a project document as not uploaded. A project that is about to be published
+ * is new to its server. One that was shared before (its link was refused, or its owner deleted
+ * the project) still says of its files what was true of the server it came from, and nobody
+ * uploads a file that is said to be there already.
+ */
+function forgetUploads(doc: Y.Doc): void {
+  const store = new ProjectStore(doc);
+  const uploaded = Object.values(store.get().assets).filter((a) => a.uploaded);
+  const edits: Edit[] = uploaded.map((a) => ({ op: 'updateAsset', id: a.id, patch: { uploaded: false } }));
+  if (edits.length) store.commit(edits, { undoable: false });
+  store.destroy();
+}
 
 function readProxyPref(): boolean {
   try {
@@ -538,12 +556,14 @@ export class Session {
   }
 
   /** Ask the server about this project with a token: what the token allows, and how the project stands. */
-  private async inquire(token: string): Promise<ProjectInfo | 'refused' | 'unreachable'> {
+  private async inquire(token: string): Promise<ProjectInfo | 'refused' | 'unreachable' | Deleted> {
     try {
       const signal = AbortSignal.any([this.closing.signal, AbortSignal.timeout(ACCESS_TIMEOUT_MS)]);
       this.answer = await api.projectInfo(this.id, token, signal);
       return this.answer;
     } catch (err) {
+      // Said only to a link that was good while there was a project, and never taken back.
+      if (isDeleted(err)) return 'deleted';
       // Only a real refusal is final; a network failure or a busy server is asked again later. And
       // only the server itself can refuse: whatever stands in front of it knows nothing of links.
       if (err instanceof ApiError && err.answered && isRefusal(err.status)) return 'refused';
@@ -553,7 +573,7 @@ export class Session {
   }
 
   /** Ask the server what a token allows on this project. */
-  private async ask(token: string): Promise<Verdict> {
+  private async ask(token: string): Promise<Verdict | Deleted> {
     const info = await this.inquire(token);
     return typeof info === 'string' ? info : { token, role: info.role };
   }
@@ -573,6 +593,15 @@ export class Session {
       this.offered ? this.ask(this.offered) : null,
     ]);
     if (this.destroyed) return 'unreachable';
+    if (kept === 'deleted' || link === 'deleted') {
+      // Both links are to this one project, so what either was told holds for the other.
+      if (this.offered) {
+        this.offered = null;
+        this.onLinkJudged();
+      }
+      this.projectDeleted();
+      return 'refused';
+    }
     if (kept === 'unreachable' || link === 'unreachable') {
       // Nothing local to show either; a later attempt clears this.
       if (this.store.isEmpty()) this.setMeta({ denied: true });
@@ -651,6 +680,43 @@ export class Session {
   }
 
   /**
+   * The project was deleted from the server by its owner. The server says so only to a link that
+   * was good while there was a project: on a connection it closes for it, or when it is asked.
+   * Unlike a refusal this is for good, so no link is kept to ask again with. What this device
+   * holds of the project stays, as a local project that is no longer shared, and its card says
+   * why. With nothing of it here there is nothing to keep, and it leaves the project list.
+   */
+  private projectDeleted(): void {
+    if (this.destroyed) return;
+    this.refused = true;
+    this.token = null;
+    this.offered = null;
+    registry.dropLinkAside(this.id);
+    // Transfers that were under way have nowhere to go, and nothing asks for them again.
+    this.transfers.want([]);
+    this.media.cancelTransfers();
+    if (this.store.isEmpty()) {
+      const listed = registry.get(this.id) !== undefined;
+      if (listed) registry.remove(this.id);
+      this.setMeta({ shared: false, refusedLink: null, denied: true, unlisted: listed });
+      toast(DELETED, 'error');
+      return;
+    }
+    registry.upsert({ id: this.id, token: null, role: undefined, deletedByOwner: true });
+    this.scheduleRegistry();
+    this.setMeta({ shared: false, refusedLink: null });
+    this.applyRole('owner');
+    toast(`${DELETED} Your copy stays on this device and is no longer shared.`, 'error');
+  }
+
+  /** A room was closed because the project was deleted. Its other room hears the same. */
+  private onProjectDeleted(): void {
+    if (this.destroyed || !this.providers.length) return;
+    this.closeRooms();
+    this.projectDeleted();
+  }
+
+  /**
    * Offer the link the server refused once more, because the person asked. Accepted, the project
    * is shared again and this copy joins what the others have.
    */
@@ -702,6 +768,7 @@ export class Session {
         onTurnedAway: (said) => this.onTurnedAway(kind, said),
         onTaken: () => this.setNotSaving(kind, null),
         onPresenceIgnored: (reason) => this.onPresenceIgnored(reason),
+        onDeleted: () => this.onProjectDeleted(),
       });
     this.providers = [room('project', this.doc, this.awareness), room('review', this.reviewDoc)];
     // The answer that settled the link also says how the documents stand. One the server holds
@@ -813,7 +880,10 @@ export class Session {
     const info = await this.inquire(this.token);
     this.probing = false;
     if (this.destroyed || !this.providers.length) return;
-    if (info === 'refused') {
+    if (info === 'deleted') {
+      this.closeRooms();
+      this.projectDeleted();
+    } else if (info === 'refused') {
       this.closeRooms();
       // What the server refused is the token it accepted for this session: the one that is stored.
       this.loseAccess(info);
@@ -904,6 +974,7 @@ export class Session {
     ] as const) {
       const copy = new Y.Doc();
       Y.applyUpdate(copy, Y.encodeStateAsUpdate(doc));
+      if (kind === 'project') forgetUploads(copy);
       const idb = new IndexeddbPersistence(idbName(id, kind), copy);
       await whenSynced(idb);
       await new Promise((r) => setTimeout(r, 80));

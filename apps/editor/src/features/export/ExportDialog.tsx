@@ -163,6 +163,8 @@ type Phase =
 
 /** How many timecodes one problem lists before the rest are only counted. */
 const MAX_PLACES = 8;
+/** And how many different answers of a decoder: a file rarely fails in more than one way. */
+const MAX_CAUSES = 2;
 
 /** Export problems, one sentence per file, each with the places on the timeline it affects. */
 function ProblemList({
@@ -180,6 +182,11 @@ function ProblemList({
       {groupProblems(warnings).map((g) => (
         <li key={g.key}>
           <span>{g.message}</span>
+          {g.causes.slice(0, MAX_CAUSES).map((cause) => (
+            <span key={cause} className="exp__cause">
+              Cause: <span className="mono">{cause}</span>
+            </span>
+          ))}
           <span className="exp__places mono">
             {g.places.slice(0, MAX_PLACES).map((place) =>
               onShow ? (

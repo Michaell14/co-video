@@ -47,7 +47,18 @@ interface Options {
   onTaken?: () => void;
   /** Called with the reason when the server says it passed over a presence update of this client. */
   onPresenceIgnored?: (reason: string) => void;
+  /**
+   * Called when the server ends the connection because the project's owner deleted the project
+   * (close code 4410). There is nothing left to connect to: the provider does not try again.
+   */
+  onDeleted?: () => void;
 }
+
+/**
+ * The code the server closes the connections to a project with when the project is deleted
+ * (`WS_CLOSE_PROJECT_DELETED` in apps/server/src/projects.ts is the same number).
+ */
+export const WS_CLOSE_PROJECT_DELETED = 4410;
 
 /** How long a connection waits before it tries again when trying at once has no prospect. */
 export const PATIENT_RETRY_MS = 60_000;
@@ -105,6 +116,8 @@ export class SyncProvider {
   /** What the server said was wrong, on the connection that is open or was open last. */
   private said: string | null = null;
   private takenTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The server said that the project is deleted: no further attempt is made. */
+  private over = false;
   /**
    * Trying again at once has no prospect: the server will not take what this client holds, or will
    * not load the document at all. Set by a close with code 1009, or from outside when the reason
@@ -133,7 +146,7 @@ export class SyncProvider {
   }
 
   private connect(): void {
-    if (this.destroyed || this.ws) return;
+    if (this.destroyed || this.over || this.ws) return;
     this.setStatus('connecting');
     let ws: WebSocket;
     try {
@@ -188,6 +201,11 @@ export class SyncProvider {
       this.setStatus('offline');
       if (this.takenTimer) clearTimeout(this.takenTimer);
       this.takenTimer = null;
+      if (this.opened && ev.code === WS_CLOSE_PROJECT_DELETED) {
+        this.over = true;
+        this.opts.onDeleted?.();
+        return;
+      }
       if (this.opened && ev.code === WS_CLOSE_TRY_AGAIN_LATER) this.opts.onDisplaced?.();
       if (this.opened && ev.code === WS_CLOSE_TOO_BIG) {
         this.patient = true;

@@ -591,6 +591,12 @@ export class MediaStore {
     }
   }
 
+  /** Stop the uploads and downloads under way: the server they were for has gone. */
+  cancelTransfers(): void {
+    for (const c of this.uploads.values()) c.abort();
+    for (const c of this.downloads.values()) c.abort();
+  }
+
   destroy(): void {
     this.destroyed = true;
     for (const c of this.uploads.values()) c.abort();
@@ -602,9 +608,18 @@ export class MediaStore {
 
 /** Delete all locally stored media for a project. */
 export async function deleteProjectMedia(projectId: string): Promise<void> {
-  // Files held for a later visit to the project have nothing left to be held for.
+  // Files held for a later visit to the project have nothing left to be held for. A copy that is
+  // still being written is stopped and waited for: while a file in it is open for writing the
+  // directory cannot be removed, and would stay on the device with nothing left that knows of it.
   const prefix = unsavedPrefix(projectId);
-  for (const key of Array.from(unsaved.keys())) if (key.startsWith(prefix)) unsaved.delete(key);
+  const writing: Promise<SaveResult>[] = [];
+  for (const [key, held] of Array.from(unsaved)) {
+    if (!key.startsWith(prefix)) continue;
+    unsaved.delete(key);
+    held.cancel.abort();
+    if (held.saving) writing.push(held.done);
+  }
+  await Promise.all(writing);
   try {
     const root = await navigator.storage.getDirectory();
     const app = await root.getDirectoryHandle('tandem', { create: true });

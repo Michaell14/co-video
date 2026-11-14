@@ -6,13 +6,7 @@
  * generated first, and thumbnails that were asked for under a view that has been scrolled or zoomed
  * away since are not generated at all.
  */
-import {
-  AudioBufferSink,
-  CanvasSink,
-  MediaLibrary,
-  type MediaResolver,
-  type OpenMedia,
-} from '@tandem/engine';
+import { CanvasSink, MediaLibrary, Sound, type MediaResolver, type OpenMedia } from '@tandem/engine';
 
 type Listener = () => void;
 
@@ -228,6 +222,8 @@ export class WaveformCache extends Emitter {
   constructor(
     private readonly library: MediaLibrary,
     private readonly opened: Opened = () => {},
+    /** Called for a file whose sound has a decoder here and still gave nothing. */
+    private readonly silent: Opened = () => {},
   ) {
     super();
   }
@@ -262,10 +258,14 @@ export class WaveformCache extends Emitter {
             w.done = true;
             continue;
           }
-          const sink = new AudioBufferSink(media.audio);
+          // What will not decode stays flat, as it stays silent when played.
+          const sound = new Sound(assetId, media.audio);
+          const buffers = sound.buffers(undefined, undefined, ({ lost }) => {
+            if (lost === 'all' && !this.disposed) this.silent(assetId, media);
+          });
           let lastEmit = 0;
           let lastYield = performance.now();
-          for await (const { buffer, timestamp } of sink.buffers()) {
+          for await (const { buffer, timestamp } of buffers) {
             if (this.disposed) return;
             const t0 = timestamp - media.audioStart;
             const sr = buffer.sampleRate;
@@ -324,7 +324,7 @@ export class WaveformCache extends Emitter {
   }
 }
 
-/** What of an asset's file this browser has no decoder for. */
+/** What of an asset's file this browser cannot decode: it has no decoder for it, or the one it has gives nothing. */
 export interface DecodeFault {
   picture: boolean;
   sound: boolean;
@@ -337,6 +337,8 @@ export class TimelineMedia {
   readonly wave: WaveformCache;
   private readonly posters = new Map<string, HTMLImageElement>();
   private readonly faults = new Map<string, DecodeFault>();
+  /** Files whose sound the browser says it can decode, and of which it decoded nothing. */
+  private readonly soundless = new Set<string>();
   private readonly faultListeners = new Set<Listener>();
   private faultsVersion = 0;
 
@@ -344,18 +346,23 @@ export class TimelineMedia {
     this.library = new MediaLibrary(resolver);
     const opened: Opened = (assetId, media) => this.noteFault(assetId, media);
     this.film = new FilmstripCache(this.library, opened);
-    this.wave = new WaveformCache(this.library, opened);
+    this.wave = new WaveformCache(this.library, opened, (assetId, media) => {
+      this.soundless.add(assetId);
+      this.noteFault(assetId, media);
+    });
   }
 
   /**
    * Whether the file can be decoded is known once it has been opened, which the caches do for
    * every asset the timeline shows. The verdict is kept by asset, so that what draws a clip can
-   * say why its picture is black or its sound silent without opening the file itself.
+   * say why its picture is black or its sound silent without opening the file itself. Sound that
+   * has a decoder and gave nothing when its waveform was read counts as sound without one: it is
+   * as silent, and for the same reason.
    */
   private noteFault(assetId: string, media: OpenMedia): void {
     const fault = {
       picture: !!media.video && !media.videoDecodable,
-      sound: !!media.audio && !media.audioDecodable,
+      sound: !!media.audio && (!media.audioDecodable || this.soundless.has(assetId)),
     };
     const before = this.faults.get(assetId);
     if ((before?.picture ?? false) === fault.picture && (before?.sound ?? false) === fault.sound) return;
@@ -393,6 +400,7 @@ export class TimelineMedia {
   /** An asset's bytes moved (e.g. finished downloading): reopen it. */
   refresh(assetId: string): void {
     this.library.invalidate(assetId);
+    this.soundless.delete(assetId);
     this.film.forget(assetId);
     this.wave.forget(assetId);
     this.film.emit();

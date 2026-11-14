@@ -17,6 +17,7 @@ import {
   type InputVideoTrack,
 } from 'mediabunny';
 import { ASSET_DEFAULTS, type Asset, type AssetKind } from '@tandem/core';
+import { forgetSound } from '../audio/sound';
 
 export interface MediaLocation {
   blob?: Blob;
@@ -220,12 +221,16 @@ export class MediaLibrary {
     return this.read(assetId).then(found);
   }
 
-  /** Forget a cached handle, e.g. after the asset finished downloading and a local copy exists. */
+  /**
+   * Forget a cached handle, e.g. after the asset finished downloading and a local copy exists.
+   * What the page has concluded about decoding the file's sound goes with it.
+   */
   invalidate(assetId: string): void {
     const p = this.opened.get(assetId);
     this.opened.delete(assetId);
     this.blobs.delete(assetId);
     this.reported.delete(assetId);
+    forgetSound(assetId);
     p?.then((m) => disposeMedia(found(m))).catch(() => {});
   }
 

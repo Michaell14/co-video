@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { AudioBufferSink, WrappedAudioBuffer } from 'mediabunny';
+import type { WrappedAudioBuffer } from 'mediabunny';
 import { makeClip } from '@tandem/core';
 import { AudioRuns } from '../src/audio/graph';
+import type { Sound, SoundTrouble } from '../src/audio/sound';
 
 const RATE = 44100;
 const BLOCK = 1024;
@@ -15,7 +16,7 @@ function decoded(first: number, count: number, nudge: (i: number) => number = ()
   }));
 }
 
-/** A sink over `all` that answers as Mediabunny's does, and counts what is asked of it. */
+/** A file's sound over `all` that answers as Mediabunny's sink does, and counts what is asked of it. */
 function sinkOver(all: WrappedAudioBuffer[]) {
   const stats = { decodes: [] as [number, number][], open: 0, pulled: 0 };
   const sink = {
@@ -38,9 +39,12 @@ function sinkOver(all: WrappedAudioBuffer[]) {
         }
       })();
     },
-  } as unknown as AudioBufferSink;
+  } as unknown as Sound;
   return { sink, stats };
 }
+
+/** Nothing fails in a sink over buffers. */
+const unheard = () => {};
 
 async function collect(buffers: AsyncGenerator<WrappedAudioBuffer, void, unknown>): Promise<number[]> {
   const starts: number[] = [];
@@ -58,9 +62,9 @@ describe('AudioRuns', () => {
     const runs = new AudioRuns();
     const high = seconds(400 * BLOCK);
     const read = (from: number, to: number, again: number) =>
-      collect(runs.of(clip).read(sink, seconds(from), seconds(to), seconds(again), 0, high, false));
+      collect(runs.of(clip).read(sink, seconds(from), seconds(to), seconds(again), 0, high, false, unheard));
     const direct = async (from: number, to: number) =>
-      collect(sinkOver(all).sink.buffers(seconds(from), seconds(to)));
+      collect(sinkOver(all).sink.buffers(seconds(from), seconds(to), unheard));
 
     // Each read begins a little before the one before it ended, as the chunks of an export do.
     expect(await read(500, 150_000, 120_000)).toEqual(await direct(500, 150_000));
@@ -79,7 +83,9 @@ describe('AudioRuns', () => {
     const runs = new AudioRuns();
     const read = (from: number, to: number, again: number) =>
       collect(
-        runs.of(clip).read(sink, seconds(from), seconds(to), seconds(again), 0, seconds(400 * BLOCK), false),
+        runs
+          .of(clip)
+          .read(sink, seconds(from), seconds(to), seconds(again), 0, seconds(400 * BLOCK), false, unheard),
       );
     await read(0, 100_000, 90_000);
     await read(90_000, 200_000, 190_000);
@@ -99,7 +105,7 @@ describe('AudioRuns', () => {
     const all = decoded(7860, 60, (i) => (i >= 30 ? 300 : 0) + [0, 1, 0, 0, -1, 1][i % 6]);
     const { sink } = sinkOver(all);
     const runs = new AudioRuns();
-    const starts = await collect(runs.of(clip).read(sink, 0, 10, 10, 0, 10, false));
+    const starts = await collect(runs.of(clip).read(sink, 0, 10, 10, 0, 10, false, unheard));
     const steps = starts.slice(1).map((at, i) => at - starts[i]);
     expect(steps.filter((step) => step !== BLOCK)).toEqual([BLOCK + 300]);
     expect(steps.indexOf(BLOCK + 300)).toBe(29);
@@ -114,9 +120,9 @@ describe('AudioRuns', () => {
     const low = seconds(20_000);
     const high = seconds(400 * BLOCK);
     const read = (from: number, to: number) =>
-      collect(runs.of(clip).read(sink, seconds(from), seconds(to), 0, low, high, true));
+      collect(runs.of(clip).read(sink, seconds(from), seconds(to), 0, low, high, true, unheard));
     const direct = async (from: number, to: number) =>
-      collect(sinkOver(all).sink.buffers(seconds(from), seconds(to)));
+      collect(sinkOver(all).sink.buffers(seconds(from), seconds(to), unheard));
     // Descending, each stretch reaching a little into the one before it.
     expect(await read(250_000, 350_000)).toEqual(await direct(250_000, 350_000));
     expect(await read(100_000, 270_000)).toEqual(await direct(100_000, 270_000));
@@ -136,7 +142,8 @@ describe('AudioRuns', () => {
   it('seeks for each read of a clip that plays backwards while what is left of it is too long to keep', async () => {
     const { sink, stats } = sinkOver(decoded(0, 400));
     const runs = new AudioRuns();
-    const read = (from: number, to: number) => collect(runs.of(clip).read(sink, from, to, 0, 0, 310, true));
+    const read = (from: number, to: number) =>
+      collect(runs.of(clip).read(sink, from, to, 0, 0, 310, true, unheard));
     // More than five minutes are left to play: decoded as without anything carried.
     await read(301, 305);
     await read(297, 301.5);
@@ -148,5 +155,43 @@ describe('AudioRuns', () => {
     await read(293, 297.5);
     await read(289, 293.5);
     expect(stats.decodes.slice(2)).toEqual([[0, 297.5]]);
+  });
+
+  it('tells whoever is reading of sound that would not decode, and starts no decoder once one has stopped for good', async () => {
+    const all = decoded(0, 400);
+    let started = 0;
+    // Decodes as far as buffer 150 with a hole after buffer 100, then stops for good.
+    const sound = {
+      buffers(from: number, _to: number, report: (trouble: SoundTrouble) => void) {
+        started++;
+        return (async function* () {
+          for (let i = Math.floor((from * RATE) / BLOCK); i < 150; i++) {
+            if (i === 101) report({ lost: 'stretch', from: all[i].timestamp, cause: 'bad packet' });
+            if (i !== 101) yield all[i];
+          }
+          report({ lost: 'rest', from: seconds(150 * BLOCK), cause: 'bad packet' });
+        })();
+      },
+    } as unknown as Sound;
+    const runs = new AudioRuns();
+    const heard: string[] = [];
+    const high = seconds(400 * BLOCK);
+    const read = (chunk: string, from: number, to: number) =>
+      collect(
+        runs
+          .of(clip)
+          .read(sound, seconds(from), seconds(to), seconds(to), 0, high, false, (t) =>
+            heard.push(`${chunk}: ${t.lost} at ${Math.round(t.from * RATE)}`),
+          ),
+      );
+    expect(await read('first', 0, 50 * BLOCK)).toHaveLength(50);
+    // The hole is met, and then the end, by the chunk that reads there: not by the one that began the decode.
+    const second = await read('second', 50 * BLOCK, 200 * BLOCK);
+    expect(second).toHaveLength(99);
+    expect(second).not.toContain(101 * BLOCK);
+    expect(await read('third', 200 * BLOCK, 300 * BLOCK)).toEqual([]);
+    expect(await read('fourth', 300 * BLOCK, 400 * BLOCK)).toEqual([]);
+    expect(heard).toEqual([`second: stretch at ${101 * BLOCK}`, `second: rest at ${150 * BLOCK}`]);
+    expect(started).toBe(1);
   });
 });

@@ -1014,16 +1014,11 @@ describe('automatic versions', () => {
     const versions = new VersionStore(projects);
     const { id } = await projects.create('p');
 
-    const named = await versions.create(
-      id,
-      { name: 'keep me', author: '', auto: false },
-      new Uint8Array([0, 0]),
-    );
+    const empty = { state: new Uint8Array([0, 0]), assets: [] };
+    const named = await versions.create(id, { name: 'keep me', author: '', auto: false }, empty);
     const autos: VersionInfo[] = [];
     for (let i = 0; i < MAX_AUTO_VERSIONS + 5; i++) {
-      autos.push(
-        await versions.create(id, { name: 'Auto-save', author: '', auto: true }, new Uint8Array([0, 0])),
-      );
+      autos.push(await versions.create(id, { name: 'Auto-save', author: '', auto: true }, empty));
     }
     const list = await versions.list(id);
     expect(list.filter((v) => v.auto)).toHaveLength(MAX_AUTO_VERSIONS);

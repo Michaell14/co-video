@@ -32,6 +32,7 @@ import type { Glx } from '../gl/glx';
 import type { SourceProvider, TextureSource } from '../gl/compositor';
 import { parseCubeLut } from '../gl/grade';
 import { fontEpoch, fontSpec, generatorKey, onFontsLoaded, rasterizeGenerator } from '../generators';
+import { describeCause } from './cause';
 import type { MediaFault, MediaLibrary, OpenMedia } from './library';
 
 const EPS = 1e-4;
@@ -81,6 +82,8 @@ export interface SourceProblem {
    * `decode-error`: decoding stopped part-way through the file, or would not start there at all.
    */
   reason: SourceFault;
+  /** Of a `decode-error`, what the decoder said when it stopped, if it said anything. */
+  cause?: string;
 }
 
 /**
@@ -158,6 +161,8 @@ class VideoCursor {
    * or its decoder gave up before the first frame (`decode-error`, see `stopped`).
    */
   problem: MediaFault | 'undecodable' | 'decode-error' | null = null;
+  /** What the decoder said when it last stopped with an error: see `describeCause`. */
+  cause: string | null = null;
 
   private media: OpenMedia | null = null;
   private sink: VideoSampleSink | null = null;
@@ -602,6 +607,7 @@ class VideoCursor {
     this.pumping = true;
     this.pumpEnded = false;
     this.broken = false;
+    this.cause = null;
     this.pumpStartedAt = performance.now();
     this.resume?.();
     this.pumpFrom = Math.max(0, t - lead);
@@ -640,6 +646,7 @@ class VideoCursor {
       } catch (err) {
         if (id === this.pumpId && !this.disposed) {
           console.warn('[video] decode error', err);
+          this.cause = describeCause(err);
           this.pumping = false;
           this.pumpEnded = true;
           this.broken = true;
@@ -1070,7 +1077,11 @@ export class SourceManager implements SourceProvider {
         if (!exact) cur.request(l.sourceTime);
         else
           waits.push(
-            cur.ready(l.sourceTime).then((reason) => reason && { clipId, assetId, part: 'video', reason }),
+            cur.ready(l.sourceTime).then((reason) => {
+              if (!reason) return null;
+              const said = reason === 'decode-error' ? cur.cause : null;
+              return { clipId, assetId, part: 'video', reason, ...(said ? { cause: said } : {}) };
+            }),
           );
       } else if (clip.type === 'image' && assetId) {
         const img = this.image(assetId, stillDetail(clip, project, frameWidth, frameHeight));

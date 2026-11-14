@@ -13,7 +13,13 @@ import {
   docFullMessage,
   type ControlMessage,
 } from '@tandem/core';
-import { PATIENT_RETRY_MS, SyncProvider, TAKEN_AFTER_MS, withoutOwn } from '../src/session/sync';
+import {
+  PATIENT_RETRY_MS,
+  SyncProvider,
+  TAKEN_AFTER_MS,
+  WS_CLOSE_PROJECT_DELETED,
+  withoutOwn,
+} from '../src/session/sync';
 
 type Entry = [id: number, clock: number, state: unknown];
 
@@ -243,6 +249,7 @@ describe('SyncProvider and a server that will not take what it is sent', () => {
   const turnedAway = vi.fn<(said: string | null) => void>();
   const taken = vi.fn<() => void>();
   const presenceIgnored = vi.fn<(reason: string) => void>();
+  const deleted = vi.fn<() => void>();
   /** The socket of the latest attempt, opened. */
   const connected = (): FakeSocket => {
     const socket = FakeSocket.last;
@@ -262,6 +269,7 @@ describe('SyncProvider and a server that will not take what it is sent', () => {
       onTurnedAway: turnedAway,
       onTaken: taken,
       onPresenceIgnored: presenceIgnored,
+      onDeleted: deleted,
     });
   });
 
@@ -306,6 +314,19 @@ describe('SyncProvider and a server that will not take what it is sent', () => {
     expect(FakeSocket.made).toBe(2);
     vi.advanceTimersByTime(1);
     expect(FakeSocket.made).toBe(3);
+  });
+
+  it('says so once when the project was deleted, and does not knock again', () => {
+    const socket = connected();
+    socket.control({ type: 'error', message: 'this project was deleted by its owner' });
+    socket.shut(WS_CLOSE_PROJECT_DELETED);
+    expect(deleted).toHaveBeenCalledOnce();
+    expect(turnedAway).not.toHaveBeenCalled();
+    expect(provider.status).toBe('offline');
+    // Not after the longest wait there is either.
+    vi.advanceTimersByTime(10 * PATIENT_RETRY_MS);
+    expect(FakeSocket.made).toBe(1);
+    expect(deleted).toHaveBeenCalledOnce();
   });
 
   it('does not carry a reason over from the connection before', () => {

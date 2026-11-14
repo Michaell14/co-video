@@ -138,6 +138,13 @@
   flex-direction: column;
   gap: 4px;
 }
+/* What the decoder said: a detail to read out or copy, so it can be selected like text. */
+.exp__cause {
+  color: var(--fg-3);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
 .exp__places {
   display: flex;
   flex-wrap: wrap;

@@ -299,6 +299,21 @@ export class DocStore {
     });
   }
 
+  /**
+   * Stop without the final persist, for a document whose files are about to be deleted: what is
+   * queued is dropped and no snapshot is taken. Resolves once a write that was under way has ended
+   * and the file handle is released, so that nothing of this store touches the directory again.
+   */
+  async abandon(): Promise<void> {
+    if (this.closed) return this.chain;
+    this.closed = true;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    this.pending = [];
+    this.pendingBytes = 0;
+    await this.enqueue(() => this.log.close());
+  }
+
   private enqueue(op: () => Promise<void>): Promise<void> {
     const run = this.chain.then(op);
     // Keep the chain usable after a failure; the caller of `enqueue` still sees the rejection.

@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { encoderAccepts, videoEncoding, type VideoEncodingSettings } from '../src/export';
+import { applyEdits, ASSET_DEFAULTS, emptyProject, type Asset } from '@tandem/core';
+import {
+  describeProblem,
+  encoderAccepts,
+  videoEncoding,
+  type ExportProblem,
+  type VideoEncodingSettings,
+} from '../src/export';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -129,5 +136,67 @@ describe('encoderAccepts', () => {
     // H.264 has no odd sizes.
     expect(await encoderAccepts(settings({ width: 1919 }))).toBe(false);
     expect(asked).toHaveLength(0);
+  });
+});
+
+describe('describeProblem', () => {
+  const asset: Asset = {
+    ...ASSET_DEFAULTS,
+    id: 'a1',
+    name: 'holiday.mp4',
+    kind: 'video',
+    createdAt: 0,
+    createdBy: 'test',
+    folderId: null,
+    uploaded: false,
+  };
+  const project = applyEdits(emptyProject(), [{ op: 'addAsset', asset }]);
+  const said = (patch: Partial<ExportProblem>) =>
+    describeProblem(project, {
+      clipId: 'c1',
+      assetId: 'a1',
+      part: 'audio',
+      reason: 'decode-error',
+      ...patch,
+    });
+
+  it('says how much of a clip’s sound would not decode: a stretch, the rest, or all of it', () => {
+    expect(said({ lost: 'stretch' })).toBe(
+      'A stretch of the audio in “holiday.mp4” could not be decoded, so the export is silent there.',
+    );
+    expect(said({ lost: 'rest' })).toBe(
+      'The audio in “holiday.mp4” stopped decoding part-way through, so the export is silent from there.',
+    );
+    expect(said({ lost: 'all' })).toBe(
+      'The audio in “holiday.mp4” could not be decoded, so it is missing from the export.',
+    );
+  });
+
+  it('keeps what the decoder said out of the sentence: that is a detail of its own', () => {
+    expect(said({ lost: 'all', cause: 'EncodingError: Decoding error.' })).not.toContain('EncodingError');
+  });
+
+  it('says of a picture that stopped decoding what the export shows instead', () => {
+    expect(said({ part: 'video' })).toBe(
+      '“holiday.mp4” stopped decoding, so the export holds its last good frame from there, or leaves it out where there is none.',
+    );
+  });
+
+  it('tells sound that has no decoder here from sound whose decoder failed', () => {
+    expect(said({ reason: 'undecodable' })).toBe(
+      'This browser cannot decode the audio in “holiday.mp4”, so it is missing from the export.',
+    );
+    expect(said({ reason: 'missing' })).toBe(
+      '“holiday.mp4” is not on this device or the server, so it is missing from the export.',
+    );
+  });
+
+  it('still has a sentence for a file that has left the project', () => {
+    expect(said({ assetId: 'gone', lost: 'all' })).toBe(
+      'The audio in a file that is no longer in the project could not be decoded, so it is missing from the export.',
+    );
+    expect(said({ assetId: 'gone', part: 'video' })).toMatch(
+      /^A file that is no longer in the project stopped/,
+    );
   });
 });

@@ -40,6 +40,8 @@ import { DocStore, DocumentTooLargeError, storedDoc, tooLargeToOpen } from './pe
 import type { DocStoreLimits, StoredDoc } from './persistence';
 import { RoomPresence } from './presence';
 import type { PresenceMember } from './presence';
+import { versionOf } from './references';
+import type { VersionContent } from './references';
 import { RECOUNT_AFTER_STRUCTS, measureUpdate, sameSetAside, setAside, weigh, weightOf } from './updateSize';
 import { delay } from './util';
 
@@ -319,8 +321,11 @@ export interface RoomHooks {
   projectDir(projectId: string): string;
   /** A document of the project changed. Called for every update, so it must be cheap. */
   onDocChanged(projectId: string): void;
-  /** Store `state` as an automatic version of the project. */
-  saveAutoVersion(projectId: string, state: Uint8Array): Promise<void>;
+  /**
+   * Store `version` as an automatic version of the project. Called in the same turn of the event
+   * loop the version was taken in.
+   */
+  saveAutoVersion(projectId: string, version: VersionContent): Promise<void>;
 }
 
 export interface RoomManagerOptions extends RoomHooks {
@@ -478,10 +483,10 @@ export class Room {
     this.idleTimer.unref();
   }
 
-  /** Full state of the document, and a note that this state is now captured by a version. */
-  snapshotForVersion(): Uint8Array {
+  /** The document as a version stores it, and a note that this state is now captured by one. */
+  snapshotForVersion(): VersionContent {
     this.unsnapshotted = false;
-    return Y.encodeStateAsUpdate(this.doc);
+    return versionOf(this.doc);
   }
 
   // ──────────────────────────────────────────────────────── document weight ──
@@ -787,9 +792,9 @@ export class Room {
     // Chained, so that destroy() also waits for a version the timer started a moment earlier.
     this.autoVersion = this.autoVersion.then(async () => {
       if (!this.unsnapshotted || this.opts.autoSnapshotMs <= 0 || this.kind !== 'project') return;
-      const state = this.snapshotForVersion();
+      const version = this.snapshotForVersion();
       try {
-        await this.opts.saveAutoVersion(this.projectId, state);
+        await this.opts.saveAutoVersion(this.projectId, version);
       } catch (err) {
         this.unsnapshotted = true; // try again at the next tick
         console.error(`[tandem] automatic version of project ${this.projectId} failed:`, err);
@@ -799,21 +804,18 @@ export class Room {
   }
 
   /**
-   * Final persist and teardown. Idempotent. After this resolves every update the room ever
-   * applied is in its snapshot file.
+   * The end of the room, whichever way it ends, once: nothing is taken from anyone any more,
+   * every connection goes the way `leave` shows it, and the store is given its `last` orders.
    */
-  destroy(): Promise<void> {
+  private end(leave: (conn: Connection) => void, last: () => Promise<void>): Promise<void> {
     this.destroying ??= (async () => {
       if (this.idleTimer) clearTimeout(this.idleTimer);
       if (this.autoTimer) clearInterval(this.autoTimer);
       this.doc.off('update', this.onDocUpdate);
       this.presence.close();
-      for (const conn of this.conns) conn.ws.terminate();
+      for (const conn of this.conns) leave(conn);
       try {
-        // Capture the end of an editing session as a version, so it can be returned to after
-        // the next session changed things.
-        await this.takeAutoVersion();
-        await this.store.close();
+        await last();
       } finally {
         this.doc.destroy(); // destroys the awareness instance (and its interval) as well
         this.store.onSnapshot = undefined;
@@ -821,6 +823,39 @@ export class Room {
       }
     })();
     return this.destroying;
+  }
+
+  /**
+   * Final persist and teardown. Idempotent. After this resolves every update the room ever
+   * applied is in its snapshot file.
+   */
+  destroy(): Promise<void> {
+    return this.end(
+      (conn) => conn.ws.terminate(),
+      async () => {
+        // Capture the end of an editing session as a version, so it can be returned to after
+        // the next session changed things.
+        await this.takeAutoVersion();
+        await this.store.close();
+      },
+    );
+  }
+
+  /**
+   * Teardown without the final persist, for a project that is being deleted. Everyone connected
+   * is told `reason` and their connection closed with `code`. Once this resolves the room writes
+   * nothing more: no snapshot, no version. A room that was already persisting its final state
+   * finishes that instead, which comes to the same for whoever deletes the files afterwards.
+   */
+  discard(code: number, reason: string): Promise<void> {
+    return this.end(
+      (conn) => conn.turnAway(code, reason),
+      async () => {
+        // A version the timer started a moment ago is let through or fails; none is begun.
+        await this.autoVersion;
+        await this.store.abandon();
+      },
+    );
   }
 }
 
@@ -1027,6 +1062,71 @@ export class RoomManager {
     } finally {
       room.release();
     }
+  }
+
+  /**
+   * Run `fn` against a document, loading it for the moment if nobody has it open. A room that was
+   * loaded for this is written back and unloaded before this resolves, not after the idle time:
+   * reading the documents of many projects in a row must not fill the memory they share.
+   */
+  async peek<T>(projectId: string, kind: DocKind, fn: (doc: Y.Doc) => T): Promise<T> {
+    const key = `${projectId}/${kind}`;
+    const wasLoaded = this.rooms.has(key);
+    const room = await this.acquire(projectId, kind);
+    let result: T;
+    try {
+      result = fn(room.doc);
+    } finally {
+      room.release();
+    }
+    if (!wasLoaded) {
+      this.unload(room);
+      await this.closing.get(key);
+    }
+    return result;
+  }
+
+  /**
+   * Decode a stored state of a `kind` document for the length of `fn`, on the books of the
+   * documents in memory like a loaded one. `null` when the state is more than is loaded of such
+   * a document, when there is no room for it right now, or when it cannot be decoded.
+   */
+  readState<T>(kind: DocKind, state: Uint8Array, fn: (doc: Y.Doc) => T): T | null {
+    const { bytes } = this.openDocs;
+    const { maxBytes } = loadLimits(kind, this.opts.limits, bytes.limit);
+    if (state.byteLength > maxBytes || !bytes.fits(state.byteLength)) return null;
+    bytes.add(state.byteLength);
+    const doc = new Y.Doc({ gc: true });
+    try {
+      Y.applyUpdate(doc, state);
+      return fn(doc);
+    } catch {
+      return null;
+    } finally {
+      doc.destroy();
+      bytes.add(-state.byteLength);
+    }
+  }
+
+  /**
+   * Close the rooms of a project that is being deleted. Everyone connected to it is told `reason`
+   * and disconnected with `code`, and once this resolves nothing of the project is in memory and
+   * nothing more is written for it. That no room of it is loaded afterwards is for `projectDir`
+   * to see to, by refusing.
+   */
+  async discard(projectId: string, code: number, reason: string): Promise<void> {
+    await Promise.all(
+      (['project', 'review'] as const).map(async (kind) => {
+        const key = `${projectId}/${kind}`;
+        this.tooLarge.delete(key);
+        const loading = this.rooms.get(key);
+        this.rooms.delete(key);
+        const room = await loading?.catch(() => undefined);
+        await room?.discard(code, reason);
+        // A room that was unloading when the project went is still writing its last state.
+        await this.closing.get(key);
+      }),
+    );
   }
 
   /** Called by a room's idle timer: persist it and drop it from memory, unless it got busy again. */

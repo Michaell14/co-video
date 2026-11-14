@@ -6,7 +6,7 @@
  *   track:       ◄──────────────────────────────────────────────────────────┘
  *                input ─► [3-band EQ] ─► [compressor ─► make-up] ─► fader ─► pan ─► meter ─► master
  */
-import { AudioBufferSink, type WrappedAudioBuffer } from 'mediabunny';
+import type { WrappedAudioBuffer } from 'mediabunny';
 import {
   animated,
   audibleTracks,
@@ -21,8 +21,10 @@ import {
   type Project,
   type Track,
 } from '@tandem/core';
+import { describeCause } from '../media/cause';
 import type { MediaFault, MediaLibrary } from '../media/library';
 import { FULL_KERNEL_STEP, Resampler, resampleReach, type Resampled } from './resample';
+import { Sound, type SoundTrouble } from './sound';
 
 /** How long a voice waits before asking again for media that is not available yet. */
 const RETRY_MS = 2000;
@@ -38,13 +40,29 @@ export interface AudioProblem {
   /**
    * `missing`: the file is neither on this device nor on the server. `unreadable`: it is there but
    * could not be opened. `undecodable`: this browser cannot decode its audio. `decode-error`:
-   * decoding stopped part-way through.
+   * some or all of it would not decode, as `lost` says.
    */
   reason: MediaFault | 'undecodable' | 'decode-error';
+  /**
+   * Of a `decode-error`, what the clip is without. `stretch`: a part of its sound, with what
+   * follows that part in its place. `rest`: everything from where decoding stopped. `all`: all
+   * of what was to be played.
+   */
+  lost?: SoundTrouble['lost'];
+  /** Timeline time (seconds) at which the lost sound begins, where that can be said. */
+  at?: number;
+  /** What the decoder said, in one line: see `describeCause`. */
+  cause?: string;
 }
 
-/** `rate` is the sample rate the file declares for its sound; decoded buffers carry their own. */
-type OpenAudio = { sink: AudioBufferSink; start: number; rate: number };
+/**
+ * `rate` is the sample rate the file declares for its sound. Decoded buffers carry their own, and
+ * once one has been seen `sound.rate` is the rate to go by.
+ */
+type OpenAudio = { sound: Sound; start: number; rate: number };
+
+/** Told of each stretch of a clip's sound that could not be decoded. */
+type Report = (trouble: SoundTrouble) => void;
 
 /**
  * The buffers of one decode, each placed where the one before it ends. A decoder's buffers follow
@@ -92,9 +110,23 @@ class Run {
    * it to play, decoded in one pass. Nothing is held that way while this is `-Infinity`.
    */
   private top = -Infinity;
+  /** Whoever is reading now: a decode outlives the chunk that began it. */
+  private report: Report | null = null;
+  /** The decoder stopped for good, and whoever was reading then has been told. */
+  private over = false;
+
+  /** A decode of the clip's sound that reports to whoever reads from it at the time. */
+  private decode(sound: Sound, from: number, to: number): AsyncGenerator<WrappedAudioBuffer, void, unknown> {
+    return inSequence(
+      sound.buffers(from, to, (trouble) => {
+        if (trouble.lost !== 'stretch') this.over = true;
+        this.report?.(trouble);
+      }),
+    );
+  }
 
   /**
-   * The buffers `sink.buffers(from, to)` would give, out of one decode of `[low, high)`, the
+   * The buffers `sound.buffers(from, to)` would give, out of one decode of `[low, high)`, the
    * stretch of the file the render plays for the clip. Forwards, the reads follow one another, and
    * each carries on where the one before stopped; one that does not lie in what that one decoded
    * seeks anew. `again` is where the read after this one may begin: what lies before it is not kept.
@@ -102,26 +134,30 @@ class Run {
    * the first read decodes everything from `low` up to its own end, beyond which no later one
    * asks, and that is handed out from its end and let go once a read has reached `low`. More than
    * `HELD_BACKWARDS` is too much to keep: reads seek for themselves until what is left to play is
-   * no longer than that.
+   * no longer than that. A decoder that has stopped for good is not started for every chunk that
+   * follows: `report` hears of it once, and of each stretch that would not decode.
    */
   async *read(
-    sink: AudioBufferSink,
+    sound: Sound,
     from: number,
     to: number,
     again: number,
     low: number,
     high: number,
     backwards: boolean,
+    report: Report,
   ): AsyncGenerator<WrappedAudioBuffer, void, unknown> {
+    this.report = report;
+    if (this.over) return;
     if (backwards) {
       if (to > this.top) {
         await this.end();
         if (to - low > HELD_BACKWARDS) {
-          yield* inSequence(sink.buffers(from, to));
+          yield* this.decode(sound, from, to);
           return;
         }
         const all: WrappedAudioBuffer[] = [];
-        for await (const wb of inSequence(sink.buffers(low, to))) all.push(wb);
+        for await (const wb of this.decode(sound, low, to)) all.push(wb);
         this.held = all;
       }
       // The reads come in descending order: what lies after this one is not asked for again.
@@ -138,7 +174,7 @@ class Run {
     const first = this.held.findLastIndex((wb) => wb.timestamp <= from);
     if (!this.source || first < 0) {
       await this.end();
-      this.source = inSequence(sink.buffers(from, high));
+      this.source = this.decode(sound, from, high);
     } else this.held.splice(0, first);
     for (let i = 0; ; i++) {
       if (i === this.held.length) {
@@ -434,7 +470,7 @@ export class AudioGraph {
         if (!m.audio) return null;
         if (!m.audioDecodable) return 'undecodable';
         return {
-          sink: new AudioBufferSink(m.audio),
+          sound: new Sound(assetId, m.audio),
           start: m.audioStart,
           rate: await m.audio.getSampleRate(),
         };
@@ -801,13 +837,14 @@ export class AudioGraph {
         ? srcB - (fromTl - clipStartSec) * per
         : clip.sourceIn + (toTl - clipStartSec) * per;
       // Converted sound is made from the samples around each position, so the first and the last
-      // of it need the source a little beyond what plays: what really is there, not silence.
+      // of it need the source a little beyond what plays: what really is there, not silence. A
+      // file can decode to another rate than it declares (a stream that doubles its rate in the
+      // decoder), which is known once a buffer of it has been seen.
+      const rate = opened.sound.rate ?? opened.rate;
       const speed = per * session.rate;
-      const step = (speed * opened.rate) / this.ctx.sampleRate;
+      const step = (speed * rate) / this.ctx.sampleRate;
       const around =
-        this.passes(opened.rate, speed) || !this.converting(step)
-          ? 0
-          : (resampleReach(step) + 1) / opened.rate;
+        this.passes(rate, speed) || !this.converting(step) ? 0 : (resampleReach(step) + 1) / rate;
       const from = srcFrom - around + opened.start;
       const to = srcTo + around + opened.start;
       // In a render made in chunks the clip's sound comes out of one decode of all that the render
@@ -821,9 +858,17 @@ export class AudioGraph {
       const played = (lastTl - clipStartSec) * per;
       const low = (clip.reverse ? srcB - played : clip.sourceIn) - around + opened.start;
       const high = (clip.reverse ? srcB : clip.sourceIn + played) + around + opened.start;
+      const report: Report = ({ lost, from: source, cause }) => {
+        if (v.cancelled || !assetId) return;
+        // Where a clip that plays forwards falls silent. Backwards, what is lost is heard up to
+        // that place, not from it, and where it begins is not known here.
+        const heard = clipStartSec + (source - opened.start - clip.sourceIn) / per;
+        const at = clip.reverse ? undefined : Math.min(Math.max(heard, fromTl), toTl);
+        this.onProblem?.({ clipId: clip.id, assetId, reason: 'decode-error', lost, at, cause });
+      };
       const buffers = this.runs
-        ? this.runs.of(clip).read(opened.sink, from, to, again, low, high, clip.reverse)
-        : inSequence(opened.sink.buffers(from, to));
+        ? this.runs.of(clip).read(opened.sound, from, to, again, low, high, clip.reverse, report)
+        : inSequence(opened.sound.buffers(from, to, report));
 
       if (clip.reverse) {
         // Reverse playback needs the buffers in descending order: collect, then schedule backwards.
@@ -849,8 +894,17 @@ export class AudioGraph {
       v.done = true;
     } catch (err) {
       if (!v.cancelled) {
-        console.warn('[audio] decode error', err);
-        if (assetId) this.onProblem?.({ clipId: clip.id, assetId, reason: 'decode-error' });
+        // Not a decoder that failed, which `Sound` deals with: the file went away under the
+        // voice, or the voice could not be scheduled.
+        console.warn(`[audio] ${assetId}: the clip’s sound stopped`, err);
+        if (assetId)
+          this.onProblem?.({
+            clipId: clip.id,
+            assetId,
+            reason: 'decode-error',
+            lost: 'rest',
+            cause: describeCause(err),
+          });
         this.endConversion(v);
       }
       v.done = true;

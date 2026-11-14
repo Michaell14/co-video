@@ -337,7 +337,8 @@
   transform: scale(1.04);
 }
 .pcard__shared,
-.pcard__refused {
+.pcard__refused,
+.pcard__unshared {
   position: absolute;
   top: 8px;
   left: 8px;
@@ -346,7 +347,8 @@
   background: rgba(12, 15, 4, 0.7);
 }
 /* The same dark plate under the warning colour: the poster behind it can be anything. */
-.pcard__refused {
+.pcard__refused,
+.pcard__unshared {
   background: rgba(20, 13, 2, 0.78);
 }
 .pcard__dur {
@@ -425,6 +427,20 @@
   color: var(--red);
   font-size: var(--text-sm);
   line-height: 1.5;
+}
+
+/* The one choice in the question before a project is deleted for everyone: its words, then its
+   switch, and under them what the choice comes to. */
+.delete__keep {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: var(--text-sm);
+}
+.delete__kept {
+  margin: 0;
 }
 
 /* The entrances are staggered by delays, which outlast the motion they were made for: without

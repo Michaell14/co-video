@@ -1,6 +1,7 @@
 import {
   AudioLines,
   Blend,
+  BrushCleaning,
   CircleAlert,
   CloudDownload,
   CloudOff,
@@ -36,6 +37,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  canEdit,
   EFFECT_CATEGORIES,
   EFFECTS,
   formatBytes,
@@ -56,13 +58,13 @@ import { mediaAvailable } from '../../state/media';
 import { commit } from '../../state/props';
 import { useUI, type LibraryTab } from '../../state/ui';
 import { confirm } from '../../ui/confirm';
-import { Button, cx, hideTip, IconButton, openContextMenu, tip } from '../../ui/core';
+import { Button, cx, hideTip, IconButton, openContextMenu, tip, toast } from '../../ui/core';
 import { beginDrag, useDrag, type DragPayload } from '../../ui/dnd';
 import { handFocus, usingKeyboard } from '../../ui/layers';
 import { onTabListKey } from '../editor/tabs';
 import { decodeNotice } from './fault';
 import { FxThumb } from './fxPreview';
-import { picked, replaceTarget, restOfDrop, type PickMode } from './pool';
+import { assetsUsedBy, picked, replaceTarget, restOfDrop, unusedAssets, type PickMode } from './pool';
 import { search } from './search';
 import { tileToward } from './tiles';
 import './library.css';
@@ -307,15 +309,7 @@ export function Library() {
  * The assets some clip uses, as its media or as the LUT of its grade. Found once for each state of
  * the clips, however many cards ask.
  */
-const usedAssets = memoByRef((clips: Project['clips']) => {
-  const used = new Set<ID>();
-  for (const id in clips) {
-    const clip = clips[id];
-    if (clip.assetId) used.add(clip.assetId);
-    if (clip.grade?.lutId) used.add(clip.grade.lutId);
-  }
-  return used;
-});
+const usedAssets = memoByRef((clips: Project['clips']) => assetsUsedBy(Object.values(clips)));
 
 /** Take files out of the project, with the clips that show them and the grades that use them as a LUT. */
 function removeAssets(ids: ID[]): void {
@@ -360,6 +354,40 @@ async function mayRemove(ids: ID[]): Promise<boolean> {
     confirmLabel: 'Remove',
     danger: true,
   });
+}
+
+/**
+ * Clear the pool of every file that no clip uses, after saying how many files that is and how
+ * much they hold. It is the removal a card's menu does, for all of them in one step, and one undo
+ * brings them all back. `pressed` is the control that asked: where it goes with the last file, the
+ * keyboard is handed on.
+ */
+async function removeUnusedMedia(pressed: HTMLElement): Promise<void> {
+  const session = currentSession();
+  if (!session) return;
+  const unused = (): Asset[] => unusedAssets(session.store.get(), session.store.hiddenClips());
+  const found = unused();
+  if (!found.length) {
+    toast('Every file in the media pool is used on the timeline. There is nothing to remove.');
+    return;
+  }
+  const one = found.length === 1;
+  const size = formatBytes(found.reduce((sum, asset) => sum + asset.size, 0));
+  const sure = await confirm({
+    title: one ? `Remove ${found[0].name} from the project?` : `Remove ${found.length} unused files?`,
+    message: one
+      ? `Nothing on the timeline uses it: 1 file, ${size}. Undo brings it back.`
+      : `Nothing on the timeline uses them: ${found.length} files, ${size} in all. Undo brings them back.`,
+    confirmLabel: one ? 'Remove file' : `Remove ${found.length} files`,
+    danger: true,
+  });
+  if (!sure) return;
+  // A file that someone has put to use while the question stood stays, with its new clip.
+  const still = new Set(unused().map((asset) => asset.id));
+  const ids = found.flatMap((asset) => (still.has(asset.id) ? [asset.id] : []));
+  const panel = pressed.closest<HTMLElement>('.lib');
+  handFocus(pressed, () => panel?.querySelector<HTMLElement>('input, button:not(:disabled)'));
+  removeAssets(ids);
 }
 
 /**
@@ -412,6 +440,9 @@ interface Pool {
 
 function MediaPool() {
   const session = useSession();
+  // Asked of the session as it stands: the role of someone who has just joined arrives a moment
+  // after the pool is first drawn.
+  const mayEdit = canEdit(useSessionMeta().role);
   const assets = useProject((p) => p.assets);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | Asset['kind']>('all');
@@ -536,6 +567,11 @@ function MediaPool() {
         >
           <Plus />
         </IconButton>
+        {mayEdit && (
+          <IconButton label="Remove unused media…" onClick={(e) => void removeUnusedMedia(e.currentTarget)}>
+            <BrushCleaning />
+          </IconButton>
+        )}
       </div>
       <div className="chips">
         {(['all', 'video', 'audio', 'image', 'lut'] as const).map((k) => {

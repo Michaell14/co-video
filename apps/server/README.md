@@ -34,27 +34,28 @@ await server.close();
 
 ## Configuration
 
-| Variable                   | Default                | Meaning                                                                                                      |
-| -------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `PORT`                     | `8787`                 | TCP port.                                                                                                    |
-| `HOST`                     | `0.0.0.0`              | Interface to bind.                                                                                           |
-| `DATA_DIR`                 | `./data`               | Where everything is stored (see below).                                                                      |
-| `CORS_ORIGIN`              | `*`                    | Value of `Access-Control-Allow-Origin` on API responses. Set it to the editor's origin in production.        |
-| `EDITOR_DIST`              | `../editor/dist`       | Built editor, served at `/app/` (relative default is resolved against this package).                         |
-| `SITE_DIST`                | `../site/dist`         | Built site, served at `/`.                                                                                   |
-| `MAX_UPLOAD_BYTES`         | `21474836480` (20 GiB) | Largest single asset.                                                                                        |
-| `UPLOAD_EXPIRY_DAYS`       | `7`                    | Days after which the stored part of an upload that was never finished is deleted; `0` keeps them.            |
-| `TANDEM_OPEN_CREATE`       | `true`                 | Whether anyone may `POST /api/projects`. With `false` the endpoint answers 403.                              |
-| `MAX_CREATES_PER_HOUR`     | `30`                   | Projects one client address may create per hour. More are refused with `429`.                                |
-| `AUTO_SNAPSHOT_MS`         | `600000` (10 min)      | Interval of automatic versions while a project changes; `0` turns them off.                                  |
-| `TRUST_PROXY`              | `false`                | Tell clients apart by the last `X-Forwarded-For` entry. Enable only behind a reverse proxy that sets it.     |
-| `MAX_CONNECTIONS_PER_IP`   | `200`                  | WebSockets one client address may hold open at a time (an editor tab uses two). More are refused with `429`. |
-| `MAX_CONNECTIONS_PER_ROOM` | `100`                  | WebSockets per room, i.e. per document of a project. More are refused with `503` (see the security model).   |
-| `MAX_PROJECT_DOC_BYTES`    | `33554432` (32 MiB)    | Size a project document may reach. At the limit it takes no more changes (see "Limits").                     |
-| `MAX_REVIEW_DOC_BYTES`     | `2097152` (2 MiB)      | The same for a review document (the comments of a project).                                                  |
-| `MAX_OPEN_DOC_BYTES`       | 1 % of the V8 heap     | Size of all documents held in memory at the same time. No document's limit is more than half of it.          |
-| `MAX_PRESENCE_BYTES`       | `262144` (256 KiB)     | Largest presence update (cursor, selection) that is relayed, and what one link may show in a room in all.    |
-| `MAX_SYNC_BACKLOG_BYTES`   | `134217728` (128 MiB)  | Document copies queued for clients that have not read them yet. Further copies wait for their turn.          |
+| Variable                    | Default                | Meaning                                                                                                      |
+| --------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `PORT`                      | `8787`                 | TCP port.                                                                                                    |
+| `HOST`                      | `0.0.0.0`              | Interface to bind.                                                                                           |
+| `DATA_DIR`                  | `./data`               | Where everything is stored (see below).                                                                      |
+| `CORS_ORIGIN`               | `*`                    | Value of `Access-Control-Allow-Origin` on API responses. Set it to the editor's origin in production.        |
+| `EDITOR_DIST`               | `../editor/dist`       | Built editor, served at `/app/` (relative default is resolved against this package).                         |
+| `SITE_DIST`                 | `../site/dist`         | Built site, served at `/`.                                                                                   |
+| `MAX_UPLOAD_BYTES`          | `21474836480` (20 GiB) | Largest single asset.                                                                                        |
+| `UPLOAD_EXPIRY_DAYS`        | `7`                    | Days after which the stored part of an upload that was never finished is deleted; `0` keeps them.            |
+| `UNUSED_MEDIA_EXPIRY_HOURS` | `24`                   | Hours after which media that neither a project nor one of its versions refers to is deleted; `0` keeps it.   |
+| `TANDEM_OPEN_CREATE`        | `true`                 | Whether anyone may `POST /api/projects`. With `false` the endpoint answers 403.                              |
+| `MAX_CREATES_PER_HOUR`      | `30`                   | Projects one client address may create per hour. More are refused with `429`.                                |
+| `AUTO_SNAPSHOT_MS`          | `600000` (10 min)      | Interval of automatic versions while a project changes; `0` turns them off.                                  |
+| `TRUST_PROXY`               | `false`                | Tell clients apart by the last `X-Forwarded-For` entry. Enable only behind a reverse proxy that sets it.     |
+| `MAX_CONNECTIONS_PER_IP`    | `200`                  | WebSockets one client address may hold open at a time (an editor tab uses two). More are refused with `429`. |
+| `MAX_CONNECTIONS_PER_ROOM`  | `100`                  | WebSockets per room, i.e. per document of a project. More are refused with `503` (see the security model).   |
+| `MAX_PROJECT_DOC_BYTES`     | `33554432` (32 MiB)    | Size a project document may reach. At the limit it takes no more changes (see "Limits").                     |
+| `MAX_REVIEW_DOC_BYTES`      | `2097152` (2 MiB)      | The same for a review document (the comments of a project).                                                  |
+| `MAX_OPEN_DOC_BYTES`        | 1 % of the V8 heap     | Size of all documents held in memory at the same time. No document's limit is more than half of it.          |
+| `MAX_PRESENCE_BYTES`        | `262144` (256 KiB)     | Largest presence update (cursor, selection) that is relayed, and what one link may show in a room in all.    |
+| `MAX_SYNC_BACKLOG_BYTES`    | `134217728` (128 MiB)  | Document copies queued for clients that have not read them yet. Further copies wait for their turn.          |
 
 The server speaks plain HTTP, and **the editor only works over HTTPS** unless it is opened on
 `localhost`: browsers switch off WebCodecs, the private file system, service workers, the clipboard
@@ -126,11 +127,13 @@ What this server does for the pages it serves, the other host has to do for the 
     project.snapshot            full Yjs state of the project document
     project.log                 updates received since that snapshot
     review.snapshot, review.log the same for the review document
-    versions.json               VersionInfo[]
+    versions.json               VersionInfo[], each with `assets`: the media files it refers to
     versions/<versionId>.bin    full Yjs state of the project document at that version
     media/<assetId>             a finished asset
     media/<assetId>.json        { size, type, completedAt }
     media/<assetId>.part        an upload in progress
+    unreferenced.json           { <assetId>: when nothing was first found to refer to it }
+  deleted/<projectId>           { deletedAt } — the project was deleted by its owner
 ```
 
 Backing up means copying the directory; restoring means copying it back. Keep `secret` with it, or every
@@ -148,7 +151,7 @@ that cannot be decoded is never overwritten — the room refuses to load instead
 named "Auto-save" is taken every `AUTO_SNAPSHOT_MS` while the document has changed since the last version
 of either kind, and once more when a changed project is unloaded or the server shuts down, so the end of
 every editing session is captured. At most 50 automatic versions are kept per project; named versions are
-never pruned.
+never pruned. Any version can be deleted by the owner or an editor (`DELETE …/versions/:versionId`).
 
 **Media.** `PUT` appends the body to `<assetId>.part` if `Upload-Offset` equals the bytes already stored
 (otherwise `409` with the real offset), and renames it to `<assetId>` once `Upload-Length` bytes are there.
@@ -156,7 +159,28 @@ Each chunk is fsynced before the `204`. If a connection dies mid-chunk, the byte
 `HEAD` reports where to resume (`HEAD …?probe` answers offset 0 instead of `404` when nothing is stored yet).
 A new `PUT` for an asset supersedes one that is still open for it. A `.part` file that has not been
 written to for `UPLOAD_EXPIRY_DAYS` is deleted (checked at startup and once a day); the upload then
-starts over. Finished assets are never deleted by the server.
+starts over.
+
+**Unused media.** A finished asset is deleted once nothing can need it any more: no asset of the project
+document and no stored version refers to it. Taking a file out of a project does not delete it, since an
+undo or a version brings the asset back. The server goes through the media of every project at startup
+and once an hour. A file that nothing refers to is noted in `unreferenced.json` the first time it is found
+so, the note is dropped when the file is referred to again, and the file is deleted when its note and the
+end of its upload are both `UNUSED_MEDIA_EXPIRY_HOURS` old, which is up to two hours more than that
+after it was last referred to. A file uploaded before the edit that adds its asset has arrived is new,
+and safe for that reason. What a version refers to is recorded when it is made (for a version from before
+that, read from its content once), so the document is only read for projects that hold a file no version
+refers to, from memory if the project is open and from disk otherwise. A project whose document or
+versions cannot be read at the moment keeps all its media. A file that was deleted answers like one that
+was never uploaded: `404`, and offset 0 to `HEAD …?probe`.
+
+**Deleted projects.** `DELETE /api/projects/:id` with the owner's token removes the project's directory
+and everything in it: both documents, every version, every media file. What stays is
+`deleted/<projectId>`, written before the first file goes. It finishes a deletion that a crash cut short
+(at the next start), keeps the id from ever being given to another project (the old links are still
+signed for it), and lets the server tell whoever comes back with such a link what happened: `410` instead
+of `404`. Connections that are open when a project is deleted are closed with code `4410` and nothing
+they still send is taken; uploads and downloads under way are cut off.
 
 Only one server process may use a data directory at a time.
 
@@ -261,12 +285,12 @@ token = base64url(JSON { p: projectId, r: role, iat }) + "." + base64url(HMAC-SH
 Tokens are sent as `Authorization: Bearer <token>` or `?t=<token>` (needed for WebSockets and `<video src>`).
 Signatures are compared in constant time, and a token is only accepted for the project id in its payload.
 
-| Role        | Read documents, versions, media | Write `review` doc | Write `project` doc, upload/delete media, create versions | Create invites            |
-| ----------- | :-----------------------------: | :----------------: | :-------------------------------------------------------: | ------------------------- |
-| `owner`     |                ✓                |         ✓          |                             ✓                             | editor, commenter, viewer |
-| `editor`    |                ✓                |         ✓          |                             ✓                             | editor, commenter, viewer |
-| `commenter` |                ✓                |         ✓          |                             –                             | –                         |
-| `viewer`    |                ✓                |         –          |                             –                             | –                         |
+| Role        | Read documents, versions, media | Write `review` doc | Write `project` doc, upload/delete media, create and delete versions | Create invites            | Delete the project |
+| ----------- | :-----------------------------: | :----------------: | :------------------------------------------------------------------: | ------------------------- | :----------------: |
+| `owner`     |                ✓                |         ✓          |                                  ✓                                   | editor, commenter, viewer |         ✓          |
+| `editor`    |                ✓                |         ✓          |                                  ✓                                   | editor, commenter, viewer |         –          |
+| `commenter` |                ✓                |         ✓          |                                  –                                   | –                         |         –          |
+| `viewer`    |                ✓                |         –          |                                  –                                   | –                         |         –          |
 
 The only `owner` token is the one returned when the project is created; it cannot be minted again.
 
@@ -278,9 +302,12 @@ What the server enforces:
   document are dropped — neither applied nor relayed — and the client receives a `readonly` control message.
 - Ids (project, asset, version) must match `^[A-Za-z0-9_-]{6,64}$` before they are used in a path; static
   files are confined to their build directory.
-- Request limits: JSON bodies 64 KiB, assets `MAX_UPLOAD_BYTES`; project creation 30/hour and invites
-  120/hour per client address (in memory, best effort). What a connection may send, and what a room
-  holds and sends on its behalf, is bounded as described under "Limits".
+- Request limits: JSON bodies 64 KiB, assets `MAX_UPLOAD_BYTES`; project creation 30/hour, invites
+  120/hour and deletions (of projects and of versions, counted together) 600/hour per client address
+  (in memory, best effort). What a connection may send, and what a room holds and sends on its
+  behalf, is bounded as described under "Limits".
+- A deleted project is gone for every link to it. Nothing of it can be read afterwards, nothing
+  written for it brings it back, and its id is never used again.
 - A lesser link cannot be used to keep people out: a full room makes way for whoever outranks someone
   in it, so viewers cannot lock out commenters, commenters cannot lock editors and the owner out of
   the review, and nobody can lock out the owner.
@@ -320,10 +347,12 @@ What it does **not** do — know this before exposing a server:
   leave, and with `TANDEM_OPEN_CREATE=true` anyone can create projects and fill each to its limits:
   the server then refuses to open further documents rather than run out of memory, which is an outage
   for those projects all the same.
-- **Almost nothing is ever deleted by the server.** The editor does not remove media from the server
-  (removing an asset can be undone, and a version may still need it), and there is no way to delete a
-  project or a named version over the API. Only automatic versions beyond the fiftieth and abandoned
-  uploads go by themselves. Ordinary use only ever grows the data directory; clear it out by hand.
+- **Deleting is for those who may, and final.** The owner's link deletes the project for everyone, an
+  editor's link any version, and neither can be undone from the server: there is no bin. Keep backups
+  if that matters. A leaked owner link is a way to delete the project.
+- **Little goes by itself.** Automatic versions beyond the fiftieth, abandoned uploads, and media that
+  no document and no version has referred to for `UNUSED_MEDIA_EXPIRY_HOURS`. Projects nobody opens
+  any more, named versions and the record of deleted projects stay until someone deletes them.
 - **No encryption at rest**, and anyone who can read `DATA_DIR/secret` can mint any token.
 - With `TANDEM_OPEN_CREATE=true` anyone who can reach the server can create projects. With `false` nobody
   can — create the projects you need first, then switch it off.
@@ -338,18 +367,26 @@ What it does **not** do — know this before exposing a server:
   `MAX_REVIEW_DOC_BYTES` or `MAX_OPEN_DOC_BYTES` is raised). It is told from the size of the files and
   loads nothing; a document that is too heavy only in structs shows as `ok` until a connection has
   made the server read it. A full room is not part of it.
+- `DELETE /api/projects/:id` (owner) and `DELETE /api/projects/:id/versions/:versionId` (owner, editor)
+  answer `204` with no body, also when repeated: deleting a version that is not there is not an error,
+  and the owner's second request for a deleted project gets the answer of the first. `429` when the
+  address has deleted too much in the hour.
+- Every request for a deleted project with a genuine link to it is answered `410` and
+  `{ "error": "this project was deleted by its owner" }`, whatever it asks for; without such a link it
+  is `401`, as for any project.
 - `PUT …/media/:assetId` requires both `Upload-Offset` and `Upload-Length`; it answers `204` with
   `Upload-Offset` and `Upload-Complete: 1|0`. Also `400` (bad headers, more bytes than declared), `413`
   (over the limit), `507` (disk full). `DELETE` is idempotent.
 - `GET …/media/:assetId` supports one byte range per request (`a-b`, `a-`, `-n`); a multi-range request
   gets the whole file with `200`.
 - A WebSocket upgrade that is refused is answered with a normal HTTP status: `401` / `404` when
-  authentication fails, `429` when the address has too many sockets open, `503` when the room is full
+  authentication fails, `410` when the project was deleted, `429` when the address has too many sockets open, `503` when the room is full
   or the server has too many documents open, `507` when the stored document is larger than the server
   loads. Browsers surface all of them only as a failed connection — validate the token with
   `GET /api/projects/:id` first if you need to tell a bad link from a busy server.
 - WebSocket close codes the server uses: `1001` shutting down, `1007` malformed message, `1009`
   message too large or document full, `1012` room restarting, `1013` place given to someone of a
-  higher role. Before `1007` and `1009` it sends `{ "type": "error", "message": … }`, except to a
+  higher role, `4410` the project was deleted by its owner. Before `1007`, `1009` and `4410` it sends
+  `{ "type": "error", "message": … }`, except to a
   connection that sent a message larger than it may: that one is cut off unread. The same control
   message without a close says that a presence update was skipped.

@@ -26,7 +26,7 @@ import {
   docLimit,
 } from './limits';
 import { MediaStore } from './media';
-import { ProjectStore } from './projects';
+import { PROJECT_DELETED, ProjectStore } from './projects';
 import { ConcurrencyLimiter, RateLimiter } from './rateLimit';
 import {
   DEFAULT_HEARTBEAT_MS,
@@ -36,6 +36,7 @@ import {
   isDocKind,
 } from './rooms';
 import { createStaticHandler } from './static';
+import { sweepUnusedMedia } from './sweep';
 import { delay, isValidId } from './util';
 import { AUTO_VERSION_NAME, VersionStore } from './versions';
 
@@ -46,10 +47,22 @@ const DAY_MS = 24 * HOUR_MS;
 const DEFAULT_MAX_UPLOAD_BYTES = 20 * 1024 ** 3;
 /** How long the bytes of an upload that was never finished are kept for someone to resume it. */
 export const DEFAULT_UPLOAD_EXPIRY_DAYS = 7;
+/**
+ * How long a media file is kept once nothing refers to it any more. Long enough for whoever took
+ * it out of a project to think again: an undo brings the asset back, and has to find its file.
+ */
+export const DEFAULT_UNUSED_MEDIA_EXPIRY_HOURS = 24;
+/** How often the media of every project is gone through for files nothing refers to. */
+const UNUSED_MEDIA_SWEEP_MS = HOUR_MS;
 const DEFAULT_AUTO_SNAPSHOT_MS = 10 * 60 * 1000;
 /** Projects one client address may create per hour. */
 export const DEFAULT_CREATES_PER_HOUR = 30;
 const INVITES_PER_HOUR = 120;
+/**
+ * Projects and versions one client address may delete per hour, taken together. Room for clearing
+ * out a long version history by hand; a script that deletes whatever it is given runs into it.
+ */
+export const DELETES_PER_HOUR = 600;
 /**
  * Open WebSockets per client address. A backstop against one client exhausting memory, not a
  * quota: an office behind one NAT shares an address, and each editor tab holds two sockets.
@@ -80,6 +93,11 @@ export interface TandemServerOptions {
   maxUploadBytes?: number;
   /** Days after which the stored part of an unfinished upload is deleted. Default 7; `0` keeps them. */
   uploadExpiryDays?: number;
+  /**
+   * Hours after which a media file that neither the project nor any of its versions refers to
+   * any more is deleted. Default 24; `0` keeps such files for good.
+   */
+  unusedMediaExpiryHours?: number;
   /** Interval of automatic versions while a project changes. Default 10 minutes; `0` disables them. */
   autoSnapshotMs?: number;
   /** Whether `POST /api/projects` is open to anyone. Default true. */
@@ -123,6 +141,13 @@ export interface TandemServer {
   port: number;
   /** A URL the server can be reached at from this machine. */
   url: string;
+  /**
+   * Go through the media of every project for files that nothing refers to any more, as the
+   * server does by itself when it starts and once an hour: files found so for the first time are
+   * noted, and those noted `unusedMediaExpiryHours` before `now` are deleted. Resolves to how
+   * many were deleted. `now` is the time the sweep takes it to be.
+   */
+  sweepUnusedMedia(now?: number): Promise<number>;
   /** Stop accepting work, disconnect clients, write every document to disk. Idempotent. */
   close(): Promise<void>;
 }
@@ -156,6 +181,7 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
   await mkdir(resolve(dataDir, 'projects'), { recursive: true });
   const auth = new TokenAuthority(await loadOrCreateSecret(dataDir));
   const projects = new ProjectStore(dataDir);
+  await projects.open();
   const versions = new VersionStore(projects);
   const media = new MediaStore(projects, options.maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES);
   const maxOpenDocBytes = options.maxOpenDocBytes ?? defaultMaxOpenDocBytes();
@@ -175,8 +201,13 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
     },
     projectDir: (projectId) => projects.dir(projectId),
     onDocChanged: (projectId) => projects.touch(projectId),
-    saveAutoVersion: async (projectId, state) => {
-      await versions.create(projectId, { name: AUTO_VERSION_NAME, author: '', auto: true }, state);
+    saveAutoVersion: async (projectId, version) => {
+      try {
+        await versions.create(projectId, { name: AUTO_VERSION_NAME, author: '', auto: true }, version);
+      } catch (err) {
+        // A version of a project that was deleted meanwhile has nowhere to go, and need not.
+        if (!projects.isDeleted(projectId)) throw err;
+      }
     },
   });
 
@@ -192,6 +223,7 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
     trustProxy,
     createLimiter: new RateLimiter(options.createsPerHour ?? DEFAULT_CREATES_PER_HOUR, HOUR_MS),
     inviteLimiter: new RateLimiter(INVITES_PER_HOUR, HOUR_MS),
+    deleteLimiter: new RateLimiter(DELETES_PER_HOUR, HOUR_MS),
   });
   const handleStatic = createStaticHandler({
     siteDist: options.siteDist ?? resolve(PACKAGE_DIR, '../site/dist'),
@@ -200,8 +232,8 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
 
   /**
    * Unfinished uploads are the one thing a client can leave behind that nothing refers to and
-   * nobody can get at. Everything else on disk may be wanted again (a removed asset by an undo,
-   * a version, or a collaborator who was offline), so everything else is left alone.
+   * nobody can get at, so they go by their age alone. A finished file may be wanted again (a
+   * removed asset by an undo, or by a version): those go by what refers to them, see sweep.ts.
    */
   const uploadExpiryMs = (options.uploadExpiryDays ?? DEFAULT_UPLOAD_EXPIRY_DAYS) * DAY_MS;
   let stopped = false;
@@ -210,6 +242,8 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
       // One project at a time: there is no hurry, and requests come first.
       for (const projectId of await projects.list()) {
         if (stopped) return;
+        // A project deleted since the list was made has nothing left to look through.
+        if (projects.isDeleted(projectId)) continue;
         const removed = await media.sweepAbandonedUploads(projectId, Date.now() - uploadExpiryMs);
         if (removed > 0) {
           console.log(`[tandem] deleted ${removed} abandoned upload(s) of project ${projectId}`);
@@ -219,15 +253,52 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
       console.error('[tandem] could not clear out abandoned uploads:', err);
     }
   };
-  let sweeping: Promise<void> = Promise.resolve();
-  let sweepTimer: NodeJS.Timeout | undefined;
-  if (uploadExpiryMs > 0) {
-    sweeping = sweepUploads();
-    sweepTimer = setInterval(() => {
-      sweeping = sweeping.then(sweepUploads);
-    }, DAY_MS);
-    sweepTimer.unref();
-  }
+  const unusedMediaExpiryMs = (options.unusedMediaExpiryHours ?? DEFAULT_UNUSED_MEDIA_EXPIRY_HOURS) * HOUR_MS;
+  const sweepMedia = async (now: number): Promise<number> => {
+    let removed = 0;
+    if (unusedMediaExpiryMs <= 0) return removed;
+    for (const projectId of await projects.list()) {
+      if (stopped) break;
+      try {
+        const gone = await sweepUnusedMedia({ versions, rooms, media }, projectId, now, unusedMediaExpiryMs);
+        if (gone > 0) {
+          console.log(
+            `[tandem] deleted ${gone} media file(s) of project ${projectId} that nothing refers to any more`,
+          );
+        }
+        removed += gone;
+      } catch (err) {
+        // A project whose document cannot be had just now (no memory to spare, more stored than
+        // is loaded, deleted this moment) keeps its media as it is: the answer the request for
+        // it would get says why, and there is a next time.
+        if (!(err instanceof HttpError)) {
+          console.error(`[tandem] could not clear out the unused media of project ${projectId}:`, err);
+        }
+      }
+    }
+    return removed;
+  };
+
+  // One sweep at a time, of either kind: there is no hurry, and requests come first.
+  let sweeping: Promise<unknown> = Promise.resolve();
+  const sweepTimers: NodeJS.Timeout[] = [];
+  const sweepRegularly = (sweep: () => Promise<unknown>, everyMs: number): void => {
+    const run = (): void => {
+      sweeping = sweeping
+        .then(sweep)
+        .catch((err: unknown) => console.error('[tandem] a sweep of the data directory failed:', err));
+    };
+    run();
+    const timer = setInterval(run, everyMs);
+    timer.unref();
+    sweepTimers.push(timer);
+  };
+  if (uploadExpiryMs > 0) sweepRegularly(sweepUploads, DAY_MS);
+  if (unusedMediaExpiryMs > 0) sweepRegularly(() => sweepMedia(Date.now()), UNUSED_MEDIA_SWEEP_MS);
+  const stopSweeping = (): void => {
+    stopped = true;
+    for (const timer of sweepTimers) clearInterval(timer);
+  };
 
   /** Requests whose response has not finished yet; shutdown gives them a moment. */
   let activeRequests = 0;
@@ -274,7 +345,13 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
       rejectUpgrade(socket, 401, 'missing or invalid token for this project');
       return;
     }
-    if (!(await projects.exists(projectId))) {
+    const exists = await projects.exists(projectId);
+    // Asked once the project has been looked for, as for an API request: see `authenticate`.
+    if (projects.isDeleted(projectId)) {
+      rejectUpgrade(socket, 410, PROJECT_DELETED);
+      return;
+    }
+    if (!exists) {
       rejectUpgrade(socket, 404, 'project not found');
       return;
     }
@@ -316,8 +393,7 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
     });
   } catch (err) {
     await rooms.close(); // e.g. the port is taken: leave no timers behind
-    stopped = true;
-    clearInterval(sweepTimer);
+    stopSweeping();
     await sweeping;
     throw err;
   }
@@ -334,8 +410,7 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
     closing ??= (async () => {
       // 1. No new connections; idle keep-alive connections are closed right away.
       const httpClosed = new Promise<void>((done) => server.close(() => done()));
-      stopped = true;
-      clearInterval(sweepTimer);
+      stopSweeping();
       // 2. Disconnect collaborators and write every loaded document (and pending auto version).
       await rooms.close();
       // 3. Let short requests that are mid-flight finish, then cut whatever is left — long
@@ -351,5 +426,11 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
     return closing;
   };
 
-  return { port, url, close };
+  const sweepNow = (now = Date.now()): Promise<number> => {
+    const sweep = sweeping.then(() => sweepMedia(now));
+    sweeping = sweep.catch(() => undefined);
+    return sweep;
+  };
+
+  return { port, url, close, sweepUnusedMedia: sweepNow };
 }

@@ -17,6 +17,32 @@ import {
 } from '@tandem/core';
 import { openGapAt, type RippleSpan } from '../../state/edits';
 
+/**
+ * The assets that some clip among `clips` uses: as its media, or as the LUT of its grade. Those
+ * are the two things a file of the pool can be to a project.
+ */
+export function assetsUsedBy(clips: Iterable<Clip>): Set<ID> {
+  const used = new Set<ID>();
+  for (const clip of clips) {
+    if (clip.assetId) used.add(clip.assetId);
+    if (clip.grade?.lutId) used.add(clip.grade.lutId);
+  }
+  return used;
+}
+
+/**
+ * The files of the pool that no clip uses, oldest first. A clip counts wherever it is: on a track
+ * that is locked, hidden or muted, and among the clips whose track is gone for the moment (`lost`:
+ * `ProjectStore.hiddenClips`). Those are not in the project as it shows, but an undo of the
+ * track's removal brings them back, and they want their files then.
+ */
+export function unusedAssets(p: Project, lost: readonly Clip[] = []): Asset[] {
+  const used = assetsUsedBy([...Object.values(p.clips), ...lost]);
+  return Object.values(p.assets)
+    .filter((asset) => !used.has(asset.id))
+    .sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name));
+}
+
 /** How a press on a card changes the selection: it alone, added to or taken from it, or a run up to it. */
 export type PickMode = 'only' | 'toggle' | 'range';
 

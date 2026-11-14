@@ -1,5 +1,6 @@
 import {
   Clock,
+  CloudOff,
   Copy,
   FileUp,
   Film,
@@ -15,6 +16,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { flushSync } from 'react-dom';
 import {
   canEdit,
   describeFps,
@@ -37,6 +39,7 @@ import {
   NumberField,
   openContextMenu,
   Select,
+  Switch,
   TextField,
   tip,
   toast,
@@ -44,7 +47,15 @@ import {
   type MenuEntry,
 } from '../../ui/core';
 import { COLOR_MODE_OPTIONS, describeResolution, describeSize } from '../../ui/labels';
-import { duplicateProject, projectFromFile, renameProject } from './manage';
+import { handFocus } from '../../ui/layers';
+import { ownsProject } from './deletion';
+import {
+  afterDeletedFromServer,
+  deleteFromServer,
+  duplicateProject,
+  projectFromFile,
+  renameProject,
+} from './manage';
 import './home.css';
 
 interface Starter {
@@ -65,6 +76,22 @@ const STARTERS: Starter[] = [
 /** What a card with a refused link says when asked: what happened, and where the way back is. */
 const REFUSED_LINK =
   'The server did not accept this project’s link. Open the project and choose Share, then Try again.';
+/** What the card of a project says whose owner deleted it from the server: there is no way back. */
+const DELETED_BY_OWNER =
+  'Its owner deleted this project from the collaboration server. This copy stays on this device and is no longer shared.';
+
+/**
+ * Where the keyboard goes when a card leaves the list, worked out while the card is still there:
+ * to the card that takes its place, to the last one, or to the first way of making a project.
+ */
+function afterCard(card: HTMLElement): () => HTMLElement | null {
+  const grid = card.parentElement;
+  const at = grid ? Array.from(grid.children).indexOf(card) : 0;
+  return () => {
+    const left = grid?.isConnected ? Array.from(grid.querySelectorAll<HTMLElement>('.pcard__open')) : [];
+    return left[Math.min(at, left.length - 1)] ?? document.querySelector<HTMLElement>('.starter');
+  };
+}
 
 function timeAgo(t: number): string {
   const s = Math.max(1, Math.round((Date.now() - t) / 1000));
@@ -285,7 +312,9 @@ function StarterCard({
 
 function ProjectCard({ project: p, index }: { project: ProjectEntry; index: number }) {
   const [renaming, setRenaming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [busy, setBusy] = useState(false);
+  const card = useRef<HTMLDivElement>(null);
 
   const duplicate = async () => {
     if (busy) return;
@@ -315,7 +344,23 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
       confirmLabel: 'Delete project',
       danger: true,
     });
-    if (sure) void deleteLocalProject(p.id);
+    if (!sure) return;
+    if (card.current) handFocus(card.current, afterCard(card.current));
+    void deleteLocalProject(p.id);
+  };
+
+  const deletedFromServer = (keepCopy: boolean) => {
+    // The dialog goes first, and at once: the keyboard is then back on the card, to be handed on
+    // from there when the card goes too.
+    flushSync(() => setDeleting(false));
+    if (!keepCopy && card.current) handFocus(card.current, afterCard(card.current));
+    void afterDeletedFromServer(p, keepCopy);
+    toast(
+      keepCopy
+        ? `Deleted “${p.name}” from the server. The copy on this device is a local project now.`
+        : `Deleted “${p.name}” for everyone.`,
+      'success',
+    );
   };
 
   // Only someone who may edit a shared project can rename it; the server would undo anyone else's.
@@ -323,18 +368,29 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
   // A project whose link the server turned down is a local one for now, and looks like one. The
   // card says what happened: the way back is inside the project, not here.
   const refused = !p.token && registry.linkAside(p.id) !== null;
-  const whatNow = tip(REFUSED_LINK);
-  const refusedId = useId();
+  // So does one whose owner deleted it from the server, and for that one there is no way back.
+  const unshared = !p.token && !refused && p.deletedByOwner === true;
+  const notice = refused ? REFUSED_LINK : unshared ? DELETED_BY_OWNER : null;
+  const whatNow = tip(notice);
+  const noticeId = useId();
   const items: MenuEntry[] = [
     { label: 'Open', icon: <FolderOpen />, onSelect: () => navigate(p.id) },
     { label: 'Rename…', icon: <Pencil />, disabled: !mayRename, onSelect: () => setRenaming(true) },
     { label: 'Duplicate', icon: <Copy />, disabled: busy, onSelect: () => void duplicate() },
     'separator',
     { label: 'Delete from this device…', icon: <Trash2 />, danger: true, onSelect: () => void remove() },
+    // Offered to whoever holds the owner's link. The server asks for it again when it is used.
+    ownsProject(p) && {
+      label: 'Delete for everyone…',
+      icon: <Trash2 />,
+      danger: true,
+      onSelect: () => setDeleting(true),
+    },
   ];
 
   return (
     <div
+      ref={card}
       className="pcard"
       style={{ animationDelay: `${Math.min(index, 12) * 30}ms` }}
       aria-busy={busy}
@@ -348,10 +404,10 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
         className="pcard__open"
         onClick={() => navigate(p.id)}
         aria-label={`Open ${p.name}`}
-        aria-describedby={refused ? refusedId : undefined}
+        aria-describedby={notice ? noticeId : undefined}
         // The pointer asks at the badge; the keyboard can only ask at the card.
-        onFocusCapture={refused ? whatNow.onFocusCapture : undefined}
-        onBlurCapture={refused ? whatNow.onBlurCapture : undefined}
+        onFocusCapture={notice ? whatNow.onFocusCapture : undefined}
+        onBlurCapture={notice ? whatNow.onBlurCapture : undefined}
       >
         <div className="pcard__thumb">
           {p.thumb ? <img src={p.thumb} alt="" draggable={false} /> : <Film />}
@@ -360,15 +416,16 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
               <Users size={10} /> Shared
             </span>
           )}
-          {refused && (
+          {notice && (
             <span
-              className="pcard__refused badge badge--amber"
+              className={`${refused ? 'pcard__refused' : 'pcard__unshared'} badge badge--amber`}
               onPointerEnter={whatNow.onPointerEnter}
               onPointerLeave={whatNow.onPointerLeave}
             >
-              <Link2Off size={10} /> Link refused
-              <span className="sr-only" id={refusedId}>
-                {REFUSED_LINK}
+              {refused ? <Link2Off size={10} /> : <CloudOff size={10} />}
+              {refused ? ' Link refused' : ' No longer shared'}
+              <span className="sr-only" id={noticeId}>
+                {notice}
               </span>
             </span>
           )}
@@ -391,7 +448,98 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
         <MoreHorizontal />
       </MenuButton>
       {renaming && <RenameDialog project={p} onClose={() => setRenaming(false)} />}
+      {deleting && (
+        <DeleteForEveryoneDialog
+          project={p}
+          onClose={() => setDeleting(false)}
+          onDeleted={deletedFromServer}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Asks the owner of a shared project before it is deleted from the server, says what goes and for
+ * whom, and what came of asking the server. `onDeleted` is called once the server has said that
+ * the project is gone, with whether this device is to keep its copy.
+ */
+function DeleteForEveryoneDialog({
+  project,
+  onClose,
+  onDeleted,
+}: {
+  project: ProjectEntry;
+  onClose: () => void;
+  onDeleted: (keepCopy: boolean) => void;
+}) {
+  const [keepCopy, setKeepCopy] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const what = useId();
+
+  const go = async () => {
+    if (busy) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      await deleteFromServer(project, keepCopy);
+    } catch (err) {
+      setProblem(err instanceof Error ? err.message : 'The project could not be deleted.');
+      setBusy(false);
+      return;
+    }
+    onDeleted(keepCopy);
+  };
+  // Once the server has been asked, closing the dialog would not take the request back: it stays
+  // until the answer is here, so that what the answer means for this device is done as well.
+  const close = () => {
+    if (!busy) onClose();
+  };
+
+  return (
+    <Dialog
+      title={`Delete “${project.name}” for everyone?`}
+      narrow
+      describedBy={what}
+      onClose={close}
+      footer={
+        <>
+          <Button variant="ghost" disabled={busy} onClick={close}>
+            Cancel
+          </Button>
+          <Button variant="danger" busy={busy} onClick={() => void go()}>
+            {busy ? 'Deleting…' : 'Delete for everyone'}
+          </Button>
+        </>
+      }
+    >
+      <div className="form">
+        <p className="dialog__message" id={what}>
+          The project is deleted from the collaboration server: the edit, its comments, every saved version
+          and every uploaded media file. Every link to it stops working, for you and for everyone you shared
+          it with. This cannot be undone.
+        </p>
+        <p className="dialog__message">
+          People who have it open keep what is already on their device, as a local project that is no longer
+          shared.
+        </p>
+        <Labelled className="delete__keep">
+          <LabelText>Keep a copy on this device</LabelText>
+          <Switch checked={keepCopy} onChange={setKeepCopy} />
+        </Labelled>
+        <p className="form__hint delete__kept">
+          {keepCopy
+            ? 'The project stays in your list as a local project. Media that was never downloaded to this device is not in the copy.'
+            : 'The project and the media stored for it on this device are deleted as well.'}
+        </p>
+        {problem && (
+          <p className="form__error" role="alert">
+            {problem}
+          </p>
+        )}
+      </div>
+    </Dialog>
   );
 }
 

@@ -38,7 +38,7 @@ import {
   type Clip,
   type Project,
 } from '@tandem/core';
-import { AudioRuns, hasAudibleAudio, renderAudioChunk } from './audio/graph';
+import { AudioRuns, hasAudibleAudio, renderAudioChunk, type AudioProblem } from './audio/graph';
 import { Compositor } from './gl/compositor';
 import { MediaLibrary, type MediaResolver } from './media/library';
 import { SourceManager, type SourceFault } from './media/sources';
@@ -94,14 +94,23 @@ export interface ExportWarning {
    * `missing`: the file is neither on this device nor on the server. `unreadable`: it is there but
    * could not be opened (damaged, not media, refused by the server). `undecodable`: it opens, and
    * this browser cannot decode what is in it. `timeout`: a frame did not arrive in time and a
-   * neighbouring one was used. `decode-error`: decoding stopped part-way through the file, or
-   * would not start at all.
+   * neighbouring one was used. `decode-error`: some of it, or all of it, would not decode.
    */
   reason: SourceFault;
   /** Project frame at which the problem starts (for a pre-flight check, where the clip enters the range). */
   frame: number;
   /** One sentence for the person exporting, naming the file. */
   message: string;
+  /**
+   * Of a `decode-error` in sound, how much the clip is without. `stretch`: a part, with what
+   * follows it in its place. `rest`: everything from `frame` on. `all`: all of it.
+   */
+  lost?: AudioProblem['lost'];
+  /**
+   * Of a `decode-error`, what the decoder said, where it said anything: the name and the message
+   * of its error in one line, for the person to read out or pass on. See `describeCause`.
+   */
+  cause?: string;
 }
 
 export interface ExportResult {
@@ -389,11 +398,15 @@ export interface ExportHandle {
 
 const AUDIO_CHUNK_SECONDS = 4;
 
-type Problem = Pick<ExportWarning, 'clipId' | 'assetId' | 'part' | 'reason'>;
+/** A problem as the picture's sources and the mixer report it: a warning before it has its place and its sentence. */
+export type ExportProblem = Pick<ExportWarning, 'clipId' | 'assetId' | 'part' | 'reason' | 'lost' | 'cause'>;
 
-function describeProblem(project: Project, p: Problem): string {
+/** The sentence that tells the person exporting of a problem: what is wrong with which file, and what the export does about it. */
+export function describeProblem(project: Project, p: ExportProblem): string {
   const asset = project.assets[p.assetId];
   const name = asset ? `“${asset.name}”` : 'A file that is no longer in the project';
+  // The same where the file is not what the sentence begins with.
+  const within = asset ? name : 'a file that is no longer in the project';
   const lost = p.part === 'lut' ? 'its look is missing from the export' : 'it is missing from the export';
   switch (p.reason) {
     case 'missing':
@@ -403,22 +416,28 @@ function describeProblem(project: Project, p: Problem): string {
     case 'undecodable':
       if (p.part === 'lut') return `${name} cannot be read as a LUT, so ${lost}.`;
       if (p.part === 'image') return `${name} cannot be read as an image, so ${lost}.`;
-      return `This browser cannot decode the ${p.part} in ${name}, so ${lost}.`;
+      return `This browser cannot decode the ${p.part} in ${within}, so ${lost}.`;
     case 'timeout':
       return `${name} took too long to deliver a frame, so the export shows a neighbouring frame there.`;
     default:
-      return p.part === 'audio'
-        ? `The audio in ${name} stopped decoding part-way through, so the export is silent from there.`
-        : `${name} stopped decoding, so the export holds its last good frame from there, or leaves it out where there is none.`;
+      if (p.part !== 'audio')
+        return `${name} stopped decoding, so the export holds its last good frame from there, or leaves it out where there is none.`;
+      if (p.lost === 'all') return `The audio in ${within} could not be decoded, so ${lost}.`;
+      if (p.lost === 'stretch')
+        return `A stretch of the audio in ${within} could not be decoded, so the export is silent there.`;
+      return `The audio in ${within} stopped decoding part-way through, so the export is silent from there.`;
   }
 }
 
-/** Collects problems into warnings: one per clip and kind of problem, reported the moment it is first seen. */
+/**
+ * Collects problems into warnings: one per clip and kind of problem, reported the moment it is
+ * first seen. Sound that fails in stretches and sound that stops for good are two kinds.
+ */
 function warningLog(project: Project, onWarning?: (w: ExportWarning) => void) {
   const warnings: ExportWarning[] = [];
   const seen = new Set<string>();
-  const add = (p: Problem, frame: number): void => {
-    const key = `${p.clipId}|${p.part}|${p.reason}`;
+  const add = (p: ExportProblem, frame: number): void => {
+    const key = `${p.clipId}|${p.part}|${p.reason}|${p.lost ?? ''}`;
     if (seen.has(key)) return;
     seen.add(key);
     const w: ExportWarning = {
@@ -429,6 +448,8 @@ function warningLog(project: Project, onWarning?: (w: ExportWarning) => void) {
       frame,
       message: describeProblem(project, p),
     };
+    if (p.lost) w.lost = p.lost;
+    if (p.cause) w.cause = p.cause;
     warnings.push(w);
     onWarning?.(w);
   };
@@ -627,7 +648,14 @@ export async function exportProject(
         len,
         project.settings.sampleRate,
         undefined,
-        (p) => log.add({ ...p, part: 'audio' }, Math.max(chunkFrame, project.clips[p.clipId]?.start ?? 0)),
+        (p) =>
+          log.add(
+            { ...p, part: 'audio' },
+            // Where the sound is lost, when the mixer can say; else where the clip enters the chunk.
+            p.at === undefined
+              ? Math.max(chunkFrame, project.clips[p.clipId]?.start ?? 0)
+              : Math.min(endFrame - 1, Math.max(startFrame, Math.floor(p.at * projFps + 1e-6))),
+          ),
         audioRuns,
       );
       await audioSource.add(buf);

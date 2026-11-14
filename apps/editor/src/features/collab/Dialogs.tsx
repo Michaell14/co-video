@@ -1,4 +1,14 @@
-import { CloudOff, Copy, History, Link2, RotateCcw, ShieldCheck, UploadCloud, UserRound } from 'lucide-react';
+import {
+  CloudOff,
+  Copy,
+  History,
+  Link2,
+  RotateCcw,
+  ShieldCheck,
+  Trash2,
+  UploadCloud,
+  UserRound,
+} from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
 import { canEdit, initials, ProjectStore, USER_COLORS, type Role, type VersionInfo } from '@tandem/core';
@@ -264,9 +274,13 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
   const meta = useSessionMeta();
   const [versions, setVersions] = useState<VersionInfo[] | null>(null);
   const [name, setName] = useState('');
-  // One thing at a time: a version is being saved, or the one with this id is being restored.
+  // One thing at a time: a version is being saved, or the one with this id is being restored
+  // or deleted.
   const [saving, setSaving] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const nameRow = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
   const token = session.token;
 
   const load = () => {
@@ -277,7 +291,7 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
 
   const save = async () => {
     // Enter in the name field asks as the button does, and has no button to be refused by.
-    if (!token || saving || restoring !== null) return;
+    if (!token || saving || restoring !== null || deleting !== null) return;
     setSaving(true);
     try {
       await api.saveVersion(
@@ -320,6 +334,37 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const remove = async (v: VersionInfo, pressed: HTMLElement) => {
+    if (!token) return;
+    const go = await confirm({
+      title: `Delete “${v.name}”?`,
+      message:
+        'The version is deleted for everyone in the project and cannot be brought back. The project as it is now does not change. Media that only this version still referred to leaves the server some time later.',
+      confirmLabel: 'Delete version',
+      danger: true,
+    });
+    if (!go) return;
+    // The row goes with its version. The keyboard moves on to the row that takes its place, or to
+    // the last one, or to the name field of a list that has none left.
+    const buttons = (): HTMLElement[] =>
+      Array.from(list.current?.querySelectorAll<HTMLElement>('.version__delete') ?? []);
+    const at = buttons().indexOf(pressed);
+    handFocus(pressed, () => {
+      const left = buttons();
+      return left[Math.min(at, left.length - 1)] ?? nameRow.current?.querySelector('input');
+    });
+    setDeleting(v.id);
+    try {
+      await api.deleteVersion(session.id, token, v.id);
+      setVersions((all) => all?.filter((other) => other.id !== v.id) ?? null);
+      toast(`Deleted “${v.name}”`, 'success');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not delete version', 'error');
+    } finally {
+      setDeleting(null);
+    }
+  };
+
   return (
     <Dialog title="Version history" onClose={onClose} icon={<History size={16} />}>
       {!meta.shared ? (
@@ -334,7 +379,7 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
       ) : (
         <div className="vstack" style={{ gap: 12 }}>
           {session.canEdit && (
-            <div className="hstack">
+            <div className="hstack" ref={nameRow}>
               <TextField
                 value={name}
                 onChange={setName}
@@ -346,14 +391,14 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
               <Button
                 variant="primary"
                 busy={saving}
-                disabled={restoring !== null}
+                disabled={restoring !== null || deleting !== null}
                 onClick={() => void save()}
               >
                 Save version
               </Button>
             </div>
           )}
-          <div className="versions">
+          <div className="versions" ref={list}>
             {versions === null ? (
               <div className="versions__note">
                 <span className="spinner" /> Loading
@@ -377,10 +422,24 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
                       size="sm"
                       icon={<RotateCcw />}
                       busy={restoring === v.id}
-                      disabled={saving || (restoring !== null && restoring !== v.id)}
+                      disabled={saving || deleting !== null || (restoring !== null && restoring !== v.id)}
                       onClick={() => void restore(v)}
                     >
                       Restore
+                    </Button>
+                  )}
+                  {session.canEdit && (
+                    <Button
+                      className="version__delete"
+                      size="sm"
+                      variant="ghost"
+                      icon={<Trash2 />}
+                      aria-label={`Delete “${v.name}”`}
+                      busy={deleting === v.id}
+                      disabled={saving || restoring !== null || (deleting !== null && deleting !== v.id)}
+                      onClick={(e) => void remove(v, e.currentTarget)}
+                    >
+                      Delete
                     </Button>
                   )}
                 </div>
