@@ -435,17 +435,24 @@ describe('document limits', () => {
   });
 });
 
-/** A project whose document is too large to disappear into the socket buffers of the machine. */
+/**
+ * A project whose document is too large to disappear into the socket buffers of the machine, on a
+ * server started with `options`. The document is made on another server first, on the same data:
+ * its two clients share one thread with the server, and with the heartbeat of a few hundred
+ * milliseconds some of these tests ask for, a busy machine is enough for them to miss it.
+ */
 async function largeProject(options: Parameters<typeof start>[0] = {}) {
-  const { api } = await start({ maxOpenDocBytes: 256 * MIB, ...options });
-  const project = await api.createProject();
-  const viewerToken = await api.invite(project, 'viewer');
-  const owner = await connect(api, project, 'project').whenSynced();
+  const made = await start({ maxOpenDocBytes: 256 * MIB });
+  const project = await made.api.createProject();
+  const viewerToken = await made.api.invite(project, 'viewer');
+  const owner = await connect(made.api, project, 'project').whenSynced();
   owner.map.set('blob', blob(24 * MIB));
-  const reader = await connect(api, project, 'project', viewerToken).whenSynced();
+  const reader = await connect(made.api, project, 'project', viewerToken).whenSynced();
   await waitFor(() => reader.map.has('blob'), 'large document stored', 15_000);
   await owner.close();
   await reader.close();
+  await made.server.close();
+  const { api } = await start({ maxOpenDocBytes: 256 * MIB, ...options, dataDir: made.dataDir });
   return { api, project, viewerToken };
 }
 
@@ -494,7 +501,9 @@ describe('sync answers', () => {
 });
 
 describe('signs of life', () => {
-  const BEAT = 300;
+  // Short enough to wait for, and long enough for a busy machine: the clients of these tests share
+  // one thread with the server, and what holds them up for most of a heartbeat looks like silence.
+  const BEAT = 500;
 
   it('lets a client take many heartbeats over a large document, as long as it keeps reading', async () => {
     const { api, project, viewerToken } = await largeProject({ heartbeatMs: BEAT });
@@ -535,6 +544,38 @@ describe('signs of life', () => {
     expect((next.map.get('blob') as string).length).toBe(24 * MIB);
   });
 
+  it('ends a connection that takes nothing of what it is sent, however much it sends itself', async () => {
+    const { api, project, viewerToken } = await largeProject({
+      heartbeatMs: BEAT,
+      maxSyncBacklogBytes: 32 * MIB,
+    });
+    const greedy = connect(api, project, 'project', viewerToken);
+    await greedy.whenOpen();
+    greedy.stall();
+    await sleep(200);
+    // Its copy of the document leaves no room for another on the way, so the next client waits.
+    const waiting = connect(api, project, 'project', viewerToken);
+    const owner = connect(api, project, 'project');
+    await Promise.all([waiting.whenOpen(), owner.whenOpen()]);
+    // Several times a heartbeat something arrives from it, and something more is queued for it
+    // behind the document. Neither is a byte taken.
+    let edits = 0;
+    const busy = setInterval(() => {
+      greedy.requestSync();
+      owner.map.set('edits', ++edits);
+    }, BEAT / 3);
+    try {
+      await waitFor(() => waiting.synced, 'the next in line is served', 3 * BEAT + 3000);
+    } finally {
+      clearInterval(busy);
+    }
+    expect((waiting.map.get('blob') as string).length).toBe(24 * MIB);
+    greedy.resume();
+    await waitFor(() => greedy.closed, 'the client notices that the connection is gone', 15_000);
+    expect(greedy.synced).toBe(false);
+    expect(greedy.closeCode).toBe(1006);
+  });
+
   it('takes whatever arrives from a client as a sign of life, and ends one that has gone quiet', async () => {
     const { api } = await start({ heartbeatMs: BEAT });
     const project = await api.createProject();
@@ -547,7 +588,7 @@ describe('signs of life', () => {
       await waitFor(() => busy.joined && quiet.joined, 'both joined');
       for (let turn = 0; turn < 15; turn++) {
         busy.send(unknown);
-        await sleep(100);
+        await sleep(BEAT / 3);
       }
       // Five heartbeats on, neither has answered a ping. One was heard from all the time.
       expect(busy.ended).toBe(false);

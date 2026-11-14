@@ -23,6 +23,14 @@ export function overlappingPairs(p: Project): [Clip, Clip][] {
   return pairs;
 }
 
+/**
+ * Whether two clips that share frames are as a change of frame rate leaves two very short ones it
+ * rounds onto one frame: they begin together, and one of them is a single frame long. Nothing else
+ * the rounding does makes clips meet.
+ */
+export const roundedTogether = (a: Clip, b: Clip): boolean =>
+  a.start === b.start && Math.min(a.duration, b.duration) === 1;
+
 /** The clips that share frames with another clip of their track. */
 export function overlappingClips(p: Project): Set<ID> {
   const out = new Set<ID>();

@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getTransitionDef } from '@tandem/core';
+import { setCurrentSession } from '../src/session/hooks';
+import type { Session } from '../src/session/session';
 import { ACCESS_NAME, accessNotice } from '../src/state/access';
-import { COMMANDS, spaceOperates, watchFocus } from '../src/state/shortcuts';
-import { FIRST_TRANSITION } from '../src/state/ui';
+import { COMMANDS, handleKey, spaceOperates, watchFocus } from '../src/state/shortcuts';
+import { FIRST_TRANSITION, useUI } from '../src/state/ui';
 
 const keysOf = (id: string): string[] => COMMANDS.find((c) => c.id === id)?.keys ?? [];
 
@@ -214,6 +216,35 @@ describe('Space on a focused control', () => {
     blur(button);
     focus({});
     expect(byKeyboard()).toBe(true);
+  });
+});
+
+describe('shortcuts and a project that is not there', () => {
+  afterEach(() => {
+    setCurrentSession(null);
+    useUI.getState().set({ snapping: true });
+  });
+
+  /** A session whose document was, or was never, given anything. */
+  const open = (empty: boolean): void =>
+    setCurrentSession({ store: { isEmpty: () => empty } } as unknown as Session);
+  const press = (key: string) => {
+    const e = { key, code: '', target: null, preventDefault: vi.fn() };
+    return { consumed: handleKey(e as unknown as KeyboardEvent), event: e };
+  };
+
+  it('run in a project that holds something', () => {
+    open(false);
+    expect(press('n').consumed).toBe(true);
+    expect(useUI.getState().snapping).toBe(false);
+  });
+
+  it('do nothing while the document is one nothing was ever put into', () => {
+    open(true);
+    const { consumed, event } = press('n');
+    expect(consumed).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(useUI.getState().snapping).toBe(true);
   });
 });
 

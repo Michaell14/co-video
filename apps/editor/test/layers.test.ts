@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { keyDown, keyUp, layerOpen, openLayer, placeTip, typeAhead, type Layer } from '../src/ui/layers';
 import { isDoublePress, isDrag } from '../src/ui/press';
-import { sliderKey } from '../src/ui/slider';
+import { isSliderKey, sliderKey } from '../src/ui/slider';
 import { handleKey } from '../src/state/shortcuts';
 import { useUI } from '../src/state/ui';
 
@@ -130,6 +130,22 @@ describe('slider keys', () => {
     expect(sliderKey('ArrowLeft', false, 1, frames)).toBe(1);
   });
 
+  it('steps a value that lies beyond the range back towards it, and never further out', () => {
+    const scale = { min: 0, max: 4 };
+    const speed = { min: -3, max: 4 };
+    expect(sliderKey('ArrowRight', false, 6, scale)).toBe(6);
+    expect(sliderKey('PageUp', false, 6, scale)).toBe(6);
+    expect(sliderKey('ArrowLeft', false, 6, scale)).toBe(5.96);
+    expect(sliderKey('PageDown', false, 4.2, scale)).toBe(3.8);
+    expect(sliderKey('ArrowDown', true, -4.5, speed)).toBe(-4.5);
+    expect(sliderKey('ArrowUp', false, -4.5, speed)).toBe(-4.43);
+    expect(sliderKey('ArrowRight', false, 120.4, frames)).toBe(120.4);
+    expect(sliderKey('ArrowLeft', false, 120.4, frames)).toBe(119);
+    // The ends are the range's own, wherever the value was.
+    expect(sliderKey('End', false, 6, scale)).toBe(4);
+    expect(sliderKey('Home', false, -4.5, speed)).toBe(-3);
+  });
+
   it('goes back to the default with Delete or Backspace, and keeps the key where there is none', () => {
     expect(sliderKey('Delete', false, 0.7, pan)).toBe(0);
     expect(sliderKey('Backspace', false, 0.7, pan)).toBe(0);
@@ -146,6 +162,18 @@ describe('slider keys', () => {
     let v = 0.1;
     for (let i = 0; i < 10; i++) v = sliderKey('ArrowRight', false, v, pan) as number;
     expect(v).toBe(0.3);
+  });
+
+  it('tells its own keys, and Shift on its way to one, from the shortcuts made with them', () => {
+    const press = (key: string, held: { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean } = {}) =>
+      isSliderKey({ key, ctrlKey: false, metaKey: false, altKey: false, ...held });
+    for (const key of ['ArrowLeft', 'ArrowUp', 'PageDown', 'Home', 'End', 'Delete', 'Backspace', 'Shift']) {
+      expect(press(key)).toBe(true);
+    }
+    for (const key of ['Escape', 'Tab', 'Enter', ' ', 'm', 'Control']) expect(press(key)).toBe(false);
+    expect(press('ArrowDown', { ctrlKey: true })).toBe(false);
+    expect(press('ArrowLeft', { metaKey: true })).toBe(false);
+    expect(press('Home', { altKey: true })).toBe(false);
   });
 });
 

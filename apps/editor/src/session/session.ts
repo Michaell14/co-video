@@ -35,6 +35,7 @@ import { api, ApiError, isRefusal, serverAvailable, wsBase } from './api';
 import { retimeView, withFrameRate } from '../features/inspector/frameRate';
 import { TimelineMedia } from '../features/timeline/mediaCache';
 import { MediaStore, moveProjectMedia, type TransferResult } from './mediaStore';
+import { fitPoster } from './poster';
 import { displayName, PeerList, published } from './presence';
 import { idbName, whenSynced } from './projects';
 import { getUser, isPoster, registry, setUser } from './registry';
@@ -154,6 +155,8 @@ export class Session {
   private refused = false;
   /** The person asked for the link that is kept aside to be tried again. */
   private retrying = false;
+  /** The server's latest answer about this project: among other things, how its documents stand. */
+  private answer: ProjectInfo | null = null;
   /** Rooms whose connection keeps being refused, until the server has been asked why. */
   private readonly turnedDown = new Set<DocKind>();
   /** Rooms this client is waiting for a place in, and when it was last told that it is. */
@@ -538,7 +541,8 @@ export class Session {
   private async inquire(token: string): Promise<ProjectInfo | 'refused' | 'unreachable'> {
     try {
       const signal = AbortSignal.any([this.closing.signal, AbortSignal.timeout(ACCESS_TIMEOUT_MS)]);
-      return await api.projectInfo(this.id, token, signal);
+      this.answer = await api.projectInfo(this.id, token, signal);
+      return this.answer;
     } catch (err) {
       // Only a real refusal is final; a network failure or a busy server is asked again later. And
       // only the server itself can refuse: whatever stands in front of it knows nothing of links.
@@ -700,6 +704,13 @@ export class Session {
         onPresenceIgnored: (reason) => this.onPresenceIgnored(reason),
       });
     this.providers = [room('project', this.doc, this.awareness), room('review', this.reviewDoc)];
+    // The answer that settled the link also says how the documents stand. One the server holds
+    // more of than it loads is shut before the first knock, and is said to be now: not after a few
+    // failed attempts, during which an empty editor would stand where the project should be.
+    const { answer } = this;
+    for (const kind of ['project', 'review'] as const) {
+      if (answer && availabilityOf(answer, kind) === 'too-large') this.judgeRefusal(kind, answer);
+    }
     // Until now the engine was told that media on the server is out of reach, and it remembers.
     for (const a of Object.values(this.store.get().assets)) {
       if (a.uploaded && !this.media.get(a.id).local) this.refreshMedia(a.id);
@@ -820,10 +831,13 @@ export class Session {
     const tooLarge = tooLargeNotice(kind);
     if (availabilityOf(info, kind) === 'too-large') {
       provider.patient = true;
-      // The link is good and there is no place to wait for: neither of the two is what is wrong.
+      // There is no place to wait for. And with nothing of the project on this device there is
+      // nothing to open either: an empty document is not the project, and whatever was made in
+      // one would be merged into the project the day the server loads it again.
       this.waiting.delete(kind);
-      if (kind === 'project' && (this.meta.busy || this.meta.denied)) {
-        this.setMeta({ busy: false, denied: false });
+      if (kind === 'project') {
+        const denied = this.store.isEmpty();
+        if (this.meta.busy || this.meta.denied !== denied) this.setMeta({ busy: false, denied });
       }
       this.setNotSaving(kind, tooLarge);
       return;
@@ -1081,6 +1095,7 @@ export class Session {
         const probe = await probeFile(file);
         const asset: Asset = {
           ...probe.asset,
+          thumb: await fitPoster(probe.asset.thumb),
           id: newId(),
           folderId,
           createdAt: Date.now(),
@@ -1134,6 +1149,7 @@ export class Session {
       }
       const asset: Asset = {
         ...probe.asset,
+        thumb: await fitPoster(probe.asset.thumb),
         id: newId(),
         folderId: old.folderId,
         createdAt: Date.now(),

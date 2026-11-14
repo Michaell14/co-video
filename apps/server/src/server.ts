@@ -112,7 +112,8 @@ export interface TandemServerOptions {
   roomIdleMs?: number;
   /**
    * How often every WebSocket is asked for a sign of life. One that gives none from one time to
-   * the next, and is not in the middle of being sent something, is closed. Default 30 s.
+   * the next is closed; for one that is in the middle of being sent something, the sign is that
+   * it took some of it. Default 30 s.
    */
   heartbeatMs?: number;
 }

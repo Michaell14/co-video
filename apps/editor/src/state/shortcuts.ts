@@ -774,6 +774,10 @@ export function handleKey(e: KeyboardEvent): boolean {
   // Nothing here acts behind a dialog, the palette or an open menu, whether or not it is one the
   // UI state knows about (confirmations are not) and wherever focus is at that moment.
   if (useUI.getState().dialog || layerOpen()) return false;
+  // Nor on a project that is not there. Behind the notice that it cannot be had stands a document
+  // nothing was ever put into, and what a key put into it now would be merged into the project
+  // the day it arrives.
+  if (currentSession()?.store.isEmpty()) return false;
   const keys = eventKeys(e);
   if (keys === 'space' && spaceOperates(e.target)) return false;
   const c = index.get(keys);

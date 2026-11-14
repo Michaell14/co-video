@@ -202,7 +202,11 @@ export function handFocus(from: Element, to: () => HTMLElement | null | undefine
 const down = new Set<string>();
 const spent = new Set<string>();
 
-function spendKeys(): void {
+/**
+ * Mark the keys that are down as having done their work: until each comes up, its auto-repeat
+ * reaches nothing (see `keyDown`).
+ */
+export function spendKeys(): void {
   for (const key of down) spent.add(key);
 }
 

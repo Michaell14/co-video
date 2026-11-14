@@ -166,12 +166,25 @@ function toUint8Array(data: RawData): Uint8Array {
     : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 }
 
+/**
+ * A mark that moves whenever the system takes more of what `socket` was given to send: what its
+ * finished writes come to, and how much of the one under way is still to go. A frame is a single
+ * write however large it is, so only the second figure shows that a large one is moving. Node
+ * goes by it for the idle timeout of a socket, but has no documented name for it.
+ */
+function writeMark(socket: Socket): string {
+  const { _handle: handle } = socket as unknown as { _handle: { writeQueueSize?: number } | null };
+  return `${socket.bytesWritten - socket.writableLength}:${handle?.writeQueueSize ?? 0}`;
+}
+
 /** One WebSocket in a room. */
 class Connection implements PresenceMember {
   /** Cleared when a ping goes out, set again by the pong. */
   alive = true;
   /** How much had arrived from the client at the last heartbeat. */
   private received = 0;
+  /** How far the client had got in taking what it is sent at the last heartbeat. */
+  private taken: string | undefined;
   /** When a heartbeat last found something for the client still on its way out. */
   private sendingAt = -Infinity;
   /** Set once the server gave up on the connection; nothing it sends afterwards is looked at. */
@@ -206,33 +219,26 @@ class Connection implements PresenceMember {
   }
 
   /**
-   * End the connection when its socket has taken nothing of what is waiting to be sent for
-   * `idleMs`. A socket reports itself idle only after that long without anything read from it and
-   * without the write that is under way having moved on, so a client that reads slowly is left
-   * alone and one that has stopped reading is not.
-   */
-  watchForStall(idleMs: number): void {
-    const { socket, ws } = this;
-    if (!(socket instanceof Socket)) return;
-    socket.setTimeout(idleMs);
-    socket.on('timeout', () => {
-      if (ws.bufferedAmount > 0) ws.terminate();
-    });
-  }
-
-  /**
    * One heartbeat: says whether the connection gave a sign of life since the one before, and asks
-   * for the next. A pong is one, and so is anything else that came in. But a ping waits its turn
-   * behind what is being sent, and its answer behind what the client is sending, and a large
-   * document on a slow link takes longer than a heartbeat either way. So a connection that is
-   * still being sent something counts as alive too (`watchForStall` ends it when the client has
-   * stopped taking it), and goes on doing so for `grace` after the last of it left.
+   * for the next. A ping waits its turn behind what is being sent, and a large document on a slow
+   * link takes longer than a heartbeat. So while something is waiting to be sent, the sign of life
+   * is that the client took some of it, and nothing else: one that sends but does not read would
+   * otherwise keep its place, and its copy of the document, for as long as it liked. With nothing
+   * waiting, a pong is a sign of life, and so is anything else that came in (the pong of a client
+   * waits behind what that client is sending), and the connection has `grace` after the last of
+   * what it was sent left our hands.
    */
   beat(now: number, grace: number): boolean {
-    const received = this.socket instanceof Socket ? this.socket.bytesRead : 0;
-    if (this.ws.bufferedAmount > 0) this.sendingAt = now;
-    const alive = this.alive || received > this.received || now - this.sendingAt < grace;
+    const { socket } = this;
+    const received = socket instanceof Socket ? socket.bytesRead : 0;
+    const taken = socket instanceof Socket ? writeMark(socket) : '';
+    const sending = this.ws.bufferedAmount > 0;
+    if (sending) this.sendingAt = now;
+    const alive = sending
+      ? taken !== this.taken
+      : this.alive || received > this.received || now - this.sendingAt < grace;
     this.received = received;
+    this.taken = taken;
     this.alive = false;
     if (alive && this.open) this.ws.ping();
     return alive;
@@ -600,7 +606,6 @@ export class Room {
     this.conns.add(conn);
     registry.add(conn);
     this.presence.join(conn);
-    conn.watchForStall(this.opts.heartbeatMs);
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
 

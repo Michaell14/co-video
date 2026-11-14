@@ -1102,13 +1102,19 @@ test.describe('sliders', () => {
     expect(problems).toEqual([]);
   });
 
-  test('a run of key presses is one undo step, ended by a pause or by leaving the slider', async ({
+  test('a run of key presses is one undo step, ended by a pause, by leaving the slider or by any other key', async ({
     page,
   }) => {
     await sample(page);
     await select(page, 'video');
     const thumb = row(page, 'Opacity').getByRole('slider');
     const opacity = async () => (await clipOf(page, 'video')).opacity;
+    const opacityOf = (id: string): Promise<number> =>
+      page.evaluate((id) => (window as any).tandem.session.store.get().clips[id].opacity, id);
+    const selected = (): Promise<string[]> =>
+      page.evaluate(() => (window as any).tandem.ui.getState().selection);
+    const markers = (): Promise<number> =>
+      page.evaluate(() => Object.keys((window as any).tandem.session.store.get().markers).length);
     await thumb.focus();
     const steps = await undoSteps(page);
 
@@ -1137,6 +1143,87 @@ test.describe('sliders', () => {
     });
     await burst(thumb, ['ArrowLeft']);
     expect(await undoSteps(page)).toBe(base + 2);
+
+    // Any other key is the keyboard doing something else. The shortcut that selects the next clip
+    // leaves the slider where it is, working that clip: what is pressed then is a step of its own.
+    // Shift on its way to an arrow is no other key.
+    await page.waitForTimeout(900);
+    const [one] = await selected();
+    const set = await opacityOf(one);
+    const before = await undoSteps(page);
+    await burst(thumb, ['ArrowLeft', 'ArrowLeft']);
+    await page.keyboard.press('Control+ArrowDown');
+    await burst(thumb, ['ArrowLeft', 'Shift', 'ArrowLeft', 'ArrowLeft']);
+    const [two] = await selected();
+    expect(two).not.toBe(one);
+    await expect(thumb).toBeFocused();
+    expect(await opacityOf(one)).toBeCloseTo(set - 0.02, 6);
+    expect(await opacityOf(two)).toBeCloseTo(0.97, 6);
+    expect(await undoSteps(page)).toBe(before + 2);
+    await page.evaluate(() => (window as any).tandem.cmd.undo());
+    expect(await opacityOf(two)).toBe(1);
+    expect(await opacityOf(one)).toBeCloseTo(set - 0.02, 6);
+
+    // A shortcut that makes an edit of its own: its step holds nothing of the slider's, pressed
+    // before it or after.
+    await page.waitForTimeout(900);
+    const flagged = await markers();
+    const mark = await undoSteps(page);
+    await burst(thumb, ['ArrowLeft']);
+    await page.keyboard.press('m');
+    await burst(thumb, ['ArrowLeft']);
+    expect(await markers()).toBe(flagged + 1);
+    expect(await opacityOf(two)).toBeCloseTo(0.98, 6);
+    expect(await undoSteps(page)).toBe(mark + 3);
+    await page.evaluate(() => (window as any).tandem.cmd.undo());
+    expect(await opacityOf(two)).toBeCloseTo(0.99, 6);
+    expect(await markers()).toBe(flagged + 1);
+    await page.evaluate(() => (window as any).tandem.cmd.undo());
+    expect(await opacityOf(two)).toBeCloseTo(0.99, 6);
+    expect(await markers()).toBe(flagged);
+  });
+
+  test('a value beyond the range is stepped back towards it, and never pulled to the nearer end', async ({
+    page,
+  }) => {
+    await sample(page);
+    await select(page, 'video');
+    const video = async () => clipOf(page, 'video');
+    // The field beside a slider may take more than the slider has room for.
+    await page.evaluate(() => (window as any).tandem.cmd.setSpeed(0.06));
+    const speed = row(page, 'Speed').getByRole('slider');
+    // It stands at the end the value lies past, and is read out as what it is.
+    await expect(speed).toHaveAttribute('aria-valuenow', '-3');
+    await expect(speed).toHaveAttribute('aria-valuetext', '6%');
+    await speed.focus();
+    let steps = await undoSteps(page);
+    for (const key of ['ArrowLeft', 'Shift+ArrowDown', 'PageDown']) await page.keyboard.press(key);
+    expect((await video()).speed).toBe(0.06);
+    expect(await undoSteps(page)).toBe(steps);
+    for (const key of ['ArrowRight', 'ArrowRight']) await page.keyboard.press(key);
+    expect((await video()).speed).toBe(0.07);
+    await page.keyboard.press('PageUp');
+    expect((await video()).speed).toBe(0.11);
+    await expect(speed).toHaveAttribute('aria-valuenow', '-3');
+
+    // A slider given its end to show for anything past it is asked for nothing by a key that
+    // would leave it there: "more" must not come out as less.
+    await page.evaluate(
+      (id) => {
+        const patch = { scaleX: 6, scaleY: 6 };
+        (window as any).tandem.session.store.commit([{ op: 'updateClip', id, patch }]);
+      },
+      (await video()).id,
+    );
+    const scale = row(page, 'Scale').getByRole('slider');
+    await expect(scale).toHaveAttribute('aria-valuenow', '4');
+    await scale.focus();
+    steps = await undoSteps(page);
+    for (const key of ['ArrowRight', 'PageUp', 'End']) await page.keyboard.press(key);
+    expect((await video()).scaleX).toBe(6);
+    expect(await undoSteps(page)).toBe(steps);
+    await page.keyboard.press('ArrowLeft');
+    expect((await video()).scaleX).toBeCloseTo(3.96, 6);
   });
 
   test('a slider whose values are coarser than its steps still moves', async ({ page }) => {
@@ -1335,6 +1422,103 @@ test.describe('tooltips', () => {
     await page.getByRole('button', { name: 'Zoom out' }).click();
     await expect(tooltip).toHaveCount(0);
     await page.waitForTimeout(700);
+    await expect(tooltip).toHaveCount(0);
+  });
+
+  test('Escape on one the keyboard brought up takes it away and does nothing else', async ({ page }) => {
+    await sample(page);
+    await select(page, 'video');
+    const tooltip = page.locator('.tooltip');
+    const inspector = page.locator('[aria-label="Inspector"]');
+    const toggle = inspector.getByRole('button', { name: 'Toggle keyframe for Position X' });
+    const selection = () => page.evaluate(() => (window as any).tandem.ui.getState().selection);
+    const selected = await selection();
+    await page.mouse.move(700, 300);
+
+    // Passed on to the editor, the key would drop the selection, and the inspector would take the
+    // button away from under the keyboard. Held down, it still asks for no more than the tip.
+    await inspector.getByRole('button', { name: 'Reset transform' }).focus();
+    await page.keyboard.press('Tab');
+    await expect(toggle).toBeFocused();
+    await expect(tooltip).toHaveText(/keyframe/);
+    for (let repeats = 0; repeats < 3; repeats++) await page.keyboard.down('Escape');
+    await page.keyboard.up('Escape');
+    await expect(tooltip).toHaveCount(0);
+    await expect(toggle).toBeFocused();
+    expect(await selection()).toEqual(selected);
+
+    // With no tip left to take away, the key is the editor's again.
+    await page.keyboard.press('Escape');
+    expect(await selection()).toEqual([]);
+
+    // So it is while a tip is only on its way: the key comes with the focus here, before the tip
+    // that this focus brings when it is left alone.
+    await select(page, 'video');
+    await toggle.evaluate((el: HTMLElement) => {
+      el.focus();
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(await selection()).toEqual([]);
+    await select(page, 'video');
+    await toggle.evaluate((el: HTMLElement) => el.focus());
+    await expect(tooltip).toHaveText(/keyframe/);
+
+    // And for a tip the pointer asked for.
+    await inspector.getByRole('button', { name: 'Reset transform' }).hover();
+    await expect(tooltip).toHaveText(/Reset transform/);
+    await page.keyboard.press('Escape');
+    await expect(tooltip).toHaveCount(0);
+    expect(await selection()).toEqual([]);
+    await page.mouse.move(700, 300);
+
+    // A dialog closes for the key that its close button's tip names, tip and all.
+    await page.evaluate(() => (window as any).tandem.ui.getState().set({ dialog: 'shortcuts' }));
+    const dialog = page.getByRole('dialog');
+    const close = dialog.getByRole('button', { name: 'Close' });
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Shift+Tab');
+    await expect(close).toBeFocused();
+    await expect(tooltip).toHaveText(/Close/);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(tooltip).toHaveCount(0);
+  });
+
+  test('show for a control the keyboard had to scroll into view, where it has come to rest', async ({
+    page,
+  }) => {
+    await sample(page);
+    await select(page, 'video');
+    const tooltip = page.locator('.tooltip');
+    const panel = page.locator('[aria-label="Inspector"] .panel__body');
+    const remove = panel.getByRole('button', { name: 'Remove effect' }).first();
+    await page.mouse.move(700, 300);
+
+    // The clip's effect is listed further down than the panel has room for. The keyboard stands
+    // on the stop before its remove button without having scrolled there.
+    await panel.evaluate((el) => (el.scrollTop = 0));
+    const room = (await panel.boundingBox())!;
+    expect((await remove.boundingBox())!.y).toBeGreaterThan(room.y + room.height);
+    await remove
+      .locator('xpath=preceding::*[@role="switch"][1]')
+      .evaluate((el: HTMLElement) => el.focus({ preventScroll: true }));
+    expect(await panel.evaluate((el) => el.scrollTop)).toBe(0);
+
+    await page.keyboard.press('Tab');
+    await expect(remove).toBeFocused();
+    expect(await panel.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+    await expect(tooltip).toHaveText('Remove effect');
+    await tooltip.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+    const a = (await remove.boundingBox())!;
+    const b = (await tooltip.boundingBox())!;
+    expect(a.y + a.height).toBeLessThanOrEqual(room.y + room.height);
+    // Just under or just over the button, and across it.
+    expect(Math.min(Math.abs(b.y - (a.y + a.height)), Math.abs(a.y - (b.y + b.height)))).toBeLessThan(12);
+    expect(b.x).toBeLessThan(a.x + a.width);
+    expect(b.x + b.width).toBeGreaterThan(a.x);
+
+    // Scrolled on by hand, the button leaves the tip behind: it goes.
+    await panel.evaluate((el) => (el.scrollTop -= 30));
     await expect(tooltip).toHaveCount(0);
   });
 

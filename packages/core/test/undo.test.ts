@@ -1109,6 +1109,56 @@ describe('two clips placed on the same frames at the same moment', () => {
     }
   });
 
+  it('stay together when it was a change of frame rate that rounded them onto one frame', () => {
+    const { a, b, sync } = apart();
+    const v1 = tracksOf(a.get()).video[0];
+    // At 24 frames a second both begin on frame 2, and a clip is never shorter than a frame.
+    const flash = makeClip('solid', v1.id, { start: 2, duration: 1, name: 'flash' });
+    const shot = makeClip('solid', v1.id, { start: 3, duration: 40, name: 'shot' });
+    a.commit([{ op: 'addClip', clip: flash }]);
+    sync();
+    b.commit([{ op: 'addClip', clip: shot }]);
+    sync();
+    const before = a.get();
+    a.commit(changeFrameRate(before, 24, 1));
+    sync();
+    const changed = a.get();
+    expect(changed.clips[flash.id]).toMatchObject({ start: 2, duration: 1 });
+    expect(changed.clips[shot.id]).toMatchObject({ start: 2, duration: 32 });
+    expect(overlappingClips(changed)).toEqual(new Set([flash.id, shot.id]));
+
+    // Nobody moves either of them, whoever looks and whoever is said to be here.
+    const here = [a.doc.clientID, b.doc.clientID];
+    expect([a, b].map((s) => s.resolveOverlaps())).toEqual([0, 0]);
+    expect([a, b].map((s) => s.resolveOverlaps(here))).toEqual([0, 0]);
+    sync();
+    expect(a.get()).toEqual(changed);
+    expect(b.get()).toEqual(changed);
+
+    // So the step can be taken back to exactly what there was, and made again.
+    expect(a.undo()).toEqual(TAKEN);
+    sync();
+    expect(a.get()).toEqual(before);
+    expect(b.get()).toEqual(before);
+    expect(a.redo()).toEqual(TAKEN);
+    sync();
+    expect(a.get()).toEqual(changed);
+    expect(b.get()).toEqual(changed);
+  });
+
+  it('are moved apart when one of them is a single frame anywhere but at the start of the other', () => {
+    const { a, b, sync } = apart();
+    const v1 = tracksOf(a.get()).video[0];
+    a.commit([{ op: 'addClip', clip: makeClip('solid', v1.id, { start: 360, duration: 180 }) }]);
+    b.commit([{ op: 'addClip', clip: makeClip('solid', v1.id, { start: 400, duration: 1 }) }]);
+    sync();
+    expect(overlappingClips(a.get()).size).toBe(2);
+    expect(a.resolveOverlaps() + b.resolveOverlaps()).toBe(1);
+    sync();
+    expect(overlappingClips(a.get()).size).toBe(0);
+    expect(a.get()).toEqual(b.get());
+  });
+
   it('are moved apart by someone who is there when the one it falls to has left', () => {
     const { a, b, c, sync, v1, placed } = three();
     c.commit([

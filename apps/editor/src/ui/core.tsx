@@ -23,6 +23,7 @@ import {
   layerOpen,
   placePopover,
   placeTip,
+  spendKeys,
   trapTab,
   typeAhead,
   useLayer,
@@ -30,7 +31,7 @@ import {
   type PopoverPlace,
 } from './layers';
 import { isDoublePress, isDrag, type Press } from './press';
-import { sliderKey } from './slider';
+import { isSliderKey, sliderKey } from './slider';
 
 export const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -91,6 +92,8 @@ interface TipState {
 
 let showTip: (t: TipState | null) => void = () => {};
 let tipTimer: ReturnType<typeof setTimeout> | undefined;
+/** Whether a tip is on the screen, and not only waiting to be. */
+let tipShown = false;
 let lastTipAt = 0;
 
 export function TooltipLayer() {
@@ -126,16 +129,22 @@ export function TooltipLayer() {
 }
 
 let unwatchTip = () => {};
+/** The element whose tip, waiting or showing, the keyboard asked for by arriving there. */
+let keyboardTip: Element | null = null;
 
 /**
  * Follow the element a tooltip belongs to for as long as its tip is waiting or showing. The
  * pointer leaving is not the only way a tip stops being true, and the others send no
  * pointerleave: the element is taken out of the page under a pointer that stays where it is (a
  * tab switched from the keyboard), it scrolls away, or the person turns to the keyboard or to
- * another window.
+ * another window. `arrived` is a tip asked for by the keyboard arriving at the element.
  */
-function watchTip(anchor: Element): void {
+function watchTip(anchor: Element, arrived: boolean): void {
+  // The pointer coming over an element the keyboard has just been brought to (scrolled into
+  // view, it may come to lie under a pointer that never moved) leaves the tip the keyboard's.
+  const byKeyboard = arrived || keyboardTip === anchor;
   unwatchTip();
+  keyboardTip = byKeyboard ? anchor : null;
   const removed = new MutationObserver(() => {
     if (!anchor.isConnected) hideTip();
   });
@@ -143,16 +152,35 @@ function watchTip(anchor: Element): void {
   const onScroll = (e: Event) => {
     if ((e.target as Node).contains(anchor)) hideTip();
   };
-  window.addEventListener('scroll', onScroll, true);
+  const watchScroll = () => window.addEventListener('scroll', onScroll, true);
+  // The keyboard arriving at an element scrolls it into view, and the page is told of that
+  // scroll with its next frame, ahead of the frame's own callbacks. That scroll is how the
+  // element came to be where the tip will point: only the ones after it take the tip away.
+  const settled = byKeyboard ? requestAnimationFrame(watchScroll) : 0;
+  if (!byKeyboard) watchScroll();
+  const onKey = (e: KeyboardEvent) => {
+    // Escape pressed on a tip the keyboard brought up asks for the tip to go, and that is all
+    // the press does, however long it is held. Passed on, it would drop the editor's selection,
+    // and with the selection often the very control the keyboard is on. In a dialog or a menu
+    // the key stays theirs: they close for it, and what the tip was on goes with them.
+    if (e.key === 'Escape' && byKeyboard && tipShown && !layerOpen()) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      spendKeys();
+    }
+    hideTip();
+  };
   // The timeline moves its content under the wheel without scrolling anything.
   window.addEventListener('wheel', hideTip, { capture: true, passive: true });
-  window.addEventListener('keydown', hideTip, true);
+  window.addEventListener('keydown', onKey, true);
   window.addEventListener('blur', hideTip);
   unwatchTip = () => {
+    keyboardTip = null;
     removed.disconnect();
+    cancelAnimationFrame(settled);
     window.removeEventListener('scroll', onScroll, true);
     window.removeEventListener('wheel', hideTip, true);
-    window.removeEventListener('keydown', hideTip, true);
+    window.removeEventListener('keydown', onKey, true);
     window.removeEventListener('blur', hideTip);
     unwatchTip = () => {};
   };
@@ -162,6 +190,7 @@ function watchTip(anchor: Element): void {
 export function hideTip(): void {
   clearTimeout(tipTimer);
   unwatchTip();
+  tipShown = false;
   showTip(null);
 }
 
@@ -171,13 +200,17 @@ export function hideTip(): void {
  * is to see. Any key pressed afterwards takes it away again (`watchTip`), Escape included.
  */
 export function tip(text: ReactNode, keys?: string, place: 'top' | 'bottom' = 'bottom') {
-  const show = (anchor: Element) => {
-    const r = anchor.getBoundingClientRect();
+  const show = (anchor: Element, arrived: boolean) => {
     clearTimeout(tipTimer);
-    watchTip(anchor);
+    watchTip(anchor, arrived);
     // After the first tooltip, neighbours appear instantly — scanning a toolbar should feel fluid.
     const delay = performance.now() - lastTipAt < 400 ? 0 : 450;
-    tipTimer = setTimeout(() => showTip({ text, keys, anchor: r, place }), delay);
+    tipTimer = setTimeout(() => {
+      tipShown = true;
+      // Measured as the tip appears: the element may have been scrolled into view since the tip
+      // was asked for.
+      showTip({ text, keys, anchor: anchor.getBoundingClientRect(), place });
+    }, delay);
   };
   const leave = () => {
     hideTip();
@@ -188,7 +221,7 @@ export function tip(text: ReactNode, keys?: string, place: 'top' | 'bottom' = 'b
       // Something carried across the page is on its way to where it will be dropped: what it
       // passes over on the way is not being asked about.
       if (e.pointerType === 'touch' || useDrag.getState().payload) return;
-      show(e.currentTarget);
+      show(e.currentTarget, false);
     },
     onPointerLeave: leave,
     onPointerDown: hideTip,
@@ -199,7 +232,7 @@ export function tip(text: ReactNode, keys?: string, place: 'top' | 'bottom' = 'b
       // as visible all the same), and neither is focus on something inside the element.
       const asked =
         e.target === e.currentTarget && usingKeyboard() && e.currentTarget.matches(':focus-visible');
-      if (asked) show(e.currentTarget);
+      if (asked) show(e.currentTarget, true);
     },
     onBlurCapture: (e: React.FocusEvent) => {
       if (e.target === e.currentTarget) leave();
@@ -354,6 +387,26 @@ const SLIDER_INSET = 5.5;
  */
 export const KEY_RUN_MS = 600;
 
+/**
+ * What ends each run of key presses under way, by the thumb the run is on. Any key that is not
+ * the slider's own is the keyboard doing something else, and the run is over: a shortcut may
+ * select another clip and leave the slider in place, working that clip, or make an edit of its
+ * own. Neither that edit nor the presses after it belong in the undo step the run began.
+ */
+const keyRuns = new Map<() => void, EventTarget>();
+
+if (typeof window !== 'undefined') {
+  // Added as the module loads, so it hears of a key ahead of whoever acts on it, and of the keys
+  // that someone takes before they reach the slider.
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      for (const [end, thumb] of keyRuns) if (e.target !== thumb || !isSliderKey(e)) end();
+    },
+    true,
+  );
+}
+
 export function Slider({
   value,
   min,
@@ -383,6 +436,7 @@ export function Slider({
     if (run.current === null) return;
     clearTimeout(run.current);
     run.current = null;
+    keyRuns.delete(endRun);
     ended.current?.();
   }, []);
   // What the last key press asked for, for as long as the value has not moved since. Whoever
@@ -472,7 +526,8 @@ export function Slider({
         {...name}
         aria-valuemin={min}
         aria-valuemax={max}
-        aria-valuenow={Number(value.toPrecision(6))}
+        // A value beyond the range is shown at the end it lies past: the position can say no more.
+        aria-valuenow={Number(Math.min(max, Math.max(min, value)).toPrecision(6))}
         aria-valuetext={valueText?.(value)}
         aria-disabled={disabled || undefined}
         onBlur={() => {
@@ -489,9 +544,14 @@ export function Slider({
           // nothing to do: Delete must not go on to delete the selected clips.
           e.preventDefault();
           e.stopPropagation();
-          if (next === null) return;
-          if (run.current === null) onStart?.();
-          else clearTimeout(run.current);
+          // Nothing to do: no default to go back to, or the slider is where the key would put it
+          // (a step past the end of the range). Writing that again would begin an undo step for
+          // nothing, and where the value shown stands in for one beyond the range, replace it.
+          if (next === null || next === from) return;
+          if (run.current === null) {
+            onStart?.();
+            keyRuns.set(endRun, e.currentTarget);
+          } else clearTimeout(run.current);
           run.current = setTimeout(endRun, KEY_RUN_MS);
           asked.current = next;
           onChange(next);

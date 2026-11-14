@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { spawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -789,7 +789,7 @@ test.describe('projects, links and media', () => {
     });
     await expect.poll(() => toastCount(b, 'no longer accepts your link'), { timeout: 30_000 }).toBe(1);
     expect(await meta(b)).toMatchObject({ shared: false, status: 'offline', busy: false, role: 'owner' });
-    await expect(b.locator('.conn')).toContainText('Saved on this device');
+    await expect(b.locator('.conn')).toContainText('Not syncing: link refused');
     // It stopped knocking.
     const attempts = await b.evaluate(() => (window as any).tandem.session.providers.length);
     expect(attempts).toBe(0);
@@ -909,6 +909,47 @@ test.describe('projects, links and media', () => {
       'testsrc.mp4:local:null',
       'tone.ogg:local:null',
     ]);
+  });
+
+  test('a still many times taller than wide gets a poster that every reader passes on', async ({ page }) => {
+    await newLocalProject(page);
+    const poster = await page.evaluate(async () => {
+      const { session } = (window as any).tandem;
+      // A page 1280 wide and 8000 tall without two neighbouring blocks alike: nothing compresses worse.
+      const noise = new ImageData(320, 2000);
+      let seed = 7;
+      for (let i = 0; i < noise.data.length; i++) {
+        seed = (seed * 16807) % 2147483647;
+        noise.data[i] = i % 4 === 3 ? 255 : seed & 255;
+      }
+      const small = new OffscreenCanvas(320, 2000);
+      small.getContext('2d')!.putImageData(noise, 0, 0);
+      const sheet = new OffscreenCanvas(1280, 8000);
+      const ctx = sheet.getContext('2d')!;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(small, 0, 0, 1280, 8000);
+      const file = new File([await sheet.convertToBlob({ type: 'image/png' })], 'long-page.png', {
+        type: 'image/png',
+      });
+      const [asset] = await session.importFiles([file]);
+      const written: string = session.doc.getMap('assets').get(asset.id).get('thumb');
+      const read: string | null = session.store.get().assets[asset.id].thumb;
+      const picture = new Image();
+      picture.src = written;
+      await picture.decode();
+      return {
+        length: written.length,
+        read: read === written,
+        shape: picture.naturalHeight / picture.naturalWidth,
+      };
+    });
+    // 256 KiB is the longest poster the readers of a project pass on (MAX_THUMB_LENGTH in core).
+    expect(poster.length).toBeLessThanOrEqual(256 * 1024);
+    expect(poster.read).toBe(true);
+    // It is the whole picture, only smaller.
+    expect(poster.shape).toBeGreaterThan(6);
+    expect(poster.shape).toBeLessThan(6.5);
+    await expect(page.locator('.asset__thumb img')).toBeVisible();
   });
 
   test('publishing takes along imports that are still being saved, and those that could not be', async ({
@@ -1290,7 +1331,7 @@ test.describe('projects, links and media', () => {
     await page.reload();
     await editorReady(page);
     await watchToasts(page);
-    await expect(page.locator('.conn')).toContainText('Saved on this device');
+    await expect(page.locator('.conn')).toContainText('Not syncing: link refused');
     await page.waitForTimeout(1500);
     expect(asked).toBe(1);
     expect(await toastCount(page, 'no longer accepts')).toBe(0);
@@ -1603,14 +1644,25 @@ test.describe('projects, links and media', () => {
       });
     };
     const contexts: BrowserContext[] = [];
-    const visitor = async (link: string): Promise<Page> => {
+    /** With `watched`, the page notes it if the editor is ever on screen with nothing of a project in it. */
+    const visitor = async (link: string, watched = false): Promise<Page> => {
       const ctx = await browser.newContext();
       contexts.push(ctx);
       await useServer(ctx, port);
+      if (watched) {
+        await ctx.addInitScript(() => {
+          (window as any).__shownEmpty = false;
+          setInterval(() => {
+            const s = (window as any).tandem?.session;
+            if (s?.store.isEmpty() && document.querySelector('.tl')) (window as any).__shownEmpty = true;
+          }, 20);
+        });
+      }
       const p = await ctx.newPage();
       await p.goto(link);
       return p;
     };
+    const shownEmpty = (p: Page): Promise<boolean> => p.evaluate(() => (window as any).__shownEmpty);
     try {
       await useServer(page.context(), port);
       await newProject(page);
@@ -1710,20 +1762,48 @@ test.describe('projects, links and media', () => {
         .poll(() => page.evaluate(() => (window as any).tandem.session.providers[1].status))
         .toBe('connected');
 
-      // Someone with nothing of the project on their device is told the same, not to wait for a place.
-      const c = await visitor(viewerLink);
-      await editorReady(c);
-      await expect.poll(() => notSaving(c), { timeout: 60_000 }).toBe(TOO_LARGE);
-      await expect(c.locator('.toast', { hasText: 'larger than this server loads' })).toBeVisible();
-      await expect(c.getByText('Waiting for a place in this project')).toHaveCount(0);
-      expect(await meta(c)).toMatchObject({ busy: false, denied: false, role: 'viewer' });
+      // Someone with nothing of the project on their device is told the same, and is shown no
+      // empty editor where the project should be, whatever their link allows: not for a moment.
+      const arrive = async (link: string): Promise<Page> => {
+        const p = await visitor(link, true);
+        await expect(p.getByText('This project is not available')).toBeVisible({ timeout: 60_000 });
+        await expect(p.locator('.toast', { hasText: TOO_LARGE })).toBeVisible();
+        expect(await notSaving(p)).toBe(TOO_LARGE);
+        await expect(p.getByText('Waiting for a place in this project')).toHaveCount(0);
+        return p;
+      };
+      const c = await arrive(viewerLink);
+      const d = await arrive(editorLink);
+      expect(await meta(c)).toMatchObject({ busy: false, denied: true, role: 'viewer' });
+      expect(await meta(d)).toMatchObject({ busy: false, denied: true, role: 'editor' });
+      // Nor can anything be made there with the keyboard: it would end up in the project later.
+      await d.keyboard.press('t');
+      await d.keyboard.press('m');
+      await d.waitForTimeout(300);
+      expect(await d.evaluate(() => (window as any).tandem.session.store.isEmpty())).toBe(true);
+      expect(await shownEmpty(c)).toBe(false);
+      expect(await shownEmpty(d)).toBe(false);
 
-      // The limit is raised: both get in, and the notice goes.
+      // The limit is raised: everyone gets in, to the project as it was, and the notice goes.
+      const tracks = (p: Page): Promise<string[]> =>
+        p.evaluate(() =>
+          (Object.values((window as any).tandem.session.store.get().tracks) as any[])
+            .map((t) => `${t.kind}${t.order}`)
+            .sort(),
+        );
       await restartWithLimit(1_000_000);
       await knock(page);
       await knock(c);
+      await knock(d);
       await expect.poll(() => titles(c), { timeout: 60_000 }).toBe(3);
+      await expect.poll(() => titles(d), { timeout: 60_000 }).toBe(3);
+      await expect(d.locator('.tl')).toBeVisible();
+      expect(await meta(d)).toMatchObject({ denied: false, synced: true, role: 'editor' });
+      expect(await tracks(d)).toEqual(await tracks(page));
+      expect(await titles(page)).toBe(3);
+      await editorReady(c);
       await expect.poll(() => notSaving(c), { timeout: 30_000 }).toBeNull();
+      await expect.poll(() => notSaving(d), { timeout: 30_000 }).toBeNull();
       await expect.poll(() => notSaving(page), { timeout: 30_000 }).toBeNull();
       expect(await toastCount(page, 'larger than this server loads')).toBe(1);
       expect(await toastCount(page, 'This project has reached the size the server allows')).toBe(1);
@@ -1750,6 +1830,7 @@ test.describe('projects, links and media', () => {
     } finally {
       await Promise.all(contexts.map((ctx) => ctx.close()));
       await server.stop();
+      rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
@@ -1815,6 +1896,7 @@ test.describe('projects, links and media', () => {
     } finally {
       await Promise.all(contexts.map((ctx) => ctx.close().catch(() => undefined)));
       await server.stop();
+      rmSync(dataDir, { recursive: true, force: true });
     }
   });
 });

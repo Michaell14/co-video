@@ -25,35 +25,48 @@ export function sliderKey(
   const span = max - min;
   const unit = step || span / 100;
   const page = Math.max(unit, span / 10);
-  let to: number;
+  let by: number;
   switch (key) {
     case 'ArrowRight':
     case 'ArrowUp':
-      to = from + unit * (shift ? 10 : 1);
+      by = unit * (shift ? 10 : 1);
       break;
     case 'ArrowLeft':
     case 'ArrowDown':
-      to = from - unit * (shift ? 10 : 1);
+      by = -unit * (shift ? 10 : 1);
       break;
     case 'PageUp':
-      to = from + page;
+      by = page;
       break;
     case 'PageDown':
-      to = from - page;
+      by = -page;
       break;
     case 'Home':
-      to = min;
-      break;
+      return min;
     case 'End':
-      to = max;
-      break;
+      return max;
     case 'Delete':
     case 'Backspace':
       return defaultValue ?? null;
     default:
       return undefined;
   }
+  let to = from + by;
   if (step) to = Math.round(to / step) * step;
   // Sums of fractions come out a hair off (0.1 + 0.02): not something to store or to read out.
-  return Math.min(max, Math.max(min, Number(to.toPrecision(12))));
+  to = Number(to.toPrecision(12));
+  // A value can lie beyond the range (typed into the field beside the slider, where more is
+  // allowed). A step is relative: towards the range it is taken from where the value is, and away
+  // from it there is nowhere to go. Pulled to the nearest end, "more" would come out as less.
+  return Math.min(Math.max(max, from), Math.max(Math.min(min, from), to));
+}
+
+/**
+ * Whether a key going down belongs to a slider that has the keyboard: one of the keys `sliderKey`
+ * answers, or Shift on its way to one. With Ctrl, Alt or the command key held, the same keys are
+ * the editor's shortcuts.
+ */
+export function isSliderKey(e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey'>): boolean {
+  if (e.ctrlKey || e.metaKey || e.altKey) return false;
+  return e.key === 'Shift' || sliderKey(e.key, false, 0, { min: 0, max: 1 }) !== undefined;
 }

@@ -33,7 +33,7 @@ import {
 } from './defaults';
 import { getEffectDef, type ParamDef } from './effects';
 import { conformEasing } from './keyframes';
-import { overlappingPairs, separateClips } from './overlaps';
+import { overlappingPairs, roundedTogether, separateClips } from './overlaps';
 import { clipAtRate, fpsOf, sameRate } from './time';
 import { getTransitionDef } from './transitions';
 import type {
@@ -164,9 +164,10 @@ const fontFamily: Reader = (v) =>
 export const MAX_NAME_LENGTH = 500;
 
 /**
- * Longest poster of an asset the readers pass on, as the length of its data URL. The editor makes
- * posters 320 pixels wide: a few kilobytes for ordinary footage, some 130,000 characters for a
- * portrait frame of pure noise. Anything longer was not made by it and is read as no poster.
+ * Longest poster of an asset the readers pass on, as the length of its data URL. A poster 320
+ * pixels wide is a few kilobytes for ordinary footage and some 130,000 characters for a portrait
+ * frame of pure noise. Only that of a picture many times taller than wide comes out longer, and
+ * whoever writes posters has to draw such a one smaller: anything longer is read as no poster.
  */
 export const MAX_THUMB_LENGTH = 256 * 1024;
 
@@ -915,12 +916,18 @@ export class ProjectStore {
    * client id. A session that has left is then passed over, and the clip does not wait for it.
    * Without `here` the clip stays where it is when the session it falls to is gone.
    *
+   * Two clips that a change of frame rate rounded onto one frame (`roundedTogether`) stay as they
+   * are. The step that brought them there is someone's to take back, and has to find them where
+   * it left them to give back exactly what there was. Two people who put such a pair there at the
+   * same moment cannot be told from it, and theirs stays as well.
+   *
    * Returns the number of clips this session moved.
    */
   resolveOverlaps(here?: Iterable<number>): number {
     const present = here && new Set(here);
     const mine = new Set<ID>();
     for (const [a, b] of overlappingPairs(this.project)) {
+      if (roundedTogether(a, b)) continue;
       const id = a.id > b.id ? a.id : b.id;
       if (this.moverOf(id, present) === this.doc.clientID) mine.add(id);
     }
@@ -1554,7 +1561,7 @@ export class ProjectStore {
       ([a, b]) =>
         (placed(a.id) || placed(b.id)) &&
         !(placed(a.id) && placed(b.id) && (rateStep || (whole(a.id) && whole(b.id)))) &&
-        !(fromOtherRate && a.start === b.start && Math.min(a.duration, b.duration) === 1),
+        !(fromOtherRate && roundedTogether(a, b)),
     );
     if (!pairs.length) return;
     const given = step.meta.get(STEP_SHARED) as ReadonlySet<string>;
