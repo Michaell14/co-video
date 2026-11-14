@@ -96,10 +96,12 @@ with projects stored in your browser.
   done to the clip, as does “Replace selected clip with this” in the file's menu. “Reveal in media
   pool” finds the file behind a clip, and a video can be added as picture only or sound only
 - A clip says what is wrong with it where it lies: **Offline** when its file is on neither this
-  device nor the server, **Unsupported** when this browser cannot decode it, **Overlap** when it
-  shares frames with another clip of its track (its menu has “Move to a free track”). The viewer
-  says in a line why the picture under the playhead is black, the inspector says it of the selected
-  clip, and the media pool marks a file this browser cannot decode
+  device nor the server, **Unsupported** when this browser cannot decode it (**No decoder** where
+  the browser has no decoder at all, **Needs HTTPS** on an address that is neither HTTPS nor
+  `localhost`), **Overlap** when it shares frames with another clip of its track (its menu has
+  “Move to a free track”). The viewer says in a line why the picture under the playhead is black,
+  the inspector says it of the selected clip, and the media pool marks a file this browser cannot
+  decode
 - Projects save to a portable `.tandem` file. Opening one makes a new project, from the home screen
   or the editor; replacing the open project with one is a separate command that asks first
 - The home screen renames, duplicates and deletes the projects on your device
@@ -147,7 +149,9 @@ with projects stored in your browser.
 - Time-coded comments with replies and resolve
 - Share links with **editor**, **commenter** and **viewer** roles, enforced by the server. For
   someone who may not edit, the inspector, the colour page and the mixer say “Read only”, and
-  their controls and the timeline's editing buttons are out of reach
+  their controls and the timeline's editing buttons are out of reach. What they select is outlined
+  in the viewer without the handles to move it by, and the track heights they set are their own,
+  kept per project on the device
 - Named versions plus automatic snapshots; restoring one is a single undoable step
 - Offline-first: the editor is an installable web app that opens with no network, projects and
   media live on your device, and changes merge when you reconnect
@@ -184,11 +188,14 @@ with projects stored in your browser.
   or Avid
 - Any resolution up to the encoder's limit (8K where the hardware allows) and any frame rate up to
   240 fps. The dialog asks the encoder about the chosen codec, size and bitrate before anything is
-  rendered, and says what it would take instead of failing after the file has been named
+  rendered, in 10 bits for an HDR export, and says what it would take instead of failing after the
+  file has been named
 - Deterministic, frame-by-frame rendering — a slow machine takes longer but produces the same file
 - Media that is missing or will not decode is listed before the export starts. You can export
   anyway; the result then names every clip that left a gap
-- Streams straight to disk, so file size is not limited by memory
+- Streams straight to disk, so file size is not limited by memory. “Cancel export” works until the
+  file is finished: only the last step, saving it where you chose, cannot be stopped. Leaving the
+  project cancels a running export
 
 ## Keyboard
 

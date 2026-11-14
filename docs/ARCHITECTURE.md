@@ -384,6 +384,12 @@ Media that is missing or will not decode does not stop an export, and never pass
 export each problem is reported once per clip as it is met (`onWarning`), and all of them are in
 `ExportResult.warnings`: which clip, which file, what was wrong, from which frame.
 
+What the video encoder is set up with is built in one place, `videoEncoding`, and `encoderAccepts`
+puts the same to the browser ahead of time: the question the export dialog asks before anything
+starts is the one the export meets at its first frame, 10-bit HDR included. An export can be
+cancelled until its file is finished. The abort signal is looked at once more after the muxer has
+finalised; only the closing of a picked file, reported as the phase `saving`, is past stopping.
+
 ### Audio
 
 `AudioGraph` builds the same node graph on a live `AudioContext` and on an `OfflineAudioContext`.
@@ -412,6 +418,8 @@ when it starts.
 - **Panel sizes are preferences.** The widths and heights a person drags are stored as they set
   them and fitted to the window each time it is laid out (`features/editor/layout.ts`), so a layout
   made on a large monitor still shows every panel on a laptop and comes back when the window grows.
+  The track heights set by someone who may not edit are kept the same way, per project
+  (`laneHeights` in `state/ui.ts`); an editor's are part of the project.
 - **Dialogs, the palette, menus and popovers are a stack of layers** (`ui/layers.ts`). The topmost
   layer gets every key before anything else in the page, a modal one makes what is beneath it
   inert, and the editor's own shortcuts stand down while any layer is open. A command chosen in
