@@ -132,14 +132,27 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
-export function Splash({ label }: { label: string }) {
+/**
+ * The screen for a wait with nothing to show yet. `steady` is for one that takes over from another
+ * of the same kind: it is there at once instead of fading in a second time.
+ */
+export function Splash({
+  label,
+  steady,
+  children,
+}: {
+  label: string;
+  steady?: boolean;
+  children?: ReactNode;
+}) {
   return (
-    <div className="splash">
+    <div className={steady ? 'splash splash--steady' : 'splash'}>
       <Logo size={40} />
       <div className="splash__label">
         <span className="spinner" />
         {label}
       </div>
+      {children}
     </div>
   );
 }

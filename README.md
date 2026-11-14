@@ -155,7 +155,8 @@ with projects stored in your browser.
   immediately while a local copy downloads in the background. A transfer the network interrupted
   is tried again by itself, or at once from the media pool
 - The top bar says how the project stands with the server, also when it does not: “Not syncing:
-  link refused” for a project whose link the server no longer accepts (Share has “Try again”), and
+  link refused” for a project whose link the server no longer accepts (Share has “Try again”),
+  “Waiting for the server” while a server that answers has no place for the project yet, and
   “Not saving to the server” when the server has stopped taking changes, with the reason, such as a
   project that has reached the size the server allows. The changes stay on the device meanwhile
   and are offered to the server again every minute
@@ -163,7 +164,8 @@ with projects stored in your browser.
   else removed are kept: a notice in the timeline restores them to a new track or discards them
 - The home screen marks a project whose link was refused and says when the browser has no room
   left to save the list of projects. The screen that stands in for a project that is not available
-  offers “Try again”
+  offers “Try again”. A shared project that has not arrived on a device yet is shown as opening,
+  never as an empty timeline, and a wait that goes on offers the way back to the projects
 
 ![Three people editing one project](docs/images/multiplayer.webp)
 
@@ -254,6 +256,9 @@ The rest of the editor is within reach of the keyboard as well:
 - A tooltip shows for the control the keyboard is on as it does under the pointer, and a notice
   that offers something to do (“Undo”, “Try again”) stays for nine seconds and waits while the
   pointer or the keyboard is on it
+- A button that is at work on what it was pressed for (a link being made, a version saved or
+  restored, a project published) keeps the keyboard and takes no second press. Where the answer
+  puts something else in its place, the keyboard goes on from what stands there
 
 ## Browser support
 

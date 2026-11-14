@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fitPanels } from '../src/features/editor/layout';
-import { readPrefs } from '../src/state/ui';
+import { laneHeightsToStore, readPrefs, withLaneHeight } from '../src/state/ui';
 
 const FIRST_VISIT = {
   snapping: true,
@@ -10,6 +10,7 @@ const FIRST_VISIT = {
   leftWidth: 320,
   rightWidth: 316,
   timelineHeight: 320,
+  laneHeights: {},
   scopes: { waveform: true, parade: true, vectorscope: true, histogram: false },
 };
 
@@ -29,6 +30,7 @@ describe('stored interface preferences', () => {
       leftWidth: 412.5,
       rightWidth: 280,
       timelineHeight: 512,
+      laneHeights: { q7Yb2mXw0eRt5uIo9pLk: { a1B2c3D4e5F6: 96, g7H8i9J0k1L2: 26 }, second: { v1: 220 } },
       scopes: { waveform: false, parade: true, vectorscope: false, histogram: true },
     };
     expect(readPrefs(JSON.stringify(written))).toEqual(written);
@@ -71,6 +73,37 @@ describe('stored interface preferences', () => {
     expect(readPrefs('{"defaultTransition": "retiredWipe"}').defaultTransition).toBe('retiredWipe');
   });
 
+  it('keep a lane height only for what can be a project and a track, and only one a lane can have', () => {
+    for (const bad of [
+      'null',
+      '7',
+      '"tall"',
+      '[]',
+      '[{"v1": 90}]',
+      '{"p1": null}',
+      '{"p1": 90}',
+      '{"p1": []}',
+    ]) {
+      expect(readPrefs(`{"laneHeights": ${bad}}`).laneHeights, bad).toEqual({});
+    }
+    for (const bad of ['null', '"90"', '25', '221', '-90', '1e999', 'true', '{}', '[90]']) {
+      const stored = `{"laneHeights": {"p1": {"v1": ${bad}, "a1": 90}, "p2": {"v1": ${bad}}}}`;
+      expect(readPrefs(stored).laneHeights, bad).toEqual({ p1: { a1: 90 } });
+    }
+    // A name that is no id is not kept, whatever stands under it: neither as a project nor as a track.
+    const named = readPrefs(
+      `{"laneHeights": {"__proto__": {"v1": 90}, "<b>": {"v1": 90}, "p1": {"__proto__": 90, "a b": 90, "v1": 90}}}`,
+    ).laneHeights;
+    expect(Object.keys(named)).toEqual(['p1']);
+    expect(Object.keys(named.p1)).toEqual(['v1']);
+    expect(Object.getPrototypeOf(named)).toBe(Object.prototype);
+    // No more projects than are kept: the ones written last stay.
+    const many = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`project${i}`, { v1: 90 }]));
+    const kept = Object.keys(readPrefs(JSON.stringify({ laneHeights: many })).laneHeights);
+    expect(kept).toHaveLength(50);
+    expect([kept[0], kept[49]]).toEqual(['project10', 'project59']);
+  });
+
   it('keep the good fields next to a bad one, and nothing that is not a preference', () => {
     const prefs = readPrefs(
       '{"leftWidth": "wide", "rightWidth": 300, "snapping": false, "scopes": {"parade": false, "rgb": true}, "workspace": "color"}',
@@ -90,5 +123,61 @@ describe('stored interface preferences', () => {
       { width: 1440, height: 900 },
     );
     expect([layout.left, layout.right, layout.timeline]).toEqual([320, 316, 320]);
+  });
+});
+
+describe('the lane heights of someone who may not edit', () => {
+  const tracks = { v1: {}, a1: {} };
+
+  it('are kept by project and by track', () => {
+    const one = withLaneHeight({}, 'p1', tracks, 'v1', 90);
+    expect(one).toEqual({ p1: { v1: 90 } });
+    const two = withLaneHeight(one, 'p1', tracks, 'a1', 120);
+    expect(two).toEqual({ p1: { v1: 90, a1: 120 } });
+    expect(withLaneHeight(two, 'p2', tracks, 'v1', 40)).toEqual({ p1: { v1: 90, a1: 120 }, p2: { v1: 40 } });
+    // A drag that has not moved the edge changes nothing, so nothing is drawn or written again.
+    expect(withLaneHeight(two, 'p1', tracks, 'a1', 120)).toBe(two);
+  });
+
+  it('let go of tracks the project no longer has when a height is set, and of no other project', () => {
+    const before = { p1: { v1: 90, gone: 150 }, p2: { gone: 60 } };
+    expect(withLaneHeight(before, 'p1', tracks, 'a1', 120)).toEqual({
+      p2: { gone: 60 },
+      p1: { v1: 90, a1: 120 },
+    });
+  });
+
+  it('make room for the project set last by dropping the one set longest ago', () => {
+    let all = {};
+    for (let i = 0; i < 50; i++) all = withLaneHeight(all, `project${i}`, tracks, 'v1', 90);
+    expect(Object.keys(all)).toHaveLength(50);
+    // Setting a height in a project that is kept moves it to the end: it is not the next to go.
+    all = withLaneHeight(all, 'project0', tracks, 'a1', 100);
+    all = withLaneHeight(all, 'project50', tracks, 'v1', 90);
+    const kept = Object.keys(all);
+    expect(kept).toHaveLength(50);
+    expect(kept).not.toContain('project1');
+    expect(kept.slice(-2)).toEqual(['project0', 'project50']);
+    expect((all as Record<string, unknown>).project0).toEqual({ v1: 90, a1: 100 });
+  });
+
+  it('are written without undoing what another tab has kept for its own project meanwhile', () => {
+    const loaded = { p1: { v1: 90 }, p2: { v1: 40 } };
+    // The other tab has set a height in p2 and in a project this tab has never seen.
+    const stored = { p1: { v1: 90 }, p2: { v1: 60 }, p3: { a1: 30 } };
+    // A tab that set nothing itself writes back what is there.
+    expect(laneHeightsToStore(loaded, loaded, stored)).toEqual(stored);
+    // One that set a height in p1 writes that project over what is there, and no other.
+    const mine = withLaneHeight(loaded, 'p1', tracks, 'a1', 120);
+    const written = laneHeightsToStore(loaded, mine, stored);
+    expect(written).toEqual({ p2: { v1: 60 }, p3: { a1: 30 }, p1: { v1: 90, a1: 120 } });
+    // Once written, the project is no longer this tab's to write over a later change elsewhere.
+    const later = { ...written, p1: { v1: 200 } };
+    expect(laneHeightsToStore(mine, mine, later)).toEqual(later);
+    // What is kept stays within the number of projects, the ones set here last.
+    const many = Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`project${i}`, { v1: 90 }]));
+    const full = Object.keys(laneHeightsToStore({}, { p1: { v1: 90 } }, many));
+    expect(full).toHaveLength(50);
+    expect([full[0], full[49]]).toEqual(['project1', 'p1']);
   });
 });

@@ -44,6 +44,12 @@ moment carries on in a page that has forgotten everything it set up, and fails i
 nothing to do with the change. Do not edit while a run is going, or have the test call
 `noReloads(page)` from `e2e/helpers.ts` before it opens the page.
 
+Without a GPU the whole page is drawn in software, the live blur behind a dialog included.
+Something that keeps moving in a dialog for seconds (a spinner in a button) then leaves the page
+busy for many times as long, and the next reload in a test waits for all of it. The kit shows
+nothing that turns in a busy button for that reason, and a dialog that has to show progress takes
+the flat backdrop (`solid`).
+
 A test that fails leaves a folder in `test-results/` with a screenshot, the page's accessibility
 tree and a trace of everything the test did: `pnpm exec playwright show-trace` followed by the
 path of the `trace.zip` opens it. CI keeps the same folder as an artifact of the failed job.

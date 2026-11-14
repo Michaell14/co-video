@@ -42,6 +42,10 @@ export async function newProject(page: Page): Promise<void> {
  * has been told to, and that message and the key reach the page by different routes: a command
  * that asks for its files within the key press can be there first, and its chooser then opens
  * where no test sees it. One round trip to the page between the two settles the order.
+ *
+ * A press of `page.mouse` loses the chooser the same way. `locator.click()` does not, and needs
+ * nothing of the kind: it looks at its element in the page before it presses, which is such a
+ * round trip already.
  */
 export async function chooserOnKey(page: Page, key: string): Promise<FileChooser> {
   const asked = page.waitForEvent('filechooser');

@@ -61,6 +61,11 @@ export interface UIState {
   leftWidth: number;
   rightWidth: number;
   timelineHeight: number;
+  /**
+   * The heights someone who may not edit a project has given its tracks, for themselves: by
+   * project, then by track. Whoever may edit sets the height of the track itself.
+   */
+  laneHeights: Record<string, Record<ID, number>>;
   commentsOpen: boolean;
   /** Uncommitted result of a drag in progress; shown instead of the real project. */
   preview: Project | null;
@@ -112,6 +117,7 @@ export type Prefs = Pick<
   | 'leftWidth'
   | 'rightWidth'
   | 'timelineHeight'
+  | 'laneHeights'
   | 'scopes'
 >;
 
@@ -120,6 +126,68 @@ export const FIRST_TRANSITION = 'crossDissolve';
 
 /** A size a splitter can have left behind, in pixels: the layout fits it to the window later. */
 const PANEL_SIZE = { min: 1, max: 10_000 };
+/** The heights a track can be dragged to, in pixels. */
+export const LANE_HEIGHT = { min: 26, max: 220 };
+/** How many projects keep lane heights of their own. The ones set longest ago make room. */
+const LANE_HEIGHT_PROJECTS = 50;
+/** What a project or a track can be called by. */
+const STORED_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+
+/** The heights kept by project, as far as what is stored can be trusted: see `readPrefs`. */
+function readLaneHeights(stored: unknown): Prefs['laneHeights'] {
+  const projects: [string, Record<ID, number>][] = [];
+  for (const [project, tracks] of Object.entries(isRecord(stored) ? stored : {})) {
+    const heights = Object.entries(isRecord(tracks) ? tracks : {}).filter(
+      (entry): entry is [ID, number] =>
+        STORED_ID.test(entry[0]) &&
+        typeof entry[1] === 'number' &&
+        entry[1] >= LANE_HEIGHT.min &&
+        entry[1] <= LANE_HEIGHT.max,
+    );
+    if (STORED_ID.test(project) && heights.length) projects.push([project, Object.fromEntries(heights)]);
+  }
+  return Object.fromEntries(projects.slice(-LANE_HEIGHT_PROJECTS));
+}
+
+/**
+ * `all` with the height one track of a project is to be drawn at for this person. What was kept
+ * for tracks the project no longer has goes with the change, and the project counts as the one
+ * set last.
+ */
+export function withLaneHeight(
+  all: Prefs['laneHeights'],
+  project: string,
+  tracks: Readonly<Record<ID, unknown>>,
+  track: ID,
+  height: number,
+): Prefs['laneHeights'] {
+  const { [project]: before = {}, ...others } = all;
+  if (before[track] === height) return all;
+  const kept = Object.entries(before).filter(([id]) => Object.hasOwn(tracks, id));
+  return {
+    ...Object.fromEntries(Object.entries(others).slice(1 - LANE_HEIGHT_PROJECTS)),
+    [project]: { ...Object.fromEntries(kept), [track]: height },
+  };
+}
+
+/**
+ * The lane heights to store from a tab that holds `mine` and last read or wrote `known`, when
+ * storage holds `stored` by now. Another tab can have kept heights for the project it shows since
+ * then. Those stay: only the projects whose heights were set in this tab are written over them.
+ */
+export function laneHeightsToStore(
+  known: Prefs['laneHeights'],
+  mine: Prefs['laneHeights'],
+  stored: Prefs['laneHeights'],
+): Prefs['laneHeights'] {
+  const here = Object.entries(mine).filter(([project, heights]) => heights !== known[project]);
+  const own = new Set(here.map(([project]) => project));
+  const there = Object.entries(stored).filter(([project]) => !own.has(project));
+  return Object.fromEntries([...there, ...here].slice(-LANE_HEIGHT_PROJECTS));
+}
 
 /**
  * The stored preferences, as far as they can be trusted. The entry outlives the version that
@@ -150,6 +218,7 @@ export function readPrefs(stored: string | null): Prefs {
     leftWidth: size(raw.leftWidth, 320),
     rightWidth: size(raw.rightWidth, 316),
     timelineHeight: size(raw.timelineHeight, 320),
+    laneHeights: readLaneHeights(raw.laneHeights),
     scopes: {
       waveform: flag(scopes.waveform, true),
       parade: flag(scopes.parade, true),
@@ -159,10 +228,12 @@ export function readPrefs(stored: string | null): Prefs {
   };
 }
 
+const PREFS_KEY = 'tandem.ui.v1';
+
 const persisted = readPrefs(
   (() => {
     try {
-      return localStorage.getItem('tandem.ui.v1');
+      return localStorage.getItem(PREFS_KEY);
     } catch {
       return null;
     }
@@ -185,6 +256,7 @@ export const useUI = create<UIState>((set, get) => ({
   leftWidth: persisted.leftWidth,
   rightWidth: persisted.rightWidth,
   timelineHeight: persisted.timelineHeight,
+  laneHeights: persisted.laneHeights,
   commentsOpen: false,
   preview: null,
   snapLine: null,
@@ -226,12 +298,15 @@ export const useUI = create<UIState>((set, get) => ({
 
 // Persist a few layout preferences.
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+/** The lane heights as this tab last read or wrote them: see `laneHeightsToStore`. */
+let knownHeights = persisted.laneHeights;
 useUI.subscribe((s) => {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     try {
+      const stored = readPrefs(localStorage.getItem(PREFS_KEY)).laneHeights;
       localStorage.setItem(
-        'tandem.ui.v1',
+        PREFS_KEY,
         JSON.stringify({
           snapping: s.snapping,
           linkedSelection: s.linkedSelection,
@@ -240,9 +315,11 @@ useUI.subscribe((s) => {
           leftWidth: s.leftWidth,
           rightWidth: s.rightWidth,
           timelineHeight: s.timelineHeight,
+          laneHeights: laneHeightsToStore(knownHeights, s.laneHeights, stored),
           scopes: s.scopes,
         }),
       );
+      knownHeights = s.laneHeights;
     } catch {
       /* ignore */
     }

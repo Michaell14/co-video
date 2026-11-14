@@ -426,7 +426,11 @@ when it starts.
 - **Focus is handed on, not dropped.** A control whose own action removes it (Close with its
   panel, Delete with its card) would leave the keyboard on nothing. `handFocus` (`ui/layers.ts`)
   says where it goes instead, for people working from the keyboard; a pointer press decides about
-  focus by itself.
+  focus by itself. A button that waits for what its own press began is not switched off meanwhile,
+  which would drop the keyboard the same way: `busy` on the kit's `Button` (`whileBusy` for a
+  button of another kind) keeps it in place, says that it is at work and takes no press. It shows
+  nothing that turns, because over a dialog's live backdrop blur whatever keeps moving has the
+  whole page composited again for every frame.
 - **Two tokens are about more than colour.** `--panel-pad` is the one distance between a panel's
   edge and its content, so rows, tiles and cards of every panel start on the same line.
   `--line-control` is the edge of a control that has nothing but its edge to be told by (an empty
@@ -455,7 +459,9 @@ gave is remembered with the project, so a viewer who opens it offline is still a
 server about the token it has stored for the project and about the one the link offers, and keeps
 the one that allows more: a link can add access but never take it away, and a token is stored only
 once the server has accepted it. A server that is unreachable, busy or full is a state to wait in,
-not an answer — the session says so and keeps knocking. A refusal ends the knocking. If the project
+not an answer — the session says so and keeps knocking. While the server answers and has no place
+(`SessionMeta.busy`) the top bar reads “Waiting for the server”; once it does not answer at all,
+`busy` is over and the project is offline. A refusal ends the knocking. If the project
 is on this device it stays, as a local copy that no longer syncs; if nothing of it is here, it
 leaves the project list, unless it was made on this device. The refused link is not thrown away:
 it is kept aside (`tandem.links-aside.v1` in local storage) and offered to the server again only
@@ -473,7 +479,10 @@ stay in the local document meanwhile. The notice is withdrawn when a connection 
 stayed open for five seconds with nothing left to send. A document the server holds more of than
 it loads is found out over HTTP (`docs` in `GET /api/projects/:id`), since a refused upgrade tells
 a browser nothing; with nothing of the project on the device that is the “not available” screen,
-because an empty document is not the project.
+because an empty document is not the project. For the same reason the editor stays on its opening
+screen until a shared project the device holds nothing of has synced once (`Workspace` in
+`features/editor/Editor.tsx`): on first opening a link, and after a copy the server would not take
+has been thrown away.
 
 **Replacing a project.** Restoring a version and replacing the open project with a file both go
 through `Session.replaceProject`, the one place that swaps everything a project holds: it keeps

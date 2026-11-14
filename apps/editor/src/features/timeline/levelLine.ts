@@ -16,9 +16,12 @@ import { LABEL_H } from './layout';
 
 /** The lowest a clip's body can be for the level line to say anything, in CSS pixels. */
 export const LEVEL_MIN_H = 18;
-/** The levels at the bottom and at the top of a clip's body, in decibels. */
-export const LEVEL_FLOOR = -48;
-export const LEVEL_CEILING = 12;
+/**
+ * The levels at the bottom and at the top of a clip's body, in decibels: the range of the Volume
+ * slider in the inspector, which shows the same value.
+ */
+const LEVEL_FLOOR = -48;
+const LEVEL_CEILING = 12;
 /** How near the line, in CSS pixels, a pointer takes hold of it; and how near a keyframe on it. */
 const LINE_REACH = 3;
 const POINT_REACH = 5;

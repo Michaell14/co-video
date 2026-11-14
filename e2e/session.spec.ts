@@ -785,6 +785,25 @@ test.describe('projects, links and media', () => {
     await expect(b.getByText('This project is not available')).toHaveCount(0);
     expect(await meta(b)).toMatchObject({ busy: true, denied: false, role: 'editor' });
 
+    // From here on the network coming back is announced to the page whenever something changes
+    // for it, so that it knocks at once instead of in its own time.
+    const knock = (refuse: boolean): Promise<void> =>
+      b.evaluate((refuse) => {
+        (window as any).__sockets.refuse = refuse;
+        for (const p of (window as any).tandem.session.providers) p.ws?.close();
+        window.dispatchEvent(new Event('online'));
+      }, refuse);
+    // A server that stops answering at all is not keeping a place: there is nothing to wait for
+    // and nothing here to open. When it answers again, as full as before, the wait is back.
+    await b.route(`**/api/projects/${id}`, (route) => route.abort());
+    await knock(true);
+    await expect(b.getByText('This project is not available')).toBeVisible();
+    expect(await meta(b)).toMatchObject({ busy: false, denied: true });
+    await b.unroute(`**/api/projects/${id}`);
+    await knock(true);
+    await expect(b.getByText('Waiting for a place in this project')).toBeVisible();
+    await expect(b.getByText('This project is not available')).toHaveCount(0);
+
     // Room again: it joins by itself.
     await b.evaluate(() => ((window as any).__sockets.refuse = false));
     await b.waitForFunction(
@@ -796,15 +815,8 @@ test.describe('projects, links and media', () => {
     expect(await b.evaluate(() => (window as any).__sockets.emptyEditor)).toBe(false);
 
     // The server stops letting this project in while it still answers. That is not the device
-    // being offline, and the top bar says what the notice says. From here on the network coming
-    // back is announced to the page each time, so that it knocks at once instead of in its own time.
+    // being offline, and the top bar says what the notice says.
     await watchToasts(b);
-    const knock = (refuse: boolean): Promise<void> =>
-      b.evaluate((refuse) => {
-        (window as any).__sockets.refuse = refuse;
-        for (const p of (window as any).tandem.session.providers) p.ws?.close();
-        window.dispatchEvent(new Event('online'));
-      }, refuse);
     const chip = b.locator('.conn');
     await knock(true);
     await expect(chip).toHaveText('Waiting for the server — changes will sync');
@@ -845,6 +857,67 @@ test.describe('projects, links and media', () => {
     // It stopped knocking.
     const attempts = await b.evaluate(() => (window as any).tandem.session.providers.length);
     expect(attempts).toBe(0);
+    await ctx.close();
+  });
+
+  test('a project that is slow to arrive is shown as opening, never as an empty one, and can be left', async ({
+    page,
+    browser,
+  }) => {
+    await newProject(page);
+    await skipWithoutServer(page);
+    await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Shared' }));
+    const link: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('editor'));
+
+    const ctx = await browser.newContext();
+    const b = await ctx.newPage();
+    // While `hang` is set a socket to the collaboration server neither opens nor fails: the server
+    // has said over HTTP that the link is good, and after that nothing more is heard from it.
+    await b.addInitScript(() => {
+      const state = ((window as any).__sockets = { hang: true, emptyEditor: false, waiting: 0, offered: 0 });
+      window.WebSocket = new Proxy(window.WebSocket, {
+        construct(target, args) {
+          if (!state.hang || !String(args[0]).includes('/ws/')) return new target(...(args as [string]));
+          return { readyState: 0, send() {}, close() {} };
+        },
+      });
+      new MutationObserver(() => {
+        const session = (window as any).tandem?.session;
+        // Whether an editor is ever drawn over a document that has nothing of the project in it.
+        if (document.querySelector('.tl') && session?.store.isEmpty()) state.emptyEditor = true;
+        // When the wait for the opened project began to be shown, and when it first offered a button.
+        const wait = session ? document.querySelector('.splash') : null;
+        if (wait) state.waiting ||= performance.now();
+        if (wait?.querySelector('button')) state.offered ||= performance.now();
+      }).observe(document, { childList: true, subtree: true });
+    });
+    await b.goto(link);
+    await b.waitForFunction(() => (window as any).tandem?.session?.getMeta().status === 'connecting');
+    expect(await meta(b)).toMatchObject({ shared: true, synced: false, busy: false, denied: false });
+    const opening = b.locator('.splash', { hasText: 'Opening project' });
+    await expect(opening).toBeVisible();
+    await expect(b.locator('.tl')).toHaveCount(0);
+
+    // Nothing says that the wait will end, so the way back is offered beside it: after a while,
+    // not on every project that takes a moment to arrive.
+    const back = opening.getByRole('button', { name: 'Back to projects' });
+    await expect(back).toBeVisible();
+    const shown = await b.evaluate(() => (window as any).__sockets);
+    expect(shown.offered - shown.waiting).toBeGreaterThan(4000);
+    await expect(b.locator('.tl')).toHaveCount(0);
+    await back.click();
+    await expect(b.locator('.home__hero')).toBeVisible();
+
+    // The server took the link, so the project is in the list. Opened when the server is heard
+    // from again, it arrives, and at no point was an empty timeline shown in its place.
+    await b.evaluate(() => ((window as any).__sockets.hang = false));
+    await b.locator('.pcard__open').click();
+    await b.waitForFunction(
+      () => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 1,
+    );
+    await expect(b.locator('.tl')).toBeVisible();
+    await expect(opening).toHaveCount(0);
+    expect(await b.evaluate(() => (window as any).__sockets.emptyEditor)).toBe(false);
     await ctx.close();
   });
 

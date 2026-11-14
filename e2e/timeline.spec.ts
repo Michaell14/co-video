@@ -2623,19 +2623,44 @@ test.describe('timeline: keyboard, drops and marks', () => {
     await guest.keyboard.press('v');
     expect((await ui()).tool).toBe('select');
 
-    // Access can change while the project is open. The buttons follow it, and a tool that edits
-    // is put down when the access to edit goes.
+    // Access can change while the project is open. The buttons follow it, in the media pool as
+    // in the timeline, and a tool that edits is put down when the access to edit goes.
     const access = (role: string) =>
       guest.evaluate((role) => (window as any).tandem.session.applyRole(role), role);
+    const importMedia = guest.locator('.pool').getByRole('button', { name: 'Import media' });
+    const addToTimeline = guest.getByRole('button', { name: 'Add dusk.mp4 to timeline' });
+    await expect(importMedia).toBeDisabled();
+    await expect(addToTimeline).toBeDisabled();
     await access('editor');
     await expect(button('Add marker')).toBeEnabled();
     await expect(button('Blade tool')).toBeEnabled();
     await expect(guest.locator('.clip__trim').first()).toBeVisible();
+    await expect(importMedia).toBeEnabled();
+    await expect(addToTimeline).toBeEnabled();
     await button('Blade tool').click();
     expect((await ui()).tool).toBe('blade');
     await access('viewer');
     await expect(button('Add marker')).toBeDisabled();
+    await expect(importMedia).toBeDisabled();
+    await expect(addToTimeline).toBeDisabled();
     await expect.poll(async () => (await ui()).tool).toBe('select');
+
+    // The heights a viewer chose are kept on this device with the other settings of the
+    // interface: the project opens with them the next time, and still only here.
+    await expect
+      .poll(() =>
+        guest.evaluate(() => {
+          const kept = JSON.parse(localStorage.getItem('tandem.ui.v1') ?? '{}').laneHeights ?? {};
+          return (Object.values(kept) as Record<string, number>[]).map((tracks) => Object.values(tracks));
+        }),
+      )
+      .toEqual([[before[0] + 30]]);
+    await guest.reload();
+    await guest.waitForFunction(
+      () => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 5,
+    );
+    await expect.poll(() => heights(guest)).toEqual([before[0] + 30, ...before.slice(1)]);
+    expect(await heights(page)).toEqual(before);
     await context.close();
   });
 });

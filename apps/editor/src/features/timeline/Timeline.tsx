@@ -54,7 +54,7 @@ import {
 import { cmd, getTimelineWidth, setTimelineWidth } from '../../state/commands';
 import { beginGesture, commit } from '../../state/props';
 import { shortcutOf } from '../../state/shortcuts';
-import { clampPpf, MAX_PPF, MIN_PPF, useUI } from '../../state/ui';
+import { clampPpf, LANE_HEIGHT, MAX_PPF, MIN_PPF, useUI, withLaneHeight } from '../../state/ui';
 import {
   IconButton,
   openContextMenu,
@@ -89,6 +89,7 @@ const LAYOUT_VARS = {
  * the zoom or the scroll position, which the parts that need them follow by themselves.
  */
 export function Timeline() {
+  const session = useSession();
   const player = usePlayer();
   const live = useLiveProject((p) => p);
   const set = useUI((s) => s.set);
@@ -99,12 +100,17 @@ export function Timeline() {
   const editable = useCanEdit();
   /**
    * How high a track is drawn is part of the project. Someone who may not change the project still
-   * sets the lanes to the height they want to look at: for themselves, while the project is open.
+   * sets the lanes to the height they want to look at: for themselves, on this device, where it is
+   * kept with the other settings of the interface so that the project opens that way again.
    */
-  const [ownHeights, setOwnHeights] = useState<Readonly<Record<ID, number>>>({});
+  const ownHeights = useUI((s) => s.laneHeights[session.id]);
   const setOwnHeight = useCallback(
-    (id: ID, h: number) => setOwnHeights((all) => (all[id] === h ? all : { ...all, [id]: h })),
-    [],
+    (id: ID, h: number) => {
+      const { laneHeights } = useUI.getState();
+      const next = withLaneHeight(laneHeights, session.id, session.store.get().tracks, id, h);
+      if (next !== laneHeights) set({ laneHeights: next });
+    },
+    [session, set],
   );
   const heights = editable ? null : ownHeights;
   const { lanes, height } = useMemo(() => layoutLanes(live, heights), [live.tracks, heights]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1051,7 +1057,11 @@ const TrackHeader = memo(function TrackHeader({ lane, onOwnHeight }: TrackHeader
         }}
         onPointerMove={(e) => {
           if (!resize.current) return;
-          const h = clamp(Math.round(resize.current.h + (e.clientY - resize.current.y)), 26, 220);
+          const h = clamp(
+            Math.round(resize.current.h + (e.clientY - resize.current.y)),
+            LANE_HEIGHT.min,
+            LANE_HEIGHT.max,
+          );
           if (editable) commit([{ op: 'updateTrack', id: t.id, patch: { height: h } }], true);
           else onOwnHeight(t.id, h);
         }}

@@ -101,6 +101,27 @@ export function Editor({ projectId, token }: { projectId: string; token: string 
   );
 }
 
+/** How long a project may be on its way before the way back is offered beside the wait. */
+const ARRIVAL_PATIENCE_MS = 5000;
+
+/**
+ * The opening screen, kept up for a project that is still on its way from the server. A
+ * connection that fails says so and gets a screen of its own; one that neither opens nor fails
+ * says nothing, and would keep the person here with no way out but the address bar.
+ */
+function Arriving() {
+  const [long, setLong] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setLong(true), ARRIVAL_PATIENCE_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  return (
+    <Splash label="Opening project" steady>
+      {long && <Button onClick={() => navigate(null)}>Back to projects</Button>}
+    </Splash>
+  );
+}
+
 function Workspace() {
   const session = useSession();
   const meta = useSessionMeta();
@@ -173,7 +194,7 @@ function Workspace() {
   // first opening its link, and after a copy the server would not take has been thrown away. The
   // document it will arrive in is not the project. Shown as an editor it says that the timeline is
   // empty, and whatever was put into it would be merged into the project as that arrives.
-  if (meta.shared && !meta.synced && session.store.isEmpty()) return <Splash label="Opening project" />;
+  if (meta.shared && !meta.synced && session.store.isEmpty()) return <Arriving />;
 
   const closeDialog = () => set({ dialog: null });
   const layout = fitPanels(

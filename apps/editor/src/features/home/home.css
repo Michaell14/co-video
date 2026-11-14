@@ -8,6 +8,9 @@
   padding: 24px;
   animation: fade-in var(--dur-3) ease;
 }
+.splash--steady {
+  animation: none;
+}
 .splash__label {
   display: flex;
   align-items: center;
