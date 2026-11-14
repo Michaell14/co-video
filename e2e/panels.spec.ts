@@ -1803,6 +1803,61 @@ test.describe('export', () => {
     await expect(exportButton(page)).toBeFocused();
   });
 
+  test('Export keeps the keyboard while it looks at the media, and is not pressed twice', async ({
+    page,
+  }) => {
+    const thrown: string[] = [];
+    page.on('pageerror', (e) => thrown.push(e.message));
+    let downloads = 0;
+    page.on('download', () => downloads++);
+    await newLocal(page);
+    await importFixtures(page, ['green.png']);
+    await page.evaluate(() => {
+      const { session, cmd } = (window as any).tandem;
+      session.store.commit([{ op: 'settings', patch: { width: 320, height: 180 } }]);
+      cmd.addAsset(Object.values(session.store.get().assets)[0]);
+    });
+    await expect.poll(async () => (await clips(page)).length).toBe(1);
+    // The look at the media asks for the still's file. That answer is held back, so Export is
+    // pressed before the dialog knows what it would export, and has to look first.
+    await page.evaluate(() => {
+      const { session, ui } = (window as any).tandem;
+      const still = Object.values(session.store.get().clips)[0] as any;
+      session.store.commit([{ op: 'updateClip', id: still.id, patch: { duration: 12 } }]);
+      const real = session.exportResolver.bind(session);
+      const gate = new Promise<void>((go) => ((window as any).letGo = go));
+      session.exportResolver = () => {
+        const resolve = real();
+        return async (id: string) => {
+          await gate;
+          return resolve(id);
+        };
+      };
+      ui.getState().set({ dialog: 'export' });
+    });
+    await expect(page.locator('.exp')).toBeVisible();
+    await probed(page);
+    const button = exportButton(page);
+    await button.focus();
+    await page.keyboard.press('Enter');
+    await expect(button).toHaveText('Checking media…');
+    // It is at work on its own press and says so. Switched off instead, it would drop the keyboard
+    // to the page.
+    await expect(button).toBeFocused();
+    await expect(button).toHaveAttribute('aria-busy', 'true');
+    await expect(button).toHaveAttribute('aria-disabled', 'true');
+    // Pressed again while it looks, by either key, it starts nothing more.
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    await expect(button).toHaveText('Checking media…');
+    await expect(button).toBeFocused();
+
+    await page.evaluate(() => (window as any).letGo());
+    await expect(page.getByText('Export complete')).toBeVisible({ timeout: 100_000 });
+    expect(downloads).toBe(1);
+    expect(thrown).toEqual([]);
+  });
+
   /**
    * A local project of one small solid clip, `frames` long, with the export dialog open on it.
    * `project` is what its settings have besides the small size.

@@ -444,10 +444,17 @@ test.describe('sharing and review', () => {
     await page.keyboard.up('Enter');
     await page.keyboard.press('Enter');
     await expect.poll(saves.asked).toBe(3);
+    // Space presses a button as it comes up. Let down while the button is at work and let go once
+    // it is ready again, it was refused when it went down and presses nothing.
+    await page.keyboard.down('Space');
+    await aMoment(page);
     saves.answer();
     await expect(listed).toHaveCount(3);
     await expect(save).toBeFocused();
     await expect(save).not.toHaveAttribute('aria-busy');
+    await page.keyboard.up('Space');
+    await aMoment(page);
+    expect(saves.asked()).toBe(3);
     await page.keyboard.press('Tab');
     const restore = listed.first().getByRole('button', { name: 'Restore' });
     await expect(restore).toBeFocused();

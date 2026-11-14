@@ -693,7 +693,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <Button
             variant="primary"
             icon={<Download />}
-            disabled={end === 0 || noVideoEncoder || support === null || checking || refused !== null}
+            busy={checking}
+            disabled={end === 0 || noVideoEncoder || support === null || refused !== null}
             onClick={() => void start()}
           >
             {checking ? 'Checking media…' : problems?.length ? 'Export anyway' : 'Export'}

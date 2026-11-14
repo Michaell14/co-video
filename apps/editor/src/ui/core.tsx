@@ -274,6 +274,15 @@ const swallow: MouseEventHandler = (e) => {
 };
 
 /**
+ * Space presses a button as it comes up, whenever that is: let down on a busy button and let go
+ * once the work is over, it would press the button that is ready again. Refused as it goes down,
+ * it has nothing to press as it comes up.
+ */
+const refuse = (e: React.KeyboardEvent) => {
+  if (e.key === ' ') e.preventDefault();
+};
+
+/**
  * What a button carries for as long as what its own press began is under way, in place of being
  * switched off for that time. Switched off it would drop the keyboard: a browser takes focus from
  * a control as it is disabled, and the next Tab starts again from the top of the dialog or the
@@ -298,7 +307,9 @@ export function useBusy<T extends Element>(busy: boolean | undefined, onClick?: 
     spendKeys();
     return spendKeys;
   }, [busy]);
-  return busy ? { 'aria-disabled': true, 'aria-busy': true, onClick: swallow } : { onClick };
+  return busy
+    ? { 'aria-disabled': true, 'aria-busy': true, onClick: swallow, onKeyDown: refuse }
+    : { onClick };
 }
 
 export function Button({

@@ -438,9 +438,10 @@ when it starts.
   which would drop the keyboard the same way: `busy` on the kit's `Button` (`useBusy` for a
   button of another kind) keeps it in place, says that it is at work and takes no press. A key
   that is down as the work begins or ends is spent (`spendKeys`), so that the repeats of a held
-  Enter do not start the work again once it is done. It shows nothing that turns, because over a
-  dialog's live backdrop blur whatever keeps moving has the whole page composited again for every
-  frame.
+  Enter do not start the work again once it is done; Space, which presses a button as it comes
+  up, is refused as it goes down. The kit's `Button` shows nothing that turns while it is busy,
+  because over a dialog's live backdrop blur whatever keeps moving has the whole page composited
+  again for every frame.
 - **Two tokens are about more than colour.** `--panel-pad` is the one distance between a panel's
   edge and its content, so rows, tiles and cards of every panel start on the same line.
   `--line-control` is the edge of a control that has nothing but its edge to be told by (an empty
