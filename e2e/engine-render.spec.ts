@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { openLab, trackErrors } from './helpers';
 
 /**
@@ -1244,4 +1244,181 @@ test.describe('render engine: losing the graphics context', () => {
       expect(r.phases).not.toContain('done');
     });
   }
+});
+
+/**
+ * The lab page with what the tests of scope reads share, as `window.scopes`: `start()` gives the
+ * canvas a new compositor, `draw(fill)` renders a frame of one colour, and `never()` makes every
+ * look at a fence from here on answer "not yet", as a driver that never says its work is done
+ * would (`again()` undoes it). `seen` counts those looks, and the times pixels were fetched.
+ */
+async function openScopeLab(page: Page): Promise<void> {
+  await openLab(page);
+  await page.evaluate(() => {
+    const { lab } = window as any;
+    const { core } = lab;
+    lab.init(320, 180);
+    const gl: WebGL2RenderingContext = lab.compositor.gl;
+    const real = { clientWaitSync: gl.clientWaitSync, getBufferSubData: gl.getBufferSubData };
+    const seen = { looks: 0, fetches: 0 };
+    gl.getBufferSubData = (...args: unknown[]) => {
+      seen.fetches++;
+      return (real.getBufferSubData as (...args: unknown[]) => void).apply(gl, args);
+    };
+    const track = core.makeTrack('video', 0);
+    const wait = (ms: number) => new Promise((res) => setTimeout(res, ms));
+    const again = () => {
+      gl.clientWaitSync = real.clientWaitSync;
+    };
+    (window as any).scopes = {
+      seen,
+      wait,
+      again,
+      start() {
+        again();
+        lab.init(320, 180);
+        Object.assign(seen, { looks: 0, fetches: 0 });
+      },
+      never() {
+        gl.clientWaitSync = () => {
+          seen.looks++;
+          return gl.TIMEOUT_EXPIRED;
+        };
+      },
+      draw(fill: string) {
+        const shape = { ...core.DEFAULT_SHAPE, fill };
+        const project = core.applyEdits(core.emptyProject({ width: 320, height: 180 }), [
+          { op: 'addTrack', track },
+          { op: 'addClip', clip: core.makeClip('solid', track.id, { start: 0, duration: 30, shape }) },
+        ]);
+        lab.compositor.render(project, core.resolveFrame(project, 0), lab.sources);
+      },
+      /** How a read ended, how long that took, and the pixel in the middle of what it brought. */
+      async read(pending: Promise<any> = lab.compositor.readScope(64)) {
+        const t0 = performance.now();
+        const frame = await Promise.race([pending, wait(15_000).then(() => 'pending')]);
+        const ms = Math.round(performance.now() - t0);
+        if (!frame || frame === 'pending') return { answer: frame, ms };
+        const o = ((frame.height >> 1) * frame.width + (frame.width >> 1)) * 4;
+        return {
+          answer: `${frame.width}×${frame.height}`,
+          ms,
+          middle: Array.from(frame.data.slice(o, o + 4)),
+        };
+      },
+    };
+  });
+}
+
+test.describe('render engine: reading back for scopes', () => {
+  test('a scope read ends with the picture although its fence never signals', async ({ page }) => {
+    await openScopeLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, scopes } = window as any;
+      scopes.draw('#ff0000');
+      scopes.never();
+      // The picture is at rest, so a fetch holds nothing up. Twice in a row.
+      const unsignalled = [await scopes.read(), await scopes.read()];
+      const looks = scopes.seen.looks;
+      await scopes.wait(300);
+      const then = {
+        fetches: scopes.seen.fetches,
+        looks: scopes.seen.looks - looks,
+        busy: lab.compositor.scopeBusy,
+      };
+      scopes.again();
+      return { unsignalled, then, signalled: await scopes.read(), glError: lab.compositor.gl.getError() };
+    });
+    for (const read of r.unsignalled) {
+      expect(read).toMatchObject({ answer: '64×36', middle: [255, 0, 0, 255] });
+      // The fence was given its time, and the fetch that followed did not take long.
+      expect(read.ms).toBeGreaterThan(1500);
+      expect(read.ms).toBeLessThan(6000);
+    }
+    // Nothing goes on looking at a fence whose read is over.
+    expect(r.then).toEqual({ fetches: 2, looks: 0, busy: false });
+    expect(r.signalled).toMatchObject({ answer: '64×36', middle: [255, 0, 0, 255] });
+    expect(r.signalled.ms).toBeLessThan(1500);
+    expect(r.glError).toBe(0);
+  });
+
+  test('a scope read that newer frames have overtaken is given up without waiting for the GPU', async ({
+    page,
+  }) => {
+    await openScopeLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, scopes } = window as any;
+      scopes.draw('#ff0000');
+      scopes.never();
+      const pending = lab.compositor.readScope(64);
+      const second = await lab.compositor.readScope(64);
+      await scopes.wait(100);
+      scopes.draw('#00ff00');
+      const overtaken = await scopes.read(pending);
+      const looks = scopes.seen.looks;
+      await scopes.wait(300);
+      const then = { fetches: scopes.seen.fetches, looks: scopes.seen.looks - looks };
+      scopes.again();
+      return { second, overtaken, then, next: await scopes.read(), glError: lab.compositor.gl.getError() };
+    });
+    // One read at a time.
+    expect(r.second).toBeNull();
+    expect(r.overtaken.answer).toBeNull();
+    expect(r.overtaken.ms).toBeGreaterThan(1500);
+    expect(r.overtaken.ms).toBeLessThan(6000);
+    // The pixels were not fetched: that would have waited for the frames drawn since.
+    expect(r.then).toEqual({ fetches: 0, looks: 0 });
+    // The next read is free to start, and brings the newer frame.
+    expect(r.next).toMatchObject({ answer: '64×36', middle: [0, 255, 0, 255] });
+    expect(r.glError).toBe(0);
+  });
+
+  test('a scope read that is waiting ends when its compositor or its context goes', async ({ page }) => {
+    const errors = trackErrors(page);
+    await openScopeLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab, scopes } = window as any;
+      const gl: WebGL2RenderingContext = lab.compositor.gl;
+      const settled = async () => {
+        const looks = scopes.seen.looks;
+        await scopes.wait(300);
+        return { looks: scopes.seen.looks - looks, fetches: scopes.seen.fetches };
+      };
+      scopes.draw('#ff0000');
+      scopes.never();
+      let pending = lab.compositor.readScope(64);
+      await scopes.wait(60);
+      const old = lab.compositor;
+      old.dispose();
+      const disposed = { ...(await scopes.read(pending)), ...(await settled()), busy: old.scopeBusy };
+      const disposeError = gl.getError();
+
+      // The canvas goes to a new compositor, as when a player is rebuilt. Its reads are its own.
+      scopes.start();
+      scopes.draw('#0000ff');
+      const rebuilt = await scopes.read();
+      scopes.never();
+      pending = lab.compositor.readScope(64);
+      await scopes.wait(60);
+      const lose = gl.getExtension('WEBGL_lose_context')!;
+      const restored = new Promise((res) =>
+        lab.canvas.addEventListener('webglcontextrestored', res, { once: true }),
+      );
+      lab.canvas.addEventListener('webglcontextlost', (e: Event) => e.preventDefault(), { once: true });
+      lose.loseContext();
+      const lost = { ...(await scopes.read(pending)), ...(await settled()) };
+      lose.restoreContext();
+      await restored;
+      return { disposed, disposeError, rebuilt, lost, restoreError: gl.getError() };
+    });
+    expect(r.disposed).toMatchObject({ answer: null, looks: 0, fetches: 0, busy: false });
+    expect(r.disposed.ms).toBeLessThan(1000);
+    expect(r.disposeError).toBe(0);
+    expect(r.rebuilt).toMatchObject({ answer: '64×36', middle: [0, 0, 255, 255] });
+    // Only the read on the rebuilt compositor fetched anything.
+    expect(r.lost).toMatchObject({ answer: null, looks: 0, fetches: 1 });
+    expect(r.lost.ms).toBeLessThan(1000);
+    expect(r.restoreError).toBe(0);
+    expect(errors).toEqual([]);
+  });
 });

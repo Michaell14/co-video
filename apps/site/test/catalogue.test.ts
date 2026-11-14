@@ -3,6 +3,8 @@
  * transitions in its copy. The site does not depend on the editor's packages, so nothing but this
  * keeps those in step with the catalogue itself: it reads both sources and compares. Whoever adds
  * an effect or a transition meets this test first, so each failure says what to edit.
+ *
+ * The feature list of README.md gives the same two counts by hand, and is held to them here too.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -22,11 +24,11 @@ function catalogueNames(path: string, list: string): string[] {
 }
 
 const SECTION = 'apps/site/src/sections/Effects.tsx';
+const effects = catalogueNames('packages/core/src/effects.ts', 'EFFECTS');
+const transitions = catalogueNames('packages/core/src/transitions.ts', 'TRANSITIONS');
 
 describe('effects section', () => {
   const section = read(SECTION);
-  const effects = catalogueNames('packages/core/src/effects.ts', 'EFFECTS');
-  const transitions = catalogueNames('packages/core/src/transitions.ts', 'TRANSITIONS');
 
   it('finds the catalogue', () => {
     expect(effects.length).toBeGreaterThan(20);
@@ -63,5 +65,20 @@ describe('effects section', () => {
       section,
       `packages/core/src/transitions.ts has ${transitions.length} transitions; ${SECTION} has to say so`,
     ).toContain(`>${transitions.length} transitions<`);
+  });
+});
+
+describe('README', () => {
+  const features = read('README.md');
+
+  it('counts the effects and the transitions there are', () => {
+    expect(
+      features,
+      `packages/core/src/effects.ts has ${effects.length} effects; the feature list in README.md has to say so`,
+    ).toContain(`- **${effects.length} GPU effects**`);
+    expect(
+      features,
+      `packages/core/src/transitions.ts has ${transitions.length} transitions; the feature list in README.md has to say so`,
+    ).toContain(`- **${transitions.length} transitions**`);
   });
 });

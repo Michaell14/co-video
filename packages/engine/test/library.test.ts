@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MediaLibrary, type MediaLocation } from '../src/media/library';
+import {
+  decoderGap,
+  MediaLibrary,
+  posterSize,
+  undecodableWarning,
+  type MediaLocation,
+} from '../src/media/library';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -160,5 +166,88 @@ describe('MediaLibrary', () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(await library.blob('a')).toBe(blob);
     expect(calls).toBe(2);
+  });
+});
+
+describe('posterSize', () => {
+  /** What a portrait frame at the poster's width holds: the most a poster may. */
+  const MOST = 320 * 569;
+
+  it('makes the poster of a frame as wide as posters get', () => {
+    expect(posterSize(1920, 1080)).toEqual({ width: 320, height: 180 });
+    expect(posterSize(3840, 2160)).toEqual({ width: 320, height: 180 });
+    expect(posterSize(1080, 1920)).toEqual({ width: 320, height: 569 });
+  });
+
+  it('gives a picture taller than a portrait frame fewer pixels across instead of more in all', () => {
+    for (const [width, height] of [
+      [1000, 4000],
+      [600, 3600],
+      [320, 1280],
+      [750, 16000],
+    ]) {
+      const poster = posterSize(width, height);
+      expect(poster.width * poster.height).toBeLessThanOrEqual(MOST * 1.01);
+      expect(poster.width * poster.height).toBeGreaterThan(MOST * 0.95);
+      // Its proportions are the picture's, to within the rounding of a side to whole pixels.
+      expect(Math.abs(poster.height / poster.width / (height / width) - 1)).toBeLessThan(0.02);
+    }
+    expect(posterSize(600, 3600)).toEqual({ width: 174, height: 1045 });
+  });
+
+  it('never enlarges a picture', () => {
+    expect(posterSize(100, 600)).toEqual({ width: 100, height: 600 });
+    expect(posterSize(64, 64)).toEqual({ width: 64, height: 64 });
+  });
+});
+
+describe('undecodableWarning', () => {
+  it('names the codec when the browser has a decoder and the decoder will not take it', () => {
+    expect(undecodableWarning('video', 'hev1.1.6.L93.B0', 'clip.mp4', null)).toBe(
+      'This browser cannot decode the video codec (hev1.1.6.L93.B0) in “clip.mp4”.',
+    );
+    expect(undecodableWarning('audio', null, 'clip.mp4', null)).toBe(
+      'This browser cannot decode the audio codec (unknown) in “clip.mp4”.',
+    );
+  });
+
+  it('blames the address, not the file, on a page the browser gives no decoder', () => {
+    const video = undecodableWarning('video', 'avc1.64001f', 'clip.mp4', 'insecure');
+    expect(video).toBe(
+      'The video in “clip.mp4” will not play: this address is neither HTTPS nor localhost, so the browser has switched off video decoding.',
+    );
+    expect(video).not.toContain('avc1');
+    expect(undecodableWarning('audio', 'mp4a.40.2', 'clip.mp4', 'insecure')).toBe(
+      'The audio in “clip.mp4” will not play: this address is neither HTTPS nor localhost, so the browser has switched off audio decoding.',
+    );
+  });
+
+  it('says so when the browser has no decoder of that kind for any page', () => {
+    const audio = undecodableWarning('audio', 'mp4a.40.2', 'clip.mp4', 'absent');
+    expect(audio).toBe(
+      'This browser has no audio decoder for web pages (WebCodecs), so the audio in “clip.mp4” will not play.',
+    );
+    expect(audio).not.toContain('mp4a');
+  });
+
+  it('finds out for itself what the page is missing', () => {
+    // Node has neither decoder, and does not call itself a secure context or an insecure one.
+    expect(decoderGap('video')).toBe('absent');
+    expect(undecodableWarning('video', 'avc1.64001f', 'clip.mp4')).toMatch(
+      /^This browser has no video decoder/,
+    );
+
+    vi.stubGlobal('isSecureContext', false);
+    expect(decoderGap('video')).toBe('insecure');
+    expect(decoderGap('audio')).toBe('insecure');
+    expect(undecodableWarning('audio', 'opus', 'take.webm')).toMatch(/neither HTTPS nor localhost/);
+
+    vi.stubGlobal('isSecureContext', true);
+    vi.stubGlobal('VideoDecoder', class {});
+    expect(decoderGap('video')).toBeNull();
+    expect(decoderGap('audio')).toBe('absent');
+    expect(undecodableWarning('video', 'vp09.00.10.08', 'take.webm')).toMatch(
+      /video codec \(vp09\.00\.10\.08\)/,
+    );
   });
 });

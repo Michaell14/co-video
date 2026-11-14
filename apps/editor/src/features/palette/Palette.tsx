@@ -1,6 +1,6 @@
 import { Search } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { EFFECTS, formatTimecode, TRANSITIONS } from '@tandem/core';
 import { useProject } from '../../session/hooks';
 import { cmd } from '../../state/commands';
@@ -88,16 +88,23 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       .map((x) => x.i);
   }, [items, query]);
 
-  useEffect(() => setActive(0), [query]);
+  // The list can get shorter under the highlight without a word being typed (someone else removes
+  // a marker): the highlight is then drawn on the last entry, and that is the one Enter runs.
+  const within = (i: number) => Math.max(0, Math.min(results.length - 1, i));
+  const highlighted = within(active);
+
+  // Typing leaves the highlight on the first entry, which may be one the list was scrolled away from.
   useEffect(() => {
     listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' });
-  }, [active]);
+  }, [highlighted, query]);
 
   const run = (item: Item | undefined) => {
     if (!item) return;
-    onClose();
-    // Let the palette unmount first so commands that open dialogs are not immediately closed.
-    setTimeout(item.run, 0);
+    // The palette is out of the page before the command starts, and the command starts within the
+    // press that chose it. A dialog the command opens finds the keyboard back where the palette
+    // was called from, and a file chooser is one the browser still takes for the person's own.
+    flushSync(onClose);
+    item.run();
   };
 
   // The palette owns the keyboard from the moment it opens, wherever focus happens to be: every
@@ -109,13 +116,13 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     if (e.isComposing) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setActive((a) => Math.min(results.length - 1, a + 1));
+      setActive((a) => within(within(a) + 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setActive((a) => Math.max(0, a - 1));
+      setActive((a) => within(within(a) - 1));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (!e.repeat) run(results[active]);
+      if (!e.repeat) run(results[highlighted]);
     } else if (e.key === 'Escape') onClose();
     else if (e.key === 'Tab') e.preventDefault();
     else inputRef.current?.focus();
@@ -140,10 +147,15 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
             aria-autocomplete="list"
             aria-expanded={results.length > 0}
             aria-controls={listId}
-            aria-activedescendant={results[active] && optionId(results[active])}
+            aria-activedescendant={results[highlighted] && optionId(results[highlighted])}
             value={query}
             placeholder="Search commands, effects, transitions, markers…"
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              // In one update with the text: the list a key meets next has its first entry
+              // highlighted, however soon after the letter that key comes.
+              setQuery(e.target.value);
+              setActive(0);
+            }}
           />
           <Kbd keys="escape" />
         </div>
@@ -157,9 +169,9 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
                 type="button"
                 role="option"
                 tabIndex={-1}
-                aria-selected={i === active}
+                aria-selected={i === highlighted}
                 className="palette__item"
-                data-active={i === active}
+                data-active={i === highlighted}
                 onPointerMove={() => setActive(i)}
                 onClick={() => run(item)}
               >
@@ -211,6 +223,28 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             ))}
           </section>
         ))}
+        {/* While the source monitor is open these keys are its own. The list above cannot say so:
+            a key stands there once, with what it does over the timeline. */}
+        <section>
+          <h4>Source monitor</h4>
+          {[
+            ['Insert', 'comma'],
+            ['Add to timeline', 'period'],
+            ['Mark in', 'i'],
+            ['Mark out', 'o'],
+            ['Go to in', 'shift+i'],
+            ['Go to out', 'shift+o'],
+            ['Clear in and out', 'alt+x'],
+            ['Close', 'escape'],
+          ].map(([title, keys]) => (
+            <div key={title} className="shortcut">
+              <span>{title}</span>
+              <span className="shortcut__keys">
+                <Kbd keys={keys} />
+              </span>
+            </div>
+          ))}
+        </section>
         <section>
           <h4>Mouse</h4>
           {[
@@ -218,7 +252,11 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             ['Scroll timeline', 'Shift + scroll'],
             ['Ripple trim', 'Alt + drag edge'],
             ['Roll edit', 'Ctrl / ⌘ + drag cut'],
+            ['Split edit', 'Linked selection off, Ctrl / ⌘ + drag cut'],
             ['Duplicate clip', 'Alt + drop'],
+            ['Insert between clips', 'Ctrl / ⌘ + drop'],
+            ['Replace a clip’s media', 'Alt + drop a file on it'],
+            ['Move a keyframe', 'Drag its mark on the selected clip'],
             ['Disable snapping', 'Hold Shift while dragging'],
             ['Fine control', 'Shift / Alt on number fields'],
             ['Reset a control', 'Double-click it'],

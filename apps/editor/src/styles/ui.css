@@ -448,8 +448,8 @@
     var(--shadow-1),
     inset 0 0 0 1px var(--line-control);
   transition:
-    transform var(--dur-3) var(--ease-out),
-    width var(--dur-3) var(--ease-out);
+    transform var(--dur-2) var(--ease-out),
+    width var(--dur-2) var(--ease-out);
   pointer-events: none;
 }
 .seg__item {

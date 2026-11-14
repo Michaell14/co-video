@@ -2571,4 +2571,101 @@ test.describe('media engine', () => {
     expect(r.v2).toBe(r.v1);
     expect(r.v3).toBeGreaterThan(r.v2);
   });
+  test('the poster of a picture many times taller than wide is one a project can carry', async ({ page }) => {
+    await openLab(page);
+    const r = await page.evaluate(async () => {
+      const { lab } = window as any;
+      // Noise is the worst a JPEG can be given: no two neighbouring pixels alike.
+      const poster = async (id: string, w: number, h: number) => {
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const g = c.getContext('2d')!;
+        const image = g.createImageData(w, h);
+        for (let i = 0; i < image.data.length; i++) image.data[i] = i % 4 === 3 ? 255 : Math.random() * 256;
+        g.putImageData(image, 0, 0);
+        const blob: Blob = await new Promise((res) => c.toBlob((b) => res(b!), 'image/png'));
+        const asset = await lab.addFile(id, URL.createObjectURL(blob), `${id}.png`);
+        const picture = new Image();
+        picture.src = asset.thumb;
+        await picture.decode();
+        return {
+          picture: [asset.width, asset.height],
+          poster: [picture.naturalWidth, picture.naturalHeight],
+          length: asset.thumb.length,
+          jpeg: asset.thumb.startsWith('data:image/jpeg;base64,'),
+        };
+      };
+      return {
+        most: lab.core.MAX_THUMB_LENGTH,
+        sixfold: await poster('sixfold', 400, 2400),
+        fourfold: await poster('fourfold', 320, 1280),
+        // Already the size of its poster, so none of its noise is averaged away on the way down.
+        worst: await poster('worst', 174, 1044),
+        portrait: await poster('portrait', 720, 1280),
+        frame: await poster('frame', 1280, 720),
+        small: await poster('small', 100, 300),
+      };
+    });
+    expect(r.most).toBe(256 * 1024);
+    // As many pixels as a portrait frame gets, in the picture's own proportions.
+    expect(r.sixfold).toMatchObject({ picture: [400, 2400], poster: [174, 1045], jpeg: true });
+    expect(r.fourfold.poster).toEqual([213, 853]);
+    expect(r.worst.poster).toEqual([174, 1044]);
+    for (const tall of [r.sixfold, r.fourfold, r.worst]) expect(tall.length).toBeLessThan(r.most);
+    // Pictures no taller than that keep the poster they had.
+    expect(r.portrait.poster).toEqual([320, 569]);
+    expect(r.portrait.length).toBeLessThan(r.most);
+    expect(r.frame.poster).toEqual([320, 180]);
+    expect(r.small.poster).toEqual([100, 300]);
+  });
+
+  test('a file is not blamed for its codec on a page that has no decoder at all', async ({
+    page,
+    context,
+  }) => {
+    const warnings = (on: Page): Promise<string[]> =>
+      on.evaluate(async () => {
+        const { lab } = window as any;
+        const blob = await (await fetch('/fixtures/testsrc.webm')).blob();
+        const probe = await lab.engine.probeFile(new File([blob], 'testsrc.webm', { type: blob.type }));
+        return probe.warnings;
+      });
+
+    // A browser that has the decoders: nothing to say about a file it can play.
+    await openLab(page);
+    expect(await warnings(page)).toEqual([]);
+    // One whose decoder refuses the picture: that is the codec's doing, and it is named.
+    await page.evaluate(() => {
+      VideoDecoder.isConfigSupported = async (config) => ({ supported: false, config });
+    });
+    const refused = await warnings(page);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatch(
+      /^This browser cannot decode the video codec \(vp0?9[\w.]*\) in “testsrc.webm”\.$/,
+    );
+
+    // A browser with no video decoder for any page.
+    const without = await context.newPage();
+    await without.addInitScript(() => {
+      delete (window as any).VideoDecoder;
+    });
+    await openLab(without);
+    expect(await warnings(without)).toEqual([
+      'This browser has no video decoder for web pages (WebCodecs), so the video in “testsrc.webm” will not play.',
+    ]);
+
+    // Plain HTTP from a name that is not localhost: the browser keeps both decoders back.
+    const insecure = await context.newPage();
+    await insecure.addInitScript(() => {
+      Object.defineProperty(window, 'isSecureContext', { get: () => false });
+      delete (window as any).VideoDecoder;
+      delete (window as any).AudioDecoder;
+    });
+    await openLab(insecure);
+    expect(await warnings(insecure)).toEqual([
+      'The video in “testsrc.webm” will not play: this address is neither HTTPS nor localhost, so the browser has switched off video decoding.',
+      'The audio in “testsrc.webm” will not play: this address is neither HTTPS nor localhost, so the browser has switched off audio decoding.',
+    ]);
+  });
 });

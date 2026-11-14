@@ -1,5 +1,5 @@
 import { CloudOff, Copy, History, Link2, RotateCcw, ShieldCheck, UploadCloud, UserRound } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
 import { canEdit, initials, ProjectStore, USER_COLORS, type Role, type VersionInfo } from '@tandem/core';
 import { navigate } from '../../App';
@@ -34,14 +34,31 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   const [link, setLink] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const canInvite = meta.role === 'owner' || meta.role === 'editor';
+  // A link the browser would not copy is left selected in its field, with the keyboard on it, so
+  // that the usual keys copy it from there.
+  const [byHand, setByHand] = useState(false);
+  const linkRow = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const field = byHand && link ? linkRow.current?.querySelector('input') : null;
+    field?.focus();
+    field?.select();
+  }, [byHand, link]);
 
   const copy = async () => {
     setBusy(true);
     try {
       const url = await session.inviteLink(role);
       setLink(url);
-      await navigator.clipboard?.writeText(url).catch(() => {});
-      toast(`${ROLE_COPY[role].label} link copied`, 'success');
+      // A page has a clipboard only over HTTPS or on localhost, and may be refused it even there.
+      const copied =
+        (await navigator.clipboard?.writeText(url).then(
+          () => true,
+          () => false,
+        )) ?? false;
+      setByHand(!copied);
+      if (copied) toast(`${ROLE_COPY[role].label} link copied`, 'success');
+      else
+        toast('This page cannot reach the clipboard. The link is selected: copy it from its field.', 'info');
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not create a link', 'error');
     } finally {
@@ -156,6 +173,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
           <>
             <Segmented
               block
+              ariaLabel="People with the link"
               value={role}
               options={(Object.keys(ROLE_COPY) as Exclude<Role, 'owner'>[]).map((r) => ({
                 value: r,
@@ -169,7 +187,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
             <p className="form__hint" style={{ margin: 0 }}>
               {ROLE_COPY[role].text}
             </p>
-            <div className="hstack">
+            <div className="hstack" ref={linkRow}>
               <TextField
                 value={link ?? ''}
                 onChange={() => {}}
@@ -180,7 +198,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                 ariaLabel="Share link"
               />
               <Button variant="primary" icon={<Copy />} disabled={busy} onClick={() => void copy()}>
-                {link ? 'Copy again' : 'Copy link'}
+                {link && !byHand ? 'Copy again' : 'Copy link'}
               </Button>
             </div>
           </>

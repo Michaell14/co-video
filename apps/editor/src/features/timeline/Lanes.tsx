@@ -511,7 +511,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
     return hit && { id: clip.id, hit, body };
   };
 
-  /** Let the pointer show that it is on a level line, which it moves or, with `adding`, adds a keyframe to. */
+  /**
+   * Let the pointer show that it is on a level line, which a press there moves or, with `adding`,
+   * adds a keyframe to.
+   */
   const showLevel = (on: boolean, adding = false) => {
     const el = ref.current;
     if (!el) return;

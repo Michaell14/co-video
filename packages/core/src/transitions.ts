@@ -2,6 +2,10 @@
  * The transition library. Like effects, transitions are data: a parameter schema and one GLSL body
  * defining `vec4 transition(vec2 uv)` that blends `A(uv)` (outgoing) into `B(uv)` (incoming) as
  * `u_progress` runs 0 → 1. Either side may be fully transparent (a clip fading in from nothing).
+ *
+ * Adding one is an entry here and nothing in the engine or the editor. The website and README.md
+ * say how many there are, though (the "transitions" heading in apps/site/src/sections/Effects.tsx
+ * and the feature list): apps/site/test/catalogue.test.ts fails until both give the new number.
  */
 import type { ParamDef } from './effects';
 import { defaultParams } from './effects';

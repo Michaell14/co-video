@@ -25,7 +25,9 @@ export default defineConfig(({ command }) => ({
   plugins: [react(), serviceWorker()],
   server: {
     port: 5173,
-    strictPort: false,
+    // The website's dev server links to this port (apps/site/src/lib/links.ts). When it is taken,
+    // starting fails and says so: on the next free port the editor would be where no link leads.
+    strictPort: true,
     proxy: {
       '/api': { target: server, changeOrigin: true },
       '/ws': { target: server.replace(/^http/, 'ws'), ws: true },

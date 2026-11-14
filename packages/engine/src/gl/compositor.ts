@@ -38,6 +38,7 @@ import {
   type ResolvedParams,
 } from '@tandem/core';
 import { runEffect, transitionProgram, type FxContext } from './effectRunner';
+import { waitForFence } from './fence';
 import { Glx, PRESENT_VS, type Program, type RenderTarget } from './glx';
 import { layerMatrix, layoutLayer } from './layout';
 import { bakeCurves, gradeUniforms, hasHueCurves, hasRgbCurves, isNeutralGrade } from './grade';
@@ -133,6 +134,13 @@ const DEG = Math.PI / 180;
 const MIP_SHRINK = 1.5;
 /** Layer buffers of a clip whose scale is animated come in at least this many sizes per doubling. */
 const LAYER_SIZE_STEPS = 8;
+/**
+ * How long a scope read waits to be told that its pixels are there. A GPU that keeps up says so
+ * within a frame or two. One that is behind says so when it has caught up, which software
+ * rendering has been seen to take two seconds and more over after a change of layout, and waiting
+ * that out costs nothing; cutting it short does (see `readScope`), so the limit is a generous one.
+ */
+const SCOPE_FENCE_WAIT_MS = 2000;
 
 export class Compositor {
   readonly glx: Glx;
@@ -178,6 +186,9 @@ export class Compositor {
   private scopeTarget: RenderTarget | null = null;
   private scopePbo: WebGLBuffer | null = null;
   private scopeBusy = false;
+  /** Frames rendered so far: tells a scope read whether the picture it asked for is still the last. */
+  private rendered = 0;
+  private disposed = false;
   private lastOutput: OutputMode = 'display';
 
   constructor(
@@ -281,6 +292,7 @@ export class Compositor {
     const { glx, gl } = this;
     this.stats = { layers: 0, passes: 0, missing: 0 };
     if (glx.contextLost) return this.stats;
+    this.rendered++;
     this.project = project;
     this.provider = provider;
     this.fast = !!opts.fast;
@@ -988,8 +1000,18 @@ export class Compositor {
   }
 
   /**
-   * Small display-referred copy of the last frame for scopes. Asynchronous (PBO + fence) so it never
-   * stalls the render loop. Resolves null when a read is already in flight.
+   * Small display-referred copy of the last frame for scopes. Asynchronous (PBO + fence) so it does
+   * not stall the render loop. Resolves null when a read is already in flight, and when the context
+   * or this compositor went before the pixels could be had.
+   *
+   * It always resolves: a fence gets `SCOPE_FENCE_WAIT_MS` to signal, in case a driver never does.
+   * What happens then depends on whether frames have been drawn meanwhile. If they have, the GPU is
+   * busy with them and the picture asked for is no longer the last: the read is given up, null.
+   * Fetching the pixels regardless would wait for the GPU to work off all it has been sent, with
+   * the page at a standstill; during playback on a GPU that is behind that has been seen to take
+   * seconds, the very stall the fence is there to prevent. If the picture has been at rest all the
+   * while, there is nothing to hold up and nothing else that would bring the pixels: they are
+   * fetched regardless, and that fetch waits for them.
    */
   async readScope(
     maxWidth = 320,
@@ -1021,36 +1043,34 @@ export class Compositor {
     if (!sync) return null;
     gl.flush();
     this.scopeBusy = true;
+    const asked = this.rendered;
     try {
-      await new Promise<void>((resolve, reject) => {
-        const poll = () => {
-          if (glx.contextLost) return reject(new Error('context lost'));
-          const st = gl.clientWaitSync(sync, 0, 0);
-          if (st === gl.WAIT_FAILED) return reject(new Error('sync failed'));
-          if (st === gl.TIMEOUT_EXPIRED) return void setTimeout(poll, 4);
-          resolve();
-        };
-        poll();
-      });
+      const gone = (): boolean => this.disposed || glx.contextLost;
+      const wait = await waitForFence(gl, sync, SCOPE_FENCE_WAIT_MS, gone);
+      if (wait === 'abandoned' || (wait === 'overdue' && this.rendered !== asked)) return null;
       const data = new Uint8Array(size);
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.scopePbo);
       gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, data);
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-      return { data, width: w, height: h, pq: hdr };
-    } catch {
-      return null;
+      // A context that is lost while it is being read hands back nothing, and does not say so.
+      return glx.contextLost ? null : { data, width: w, height: h, pq: hdr };
     } finally {
-      gl.deleteSync(sync);
+      // What was made on a lost context went with it, and must not be named to the one that follows.
+      if (!glx.contextLost) gl.deleteSync(sync);
       this.scopeBusy = false;
     }
   }
 
   dispose(): void {
+    // A scope read that is still waiting sees this and ends without touching what goes here.
+    this.disposed = true;
     this.glx.release(this.last);
     this.last = null;
     this.releasePack();
     this.glx.release(this.scopeTarget);
     this.scopeTarget = null;
+    this.gl.deleteBuffer(this.scopePbo);
+    this.scopePbo = null;
     this.glx.dispose();
     // Off-screen contexts are ours alone, so drop them now to return GPU memory promptly. An
     // on-screen canvas may be handed to a new Compositor (it would get this same context back),

@@ -15,3 +15,8 @@ export const GITHUB_URL = 'https://github.com/michaell14/co-video';
 /** `HEAD` follows the default branch, whatever it is called. */
 export const LICENSE_URL = `${GITHUB_URL}/blob/HEAD/LICENSE`;
 export const ISSUES_URL = `${GITHUB_URL}/issues`;
+/**
+ * The typefaces and libraries a build of the site contains, with their licences: a file of the
+ * site itself (`public/`), so that a site hosted without the editor still carries it.
+ */
+export const NOTICES_URL = `${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt`;

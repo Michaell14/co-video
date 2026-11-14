@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { clipWidth, tickInterval } from '../src/features/timeline/layout';
+import { applyEdits, emptyProject, makeTrack } from '@tandem/core';
+import { clipWidth, GROUP_GAP, LANE_GAP, layoutLanes, tickInterval } from '../src/features/timeline/layout';
 
 describe('ruler ticks', () => {
   it('fall on whole frames at every zoom level, for the usual frame rates', () => {
@@ -32,5 +33,39 @@ describe('clipWidth', () => {
   it('stops a pixel short of the next clip and never vanishes', () => {
     expect(clipWidth(120, 3)).toBe(359);
     expect(clipWidth(1, 0.05)).toBe(2);
+  });
+});
+
+describe('layoutLanes', () => {
+  const v1 = makeTrack('video', 0);
+  const a1 = makeTrack('audio', 0);
+  const a2 = makeTrack('audio', 1);
+  const project = applyEdits(
+    emptyProject(),
+    [v1, a1, a2].map((track) => ({ op: 'addTrack', track })),
+  );
+
+  it('stacks the lanes at the heights of their tracks, picture over sound', () => {
+    const { lanes } = layoutLanes(project);
+    expect(lanes.map((l) => [l.label, l.height])).toEqual([
+      ['V1', v1.height],
+      ['A1', a1.height],
+      ['A2', a2.height],
+    ]);
+    expect(lanes[1].top).toBe(lanes[0].top + v1.height + LANE_GAP + GROUP_GAP);
+    expect(lanes[2].top).toBe(lanes[1].top + a1.height + LANE_GAP);
+  });
+
+  it('draws a track at the height someone chose to look at it, and moves the lanes below along', () => {
+    const plain = layoutLanes(project);
+    const own = layoutLanes(project, { [a1.id]: a1.height + 40 });
+    expect(own.lanes.map((l) => l.height)).toEqual([v1.height, a1.height + 40, a2.height]);
+    expect(own.lanes[1].top).toBe(plain.lanes[1].top);
+    expect(own.lanes[2].top).toBe(plain.lanes[2].top + 40);
+    expect(own.height).toBe(plain.height + 40);
+    // The track itself is as it was, and without a height of one's own the layout is the plain one.
+    expect(own.lanes[1].track).toBe(project.tracks[a1.id]);
+    expect(layoutLanes(project, null)).toEqual(plain);
+    expect(layoutLanes(project, {})).toEqual(plain);
   });
 });

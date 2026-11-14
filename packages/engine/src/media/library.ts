@@ -255,14 +255,27 @@ export function guessKind(file: { name: string; type: string }): AssetKind | nul
   return null;
 }
 
+/** A poster is at most this wide. */
+const POSTER_MAX_WIDTH = 320;
+/**
+ * And it has at most the pixels of a portrait frame of that width, however tall the picture is. A
+ * poster travels in the project as a data URL, and whoever reads a project passes on none longer
+ * than `MAX_THUMB_LENGTH`. Pure noise of this many pixels encodes to about half of that; bounded
+ * in width alone, the poster of a long screenshot came out longer and was shown to no one.
+ */
+const POSTER_MAX_PIXELS = POSTER_MAX_WIDTH * 569;
+
+/** The size of the poster of a picture: its proportions, within the two bounds, never enlarged. */
+export function posterSize(width: number, height: number): { width: number; height: number } {
+  const scale = Math.min(1, POSTER_MAX_WIDTH / width, Math.sqrt(POSTER_MAX_PIXELS / (width * height)));
+  return { width: Math.max(2, Math.round(width * scale)), height: Math.max(2, Math.round(height * scale)) };
+}
+
 async function posterFromBitmap(
   bmp: ImageBitmap | HTMLCanvasElement | OffscreenCanvas,
-  maxW = 320,
 ): Promise<string | null> {
   try {
-    const scale = Math.min(1, maxW / bmp.width);
-    const w = Math.max(2, Math.round(bmp.width * scale));
-    const h = Math.max(2, Math.round(bmp.height * scale));
+    const { width: w, height: h } = posterSize(bmp.width, bmp.height);
     const c = new OffscreenCanvas(w, h);
     const ctx = c.getContext('2d')!;
     ctx.drawImage(bmp, 0, 0, w, h);
@@ -276,6 +289,40 @@ async function posterFromBitmap(
   } catch {
     return null;
   }
+}
+
+/**
+ * Why a page has no decoder for a kind of track, when it has none. `insecure`: browsers keep their
+ * decoders for pages that came over HTTPS or from localhost, and this one did not. `absent`: the
+ * browser has no such decoder for any page.
+ */
+export type DecoderGap = 'insecure' | 'absent';
+
+/** What keeps this page from decoding any video (or any audio) at all, or null if nothing does. */
+export function decoderGap(part: 'video' | 'audio'): DecoderGap | null {
+  const present =
+    part === 'video' ? typeof VideoDecoder !== 'undefined' : typeof AudioDecoder !== 'undefined';
+  if (present) return null;
+  return globalThis.isSecureContext === false ? 'insecure' : 'absent';
+}
+
+/**
+ * What to tell whoever imported `fileName` when its picture or its sound cannot be decoded here.
+ * Only a decoder that is there and refuses the track makes that a matter of the file's codec.
+ * Naming the codec when the page has no decoder at all sends people off to convert a file that
+ * is fine, so those cases name what is really missing.
+ */
+export function undecodableWarning(
+  part: 'video' | 'audio',
+  codec: string | null,
+  fileName: string,
+  gap: DecoderGap | null = decoderGap(part),
+): string {
+  if (gap === 'insecure')
+    return `The ${part} in “${fileName}” will not play: this address is neither HTTPS nor localhost, so the browser has switched off ${part} decoding.`;
+  if (gap === 'absent')
+    return `This browser has no ${part} decoder for web pages (WebCodecs), so the ${part} in “${fileName}” will not play.`;
+  return `This browser cannot decode the ${part} codec (${codec ?? 'unknown'}) in “${fileName}”.`;
 }
 
 export interface ProbeResult {
@@ -348,12 +395,10 @@ export async function probeFile(file: File): Promise<ProbeResult> {
         /* colour metadata is optional */
       }
       if (!decodable) {
-        warnings.push(
-          `This browser cannot decode the video codec (${asset.videoCodec ?? (await video.getCodec()) ?? 'unknown'}) in “${file.name}”.`,
-        );
+        warnings.push(undecodableWarning('video', asset.videoCodec ?? (await video.getCodec()), file.name));
       } else {
         try {
-          const sink = new CanvasSink(video, { width: 320, poolSize: 1 });
+          const sink = new CanvasSink(video, { width: POSTER_MAX_WIDTH, poolSize: 1 });
           const first = await video.getFirstTimestamp();
           const wrapped = await sink.getCanvas(first + Math.min(1, duration * 0.1));
           if (wrapped) asset.thumb = await posterFromBitmap(wrapped.canvas as OffscreenCanvas);
@@ -368,9 +413,7 @@ export async function probeFile(file: File): Promise<ProbeResult> {
       asset.audioChannels = await audio.getNumberOfChannels().catch(() => 2);
       asset.audioSampleRate = await audio.getSampleRate().catch(() => 48000);
       if (!(await audio.canDecode().catch(() => false))) {
-        warnings.push(
-          `This browser cannot decode the audio codec (${asset.audioCodec ?? 'unknown'}) in “${file.name}”.`,
-        );
+        warnings.push(undecodableWarning('audio', asset.audioCodec ?? null, file.name));
       }
     }
     return { asset, warnings };

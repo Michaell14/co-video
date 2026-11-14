@@ -42,6 +42,10 @@ pnpm dev
 Requires Node 20+ and pnpm 10. Use a Chromium-based browser (Chrome, Edge, Arc, Brave) — see
 [browser support](#browser-support).
 
+The website's “Open the editor” leads to port 5173, so the editor's dev server takes that port or
+none: when it is in use, starting fails and says so. To run the editor on another port, tell the
+website where it is: `pnpm dev:editor --port 5199` and `VITE_EDITOR_URL=http://localhost:5199/ pnpm dev:site`.
+
 No server? The editor also works entirely offline: `pnpm dev:editor` gives you a local-only editor
 with projects stored in your browser.
 
@@ -54,11 +58,18 @@ with projects stored in your browser.
   whole edit, and clips, keyframes, markers and comments keep their place in real time
 - Overwrite, insert, **ripple**, **roll**, **slip** and blade edits; magnetic snapping; linked
   audio / video; in / out ranges; J-K-L shuttle; frame-accurate stepping
-- Markers with a note and a colour, and keys to step from one to the next
+- A clip or a file that is dropped overwrites what it lands on; dropped with `Ctrl` held it goes in
+  between, and what follows moves later to make room. `Ctrl+Shift+V` pastes the same way. A roll
+  (`Ctrl`-drag on a cut) moves the cut of linked picture and sound together, and with linked
+  selection switched off the cut of one of them, for a split edit
+- Markers with a note and a colour, and keys to step from one to the next. They move with ripple
+  edits; a switch in the timeline's toolbar keeps them where they are instead
 - A drag that reaches the edge of the timeline scrolls it, and the timeline's menus act where you
   click: “Add marker here”, “Close gap here”
 - **Keyframes on every numeric property** — transform, opacity, crop, volume, pan and every effect
-  parameter — with linear, hold, ease-in, ease-out or ease-in-out interpolation chosen per keyframe
+  parameter — with linear, hold, ease-in, ease-out or ease-in-out interpolation chosen per keyframe.
+  The keyframes of a selected clip are marked on it in the timeline, where they can be dragged, and
+  `[` and `]` step from one to the next
 - A clip's name, start and duration can be typed in the inspector: as timecode, as frames, as
   seconds (`2.5s`), or relative to where it is (`+12`, `-12`)
 - Speed changes from 5 % to 10 000 %, reverse playback and freeze frames
@@ -69,9 +80,18 @@ with projects stored in your browser.
 - 18 blend modes, rectangular and elliptical masks with feathering, on-canvas transform handles
 - A source monitor with in / out marking, driven by the same transport keys as the timeline. What
   is marked is inserted at the playhead or added there on a free track; **match frame** opens the
-  monitor on the very frame under the playhead
-- Replace or relink the file behind any asset; every clip follows, in one undo step. “Reveal in
-  media pool” finds the file behind a clip, and a video can be added as picture only or sound only
+  monitor on the very frame under the playhead. It stays open from one select to the next, and
+  while the project is open it remembers the marks and the position of every file it has shown
+- The media pool has a selection like a file manager's (click, `Shift`, `Ctrl`, `Ctrl+A`, `Space`
+  from the keyboard). A drag or the `+` takes the selected files to the timeline end to end, and
+  `Delete` removes them, after asking when there are several or one is in use
+- Replace or relink the file behind any asset; every clip follows, in one undo step. A file dropped
+  on a clip with `Alt` held takes the place of that one clip's media and keeps everything that was
+  done to the clip. “Reveal in media pool” finds the file behind a clip, and a video can be added
+  as picture only or sound only
+- A clip says what is wrong with it where it lies: **Offline** when its file is on neither this
+  device nor the server, **Unsupported** when this browser cannot decode it, **Overlap** when it
+  shares frames with another clip of its track (its menu has “Move to a free track”)
 - Projects save to a portable `.tandem` file. Opening one makes a new project, from the home screen
   or the editor; replacing the open project with one is a separate command that asks first
 - The home screen renames, duplicates and deletes the projects on your device
@@ -82,8 +102,9 @@ with projects stored in your browser.
 - **50 GPU effects** — blurs, glow, sharpen, clarity, chroma and luma keys, film grain, VHS, CRT,
   glitch, halftone, lens distortion, kaleidoscope, drop shadow, outline and more
 - **25 transitions** — dissolves, wipes, pushes, cross zoom, whip pan, film burn, glitch…
-- Effects and transitions are plain data (a parameter schema plus GLSL), so adding one is a single
-  entry in a file
+- Effects and transitions are plain data (a parameter schema plus GLSL), so adding one to the
+  editor is a single entry in a file. The website and this list name and count them too, and a
+  test says what else to edit ([`CONTRIBUTING.md`](CONTRIBUTING.md#adding-an-effect-or-a-transition))
 
 ### Colour
 
@@ -113,13 +134,25 @@ with projects stored in your browser.
   and every field converges
 - Live cursors, playheads, selections and in-flight drags; follow someone's playhead with one click
 - Time-coded comments with replies and resolve
-- Share links with **editor**, **commenter** and **viewer** roles, enforced by the server
+- Share links with **editor**, **commenter** and **viewer** roles, enforced by the server. For
+  someone who may not edit, the inspector, the colour page and the mixer say “Read only” and
+  their controls are out of reach
 - Named versions plus automatic snapshots; restoring one is a single undoable step
 - Offline-first: the editor is an installable web app that opens with no network, projects and
   media live on your device, and changes merge when you reconnect
 - Media syncs itself — originals upload in resumable chunks and collaborators stream them
   immediately while a local copy downloads in the background. A transfer the network interrupted
   is tried again by itself, or at once from the media pool
+- The top bar says how the project stands with the server, also when it does not: “Not syncing:
+  link refused” for a project whose link the server no longer accepts (Share has “Try again”), and
+  “Not saving to the server” when the server has stopped taking changes, with the reason, such as a
+  project that has reached the size the server allows. The changes stay on the device meanwhile
+  and are offered to the server again every minute
+- Clips that two people put on the same frames are moved apart, and clips whose track someone
+  else removed are kept: a notice in the timeline restores them to a new track or discards them
+- The home screen marks a project whose link was refused and says when the browser has no room
+  left to save the list of projects. The screen that stands in for a project that is not available
+  offers “Try again”
 
 ![Three people editing one project](docs/images/multiplayer.webp)
 
@@ -155,6 +188,7 @@ shortcuts and the command palette (`Ctrl+K`). The ones worth learning first:
 | Previous / next edit · start / end              | `↑` `↓` · `Home` `End`                      |
 | Mark in / out · mark the clip · clear the range | `I` `O` · `X` · `Alt+X`                     |
 | Go to the in / out point                        | `Shift+I` `Shift+O`                         |
+| Previous / next keyframe of the selected clips  | `[` `]`                                     |
 | Match frame                                     | `F`                                         |
 | Source monitor: insert · add on a free track    | `F9` · `F10`                                |
 | Select the clip under the playhead              | `Shift+V`                                   |
@@ -166,6 +200,7 @@ shortcuts and the command palette (`Ctrl+K`). The ones worth learning first:
 | Extend the edit to the playhead                 | `E`                                         |
 | Add the default transition to the selected cuts | `Shift+D`                                   |
 | Close the gap at the playhead                   | `Shift+G`                                   |
+| Paste · paste insert (what follows makes room)  | `Ctrl+V` · `Ctrl+Shift+V`                   |
 | Nudge the selection by a frame · by ten         | `,` `.` · `Shift+,` `Shift+.`               |
 | Move the selection up / down a track            | `Alt+↑` `Alt+↓`                             |
 | Marker: add or remove · next · previous         | `M` · `Shift+M` · `Ctrl+Shift+M` or `Alt+M` |
@@ -190,6 +225,23 @@ marked (the whole file when nothing is) on the timeline at the playhead. `,` ins
 unlocked track is cut at the playhead and what follows moves later to make room. `.` adds it on a
 free track and leaves every other clip where it is. The monitor stays open after either, and `Esc`
 closes it.
+
+The rest of the editor is within reach of the keyboard as well:
+
+- The timeline's clips are one stop for `Tab`. On a clip the keyboard has reached, `←` `→` go to
+  the clip before and after it, `↑` `↓` to the track above and below, `Home` and `End` to the first
+  and last clip of the track. The selection goes along, and grows with `Shift`; `Enter` and `Space`
+  select the clip the keyboard is on, and `Shift+F10` opens its menu. A press of the pointer gives
+  the arrow keys back to the playhead
+- A slider moves a step with the arrow keys and ten with `Shift`, a tenth of its range with
+  `Page Up` and `Page Down`, to either end with `Home` and `End`, and back to its default with
+  `Delete` or `Backspace`. A run of presses is one undo step. The colour wheels, the points of a
+  curve, the tonal zones and the mixer's faders take the same keys. The splitters between the
+  panels are stops for `Tab` as well, and move with the arrows, the page keys, `Home` and `End`
+- The arrow keys step through the tabs of the library and of the colour page
+- A tooltip shows for the control the keyboard is on as it does under the pointer, and a notice
+  that offers something to do (“Undo”, “Try again”) stays for nine seconds and waits while the
+  pointer or the keyboard is on it
 
 ## Browser support
 
@@ -226,7 +278,9 @@ docker run -p 8787:8787 -v tandem-data:/data tandem
 **Anywhere but `localhost`, the editor needs HTTPS to work at all.** Browsers offer WebCodecs, the
 private file system, service workers, the clipboard and the microphone only to pages that came
 over HTTPS (or from `localhost`). Opened at `http://your-server:8787/app/` the editor loads, shows
-a black viewer, decodes nothing, stores nothing on the device and does not open offline. The server
+a black viewer, decodes nothing, stores nothing on the device and does not open offline, and says
+why in a notice above every screen. (Projects are still shared and synced there; a share link has to
+be copied by hand from its field.) The server
 itself speaks plain HTTP and compresses nothing, so put a reverse proxy that terminates TLS in
 front of it. With [Caddy](https://caddyserver.com), which gets the certificate by itself and passes
 WebSocket upgrades on, this is the whole configuration (the `encode` line is what compresses the
@@ -320,6 +374,8 @@ Three ideas carry most of the weight:
 ## Honest limitations
 
 - Tested on Chromium only (see above).
+- The names, roles and keyboard behaviour of the interface are checked against Chromium's
+  accessibility tree, by the test suite. Nobody has gone through the editor with a screen reader.
 - No account system: access control is by capability link. Fine for teams; not a public SaaS
   permission model.
 - HDR _display_ preview is tone-mapped to SDR in the viewer; scopes read true PQ nits and exports
@@ -344,7 +400,15 @@ Three ideas carry most of the weight:
   people: anyone with a comment link and a client of their own can rewrite or delete other people's
   comments.
 - Nothing deletes a project or its media from the server. Deleting a project on the home screen
-  removes it from that device; on the server it stays until someone removes its folder.
+  removes it from that device; on the server it stays until someone removes its folder, and so does
+  the file of an asset that was removed from a project. The one thing the server clears away by
+  itself is an upload that was never finished (`UPLOAD_EXPIRY_DAYS`).
+- Review comments stay on their frame when a ripple edit moves what they were about. Markers follow
+  a ripple; comments do not.
+- Zooming the timeline lays out every clip in view again, which shows on a timeline with thousands
+  of clips in view at once.
+- The website draws nothing until its script has arrived: its first screen is animated in by that
+  script and is not in the page as it is served.
 - Vorbis sound that starts part-way into its file is placed about 20 ms early, in the preview and
   in exports alike (a limit of the decoder library; the offset is constant over the clip).
 - Performance on very long 4K+ timelines has been engineered for (virtualised timeline,
@@ -357,4 +421,6 @@ demuxing and muxing, and [Yjs](https://yjs.dev) (MIT) for CRDTs. Bundled typefac
 SIL Open Font Licence, except Permanent Marker (Apache 2.0).
 [`THIRD_PARTY_NOTICES.txt`](apps/editor/public/THIRD_PARTY_NOTICES.txt) names everything a build
 contains, with the licences in full. It is part of every build of the editor, so a server has it at
-`/app/THIRD_PARTY_NOTICES.txt`.
+`/app/THIRD_PARTY_NOTICES.txt`. The website is built from less and carries
+[a list of its own](apps/site/public/THIRD_PARTY_NOTICES.txt), linked from its footer, so that it can
+be hosted without the editor.

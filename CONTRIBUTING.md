@@ -44,6 +44,12 @@ moment carries on in a page that has forgotten everything it set up, and fails i
 nothing to do with the change. Do not edit while a run is going, or have the test call
 `noReloads(page)` from `e2e/helpers.ts` before it opens the page.
 
+To see the editor as it is without HTTPS, open it under a name that is not `localhost` (Chromium's
+`--host-resolver-rules="MAP tandem.test 127.0.0.1"` makes one up). If `HTTPS_PROXY` is set on your
+machine, start that browser without it: Chromium fetches the page directly but sends its WebSockets
+to such a name through the proxy, and the editor then reports a project as offline that the server
+is serving perfectly well.
+
 A test that fails leaves a folder in `test-results/` with a screenshot, the page's accessibility
 tree and a trace of everything the test did: `pnpm exec playwright show-trace` followed by the
 path of the `trace.zip` opens it. CI keeps the same folder as an artifact of the failed job.
@@ -83,8 +89,8 @@ The website keeps its own copy of the catalogue's names and counts, because it i
 the editor's packages. Add an effect's name to `CATALOGUE` in `apps/site/src/sections/Effects.tsx`,
 in the place it has in `effects.ts`; for a transition, raise the number in that file's
 "transitions" heading. `pnpm test` fails, and says which of the two it wants, until the website
-agrees with the catalogue. The feature list in `README.md` gives both counts as well, and nothing
-checks those.
+agrees with the catalogue. The feature list in `README.md` gives both counts as well, and the same
+test fails until they are the catalogue's.
 
 ## Adding a dependency
 
@@ -93,6 +99,11 @@ licence, and `apps/editor/public/THIRD_PARTY_NOTICES.txt` names all of it: it sh
 build. Add the package there, with its licence and copyright line, and the licence's text if the
 file does not have it yet. `pnpm test` fails, and says what is missing, until the notices cover
 every package a build is made from.
+
+The website can be hosted without the editor, so it carries a list of its own,
+`apps/site/public/THIRD_PARTY_NOTICES.txt`, which its footer links to. It names what the website is
+built from and nothing else: a package the website starts to use goes into both files, and one it
+stops using comes out of this one. `pnpm test` checks that as well.
 
 ## Ground rules
 

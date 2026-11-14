@@ -99,6 +99,17 @@ sequence, and it is back the moment its track is (an undo, a redo). `ProjectStor
 lists them. A frame-rate change re-times them with everything else, in the same transaction and
 undo step, so one that returns later is where it was in real time.
 
+**Clips can land on each other.** No edit leaves two clips on the same frames of a track, but two
+people can each put one there at the same moment, and both edits arrive.
+`ProjectStore.resolveOverlaps` moves one of the two to a free track, outside the undo history. It is
+moved by exactly one session, or two would each add a track for it: one of those that last wrote
+where the clip is, and of these the one with the greatest client id, which every session works out
+alike. The editor's session calls it when changes from others have stopped coming in for 400 ms,
+and after each sync, never on the first update: a collaborator's undo arrives as several, and the
+first of them is not yet the project they mean. It passes the client ids of everyone presence
+shows with a role that edits, so a clip does not wait for a session that has left. With nobody
+there who may move it, the clip stays, marked in the timeline, until someone does.
+
 ### Undo
 
 `Y.UndoManager` tracks only the local origin, so undo reverts _your_ edits and leaves everyone
@@ -163,6 +174,10 @@ says about its own id and announces itself again if someone else spoke for it. T
 entry that can be relied on is `role`, which the server writes from the link the connection came
 with.
 
+The server meters presence and passes over an update that comes too soon after the last, with a
+notice to its sender. The state it passed over may be the one a gesture ended on, so the session
+announces its state once more a second after such a notice.
+
 ### Comments
 
 Comments live in a second document so that a **commenter** can write there while the project
@@ -197,6 +212,16 @@ stored document over twice the limit is not loaded (`507`). A connection publish
 entry, metered in size and rate, and one copy of the document at a time is on its way to a client.
 Project creation is limited per address and hour (`MAX_CREATES_PER_HOUR`).
 [`apps/server/README.md`](../apps/server/README.md) has the numbers and the security model.
+
+A heartbeat every 30 seconds ends connections that have gone away without closing
+(`Connection.beat` in `rooms.ts`). What counts as a sign of life depends on whether something is on
+its way to the client. With nothing waiting to be sent, a pong counts, and so does anything else
+that arrived, and the connection has two heartbeats of grace after the last of what it was sent
+left the server. While something is waiting, a ping waits behind it, and a large document on a
+slow link takes longer than a heartbeat: then the one sign of life is that the client took some of
+it since the heartbeat before, measured on the socket itself (what its finished writes come to,
+and how much of the write under way is still to go). Neither a pong nor incoming data counts then. A client that sends but does not read would
+otherwise keep its place, and its copy of the document, for as long as it liked.
 
 ## 3. The render engine (`packages/engine`)
 
@@ -382,7 +407,24 @@ when it starts.
   made on a large monitor still shows every panel on a laptop and comes back when the window grows.
 - **Dialogs, the palette, menus and popovers are a stack of layers** (`ui/layers.ts`). The topmost
   layer gets every key before anything else in the page, a modal one makes what is beneath it
-  inert, and the editor's own shortcuts stand down while any layer is open.
+  inert, and the editor's own shortcuts stand down while any layer is open. A command chosen in
+  the palette runs once the palette is out of the page and within the same key press, so a dialog
+  it opens finds the keyboard where the palette was called from, and a file chooser is opened by
+  the person's own press as far as the browser is concerned.
+- **A row's label names its controls.** `Labelled` and `LabelText` (`ui/core.tsx`) make a row of a
+  panel or a form: the kit's fields, sliders, selects, switches and segmented controls inside it
+  take their accessible name from the row's label unless they are given one, so a property is
+  named once, where it is drawn. `ui/labels.ts` holds the wording of frame sizes and colour modes
+  for every place that shows them.
+- **Focus is handed on, not dropped.** A control whose own action removes it (Close with its
+  panel, Delete with its card) would leave the keyboard on nothing. `handFocus` (`ui/layers.ts`)
+  says where it goes instead, for people working from the keyboard; a pointer press decides about
+  focus by itself.
+- **Two tokens are about more than colour.** `--panel-pad` is the one distance between a panel's
+  edge and its content, so rows, tiles and cards of every panel start on the same line.
+  `--line-control` is the edge of a control that has nothing but its edge to be told by (an empty
+  field, the chosen segment): it holds 3:1 against the surfaces around it, which the hairlines do
+  not.
 - **The timeline** is DOM for clips (so hover, selection and drag feedback are just CSS) with one
   canvas per lane underneath for filmstrips and waveforms. Only clips near the viewport exist in
   the DOM; scrolling is a transform on one element; the playhead is moved outside React.
@@ -413,6 +455,18 @@ it is kept aside (`tandem.links-aside.v1` in local storage) and offered to the s
 when the person asks (Share → Try again), when another link to the same project is being judged,
 or when nothing of the project is on the device. A refusal is only what one server said at one
 moment, and a link is not something its holder can get again by themselves.
+
+**Not saving.** A connection can be open and the work still not reach the server: the document has
+reached the size the server allows, the server has no memory for more, or one change is more than
+it takes in a message. The server ends such a connection with close code `1009` and says why first.
+`SessionMeta.notSaving` then holds the reason as a sentence for the person (`session/saving.ts`
+words it), the top bar reads “Not saving to the server”, and the connection, which would only send
+the same thing again, tries once a minute instead of at once (`SyncProvider.patient`). The changes
+stay in the local document meanwhile. The notice is withdrawn when a connection has synced and
+stayed open for five seconds with nothing left to send. A document the server holds more of than
+it loads is found out over HTTP (`docs` in `GET /api/projects/:id`), since a refused upgrade tells
+a browser nothing; with nothing of the project on the device that is the “not available” screen,
+because an empty document is not the project.
 
 **Replacing a project.** Restoring a version and replacing the open project with a file both go
 through `Session.replaceProject`, the one place that swaps everything a project holds: it keeps

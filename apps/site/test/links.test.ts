@@ -33,6 +33,12 @@ describe('link to the editor', () => {
     expect(await editorUrl({ DEV: true }), `EDITOR_DEV_URL in ${LINKS}`).toBe(`http://localhost:${port}/`);
   });
 
+  it('can count on that port: the editor’s dev server does not move to another one', () => {
+    // On a port of its own choosing the editor would be where this link does not lead, and the
+    // link would open whatever holds the port instead.
+    expect(editor, `strictPort in ${EDITOR_CONFIG}`).toMatch(/\bserver: \{[^}]*\bstrictPort: true\b/);
+  });
+
   it('goes to the path the built editor is hosted under in a build', async () => {
     const base = /\bbase: command === 'build' \? \(process\.env\.TANDEM_BASE \?\? '([^']+)'\)/.exec(
       editor,

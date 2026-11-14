@@ -64,10 +64,39 @@ test('the production build works in a browser: site, editor, a second person, ex
 }) => {
   const first = await watch(context);
 
-  await test.step('the website links to the editor', async () => {
+  await test.step('the website’s menu works from the keyboard on a phone', async () => {
+    const size = page.viewportSize()!;
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/');
     await expect(page).toHaveTitle(/Tandem/);
-    expect(await page.locator('a[href="/app/"]').count()).toBeGreaterThan(0);
+    const toggle = page.locator('.nav__toggle');
+    const menu = page.locator('#nav-menu');
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    await expect(menu).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(menu.locator('a').first()).toBeFocused();
+    // Escape takes the menu away, and the keyboard goes back to the button that opened it.
+    await page.keyboard.press('Escape');
+    await expect(toggle).toBeFocused();
+    await expect(menu).toHaveCount(0);
+    await page.setViewportSize(size);
+  });
+
+  await test.step('the website carries its notices and leads to the editor', async () => {
+    // The site lists what it is built from itself: it can be hosted without the editor.
+    const link = page.locator('footer').getByRole('link', { name: 'Third-party notices' });
+    const notices = await page.request.get(new URL((await link.getAttribute('href'))!, page.url()).href);
+    expect(notices.status()).toBe(200);
+    expect(notices.headers()['content-type']).toContain('text/plain');
+    const text = await notices.text();
+    expect(text).toContain('@fontsource-variable/inter (OFL-1.1)');
+    expect(text).toContain('SIL OPEN FONT LICENSE');
+    expect(text).not.toContain('mediabunny');
+
+    await page.getByRole('link', { name: 'Open the editor' }).first().click();
+    await expect(page.locator('.home__hero')).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe('/app/');
   });
 
   await test.step('the editor opens under /app/ with its security headers', async () => {

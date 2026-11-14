@@ -1,5 +1,5 @@
 import { Logo } from '../components/Logo';
-import { EDITOR_URL, GITHUB_URL, ISSUES_URL, LICENSE_URL } from '../lib/links';
+import { EDITOR_URL, GITHUB_URL, ISSUES_URL, LICENSE_URL, NOTICES_URL } from '../lib/links';
 import { FEATURE_SECTIONS, OPEN_SOURCE_SECTION } from '../lib/sections';
 import './Footer.css';
 
@@ -17,6 +17,7 @@ const COLUMNS = [
       { label: 'Source on GitHub', href: GITHUB_URL, external: true },
       { label: 'Report an issue', href: ISSUES_URL, external: true },
       { label: 'MIT licence', href: LICENSE_URL, external: true },
+      { label: 'Third-party notices', href: NOTICES_URL },
       { label: 'Self-hosting', href: `#${OPEN_SOURCE_SECTION.id}` },
       { label: 'How it works', href: '#architecture' },
     ],

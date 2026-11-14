@@ -23,7 +23,10 @@ async function openShare(page: Page): Promise<Locator> {
 
 /** Make a link for `access` in the open Share dialog, the way a person does, and read it. */
 async function copyLink(dialog: Locator, access: 'Can edit' | 'Can comment' | 'Can view'): Promise<string> {
-  await dialog.getByText(access, { exact: true }).click();
+  await dialog
+    .getByRole('group', { name: 'People with the link' })
+    .getByRole('button', { name: access, exact: true })
+    .click();
   const field = dialog.getByLabel('Share link');
   // Another level of access is another link: the one that was shown is gone.
   await expect(field).toHaveValue('');
@@ -45,6 +48,29 @@ async function join(page: Page, link: string): Promise<void> {
 
 const comment = (page: Page, text: string): Locator => page.locator('.comment', { hasText: text });
 
+/**
+ * Make the page what a browser makes of one served over plain HTTP from a name that is not
+ * localhost: everything that is kept for HTTPS is missing from it. Call before the page is opened.
+ */
+async function overPlainHttp(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const gone = (owner: object, names: string[]) => {
+      for (const name of names) delete (owner as Record<string, unknown>)[name];
+    };
+    Object.defineProperty(window, 'isSecureContext', { get: () => false });
+    gone(Navigator.prototype, ['clipboard', 'locks', 'mediaDevices', 'serviceWorker', 'storage']);
+    gone(Crypto.prototype, ['randomUUID', 'subtle']);
+    gone(window, [
+      'AudioDecoder',
+      'AudioEncoder',
+      'ImageDecoder',
+      'VideoDecoder',
+      'VideoEncoder',
+      'VideoFrame',
+    ]);
+  });
+}
+
 test.describe('sharing and review', () => {
   test('a comment link from the Share dialog lets a guest discuss the cut and change nothing', async ({
     page,
@@ -64,6 +90,10 @@ test.describe('sharing and review', () => {
     await expect(dialog.locator('.person')).toHaveCount(1);
     await expect(dialog.locator('.person')).toContainText('(you)');
     await expect(dialog.locator('.person .badge')).toHaveText('Owner');
+    // What a link allows is one choice with a name, not three buttons on their own.
+    const access = dialog.getByRole('group', { name: 'People with the link' });
+    await expect(access.getByRole('button')).toHaveText(['Can edit', 'Can comment', 'Can view']);
+    await expect(access.getByRole('button', { pressed: true })).toHaveText('Can edit');
     const link = await copyLink(dialog, 'Can comment');
     await expect(dialog).toContainText('Can watch, scrub and leave time-coded comments.');
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(link);
@@ -150,6 +180,51 @@ test.describe('sharing and review', () => {
 
     expect(errors).toEqual([]);
     expect(guestErrors).toEqual([]);
+  });
+
+  test('over plain HTTP a project is shared and synced all the same, and a link the page cannot copy is not called copied', async ({
+    page,
+    browser,
+  }) => {
+    const errors = trackErrors(page);
+    await noReloads(page);
+    await overPlainHttp(page);
+    await newProject(page);
+    const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
+    test.skip(!meta.online || !meta.shared, 'collaboration server not reachable');
+    expect(
+      await page.evaluate(() => [typeof crypto.subtle, typeof navigator.storage, typeof navigator.clipboard]),
+    ).toEqual(['undefined', 'undefined', 'undefined']);
+    await expect(page.getByRole('alert').filter({ hasText: 'Tandem needs HTTPS' })).toBeVisible();
+
+    // Media needs what the browser withholds here. The connection does not: the top bar says so.
+    await expect(page.locator('.conn')).toHaveText('All changes synced');
+    await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Shared' }));
+
+    // There is no clipboard to copy to. The link is made, and left where it can be copied by hand.
+    const dialog = await openShare(page);
+    await dialog.getByRole('button', { name: 'Copy link' }).click();
+    const field = dialog.getByLabel('Share link');
+    await expect(field).toHaveValue(/#\/p\/[\w-]+\?t=/);
+    await expect(page.locator('.toast')).toHaveText(
+      'This page cannot reach the clipboard. The link is selected: copy it from its field.',
+    );
+    await expect(field).toBeFocused();
+    await expect(dialog.getByRole('button', { name: 'Copy link' })).toBeVisible();
+    const link = await field.inputValue();
+    expect(
+      await field.evaluate((el: HTMLInputElement) => el.value.slice(el.selectionStart!, el.selectionEnd!)),
+    ).toBe(link);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+
+    // What was made here has reached the server: someone who opens the link gets it.
+    const theirs = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const guest = await theirs.newPage();
+    await join(guest, link);
+    expect(await role(guest)).toBe('editor');
+    await theirs.close();
+    expect(errors).toEqual([]);
   });
 
   test('a view link from the Share dialog lets a guest read the comments and write none', async ({

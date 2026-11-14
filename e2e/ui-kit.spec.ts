@@ -939,6 +939,11 @@ test.describe('names', () => {
     expect(await edgeContrast(search)).toBeGreaterThanOrEqual(3);
     expect(await edgeContrast(page.locator('.topbar .seg__thumb'))).toBeGreaterThanOrEqual(3);
     expect(await edgeContrast(row(page, 'Align').locator('.seg__thumb'))).toBeGreaterThanOrEqual(3);
+    // The chosen segment answers a press in the time everything else that is pressed takes.
+    const slide = await page
+      .locator('.topbar .seg__thumb')
+      .evaluate((el) => getComputedStyle(el).transitionDuration.split(',').map(parseFloat));
+    expect(Math.max(...slide)).toBeLessThanOrEqual(0.2);
     await page.evaluate(() => (window as any).tandem.ui.getState().set({ commentsOpen: true }));
     const composer = page.locator('.composer textarea');
     expect(await edgeContrast(composer)).toBeGreaterThanOrEqual(3);
@@ -1626,6 +1631,105 @@ test.describe('command palette', () => {
     await input.fill('toggle snapping');
     await expect(page.locator('.palette').getByRole('status')).toHaveText('1 command');
   });
+
+  test('Enter runs the first match of what was typed, however soon it follows the last letter', async ({
+    page,
+  }) => {
+    await sample(page);
+    const before = await uiState(page);
+    /** Text and Enter with nothing in between: keys that queued up while the page was busy. */
+    const typeAndEnter = (text: string) =>
+      page.locator('.palette input').evaluate((input: HTMLInputElement, text) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      }, text);
+    const options = page.getByRole('listbox', { name: 'Commands' }).getByRole('option');
+
+    // The highlight was walked down a longer list with the arrow keys.
+    await page.keyboard.press('Control+k');
+    await page.keyboard.type('tool');
+    expect(await options.count()).toBeGreaterThan(3);
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await expect(options.nth(3)).toHaveAttribute('aria-selected', 'true');
+    await typeAndEnter('toggle snapping');
+    await expect(page.locator('.palette')).toHaveCount(0);
+    expect(await uiState(page)).toEqual({ ...before, snapping: !before.snapping });
+
+    // Or it lay where the pointer had been moved over the list.
+    await page.keyboard.press('Control+k');
+    await page.keyboard.type('tool');
+    const fourth = (await options.nth(3).boundingBox())!;
+    await page.mouse.move(fourth.x + 40, fourth.y + fourth.height / 2 - 2);
+    await page.mouse.move(fourth.x + 40, fourth.y + fourth.height / 2);
+    await expect(options.nth(3)).toHaveAttribute('aria-selected', 'true');
+    await typeAndEnter('blade tool');
+    await expect(page.locator('.palette')).toHaveCount(0);
+    expect(await uiState(page)).toEqual({ dialog: null, snapping: !before.snapping, tool: 'blade' });
+
+    // Typed and pressed key by key, the same.
+    await page.keyboard.press('Control+k');
+    await page.keyboard.type('select');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await expect(options.nth(2)).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.type('ion tool');
+    await expect(options.first()).toHaveText(/^Selection tool/);
+    await expect(options.first()).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Enter');
+    await expect.poll(async () => (await uiState(page)).tool).toBe('select');
+    await expect(page.locator('.palette')).toHaveCount(0);
+  });
+
+  test('a command that opens a dialog leaves the keyboard in it, and one that asks for files gets its chooser', async ({
+    page,
+  }) => {
+    const problems = trackProblems(page);
+    await sample(page);
+    const tool = page.getByRole('button', { name: 'Selection tool' });
+    await tool.focus();
+
+    await page.keyboard.press('Control+k');
+    await page.keyboard.type('project settings');
+    await expect(page.locator('.palette__item')).toHaveCount(1);
+    // The key is held: the press that ran the command neither answers the dialog nor runs it twice.
+    await page.keyboard.down('Enter');
+    const settings = page.getByRole('dialog', { name: 'Project settings' });
+    await expect(settings).toBeVisible();
+    await expect(page.locator('.palette')).toHaveCount(0);
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+    await expect(settings).toBeVisible();
+    expect(await focusIsIn(page, '[role="dialog"]')).toBe(true);
+    expect(await rootInert(page)).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(settings).toHaveCount(0);
+    await expect(tool).toBeFocused();
+
+    // A browser opens a file chooser only for the person's own press, so the command has to ask
+    // while that press is still being handled: note what is going on when it does.
+    await page.evaluate(() => {
+      const click = HTMLInputElement.prototype.click;
+      HTMLInputElement.prototype.click = function (this: HTMLInputElement) {
+        if (this.type === 'file') (window as any).__askedDuring = window.event?.type ?? 'no event';
+        click.call(this);
+      };
+    });
+    await page.keyboard.press('Control+k');
+    await page.keyboard.type('import media');
+    await expect(page.locator('.palette__item').first()).toHaveText(/^Import media/);
+    await expect(page.locator('.palette__item').first()).toHaveAttribute('data-active', 'true');
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.keyboard.press('Enter')]);
+    expect(chooser.isMultiple()).toBe(true);
+    expect(await page.evaluate(() => (window as any).__askedDuring)).toBe('keydown');
+    await expect(page.locator('.palette')).toHaveCount(0);
+    await expect(tool).toBeFocused();
+    await chooser.setFiles([]);
+    expect(problems).toEqual([]);
+  });
 });
 
 test.describe('confirmation dialog', () => {
@@ -1823,6 +1927,61 @@ test.describe('shortcut sheet and empty states', () => {
     // No key is shown by its internal name (those are lower-case words such as "quote").
     const labels = await sheet.locator('.kbd').allTextContents();
     expect(labels.filter((l) => /^[A-Z]{4,}$/.test(l))).toEqual([]);
+  });
+
+  test('the sheet lists what is done with the mouse and the keys the source monitor takes', async ({
+    page,
+  }) => {
+    await sample(page);
+    await page.keyboard.press('Shift+?');
+    const sheet = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    await expect(sheet).toBeVisible();
+    /** The rows under a heading: what is done, and the keys or the gesture that does it. */
+    const rows = (heading: string): Promise<[string, string][]> =>
+      sheet
+        .locator('section', { has: page.getByRole('heading', { name: heading, exact: true }) })
+        .locator('.shortcut')
+        .evaluateAll((rows) =>
+          rows.map((row) => {
+            const keys = Array.from(row.querySelectorAll('.kbd'), (key) => key.textContent);
+            return [
+              row.firstElementChild!.textContent!,
+              keys.length ? keys.join(' ') : row.lastElementChild!.textContent!,
+            ];
+          }),
+        );
+
+    // Comma, period and the marking keys do something else while the monitor is open.
+    expect(await rows('Source monitor')).toEqual([
+      ['Insert', ','],
+      ['Add to timeline', '.'],
+      ['Mark in', 'I'],
+      ['Mark out', 'O'],
+      ['Go to in', 'Shift I'],
+      ['Go to out', 'Shift O'],
+      ['Clear in and out', 'Alt X'],
+      ['Close', 'Esc'],
+    ]);
+    const mouse = new Map(await rows('Mouse'));
+    expect(mouse.get('Roll edit')).toBe('Ctrl / ⌘ + drag cut');
+    expect(mouse.get('Split edit')).toBe('Linked selection off, Ctrl / ⌘ + drag cut');
+    expect(mouse.get('Insert between clips')).toBe('Ctrl / ⌘ + drop');
+    expect(mouse.get('Replace a clip’s media')).toBe('Alt + drop a file on it');
+    expect(mouse.get('Move a keyframe')).toBe('Drag its mark on the selected clip');
+
+    // Every row is one line: what is done on the left, how on the right, nothing cut off.
+    const crowded = await sheet
+      .locator('.shortcut')
+      .evaluateAll((rows) =>
+        rows
+          .filter(
+            (row) =>
+              row.scrollWidth > row.clientWidth ||
+              Array.from(row.children).some((half) => half.getBoundingClientRect().height > row.clientHeight),
+          )
+          .map((row) => row.textContent),
+      );
+    expect(crowded).toEqual([]);
   });
 
   test('the button in an empty media pool keeps its own icon', async ({ page }) => {

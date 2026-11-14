@@ -5,6 +5,10 @@
  * generic runner (packages/engine/src/gl/effectRunner.ts) that compiles and executes them, which
  * means adding an effect is a matter of appending an entry here — no engine or UI changes needed.
  *
+ * Two places outside the editor name or count the effects as well, and have to follow: the website
+ * (CATALOGUE in apps/site/src/sections/Effects.tsx) and the feature list of README.md.
+ * apps/site/test/catalogue.test.ts fails, and says which of them it wants, until they do.
+ *
  * See `glsl.ts` for the shader conventions (premultiplied alpha, working encoding, top-left UVs).
  */
 import type { EffectInstance, ParamValue } from './types';

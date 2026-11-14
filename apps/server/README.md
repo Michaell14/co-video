@@ -181,9 +181,10 @@ after 80,000 edits.
 
 - An update that would take a document over its limit is not applied. The sender gets
   `the project document has reached the size this server allows` and close code `1009`; everyone else
-  keeps the document as it was. The editor reconnects and offers the same change again, with the same
-  result, until the limit is raised. An update is judged by what it adds, also when it deletes more
-  than that: replacing most of a document that is over half full does not fit.
+  keeps the document as it was. The editor tells the person (its top bar reads “Not saving to the
+  server”, with the reason), keeps the change on the device and offers it again once a minute, with
+  the same result until the limit is raised. An update is judged by what it adds, also when it
+  deletes more than that: replacing most of a document that is over half full does not fit.
 - All documents in memory together stay within `MAX_OPEN_DOC_BYTES` (and one struct per 16 bytes of
   it). When that is used up, further projects cannot be opened (the upgrade is refused with `503`) and
   open ones take no changes that need more, until rooms are unloaded. The sender of such a change gets
@@ -240,6 +241,13 @@ dropped, and synchronises from scratch when it reconnects.
 refused before the handshake. A full room still admits a participant who outranks someone in it
 (viewer < commenter < editor < owner): the most recent connection of the lowest role below theirs is
 closed (code `1013`) to make way.
+
+A heartbeat every 30 s ends connections that went away without closing. A connection with nothing
+waiting to be sent to it is kept if it answered the last ping or sent anything at all since, and
+for two heartbeats after the last of what it was sent has left the server. One that still has
+something waiting is kept for as long as it takes some of it between one heartbeat and the next,
+however slowly, and for nothing else: a client that sends but does not read is closed at the second
+heartbeat.
 
 ## Security model
 
@@ -342,5 +350,6 @@ What it does **not** do — know this before exposing a server:
   `GET /api/projects/:id` first if you need to tell a bad link from a busy server.
 - WebSocket close codes the server uses: `1001` shutting down, `1007` malformed message, `1009`
   message too large or document full, `1012` room restarting, `1013` place given to someone of a
-  higher role. Before `1007` and `1009` it sends `{ "type": "error", "message": … }`. The same control
+  higher role. Before `1007` and `1009` it sends `{ "type": "error", "message": … }`, except to a
+  connection that sent a message larger than it may: that one is cut off unread. The same control
   message without a close says that a presence update was skipped.
