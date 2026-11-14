@@ -111,6 +111,15 @@ async function saveToDevice(
   }
 }
 
+/**
+ * Whether a refusal is the collaboration server's own (`{ "error": … }`), and not the error page
+ * of whatever stands in front of it, which knows nothing of what the server holds.
+ */
+async function saidByServer(res: Response): Promise<boolean> {
+  const body: unknown = await res.json().catch(() => null);
+  return typeof (body as { error?: unknown } | null)?.error === 'string';
+}
+
 export interface RemoteAccess {
   projectId: string;
   token: string;
@@ -138,6 +147,12 @@ export class MediaStore {
   onUploaded: (assetId: string) => void = () => {};
   /** Called when an asset's proxy appears or goes away. */
   onProxy: (assetId: string) => void = () => {};
+  /**
+   * Called when the server says that it does not hold a file it was asked for as one the project
+   * calls uploaded. Answers whether the project has been put right about it: then the download
+   * did not fail, there simply was nothing to download.
+   */
+  onMissing: (assetId: string) => boolean = () => false;
 
   constructor(private readonly projectId: string) {}
 
@@ -552,6 +567,10 @@ export class MediaStore {
     try {
       this.patch(assetId, { downloading: 0, transferError: null });
       const res = await fetch(api.mediaUrl(remote.projectId, assetId, remote.token), { signal: ctrl.signal });
+      if (res.status === 404 && (await saidByServer(res)) && this.onMissing(assetId)) {
+        this.patch(assetId, { downloading: null });
+        return 'done';
+      }
       if (!res.ok || !res.body) {
         const message = `Download failed (${res.status})`;
         throw isRefusal(res.status) ? new TransferRefused(message) : new Error(message);

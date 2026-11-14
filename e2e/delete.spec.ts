@@ -695,3 +695,60 @@ test.describe('what a device keeps of a project that is deleted from it', () => 
     expect(databases.filter((name) => name?.includes(projectId))).toEqual([]);
   });
 });
+
+test.describe('media that has left the server', () => {
+  test('is said to be offline, and is uploaded again by whoever still has it', async ({ page, browser }) => {
+    await noReloads(page);
+    const project = await sharedProject(page, 'Swept');
+    await importFixtures(page, ['tone.ogg']);
+    await page.waitForFunction(() =>
+      Object.values((window as any).tandem.session.store.get().assets).every((a: any) => a.uploaded),
+    );
+    const link = await inviteLink(page, 'editor');
+    const assetId: string = await page.evaluate(
+      () => Object.keys((window as any).tandem.session.store.get().assets)[0],
+    );
+
+    // The one person who has the file goes home, and the file leaves the server: by an editor's
+    // own request here, as it does by itself when nothing has referred to it for long enough.
+    await goHome(page);
+    const removed = await page.evaluate(
+      async ({ project, assetId }) =>
+        (
+          await fetch(`/api/projects/${project.id}/media/${assetId}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${project.token}` },
+          })
+        ).status,
+      { project, assetId },
+    );
+    expect(removed).toBe(204);
+
+    // The project still calls the file uploaded. Someone who opens it now finds out that it is
+    // not, and is told what is true: the media is offline, not that a download failed.
+    const context = await browser.newContext();
+    const guest = await context.newPage();
+    await join(guest, link);
+    const file = guest.locator('.pool .asset');
+    await expect(file).toHaveAttribute('data-offline', 'true');
+    const flags = (p: Page): Promise<boolean[]> =>
+      p.evaluate(() =>
+        (Object.values((window as any).tandem.session.store.get().assets) as any[]).map((a) => a.uploaded),
+      );
+    expect(await flags(guest)).toEqual([false]);
+    await expect(file.locator('.asset__retry')).toHaveCount(0);
+    await file.locator('.asset__status span').hover();
+    await expect(guest.locator('.tip')).toHaveText('Media offline: not on this device or the server');
+
+    // The owner comes back with the file on their device. It goes up again like a new one, and
+    // the guest gets it.
+    await card(page, 'Swept').locator('.pcard__open').click();
+    await editorReady(page);
+    await expect.poll(() => flags(guest), { timeout: 30_000 }).toEqual([true]);
+    await expect(file).toHaveAttribute('data-offline', 'false');
+    await guest.waitForFunction((id) => (window as any).tandem.session.media.get(id).local, assetId, {
+      timeout: 30_000,
+    });
+    await context.close();
+  });
+});

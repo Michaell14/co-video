@@ -445,6 +445,7 @@ export class Session {
       }
     };
     this.media.onLocal = (assetId) => this.refreshMedia(assetId);
+    this.media.onMissing = (assetId) => this.serverLacks(assetId);
     this.media.onProxy = (assetId) => {
       if (this.meta.proxies) this.refreshMedia(assetId);
     };
@@ -1304,6 +1305,22 @@ export class Session {
       this.store.commit([{ op: 'updateAsset', id: assetId, patch: { uploaded: true } }], { undoable: false });
     }
     return 'done';
+  }
+
+  /**
+   * The server does not hold a file that the project says is uploaded. It clears away media that
+   * nothing has referred to for long enough, and an asset can come back later than that: by an
+   * undo in a session that was open all the while, or with a project file. Someone who may edit
+   * takes the flag back. Everyone is then told the truth, that the media is offline, and whoever
+   * still has the file on their device uploads it again, as they would a new one. Returns whether
+   * the flag was taken back.
+   */
+  private serverLacks(assetId: string): boolean {
+    if (this.destroyed || !this.canEdit || !this.store.get().assets[assetId]?.uploaded) return false;
+    // The server has just said no: it is not asked again until the project says otherwise.
+    this.notHeld.add(assetId);
+    this.store.commit([{ op: 'updateAsset', id: assetId, patch: { uploaded: false } }], { undoable: false });
+    return true;
   }
 
   /** Try an asset's failed upload or download again now instead of when its turn comes round. */
