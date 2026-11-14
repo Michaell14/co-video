@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { makeClip, ProjectStore, removeTrack, tracksOf, trackLabel, addTrack } from '@tandem/core';
-import { discardEdits, restoreEdits } from '../src/features/timeline/lostClips';
+import { discardEdits, restoreEdits } from '../src/features/timeline/lostClipEdits';
 
 /** Two people in one project who exchange what they did only when `sync` is called. */
 function pair() {

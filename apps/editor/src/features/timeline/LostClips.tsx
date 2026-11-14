@@ -3,13 +3,13 @@ import type { Clip } from '@tandem/core';
 import { useSession, useSessionMeta } from '../../session/hooks';
 import { commit } from '../../state/props';
 import { Button } from '../../ui/core';
-import { discardEdits, restoreEdits } from './lostClips';
+import { discardEdits, restoreEdits } from './lostClipEdits';
 
 const sameClips = (a: readonly Clip[], b: readonly Clip[]): boolean =>
   a.length === b.length && a.every((c, i) => c.id === b[i].id);
 
 /**
- * Says so when the project holds clips that no track shows (see `lostClips`), and offers to put
+ * Says so when the project holds clips that no track shows (see `lostClipEdits`), and offers to put
  * them on a track again or to remove them. Only to people who can do either.
  */
 export function LostClips() {
