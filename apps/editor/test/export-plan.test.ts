@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { ExportWarning } from '@tandem/engine';
-import { groupProblems, hasUnseen, usableCodec } from '../src/features/export/plan';
+import {
+  describeBitrate,
+  groupProblems,
+  hasUnseen,
+  highestAccepted,
+  refusalNotice,
+  usableCodec,
+} from '../src/features/export/plan';
 
 const warning = (clipId: string, assetId: string, frame: number, init: Partial<ExportWarning> = {}) =>
   ({
@@ -77,5 +84,65 @@ describe('hasUnseen', () => {
     expect(hasUnseen([...shown, warning('c3', 'a.mp4', 90)], shown)).toBe(true);
     expect(hasUnseen([warning('c1', 'a.mp4', 0, { reason: 'undecodable' })], shown)).toBe(true);
     expect(hasUnseen(shown, [])).toBe(true);
+  });
+});
+
+describe('highestAccepted', () => {
+  /** An encoder that takes up to `ceiling`, and the numbers it was asked about. */
+  const encoder = (ceiling: number) => {
+    const asked: number[] = [];
+    return { asked, accepts: async (n: number) => (asked.push(n), n <= ceiling) };
+  };
+
+  it('finds the ceiling under a number that is refused', async () => {
+    for (const ceiling of [2, 3, 1999, 2000, 2881, 3999]) {
+      expect(await highestAccepted(2, 4000, encoder(ceiling).accepts)).toBe(ceiling);
+    }
+  });
+
+  it('asks about a handful of numbers, not about each', async () => {
+    const { asked, accepts } = encoder(2880);
+    await highestAccepted(2, 4000, accepts);
+    expect(asked.length).toBeLessThanOrEqual(13);
+    expect(new Set(asked).size).toBe(asked.length);
+  });
+
+  it('has none where even the lowest is refused, or there is nothing below the refused number', async () => {
+    expect(await highestAccepted(2, 4000, encoder(1).accepts)).toBeNull();
+    const { asked, accepts } = encoder(100);
+    expect(await highestAccepted(2, 2, accepts)).toBeNull();
+    expect(asked).toEqual([]);
+  });
+});
+
+describe('what the dialog says about settings the encoder refuses', () => {
+  const asked = { codec: 'H.264 (AVC)', size: '320×180', bitrate: 400e6, hardware: 'no-preference' } as const;
+
+  it('writes a bitrate the way its field shows it', () => {
+    expect(describeBitrate(200e6)).toBe('200 Mbps');
+    expect(describeBitrate(12_500_000)).toBe('12.5 Mbps');
+    expect(describeBitrate(4_099_999)).toBe('4.1 Mbps');
+  });
+
+  it('names the ceiling for this codec and size where the bitrate is over it', () => {
+    expect(refusalNotice({ accepted: false, limit: 200e6, acceleration: false }, asked)).toBe(
+      'H.264 (AVC) at 320×180 takes at most 200 Mbps in this browser. Lower the bitrate, or choose another codec.',
+    );
+  });
+
+  it('points at the choice of encoder where that is what stands in the way', () => {
+    const verdict = { accepted: false, limit: null, acceleration: true } as const;
+    expect(refusalNotice(verdict, { ...asked, hardware: 'prefer-hardware' })).toBe(
+      'This browser has no GPU encoder for H.264 (AVC) at 320×180. Set Acceleration to Automatic.',
+    );
+    expect(refusalNotice(verdict, { ...asked, hardware: 'prefer-software' })).toBe(
+      'This browser has no software encoder for H.264 (AVC) at 320×180. Set Acceleration to Automatic.',
+    );
+  });
+
+  it('says what was refused where neither explains it', () => {
+    expect(refusalNotice({ accepted: false, limit: null, acceleration: false }, asked)).toBe(
+      'This browser’s H.264 (AVC) encoder does not take 320×180 at 400 Mbps. Choose another codec, size or frame rate.',
+    );
   });
 });

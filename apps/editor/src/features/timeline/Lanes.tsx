@@ -71,6 +71,7 @@ import { useUI } from '../../state/ui';
 import { openContextMenu, toast, type MenuEntry } from '../../ui/core';
 import { insideRect, onDrop, useDrag, type DragPayload } from '../../ui/dnd';
 import { usingKeyboard } from '../../ui/layers';
+import { editEntry, useCanEdit } from './access';
 import { describeClip, describeSelection } from './describe';
 import { EdgeScroller, laneAxis, timeAxis } from './edgeScroll';
 import { keyframeRange, keyframeTimes, moveKeyframes, removeKeyframes } from './keyframes';
@@ -85,6 +86,16 @@ import {
   NARROW_W,
   type Lane,
 } from './layout';
+import {
+  clipBody,
+  levelAt,
+  levelDragged,
+  levelHit,
+  levelPatch,
+  levelText,
+  type ClipBody,
+  type LevelHit,
+} from './levelLine';
 import { insertMove } from './moves';
 
 const ICONS: Record<ClipType, typeof Film> = {
@@ -165,6 +176,27 @@ type Drag =
       f0: number;
       x0: number;
       moved: boolean;
+    }
+  | {
+      kind: 'level';
+      id: ID;
+      /** The volume keyframe that is held, by its time. Null when it is the level of the whole clip. */
+      t: number | null;
+      /** That keyframe was made by this press. */
+      added: boolean;
+      /** The level when it was taken hold of and the level it has been taken to, in decibels. */
+      from: number;
+      db: number;
+      x0: number;
+      y0: number;
+      body: ClipBody;
+      moved: boolean;
+      /**
+       * What the press turns into when it goes sideways, or nowhere: the move, or the click, that
+       * it would have been anywhere else on the clip. The line of a clip runs right where the
+       * clip is taken hold of, and must not be in the way of that.
+       */
+      otherwise: Extract<Drag, { kind: 'move' }> | null;
     }
   | { kind: 'marquee'; x0: number; y0: number; keep: ID[]; moved: boolean; frame: number }
   | { kind: 'pan'; x0: number; scroll0: number };
@@ -254,6 +286,7 @@ const standingCuts = (p: Project, cuts: Cut[]): Cut[] =>
 
 export function Lanes({ lanes, height, width, live }: Props) {
   const session = useSession();
+  const editable = useCanEdit();
   const ppf = useUI((s) => s.ppf);
   const scrollX = useUI((s) => s.scrollX);
   const selection = useUI((s) => s.selection);
@@ -461,6 +494,31 @@ export function Lanes({ lanes, height, width, live }: Props) {
     else ui().set({ preview: edits.length ? applyEdits(store(), edits) : null, snapLine: line });
   };
 
+  /**
+   * What of a level line is under the pointer, where the line can be taken hold of: on a selected
+   * sound clip of an unlocked track, with the selection tool, by someone who may edit. The line
+   * of a clip that is not selected is left alone, so that a clip is taken from anywhere on it as
+   * it always was, and selected first to work on its level.
+   */
+  const levelUnder = (e: React.PointerEvent): { id: ID; hit: LevelHit; body: ClipBody } | null => {
+    if (tool !== 'select' || !session.canEdit) return null;
+    const id = (e.target as HTMLElement).closest<HTMLElement>('[data-clip]')?.dataset.clip;
+    const clip = id ? store().clips[id] : undefined;
+    const lane = clip && lanes.find((l) => l.track.id === clip.trackId);
+    if (!clip || !lane || lane.track.locked || !selectedSet.has(clip.id)) return null;
+    const body = clipBody(lane.height);
+    const hit = levelHit(clip, toFrame(e.clientX) - clip.start, toY(e.clientY) - lane.top, body, ui().ppf);
+    return hit && { id: clip.id, hit, body };
+  };
+
+  /** Let the pointer show that it is on a level line, which it moves or, with `adding`, adds a keyframe to. */
+  const showLevel = (on: boolean, adding = false) => {
+    const el = ref.current;
+    if (!el) return;
+    if (on) el.dataset.level = adding ? 'add' : 'move';
+    else delete el.dataset.level;
+  };
+
   // ─────────────────────────────────────────────────────── move planning ──
   const planMove = (d: Extract<Drag, { kind: 'move' }>, e: Pointer) => {
     const base = store();
@@ -651,6 +709,32 @@ export function Lanes({ lanes, height, width, live }: Props) {
         };
         return;
       }
+      // The level line of a sound clip. On a keyframe of it, or with Ctrl/⌘, which makes one, the
+      // press is for that keyframe and nothing else.
+      const level = handle || e.shiftKey ? null : levelUnder(e);
+      const adding = e.ctrlKey || e.metaKey;
+      if (level && (level.hit.key !== null || adding)) {
+        const t = level.hit.t;
+        const added = !clip.keyframes.volume?.some((k) => k.t === t);
+        const from = levelAt(clip, t);
+        const { clientX: x0, clientY: y0 } = e;
+        drag.current = {
+          kind: 'level',
+          id: clip.id,
+          t,
+          added,
+          from,
+          db: from,
+          x0,
+          y0,
+          moved: false,
+          body: level.body,
+          otherwise: null,
+        };
+        showLevel(true);
+        if (added) setPreview([{ op: 'updateClip', id: clip.id, patch: levelPatch(clip, t, from) }]);
+        return;
+      }
       // Body: select and maybe move.
       let reselect = false;
       if (e.shiftKey || e.metaKey || e.ctrlKey) {
@@ -671,6 +755,23 @@ export function Lanes({ lanes, height, width, live }: Props) {
           y0: e.clientY,
           moved: false,
           reselect,
+        };
+      }
+      // On the line of a clip without volume keyframes the press sets the clip's level, if it
+      // goes up or down: which it is shows once it has gone somewhere.
+      if (level && !clip.keyframes.volume?.length) {
+        drag.current = {
+          kind: 'level',
+          id: clip.id,
+          t: null,
+          added: false,
+          from: clip.volume,
+          db: clip.volume,
+          x0: e.clientX,
+          y0: e.clientY,
+          moved: false,
+          body: level.body,
+          otherwise: drag.current?.kind === 'move' ? drag.current : null,
         };
       }
       return;
@@ -797,6 +898,26 @@ export function Lanes({ lanes, height, width, live }: Props) {
         d.t = t;
         return 'time';
       }
+      case 'level': {
+        const c = p.clips[d.id];
+        if (!c) return 'none';
+        if (!d.moved) {
+          const dx = e.clientX - d.x0;
+          const dy = e.clientY - d.y0;
+          if (Math.hypot(dx, dy) < 4) return 'none';
+          if (d.otherwise && Math.abs(dx) > Math.abs(dy)) {
+            drag.current = d.otherwise;
+            showLevel(false);
+            return dragTo(e);
+          }
+          d.moved = true;
+          showLevel(true);
+        }
+        d.db = levelDragged(d.from, e.clientY - d.y0, d.body);
+        setPreview([{ op: 'updateClip', id: d.id, patch: levelPatch(c, d.t, d.db) }]);
+        showMode(levelText(d.db), e);
+        return 'none';
+      }
       case 'trans': {
         const c = p.clips[d.id];
         const t = c && (d.side === 'in' ? c.transIn : c.transOut);
@@ -855,15 +976,25 @@ export function Lanes({ lanes, height, width, live }: Props) {
       session.setPresence({ cursor: { area: 'timeline', x: toFrame(e.clientX), y: lane?.track.id ?? '' } });
     }
     if (tool === 'blade') showCut(e);
-    if (!drag.current) return;
+    if (!drag.current) {
+      // The pointer says what a press here would take hold of.
+      const level = (e.target as HTMLElement).closest('[data-handle]') || e.shiftKey ? null : levelUnder(e);
+      const adding = e.ctrlKey || e.metaKey;
+      const keyed = !!level && !!store().clips[level.id]?.keyframes.volume?.length;
+      showLevel(!!level && (level.hit.key !== null || !keyed || adding), adding && level?.hit.key === null);
+      return;
+    }
     pointer.current = pointerOf(e);
     follow(pointer.current);
   };
 
   const finish = (e: React.PointerEvent | null, cancelled: boolean) => {
-    const d = drag.current;
+    let d = drag.current;
     drag.current = null;
     if (!d) return;
+    // A press on the level line that went nowhere was a click on the clip.
+    if (d.kind === 'level' && !d.moved && d.otherwise) d = d.otherwise;
+    showLevel(false);
     pointer.current = null;
     scroller.stop();
     noteScroll();
@@ -927,6 +1058,15 @@ export function Lanes({ lanes, height, width, live }: Props) {
       case 'keyframe':
         if (!d.moved && !cancelled && p.clips[d.id]) cmd.seek(p.clips[d.id].start + d.t, false);
         break;
+      case 'level': {
+        const c = p.clips[d.id];
+        if (cancelled || !c) break;
+        // Planned again on the clip as it is now, like a trim. A keyframe that was only pressed
+        // is where the playhead goes; one the press made is kept as it was made.
+        if (d.moved || d.added) commit([{ op: 'updateClip', id: d.id, patch: levelPatch(c, d.t, d.db) }]);
+        else if (d.t !== null) cmd.seek(c.start + d.t, false);
+        break;
+      }
       case 'marquee':
         setMarquee(null);
         if (!d.moved && !cancelled) {
@@ -1001,7 +1141,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
       clientX: clamp(r.left, view.left, view.right) + 8,
       clientY: clamp(r.top + r.height / 2, view.top, view.bottom),
     };
-    openContextMenu({ ...at, preventDefault: () => {} }, clipMenu(store(), id, at));
+    openContextMenu({ ...at, preventDefault: () => {} }, clipMenu(store(), id, at, session.canEdit));
   };
 
   /**
@@ -1200,10 +1340,11 @@ export function Lanes({ lanes, height, width, live }: Props) {
       if (held.alt && over && fits) {
         return { ...none, hint: { clipId: over.id, side: 'all' }, replace: over.id, mode: 'Replace' };
       }
-      const len =
-        asset.kind === 'image'
-          ? Math.round(5 * (p.settings.fpsNum / p.settings.fpsDen))
-          : Math.round(asset.duration * (p.settings.fpsNum / p.settings.fpsDen));
+      // A drag from the source monitor carries the stretch that is marked there; a still is as
+      // long as stills are laid in, whatever the drag says.
+      const timed = asset.kind !== 'image';
+      const stretch = timed ? (payload.sourceOut ?? asset.duration) - (payload.sourceIn ?? 0) : 5;
+      const len = Math.round(stretch * (p.settings.fpsNum / p.settings.fpsDen));
       const s = snap(p, new Set(), [frame, frame + len], false);
       frame = Math.max(0, Math.round(frame + s.adjust));
       const visual = asset.kind !== 'audio';
@@ -1212,6 +1353,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
         videoTrackId:
           visual && lane?.track.kind === 'video' && !lane.track.locked ? lane.track.id : undefined,
         audioTrackId: lane?.track.kind === 'audio' && !lane.track.locked ? lane.track.id : undefined,
+        sourceIn: payload.sourceIn,
+        sourceOut: payload.sourceOut,
       };
       if (!held.insert) return placed((on) => addAssetToTimeline(on, asset, target), s.line);
       // With Ctrl or ⌘ what is there makes way: everything from the frame on moves later by the
@@ -1278,7 +1421,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
     if (plan.opened) reveal.current = null;
     endDrop();
     if (plan.replace && payload.kind === 'asset') {
-      cmd.replaceClip(plan.replace, payload.assetId);
+      cmd.replaceClip(plan.replace, payload.assetId, payload.sourceIn);
       return true;
     }
     if (plan.hint) {
@@ -1365,6 +1508,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
       role="group"
       aria-label="Tracks"
       data-tool={tool}
+      data-readonly={!editable || undefined}
       style={{ height, cursor }}
       onKeyDown={onKeyDown}
       onPointerDown={onPointerDown}
@@ -1374,6 +1518,7 @@ export function Lanes({ lanes, height, width, live }: Props) {
       onPointerLeave={() => {
         session.setPresence({ cursor: null });
         if (blade.current) blade.current.style.visibility = 'hidden';
+        if (!drag.current) showLevel(false);
       }}
       onDoubleClick={(e) => {
         // The lanes hold the pointer from the press on, so the event is aimed at them, not at the
@@ -1397,14 +1542,14 @@ export function Lanes({ lanes, height, width, live }: Props) {
           const t = Number(mark.dataset.t);
           openContextMenu(e, [
             { label: 'Go to keyframe', onSelect: () => cmd.seek((store().clips[id]?.start ?? 0) + t, false) },
-            {
+            editEntry(session.canEdit)({
               label: 'Delete keyframe',
               danger: true,
               onSelect: () => {
                 const c = store().clips[id];
                 if (c) commit([{ op: 'updateClip', id, patch: removeKeyframes(c, t) }]);
               },
-            },
+            }),
           ]);
           return;
         }
@@ -1412,7 +1557,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
         const lane = laneAt(lanes, toY(e.clientY));
         const at = Math.max(0, Math.floor(toFrame(e.clientX)));
         const where = { clientX: e.clientX, clientY: e.clientY };
-        openContextMenu(e, id ? clipMenu(store(), id, where) : laneMenu(store(), lane, at));
+        openContextMenu(
+          e,
+          id ? clipMenu(store(), id, where, session.canEdit) : laneMenu(store(), lane, at, session.canEdit),
+        );
       }}
     >
       {lanes.map((lane) => {
@@ -1604,10 +1752,15 @@ const further = (label: string, at: MenuAt, items: () => MenuEntry[]): MenuEntry
   onSelect: () => setTimeout(() => openContextMenu({ ...at, preventDefault: () => {} }, items())),
 });
 
-function clipMenu(p: Project, id: ID, at: MenuAt): MenuEntry[] {
+/**
+ * The menu of a clip. What changes the project cannot be chosen by someone who may not edit;
+ * copying, and finding the clip's file or its place, is for anyone.
+ */
+function clipMenu(p: Project, id: ID, at: MenuAt, editable: boolean): MenuEntry[] {
   const c = p.clips[id];
   if (!c) return [];
   const ui = useUI.getState();
+  const edit = editEntry(editable);
   const timed = (c.type === 'video' || c.type === 'audio') && !c.freeze;
   const picture = c.type !== 'audio';
   // The copied attributes as the menu has them when it is opened, not as they were under this one.
@@ -1617,26 +1770,29 @@ function clipMenu(p: Project, id: ID, at: MenuAt): MenuEntry[] {
       { label: 'Copy attributes', keys: shortcutOf('copy-attrs'), onSelect: () => cmd.copyAttributes() },
       'separator',
       { heading: 'Paste attributes' },
-      {
+      edit({
         label: 'Everything',
         keys: shortcutOf('paste-attrs'),
         onSelect: () => cmd.pasteAttributes('all'),
         disabled: !copied,
-      },
-      { label: 'Grade only', onSelect: () => cmd.pasteAttributes('grade'), disabled: !copied?.look },
-      { label: 'Effects only', onSelect: () => cmd.pasteAttributes('effects'), disabled: !copied?.look },
-      {
+      }),
+      edit({ label: 'Grade only', onSelect: () => cmd.pasteAttributes('grade'), disabled: !copied?.look }),
+      edit({
+        label: 'Effects only',
+        onSelect: () => cmd.pasteAttributes('effects'),
+        disabled: !copied?.look,
+      }),
+      edit({
         label: 'Transform and crop only',
         onSelect: () => cmd.pasteAttributes('transform'),
         disabled: !copied?.look,
-      },
-      c.type === 'audio'
-        ? {
-            label: 'Volume, pan and fades only',
-            onSelect: () => cmd.pasteAttributes('sound'),
-            disabled: !copied?.sound,
-          }
-        : null,
+      }),
+      c.type === 'audio' &&
+        edit({
+          label: 'Volume, pan and fades only',
+          onSelect: () => cmd.pasteAttributes('sound'),
+          disabled: !copied?.sound,
+        }),
     ];
   };
   const range = (): MenuEntry[] => [
@@ -1644,61 +1800,8 @@ function clipMenu(p: Project, id: ID, at: MenuAt): MenuEntry[] {
     { label: 'Go to in', keys: shortcutOf('go-in'), onSelect: () => cmd.goToRange('in') },
     { label: 'Go to out', keys: shortcutOf('go-out'), onSelect: () => cmd.goToRange('out') },
   ];
-  return [
-    { label: 'Cut', keys: 'mod+x', onSelect: cmd.cut },
-    { label: 'Copy', keys: 'mod+c', onSelect: cmd.copy },
-    { label: 'Paste', keys: 'mod+v', onSelect: cmd.paste, disabled: !ui.clipboard.length },
-    { label: 'Duplicate', keys: 'mod+d', onSelect: cmd.duplicate },
-    'separator',
-    { label: 'Split at playhead', keys: 'mod+b', onSelect: cmd.split },
-    c.type === 'video' && !c.freeze
-      ? { label: 'Freeze frame at playhead', keys: 'shift+f', onSelect: cmd.freezeFrame }
-      : null,
-    { label: 'Delete', keys: 'delete', onSelect: () => cmd.delete(false) },
-    { label: 'Ripple delete', keys: 'shift+delete', onSelect: () => cmd.delete(true) },
-    'separator',
-    c.type === 'text' ? { label: 'Edit text', onSelect: () => cmd.editText(c.id) } : null,
-    c.assetId && p.assets[c.assetId]
-      ? { label: 'Match frame', keys: 'f', onSelect: () => cmd.matchFrame(c.id) }
-      : null,
-    c.assetId && p.assets[c.assetId]
-      ? { label: 'Reveal in media pool', onSelect: () => cmd.revealInPool(c.id) }
-      : null,
-    { label: c.enabled ? 'Disable' : 'Enable', keys: 'd', onSelect: cmd.toggleEnabled },
-    c.linkId
-      ? { label: 'Unlink', icon: <Link2 />, keys: 'mod+shift+g', onSelect: cmd.unlink }
-      : {
-          label: 'Link selected',
-          icon: <Link2 />,
-          keys: 'mod+g',
-          onSelect: cmd.link,
-          disabled: ui.selection.length < 2,
-        },
-    timed
-      ? { label: c.reverse ? 'Play forwards' : 'Reverse', onSelect: () => cmd.setSpeed(c.speed, !c.reverse) }
-      : null,
-    timed ? { label: 'Speed: 50%', onSelect: () => cmd.setSpeed(0.5) } : null,
-    timed ? { label: 'Speed: 100%', onSelect: () => cmd.setSpeed(1) } : null,
-    timed ? { label: 'Speed: 200%', onSelect: () => cmd.setSpeed(2) } : null,
-    c.type === 'audio'
-      ? { label: 'Normalise loudness (−14 LUFS)', onSelect: () => void cmd.normalizeLoudness(-14) }
-      : null,
-    // Only there for a clip that shares frames with another: two people placed them at one moment.
-    overlappingClips(p).has(id)
-      ? { label: 'Move to a free track', onSelect: () => commit(separateClips(p, [id])) }
-      : null,
-    'separator',
-    picture
-      ? {
-          label: 'Add default transition',
-          keys: shortcutOf('default-transition'),
-          onSelect: cmd.addDefaultTransition,
-        }
-      : null,
-    { label: 'Extend edit to playhead', keys: shortcutOf('extend-edit'), onSelect: cmd.extendEdit },
-    // Kept a step away, so that the menu stays short enough to take in at a glance.
-    further('In and out…', at, range),
-    further('Attributes…', at, attributes),
+  const hasFile = !!c.assetId && !!p.assets[c.assetId];
+  const labels: MenuEntry[] = [
     'separator',
     { heading: 'Label' },
     {
@@ -1710,32 +1813,91 @@ function clipMenu(p: Project, id: ID, at: MenuAt): MenuEntry[] {
       })),
     },
   ];
+  return [
+    edit({ label: 'Cut', keys: 'mod+x', onSelect: cmd.cut }),
+    { label: 'Copy', keys: 'mod+c', onSelect: cmd.copy },
+    edit({ label: 'Paste', keys: 'mod+v', onSelect: cmd.paste, disabled: !ui.clipboard.length }),
+    edit({ label: 'Duplicate', keys: 'mod+d', onSelect: cmd.duplicate }),
+    'separator',
+    edit({ label: 'Split at playhead', keys: 'mod+b', onSelect: cmd.split }),
+    c.type === 'video' &&
+      !c.freeze &&
+      edit({ label: 'Freeze frame at playhead', keys: 'shift+f', onSelect: cmd.freezeFrame }),
+    edit({ label: 'Delete', keys: 'delete', onSelect: () => cmd.delete(false) }),
+    edit({ label: 'Ripple delete', keys: 'shift+delete', onSelect: () => cmd.delete(true) }),
+    'separator',
+    c.type === 'text' && edit({ label: 'Edit text', onSelect: () => cmd.editText(c.id) }),
+    hasFile && { label: 'Match frame', keys: 'f', onSelect: () => cmd.matchFrame(c.id) },
+    hasFile && { label: 'Reveal in media pool', onSelect: () => cmd.revealInPool(c.id) },
+    edit({ label: c.enabled ? 'Disable' : 'Enable', keys: 'd', onSelect: cmd.toggleEnabled }),
+    edit(
+      c.linkId
+        ? { label: 'Unlink', icon: <Link2 />, keys: 'mod+shift+g', onSelect: cmd.unlink }
+        : {
+            label: 'Link selected',
+            icon: <Link2 />,
+            keys: 'mod+g',
+            onSelect: cmd.link,
+            disabled: ui.selection.length < 2,
+          },
+    ),
+    timed &&
+      edit({
+        label: c.reverse ? 'Play forwards' : 'Reverse',
+        onSelect: () => cmd.setSpeed(c.speed, !c.reverse),
+      }),
+    timed && edit({ label: 'Speed: 50%', onSelect: () => cmd.setSpeed(0.5) }),
+    timed && edit({ label: 'Speed: 100%', onSelect: () => cmd.setSpeed(1) }),
+    timed && edit({ label: 'Speed: 200%', onSelect: () => cmd.setSpeed(2) }),
+    c.type === 'audio' &&
+      edit({ label: 'Normalise loudness (−14 LUFS)', onSelect: () => void cmd.normalizeLoudness(-14) }),
+    // Only there for a clip that shares frames with another: two people placed them at one moment.
+    overlappingClips(p).has(id) &&
+      edit({ label: 'Move to a free track', onSelect: () => commit(separateClips(p, [id])) }),
+    'separator',
+    picture &&
+      edit({
+        label: 'Add default transition',
+        keys: shortcutOf('default-transition'),
+        onSelect: cmd.addDefaultTransition,
+      }),
+    edit({ label: 'Extend edit to playhead', keys: shortcutOf('extend-edit'), onSelect: cmd.extendEdit }),
+    // Kept a step away, so that the menu stays short enough to take in at a glance.
+    further('In and out…', at, range),
+    further('Attributes…', at, attributes),
+    // A row of colours has no way of showing that none of them can be chosen: it is left out.
+    ...(editable ? labels : []),
+  ];
 }
 
-/** Menu for empty lane space: `lane` and `at` are the track and the frame under the pointer. */
-function laneMenu(p: Project, lane: Lane | null, at: number): MenuEntry[] {
+/**
+ * Menu for empty lane space: `lane` and `at` are the track and the frame under the pointer. All
+ * of it changes the project.
+ */
+function laneMenu(p: Project, lane: Lane | null, at: number, editable: boolean): MenuEntry[] {
   const ui = useUI.getState();
+  const edit = editEntry(editable);
   const gap = lane && !lane.track.locked ? rippleCloseGap(p, lane.track.id, at) : null;
   return [
-    { label: 'Paste', keys: 'mod+v', onSelect: cmd.paste, disabled: !ui.clipboard.length },
-    {
+    edit({ label: 'Paste', keys: 'mod+v', onSelect: cmd.paste, disabled: !ui.clipboard.length }),
+    edit({
       label: 'Paste insert',
       keys: shortcutOf('paste-insert'),
       onSelect: cmd.pasteInsert,
       disabled: !ui.clipboard.length,
-    },
-    {
+    }),
+    edit({
       label: 'Close gap here',
       // A gap that cannot be closed stays on offer: choosing it says why.
       disabled: !lane || !gap || (!gap.edits.length && !gap.refused),
       onSelect: () => lane && cmd.closeGap(lane.track.id, at),
-    },
+    }),
     'separator',
-    { label: 'Add text', keys: 't', onSelect: () => cmd.addTitle() },
-    { label: 'Add adjustment layer', onSelect: cmd.addAdjustment },
+    edit({ label: 'Add text', keys: 't', onSelect: () => cmd.addTitle() }),
+    edit({ label: 'Add adjustment layer', onSelect: cmd.addAdjustment }),
     'separator',
-    { label: 'Add video track', onSelect: () => cmd.addTrack('video') },
-    { label: 'Add audio track', onSelect: () => cmd.addTrack('audio') },
+    edit({ label: 'Add video track', onSelect: () => cmd.addTrack('video') }),
+    edit({ label: 'Add audio track', onSelect: () => cmd.addTrack('audio') }),
   ];
 }
 
@@ -1752,10 +1914,25 @@ interface LaneCanvasProps {
 }
 
 /**
+ * Whether the clips of a lane show the same files, in the same state, in two renders that have
+ * the same clips. The project's list of assets is a new one whenever any file in it changes (an
+ * upload finishes, a poster arrives), and that is no reason to paint a lane that shows none of it.
+ */
+function sameFiles(a: LaneCanvasProps, b: LaneCanvasProps): boolean {
+  if (a.project.assets === b.project.assets && a.offline === b.offline) return true;
+  return a.clips.every(
+    (c) =>
+      !c.assetId ||
+      (a.project.assets[c.assetId] === b.project.assets[c.assetId] &&
+        a.offline.has(c.assetId) === b.offline.has(c.assetId)),
+  );
+}
+
+/**
  * Whether two renders of a lane would paint the same picture. Every commit and every tick of a
  * drag preview makes a new project and a new clip list for every lane, but the store keeps what
- * did not change identical, and the painting reads only the clips, the assets, the frame rate and
- * which of the assets are offline.
+ * did not change identical, and the painting reads only the clips, their assets, the frame rate
+ * and which of those assets are offline.
  */
 function sameLanePicture(a: LaneCanvasProps, b: LaneCanvasProps): boolean {
   return (
@@ -1763,11 +1940,10 @@ function sameLanePicture(a: LaneCanvasProps, b: LaneCanvasProps): boolean {
     a.height === b.height &&
     a.scrollX === b.scrollX &&
     a.ppf === b.ppf &&
-    a.offline === b.offline &&
-    a.project.assets === b.project.assets &&
     a.project.settings === b.project.settings &&
     a.clips.length === b.clips.length &&
-    a.clips.every((c, i) => c === b.clips[i])
+    a.clips.every((c, i) => c === b.clips[i]) &&
+    sameFiles(a, b)
   );
 }
 

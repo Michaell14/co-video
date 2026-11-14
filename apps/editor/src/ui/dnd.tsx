@@ -10,7 +10,11 @@ import type { ShapeProps, TextProps } from '@tandem/core';
 import { isDoublePress, type Press } from './press';
 
 export type DragPayload =
-  | { kind: 'asset'; assetId: string }
+  /**
+   * A file of the project. With `sourceIn` and `sourceOut`, in seconds, it is that stretch of the
+   * file and not all of it: what is marked in the source monitor.
+   */
+  | { kind: 'asset'; assetId: string; sourceIn?: number; sourceOut?: number }
   | { kind: 'effect'; type: string }
   | { kind: 'transition'; type: string }
   | { kind: 'text'; text: Partial<TextProps> }

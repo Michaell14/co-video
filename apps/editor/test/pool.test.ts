@@ -11,7 +11,8 @@ import {
   type Project,
   type Track,
 } from '@tandem/core';
-import { picked, placeAssets, restOfDrop } from '../src/features/library/pool';
+import { decodeNotice } from '../src/features/library/fault';
+import { picked, placeAssets, replaceTarget, restOfDrop } from '../src/features/library/pool';
 import { foldSpelling, search } from '../src/features/library/search';
 import { tabToward } from '../src/features/editor/tabs';
 
@@ -288,6 +289,76 @@ describe('searching the library in either spelling', () => {
 
   it('folds both spellings to one', () => {
     expect(foldSpelling('colourise the centre in grey')).toBe(foldSpelling('colorize the center in gray'));
+  });
+});
+
+describe('the clip a file from the pool can replace', () => {
+  /** A shot with its sound, linked, a second shot on its own and a pair of linked sounds. */
+  function cut(): Project {
+    const { p, v1, a1 } = fixture();
+    const clip = (type: 'video' | 'audio', id: string, start: number, linkId: string | null) =>
+      ({
+        op: 'addClip',
+        clip: makeClip(type, type === 'video' ? v1.id : a1.id, {
+          id,
+          assetId: 'one',
+          start,
+          duration: 30,
+          linkId,
+        }),
+      }) as const;
+    return applyEdits(p, [
+      clip('video', 'shot', 0, 'sync'),
+      clip('audio', 'shot-sound', 0, 'sync'),
+      clip('video', 'other', 60, null),
+      clip('audio', 'left', 120, 'stereo'),
+      clip('audio', 'right', 160, 'stereo'),
+    ]);
+  }
+
+  it('is the one clip that is selected', () => {
+    expect(replaceTarget(cut(), ['other'])).toBe('other');
+    expect(replaceTarget(cut(), ['shot-sound'])).toBe('shot-sound');
+  });
+
+  it('is the picture of a shot selected together with its linked sound, in either order', () => {
+    expect(replaceTarget(cut(), ['shot', 'shot-sound'])).toBe('shot');
+    expect(replaceTarget(cut(), ['shot-sound', 'shot'])).toBe('shot');
+  });
+
+  it('is none when nothing is selected, or more than one clip', () => {
+    expect(replaceTarget(cut(), [])).toBeNull();
+    expect(replaceTarget(cut(), ['shot', 'other'])).toBeNull();
+    expect(replaceTarget(cut(), ['shot', 'shot-sound', 'other'])).toBeNull();
+    // Linked sounds have no picture to stand for the two of them.
+    expect(replaceTarget(cut(), ['left', 'right'])).toBeNull();
+  });
+
+  it('passes over a selected clip that is no longer in the project', () => {
+    expect(replaceTarget(cut(), ['gone', 'other'])).toBe('other');
+    expect(replaceTarget(cut(), ['gone'])).toBeNull();
+  });
+});
+
+describe('what is said of a file this browser cannot decode', () => {
+  const file = { videoCodec: 'apch', audioCodec: 'pcm-s24' };
+
+  it('names the part that cannot be decoded, and its codec', () => {
+    expect(decodeNotice(file, { picture: true, sound: false })).toBe(
+      'This browser cannot decode the picture of this file (apch)',
+    );
+    expect(decodeNotice(file, { picture: false, sound: true })).toBe(
+      'This browser cannot decode the sound of this file (pcm-s24)',
+    );
+    expect(decodeNotice(file, { picture: true, sound: true })).toBe(
+      'This browser cannot decode the picture or the sound of this file (apch, pcm-s24)',
+    );
+  });
+
+  it('says so without a codec where the file names none', () => {
+    expect(decodeNotice({ videoCodec: null, audioCodec: null }, { picture: true, sound: false })).toBe(
+      'This browser cannot decode the picture of this file',
+    );
   });
 });
 

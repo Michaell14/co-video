@@ -206,14 +206,15 @@
  * What a button is switched to shows under the pointer too: the press that mutes a track must be
  * seen to have worked while the pointer is still on the button.
  */
+/* Muted and soloed are the colours they are in the track's header: the tokens are the timeline's. */
 .strip__btn--mute,
 .strip__btn--mute:hover {
-  background: var(--red);
+  background: var(--track-mute);
   color: var(--bg-0);
 }
 .strip__btn--solo,
 .strip__btn--solo:hover {
-  background: var(--amber);
+  background: var(--track-solo);
   color: var(--bg-0);
 }
 .strip__btn--mute:hover,

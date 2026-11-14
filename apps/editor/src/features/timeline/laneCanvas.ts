@@ -2,9 +2,7 @@
 import {
   animated,
   CLIP_TYPE_COLORS,
-  clipGainAt,
   dbToGain,
-  gainToDb,
   hexToRgb,
   sourcePerFrame,
   type Clip,
@@ -12,6 +10,7 @@ import {
 } from '@tandem/core';
 import { canvasTheme, type CanvasTheme } from './canvasTheme';
 import { clipWidth, LABEL_H, LABEL_MIN_W, LABEL_TINT, NARROW_W } from './layout';
+import { clipBody, LEVEL_MIN_H, levelCurve } from './levelLine';
 import { FilmstripCache, type TimelineMedia } from './mediaCache';
 
 export interface LaneView {
@@ -43,9 +42,8 @@ export function drawLane(
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
   const fps = project.settings.fpsNum / project.settings.fpsDen;
-  const compact = height < 40;
-  const top = compact ? 0 : LABEL_H;
-  const bodyH = height - top;
+  const { top, height: bodyH } = clipBody(height);
+  const compact = top === 0;
 
   for (const clip of clips) {
     if (clip.type !== 'video' && clip.type !== 'image' && clip.type !== 'audio') continue;
@@ -202,22 +200,9 @@ function drawWaveform(
   }
 }
 
-/** The lowest a lane's body can be for the level line to say anything, in CSS pixels. */
-const LEVEL_MIN_H = 18;
-/** The levels at the bottom and at the top of a clip's body, in decibels. */
-const LEVEL_FLOOR = -48;
-const LEVEL_CEILING = 12;
-
-/** How far up a clip's body the level line runs for a gain: 0 at the floor, 1 at the ceiling. */
-function levelHeight(gain: number): number {
-  const db = Math.min(LEVEL_CEILING, Math.max(LEVEL_FLOOR, gainToDb(gain)));
-  return (db - LEVEL_FLOOR) / (LEVEL_CEILING - LEVEL_FLOOR);
-}
-
 /**
- * The level line of a sound clip: how loud the clip is played over its length, from its volume,
- * the keyframes on it and its fades. A dip under dialogue shows as a dip, and a keyframe on the
- * volume as a point on the line.
+ * The level line of a sound clip (see `levelCurve`). A dip under dialogue shows as a dip, and a
+ * keyframe on the volume as a point on the line.
  */
 function drawLevel(
   ctx: CanvasRenderingContext2D,
@@ -225,11 +210,7 @@ function drawLevel(
   g: { x0: number; visL: number; visR: number; top: number; bodyH: number; ppf: number },
   theme: CanvasTheme,
 ): void {
-  // What the line shows is the level set on the clip, also while the clip is switched off.
-  const heard = clip.enabled && !clip.audioMuted ? clip : { ...clip, enabled: true, audioMuted: false };
-  const room = g.bodyH - 4;
-  const yAt = (frame: number): number =>
-    g.top + 2 + room * (1 - levelHeight(clipGainAt(heard, Math.min(clip.duration, Math.max(0, frame)))));
+  const yAt = levelCurve(clip, { top: g.top, height: g.bodyH });
   const from = Math.floor(g.visL);
   const to = Math.ceil(g.visR);
   ctx.beginPath();

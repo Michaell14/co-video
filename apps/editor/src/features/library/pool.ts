@@ -35,6 +35,21 @@ export function picked(shown: ID[], selection: ID[], anchor: ID | null, id: ID, 
   return from <= to ? shown.slice(from, to + 1) : shown.slice(to, from + 1).reverse();
 }
 
+/**
+ * The clip a file from the pool would take the place of when the person asks to replace 'the
+ * selected clip': the one clip that is selected. A picture selected together with what is linked
+ * to it is one clip to the person, and it is the picture that is replaced: its sound from the same
+ * file goes with it (see `replaceEdits`). Null when nothing is selected, or more than that.
+ */
+export function replaceTarget(p: Project, selection: readonly ID[]): ID | null {
+  const clips = selection.flatMap((id) => (p.clips[id] ? [p.clips[id]] : []));
+  if (clips.length < 2) return clips[0]?.id ?? null;
+  const { linkId } = clips[0];
+  if (!linkId || clips.some((c) => c.linkId !== linkId)) return null;
+  const pictures = clips.filter((c) => c.type !== 'audio');
+  return pictures.length === 1 ? pictures[0].id : null;
+}
+
 /** Clips placed on the timeline, and the stretch of time an insert put into the sequence for them. */
 export interface Placed extends OpResult {
   spans: RippleSpan[];

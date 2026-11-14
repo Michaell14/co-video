@@ -2,7 +2,9 @@ import {
   AudioLines,
   ChevronFirst,
   ChevronLast,
+  CircleAlert,
   Eraser,
+  FileWarning,
   Gauge,
   Grid3x3,
   Maximize,
@@ -36,6 +38,7 @@ import {
   parseTimecode,
   resolveFrame,
   sequenceEnd,
+  type Asset,
   type Clip,
   type ClipLayer,
   type Project,
@@ -62,12 +65,16 @@ import {
 } from '../../session/hooks';
 import { cmd } from '../../state/commands';
 import { eventKeys } from '../../state/keys';
+import { mediaAvailable } from '../../state/media';
 import { beginGesture, setClipValues } from '../../state/props';
 import { isTyping, spaceOperates } from '../../state/shortcuts';
 import { useUI, type SourceMarks } from '../../state/ui';
-import { IconButton, MenuButton, Slider, tip, cx, Button } from '../../ui/core';
+import { IconButton, MenuButton, Slider, tip, cx, Button, hideTip } from '../../ui/core';
+import { beginDrag } from '../../ui/dnd';
 import { handFocus, layerOpen } from '../../ui/layers';
+import { useCanEdit } from '../timeline/access';
 import { angleStep, pointInQuad, quadCovers, wrapDegrees } from './geometry';
+import { missingPictureAt, pictureNotice, type MissingPicture, type PictureFault } from './mediaNotice';
 import { selectedLayers } from './selectedLayers';
 import {
   marksOfKnown,
@@ -177,6 +184,7 @@ export function Viewer() {
               )}
             </svg>
           )}
+          <MediaNotice />
           <Gizmo scale={size.scale} />
           <PeerCursors />
         </div>
@@ -478,6 +486,64 @@ function Gizmo({ scale }: { scale: number }) {
       {guides.h && <line className="gizmo__guide" x1={0} y1={H / 2} x2={W} y2={H / 2} strokeWidth={sw} />}
       {shape}
     </svg>
+  );
+}
+
+// ────────────────────────────────────────────────────────── missing media ──
+
+/** How often the picture under a running playhead is asked about, in times a second. */
+const NOTICE_HZ = 8;
+
+/**
+ * One line over the picture that says why it is black, when it is black because the file of the
+ * clip under the playhead is nowhere to be had or cannot be decoded here: the timeline marks such
+ * clips, and without this the viewer would show nothing and say nothing. A file that is still on
+ * its way counts as neither. The line is not in the way of the pointer, and it is drawn again
+ * only when what it says changes: the playhead is listened to, not rendered with.
+ */
+function MediaNotice() {
+  const session = useSession();
+  const player = usePlayer();
+  const { shared } = useSessionMeta();
+  const [missing, setMissing] = useState<MissingPicture | null>(null);
+
+  useEffect(() => {
+    if (!player) return;
+    const faultOf = (asset: Asset): PictureFault | null =>
+      !mediaAvailable(asset, session.media.get(asset.id), shared)
+        ? 'offline'
+        : session.thumbs.fault(asset.id)?.picture
+          ? 'undecodable'
+          : null;
+    const look = () => {
+      const now = missingPictureAt(session.store.get(), Math.floor(player.getFrame()), faultOf);
+      setMissing((before) => (before?.name === now?.name && before?.why === now?.why ? before : now));
+    };
+    let looked = 0;
+    const onFrame = () => {
+      const now = performance.now();
+      if (player.getState().playing && now - looked < 1000 / NOTICE_HZ) return;
+      looked = now;
+      look();
+    };
+    look();
+    // The frame a stop leaves the playhead on is looked at when the player says it has stopped.
+    const offs = [
+      player.onFrame(onFrame),
+      player.subscribe(look),
+      session.store.subscribe(look),
+      session.media.subscribe(look),
+      session.thumbs.subscribeFaults(look),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [session, player, shared]);
+
+  if (!missing) return null;
+  return (
+    <div className="viewer__media" role="status">
+      {missing.why === 'offline' ? <CircleAlert /> : <FileWarning />}
+      <span>{pictureNotice(missing)}</span>
+    </div>
   );
 }
 
@@ -856,6 +922,7 @@ function useSourceMarksOfProject(): void {
 /** The source monitor for one asset. A different asset gets a monitor of its own (it is keyed). */
 function SourceMonitor({ assetId }: { assetId: string }) {
   const session = useSession();
+  const editable = useCanEdit();
   const player = usePlayer();
   const asset = useProject((p) => p.assets[assetId]);
   const fps = useProject((p) => p.settings.fpsNum / p.settings.fpsDen);
@@ -998,6 +1065,11 @@ function SourceMonitor({ assetId }: { assetId: string }) {
         case 'period':
           if (!held) cmd.addFromSource(false);
           break;
+        // With Shift the same two keys nudge the selected clips by ten frames. Those are behind the
+        // monitor: they do not move unseen while the plain keys are the monitor's.
+        case 'shift+comma':
+        case 'shift+period':
+          break;
         case 'arrowleft':
           transport.step(-1 / fps);
           break;
@@ -1030,12 +1102,26 @@ function SourceMonitor({ assetId }: { assetId: string }) {
   });
 
   if (!asset) return null;
+  // The file is taken to the timeline by its name: the picture has the player's own controls on
+  // it. What goes is what the buttons below would put there, the marked stretch of a timed file.
+  const grip = editable ? tip(timed ? 'Drag what is marked to the timeline' : 'Drag to the timeline') : null;
 
   return (
     <div className="source">
       <div className="source__head">
-        <MonitorPlay size={14} />
-        <span className="source__name">{asset.name}</span>
+        <span
+          className="source__grip"
+          data-live={editable || undefined}
+          {...grip}
+          onPointerDown={(e) => {
+            if (!editable) return;
+            hideTip();
+            beginDrag(e, { kind: 'asset', assetId, ...(timed ? range : null) }, asset.name);
+          }}
+        >
+          <MonitorPlay size={14} />
+          <span className="source__name">{asset.name}</span>
+        </span>
         <span className="badge">Source</span>
         <span style={{ flex: 1 }} />
         <IconButton label="Close source monitor" keys="escape" small onClick={closeSourceMonitor}>
@@ -1086,6 +1172,7 @@ function SourceMonitor({ assetId }: { assetId: string }) {
           <Button
             size="sm"
             icon={<CornerDownRight />}
+            disabled={!editable}
             onClick={() => cmd.addFromSource(true)}
             {...tip('Ripple-insert at the playhead', 'comma')}
           >
@@ -1095,6 +1182,7 @@ function SourceMonitor({ assetId }: { assetId: string }) {
             size="sm"
             variant="primary"
             icon={<ArrowDownToLine />}
+            disabled={!editable}
             onClick={() => cmd.addFromSource(false)}
             {...tip('Add at the playhead, on a free track', 'period')}
           >

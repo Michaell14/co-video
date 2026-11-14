@@ -644,6 +644,153 @@ test.describe('library', () => {
     await expect.poll(() => clipTypes(page)).toEqual(['audio', 'audio', 'video', 'video']);
   });
 
+  test('a file takes the place of the selected clip’s media from its card’s menu', async ({ page }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await sample(page);
+    await importFixtures(page, ['testsrc.mp4']);
+    const entry = page.getByRole('menuitem', { name: 'Replace selected clip with this' });
+    const menuOf = async (file: string): Promise<void> => {
+      await page.locator('.asset', { hasText: file }).click({ button: 'right' });
+      await expect(page.getByRole('menuitem', { name: 'Replace media…' })).toBeVisible();
+    };
+    const select = (ids: string[]) =>
+      page.evaluate((ids) => (window as any).tandem.ui.getState().select(ids), ids);
+    /** `type:file@start+duration` of every clip that shows a file, in timeline order. */
+    const shots = () =>
+      tandem(page, (t) => {
+        const p = t.session.store.get();
+        return (Object.values(p.clips) as any[])
+          .filter((c) => c.assetId)
+          .sort((a, b) => a.start - b.start || a.type.localeCompare(b.type))
+          .map((c) => `${c.type}:${p.assets[c.assetId].name}@${c.start}+${c.duration}`);
+      });
+    const idOf = (name: string): Promise<string> =>
+      page.evaluate(
+        (name) =>
+          (Object.values((window as any).tandem.session.store.get().clips) as any[]).find(
+            (c) => c.name === name,
+          ).id,
+        name,
+      );
+    const before = await shots();
+    expect(before).toEqual([
+      'audio:pulse.ogg@0+360',
+      'video:dusk.mp4@0+120',
+      'video:fractal.mp4@120+120',
+      'video:aurora.mp4@240+120',
+    ]);
+
+    // With no clip selected, or more than one, there is no clip to offer the file for.
+    await select([]);
+    await menuOf('dusk.mp4');
+    await expect(entry).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await select([await idOf('fractal.mp4'), await idOf('aurora.mp4')]);
+    await menuOf('dusk.mp4');
+    await expect(entry).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    // The one selected clip takes the file, where it stands and as one step.
+    await page.locator('.clip', { hasText: 'fractal.mp4' }).click();
+    // The file the clip already shows is not offered to it.
+    await menuOf('fractal.mp4');
+    await expect(entry).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    const steps = await undoSteps(page);
+    await menuOf('dusk.mp4');
+    await entry.click();
+    await expect.poll(shots).toEqual([before[0], before[1], 'video:dusk.mp4@120+120', before[3]]);
+    expect(await undoSteps(page)).toBe(steps + 1);
+    await tandem(page, (t) => t.cmd.undo());
+    await expect.poll(shots).toEqual(before);
+
+    // A shot selected with the sound linked to it is one clip: the picture takes the file, and
+    // the sound goes, since the new file has none.
+    await tandem(page, (t) => t.cmd.seek(360));
+    await page.locator('.asset', { hasText: 'testsrc.mp4' }).locator('.asset__add').click();
+    await expect
+      .poll(async () => (await shots()).slice(4).map((shot) => shot.split('+')[0]))
+      .toEqual(['audio:testsrc.mp4@360', 'video:testsrc.mp4@360']);
+    expect(await tandem(page, (t) => t.ui.getState().selection.length)).toBe(2);
+    const linked = await undoSteps(page);
+    await menuOf('aurora.mp4');
+    await entry.click();
+    await expect
+      .poll(async () => (await shots()).slice(4).map((shot) => shot.split('+')[0]))
+      .toEqual(['video:aurora.mp4@360']);
+    expect(await undoSteps(page)).toBe(linked + 1);
+
+    // A clip that cannot show the file says why, and nothing changes.
+    await select([await idOf('Text')]);
+    const refused = await shots();
+    await menuOf('dusk.mp4');
+    await entry.click();
+    await expect(toast(page, 'This clip has no media to replace.')).toBeVisible();
+    expect(await shots()).toEqual(refused);
+    expect(await undoSteps(page)).toBe(linked + 1);
+  });
+
+  test('a file this browser cannot decode says so on its card', async ({ page }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await localProject(page);
+    await importFixtures(page, ['testsrc.webm', 'red.webm']);
+    const card = (file: string) => page.locator('.asset', { hasText: file });
+    await expect(page.locator('.asset')).toHaveCount(2);
+    await expect(page.locator('.asset__fault')).toHaveCount(0);
+    // From here on this browser decodes no picture. What a file needs is found out when it is
+    // opened, and the timeline opens the files it shows.
+    await page.evaluate(() => {
+      VideoDecoder.isConfigSupported = async (config) => ({ supported: false, config });
+    });
+    await card('testsrc.webm').locator('.asset__add').click();
+    await expect(page.locator('.clip__chip', { hasText: 'Unsupported' })).toBeVisible();
+    const fault = card('testsrc.webm').getByRole('img', { name: /cannot decode/ });
+    await expect(fault).toHaveAccessibleName(/^This browser cannot decode the picture of this file \(vp0?9/);
+    // The chip stands beside the place of the transfer badges, on the picture, and says why
+    // under the pointer.
+    const picture = await box(card('testsrc.webm').locator('.asset__thumb'));
+    const chip = await box(fault);
+    expect(chip.x).toBeGreaterThanOrEqual(picture.x);
+    expect(chip.y).toBeGreaterThanOrEqual(picture.y);
+    expect(chip.y + chip.height).toBeLessThan(picture.y + picture.height / 2);
+    await fault.hover();
+    await expect(page.locator('.tooltip')).toHaveText(/^This browser cannot decode the picture of this file/);
+    // The verdict is on that file, not on the pool.
+    await expect(card('red.webm').locator('.asset__fault')).toHaveCount(0);
+  });
+
+  test('a key or a press that reaches the window from no element of the page is left alone', async ({
+    page,
+  }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await sample(page);
+    const startOf = (name: string): Promise<number> =>
+      page.evaluate(
+        (name) =>
+          (Object.values((window as any).tandem.session.store.get().clips) as any[]).find(
+            (c) => c.name === name,
+          ).start,
+        name,
+      );
+    // Something typed and not applied yet makes a field listen for the press that ends the entry.
+    await page.locator('.clip', { hasText: 'aurora.mp4' }).click();
+    const start = panel(page, 'Inspector').getByLabel('Start', { exact: true });
+    await start.click();
+    await start.pressSequentially('+5');
+    await page.evaluate(() => {
+      const key = (): KeyboardEvent =>
+        new KeyboardEvent('keydown', { key: 'F13', bubbles: true, cancelable: true });
+      window.dispatchEvent(key());
+      document.dispatchEvent(key());
+      window.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+    });
+    // The press was not in the field, so it ended the entry like a press anywhere else.
+    await expect.poll(() => startOf('aurora.mp4')).toBe(245);
+    expect(errors).toEqual([]);
+  });
+
   test('a title preset puts the keyboard in the new title’s text', async ({ page }) => {
     await localProject(page);
     await page.getByRole('tab', { name: 'Titles' }).click();

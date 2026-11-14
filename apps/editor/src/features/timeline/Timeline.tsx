@@ -26,7 +26,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   clamp,
   editPoints,
@@ -37,6 +37,7 @@ import {
   sequenceEnd,
   snapTo,
   tracksOf,
+  type ID,
   type Marker,
   type Project,
   type Track,
@@ -65,6 +66,7 @@ import {
   cx,
   hideTip,
 } from '../../ui/core';
+import { editEntry, useCanEdit } from './access';
 import { canvasTheme } from './canvasTheme';
 import { EdgeScroller, timeAxis } from './edgeScroll';
 import { Lanes } from './Lanes';
@@ -94,7 +96,18 @@ export function Timeline() {
   const areaRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
-  const { lanes, height } = useMemo(() => layoutLanes(live), [live.tracks]); // eslint-disable-line react-hooks/exhaustive-deps
+  const editable = useCanEdit();
+  /**
+   * How high a track is drawn is part of the project. Someone who may not change the project still
+   * sets the lanes to the height they want to look at: for themselves, while the project is open.
+   */
+  const [ownHeights, setOwnHeights] = useState<Readonly<Record<ID, number>>>({});
+  const setOwnHeight = useCallback(
+    (id: ID, h: number) => setOwnHeights((all) => (all[id] === h ? all : { ...all, [id]: h })),
+    [],
+  );
+  const heights = editable ? null : ownHeights;
+  const { lanes, height } = useMemo(() => layoutLanes(live, heights), [live.tracks, heights]); // eslint-disable-line react-hooks/exhaustive-deps
   const end = sequenceEnd(live);
   const fitted = useRef(false);
 
@@ -170,7 +183,7 @@ export function Timeline() {
         <div className="tl__body" ref={bodyRef}>
           <div className="tl__headers" style={{ width: HEADER_W, height }}>
             {lanes.map((lane) => (
-              <TrackHeader key={lane.track.id} lane={lane} />
+              <TrackHeader key={lane.track.id} lane={lane} onOwnHeight={setOwnHeight} />
             ))}
           </div>
           <div className="tl__lanes">
@@ -206,6 +219,7 @@ function inView(frames: number, settings: Project['settings']): string {
 }
 
 const Toolbar = memo(function Toolbar() {
+  const editable = useCanEdit();
   const tool = useUI((s) => s.tool);
   const snapping = useUI((s) => s.snapping);
   const ripple = useUI((s) => s.rippleMode);
@@ -217,6 +231,10 @@ const Toolbar = memo(function Toolbar() {
   const settings = useProject((p) => p.settings);
   const lo = Math.log(MIN_PPF);
   const hi = Math.log(MAX_PPF);
+  // A tool that edits is put down when the access to edit goes: it would do nothing in the lanes.
+  useEffect(() => {
+    if (!editable && (tool === 'blade' || tool === 'slip')) set({ tool: 'select' });
+  }, [editable, tool, set]);
   return (
     <div className="tl__toolbar">
       <div className="tl__tools">
@@ -234,6 +252,7 @@ const Toolbar = memo(function Toolbar() {
           keys="b"
           tipPlace="top"
           active={tool === 'blade'}
+          disabled={!editable}
           onClick={() => set({ tool: 'blade' })}
         >
           <Scissors />
@@ -243,6 +262,7 @@ const Toolbar = memo(function Toolbar() {
           keys="y"
           tipPlace="top"
           active={tool === 'slip'}
+          disabled={!editable}
           onClick={() => set({ tool: 'slip' })}
         >
           <MoveHorizontal />
@@ -258,14 +278,20 @@ const Toolbar = memo(function Toolbar() {
         </IconButton>
       </div>
       <div className="topbar__sep" />
-      <IconButton label="Split at playhead" keys="mod+b" tipPlace="top" onClick={() => cmd.split()}>
+      <IconButton
+        label="Split at playhead"
+        keys="mod+b"
+        tipPlace="top"
+        disabled={!editable}
+        onClick={() => cmd.split()}
+      >
         <SquareSplitHorizontal />
       </IconButton>
       <IconButton
         label="Delete"
         keys="delete"
         tipPlace="top"
-        disabled={!hasSel}
+        disabled={!editable || !hasSel}
         onClick={() => cmd.delete(false)}
       >
         <Trash2 />
@@ -274,7 +300,7 @@ const Toolbar = memo(function Toolbar() {
         label="Ripple delete"
         keys="shift+delete"
         tipPlace="top"
-        disabled={!hasSel}
+        disabled={!editable || !hasSel}
         onClick={() => cmd.delete(true)}
       >
         <ChevronsLeftRight />
@@ -294,6 +320,7 @@ const Toolbar = memo(function Toolbar() {
         keys="r"
         tipPlace="top"
         active={ripple}
+        disabled={!editable}
         onClick={() => set({ rippleMode: !ripple })}
       >
         <ArrowDownUp style={{ transform: 'rotate(90deg)' }} />
@@ -302,6 +329,7 @@ const Toolbar = memo(function Toolbar() {
         label="Markers follow ripple edits"
         tipPlace="top"
         active={markersFollow}
+        disabled={!editable}
         onClick={() => set({ markersFollow: !markersFollow })}
       >
         <FlagTriangleRight />
@@ -316,13 +344,25 @@ const Toolbar = memo(function Toolbar() {
         <Link2 />
       </IconButton>
       <div className="topbar__sep" />
-      <IconButton label="Add marker" keys="m" tipPlace="top" onClick={() => cmd.addMarker()}>
+      <IconButton
+        label="Add marker"
+        keys="m"
+        tipPlace="top"
+        disabled={!editable}
+        onClick={() => cmd.addMarker()}
+      >
         <Flag />
       </IconButton>
-      <IconButton label="Add text" keys="t" tipPlace="top" onClick={() => cmd.addTitle()}>
+      <IconButton
+        label="Add text"
+        keys="t"
+        tipPlace="top"
+        disabled={!editable}
+        onClick={() => cmd.addTitle()}
+      >
         <Type />
       </IconButton>
-      <VoiceoverButton />
+      <VoiceoverButton editable={editable} />
       <div style={{ flex: 1 }} />
       <IconButton label="Zoom out" keys="minus" tipPlace="top" onClick={() => cmd.zoom(1 / 1.4)}>
         <ZoomOut />
@@ -351,12 +391,14 @@ const Toolbar = memo(function Toolbar() {
 });
 
 const TrackAdder = memo(function TrackAdder() {
+  const editable = useCanEdit();
   return (
     <div className="tl__adder">
       <button
         type="button"
         className="btn btn--ghost btn--sm"
         aria-label="Add video track"
+        disabled={!editable}
         onClick={() => cmd.addTrack('video')}
         {...tip('Add video track')}
       >
@@ -367,6 +409,7 @@ const TrackAdder = memo(function TrackAdder() {
         type="button"
         className="btn btn--ghost btn--sm"
         aria-label="Add audio track"
+        disabled={!editable}
         onClick={() => cmd.addTrack('audio')}
         {...tip('Add audio track')}
       >
@@ -387,6 +430,7 @@ interface RulerProps {
 
 const Ruler = memo(function Ruler({ width, settings, markers: markerMap }: RulerProps) {
   const session = useSession();
+  const editable = useCanEdit();
   const player = usePlayer();
   const range = usePlayerState().range;
   const ppf = useUI((s) => s.ppf);
@@ -527,6 +571,7 @@ const Ruler = memo(function Ruler({ width, settings, markers: markerMap }: Ruler
     <div
       ref={rulerRef}
       className="ruler"
+      data-readonly={!editable || undefined}
       style={{ height: RULER_H }}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
@@ -562,15 +607,20 @@ const Ruler = memo(function Ruler({ width, settings, markers: markerMap }: Ruler
         // Snapped like a click on the ruler, unless that lands on a marker that is already there.
         const snapped = frameAt(e.clientX, true);
         const at = markers.some((m) => m.frame === snapped) ? frameAt(e.clientX, false) : snapped;
+        // A range is marked to play it or to go to its ends, which anyone may. The rest changes
+        // the project.
+        const edit = editEntry(session.canEdit);
         openContextMenu(e, [
-          marker && session.canEdit ? { label: 'Edit marker…', onSelect: () => editMarker(marker.id) } : null,
-          marker
-            ? {
-                label: 'Delete marker',
-                danger: true,
-                onSelect: () => commit([{ op: 'removeMarker', id: marker.id }]),
-              }
-            : { label: 'Add marker here', onSelect: () => cmd.addMarker(at) },
+          marker ? edit({ label: 'Edit marker…', onSelect: () => editMarker(marker.id) }) : null,
+          edit(
+            marker
+              ? {
+                  label: 'Delete marker',
+                  danger: true,
+                  onSelect: () => commit([{ op: 'removeMarker', id: marker.id }]),
+                }
+              : { label: 'Add marker here', onSelect: () => cmd.addMarker(at) },
+          ),
           'separator',
           { label: 'Mark in', keys: shortcutOf('mark-in'), onSelect: () => cmd.markIn() },
           { label: 'Mark out', keys: shortcutOf('mark-out'), onSelect: () => cmd.markOut() },
@@ -584,16 +634,16 @@ const Ruler = memo(function Ruler({ width, settings, markers: markerMap }: Ruler
           { label: 'Go to in', keys: shortcutOf('go-in'), onSelect: () => cmd.goToRange('in') },
           { label: 'Go to out', keys: shortcutOf('go-out'), onSelect: () => cmd.goToRange('out') },
           'separator',
-          {
+          edit({
             label: 'Add default transition',
             keys: shortcutOf('default-transition'),
             onSelect: () => cmd.addDefaultTransition(),
-          },
-          {
+          }),
+          edit({
             label: 'Extend edit to playhead',
             keys: shortcutOf('extend-edit'),
             onSelect: () => cmd.extendEdit(),
-          },
+          }),
         ]);
       }}
     >
@@ -797,8 +847,15 @@ const RemotePlayheads = memo(function RemotePlayheads({ left, width }: { left: n
 
 // ────────────────────────────────────────────────────────────── headers ──
 
-const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
+interface TrackHeaderProps {
+  lane: Lane;
+  /** Sets the height the track is drawn at for someone who cannot change the track itself. */
+  onOwnHeight: (id: ID, height: number) => void;
+}
+
+const TrackHeader = memo(function TrackHeader({ lane, onOwnHeight }: TrackHeaderProps) {
   const session = useSession();
+  const editable = useCanEdit();
   const player = usePlayer();
   const t = lane.track;
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -809,6 +866,26 @@ const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
   const label = lane.label;
   const resize = useRef<{ y: number; h: number } | null>(null);
   const nameTip = tip(t.name);
+  const name = useRef<HTMLSpanElement>(null);
+  /** The header is too narrow to show all of the name. */
+  const [cut, setCut] = useState(false);
+  const named = renaming === null;
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = name.current;
+      setCut(!!el && el.scrollWidth > el.clientWidth);
+    };
+    measure();
+    // The name is as wide as its typeface makes it, and that can arrive after the header.
+    document.fonts.addEventListener('loadingdone', measure);
+    return () => document.fonts.removeEventListener('loadingdone', measure);
+  }, [t.name, label, named]);
+  /** Shows the whole name, where the header is too narrow for it, and nothing otherwise. */
+  const whenCut =
+    <E extends React.SyntheticEvent>(show: (e: E) => void) =>
+    (e: E) => {
+      if (e.currentTarget.scrollWidth > e.currentTarget.clientWidth) show(e);
+    };
 
   // Live level meter for audio tracks.
   useEffect(() => {
@@ -836,33 +913,34 @@ const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
         // Picture tracks stack upwards and sound tracks are listed downwards.
         const [up, down] = t.kind === 'video' ? ([1, -1] as const) : ([-1, 1] as const);
         const move = (dir: 1 | -1) => commit(moveTrack(session.store.get(), t.id, dir));
+        const edit = editEntry(session.canEdit);
         openContextMenu(e, [
-          { label: 'Rename', onSelect: () => setRenaming(t.name || label) },
-          {
+          edit({ label: 'Rename', onSelect: () => setRenaming(t.name || label) }),
+          edit({
             label: 'Move up',
             disabled: !list[idx + up],
             onSelect: () => move(up),
-          },
-          {
+          }),
+          edit({
             label: 'Move down',
             disabled: !list[idx + down],
             onSelect: () => move(down),
-          },
+          }),
           'separator',
-          { label: 'Add video track', onSelect: () => cmd.addTrack('video') },
-          { label: 'Add audio track', onSelect: () => cmd.addTrack('audio') },
+          edit({ label: 'Add video track', onSelect: () => cmd.addTrack('video') }),
+          edit({ label: 'Add audio track', onSelect: () => cmd.addTrack('audio') }),
           t.kind === 'video' && 'separator',
           t.kind === 'video' && {
             label: 'Export captions from this track',
             onSelect: () => cmd.exportSubtitles(t.id),
           },
           'separator',
-          {
+          edit({
             label: 'Delete track',
             danger: true,
             disabled: list.length <= 1,
             onSelect: () => cmd.removeTrack(t.id),
-          },
+          }),
         ]);
       }}
     >
@@ -890,13 +968,15 @@ const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
           />
         ) : (
           <span
+            ref={name}
             className="th__name"
+            // A name that is cut off is a stop for Tab: the keyboard asks for the rest by resting
+            // there, as the pointer does.
+            tabIndex={cut ? 0 : undefined}
             onDoubleClick={() => session.canEdit && setRenaming(t.name || label)}
             {...nameTip}
-            onPointerEnter={(e) => {
-              // The whole name, where the header is too narrow to show it.
-              if (e.currentTarget.scrollWidth > e.currentTarget.clientWidth) nameTip.onPointerEnter(e);
-            }}
+            onPointerEnter={whenCut(nameTip.onPointerEnter)}
+            onFocusCapture={whenCut(nameTip.onFocusCapture)}
           >
             {t.name}
           </span>
@@ -907,6 +987,7 @@ const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
             small
             label={t.hidden ? 'Show track' : 'Hide track'}
             active={t.hidden}
+            disabled={!editable}
             onClick={() => update({ hidden: !t.hidden })}
           >
             {t.hidden ? <EyeOff /> : <Eye />}
@@ -918,6 +999,7 @@ const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
               label={t.muted ? 'Unmute track' : 'Mute track'}
               active={t.muted}
               className={cx(t.muted && 'th__mute--on')}
+              disabled={!editable}
               onClick={() => update({ muted: !t.muted })}
             >
               {t.muted ? <VolumeX /> : <Volume2 />}
@@ -925,6 +1007,7 @@ const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
             <button
               type="button"
               className={cx('th__solo', t.solo && 'th__solo--on')}
+              disabled={!editable}
               onClick={() => update({ solo: !t.solo })}
               aria-label="Solo track"
               aria-pressed={t.solo}
@@ -938,6 +1021,7 @@ const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
           small
           label={t.locked ? 'Unlock track' : 'Lock track'}
           active={t.locked}
+          disabled={!editable}
           onClick={() => update({ locked: !t.locked })}
         >
           {t.locked ? <Lock /> : <LockOpen />}
@@ -952,13 +1036,14 @@ const TrackHeader = memo(function TrackHeader({ lane }: { lane: Lane }) {
         className="th__resize"
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId);
-          resize.current = { y: e.clientY, h: t.height };
-          session.store.beginGesture();
+          resize.current = { y: e.clientY, h: lane.height };
+          if (editable) session.store.beginGesture();
         }}
         onPointerMove={(e) => {
           if (!resize.current) return;
           const h = clamp(Math.round(resize.current.h + (e.clientY - resize.current.y)), 26, 220);
-          commit([{ op: 'updateTrack', id: t.id, patch: { height: h } }], true);
+          if (editable) commit([{ op: 'updateTrack', id: t.id, patch: { height: h } }], true);
+          else onOwnHeight(t.id, h);
         }}
         onPointerUp={(e) => {
           e.currentTarget.releasePointerCapture(e.pointerId);
@@ -1022,7 +1107,7 @@ const Scrollbar = memo(function Scrollbar({ width, end }: { width: number; end: 
 });
 
 /** Starts and stops a voiceover take; while recording it shows the running time and input level. */
-function VoiceoverButton() {
+function VoiceoverButton({ editable }: { editable: boolean }) {
   const recording = useUI((s) => s.recording);
   const [, tick] = useState(0);
   const level = useRef<HTMLElement | null>(null);
@@ -1047,6 +1132,7 @@ function VoiceoverButton() {
         label="Record voiceover"
         keys="shift+r"
         tipPlace="top"
+        disabled={!editable}
         onClick={() => void cmd.toggleVoiceover()}
       >
         <Mic />

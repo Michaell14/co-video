@@ -1,7 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
-import { importFixtures, newProject } from './helpers';
+import { importFixtures, newProject, noReloads } from './helpers';
 
 /** The viewer panel: the source monitor and three-point editing from it, and the layout handles. */
+
+// A page that reloads because someone saved a file comes back with the monitor closed.
+test.beforeEach(({ page }) => noReloads(page));
 
 /** `track:type@start+duration<sourceIn` for every clip, sorted, with tracks named V1, A1, … */
 function cut(page: Page): Promise<string[]> {
@@ -331,6 +334,183 @@ test.describe('source monitor', () => {
     await expect(page.locator('.source__foot button', { hasText: 'Add to timeline' })).toBeInViewport({
       ratio: 1,
     });
+  });
+
+  test('with the monitor open, the nudge keys leave the clips behind it where they are', async ({ page }) => {
+    await newProject(page);
+    await importFixtures(page, ['testsrc.mp4']);
+    await page.evaluate(() => {
+      const { cmd, session } = (window as any).tandem;
+      const [asset] = Object.values(session.store.get().assets);
+      cmd.addAsset(asset, { frame: 60 });
+    });
+    const placed = ['A1:audio@60+120<0', 'V1:video@60+120<0'];
+    await expect.poll(() => cut(page)).toEqual(placed);
+    // What was just added is selected, and stays so behind the monitor.
+    await open(page, 'testsrc.mp4');
+    await page.keyboard.press('k');
+    expect(await state(page)).toMatchObject({ selection: 2, open: 'testsrc.mp4' });
+    for (const key of ['Shift+Comma', 'Shift+Period', 'Shift+Period']) await page.keyboard.press(key);
+    expect(await cut(page)).toEqual(placed);
+    // With the monitor closed the same keys are the nudge by ten frames again.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.source')).toHaveCount(0);
+    await page.keyboard.press('Shift+Period');
+    await expect.poll(() => cut(page)).toEqual(['A1:audio@70+120<0', 'V1:video@70+120<0']);
+    await page.keyboard.press('Shift+Comma');
+    await expect.poll(() => cut(page)).toEqual(placed);
+  });
+
+  test('what is marked in the monitor is dragged to the timeline by the name of the file', async ({
+    page,
+  }) => {
+    await newProject(page);
+    await importFixtures(page, ['testsrc.mp4']);
+    await open(page, 'testsrc.mp4');
+    await holdAt(page, 1);
+    await page.keyboard.press('i');
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('o');
+    await expect(markOut(page)).toContainText('0:02.00');
+
+    const v1 = (await page.locator('.lane').nth(1).boundingBox())!;
+    const ppf: number = await page.evaluate(() => (window as any).tandem.ui.getState().ppf);
+    const frameAt = (x: number) => Math.round((x - v1.x) / ppf);
+    const middle = v1.y + v1.height / 2;
+    /** Take the file by its name in the monitor, or by its card in the pool, to `x` on V1. */
+    const carry = async (selector: string, x: number) => {
+      const from = (await page.locator(selector).boundingBox())!;
+      await page.mouse.move(from.x + 20, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(from.x + 40, from.y + from.height / 2 + 30, { steps: 3 });
+      await page.mouse.move(x, middle, { steps: 8 });
+    };
+    const ghost = () =>
+      page.evaluate(() => {
+        const preview = (window as any).tandem.ui.getState().preview;
+        if (!preview) return null;
+        return (Object.values(preview.clips) as any[]).map((c) => c.duration).sort((a, b) => a - b);
+      });
+
+    // The second second of the file, to V1: what shows in the lane while it is carried is as
+    // long as what is marked, and so is what lands there, picture and sound.
+    await expect(page.locator('.source__grip')).toHaveAttribute('data-live', 'true');
+    const first = frameAt(v1.x + 200);
+    await carry('.source__grip', v1.x + 200);
+    await expect.poll(ghost).toEqual([30, 30]);
+    await page.mouse.up();
+    await expect.poll(() => cut(page)).toEqual([`A1:audio@${first}+30<30`, `V1:video@${first}+30<30`]);
+    // The monitor stays as it was, and the drop is one step to undo.
+    await expect(page.locator('.source')).toBeVisible();
+    await expect(markIn(page)).toContainText('0:01.00');
+    await page.keyboard.press('ControlOrMeta+z');
+    await expect.poll(() => cut(page)).toEqual([]);
+    await page.evaluate(() => (window as any).tandem.cmd.redo());
+    await expect.poll(async () => (await cut(page)).length).toBe(2);
+
+    // With Alt on a clip of its kind it takes the clip's place from its in point, which is now
+    // the third second: the clip keeps its length and shows that second.
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('i');
+    await expect(markIn(page)).toContainText('0:03.00');
+    const onClip = v1.x + (first + 15) * ppf;
+    await carry('.source__grip', onClip);
+    await page.keyboard.down('Alt');
+    await page.mouse.move(onClip + 2, middle);
+    await page.mouse.up();
+    await page.keyboard.up('Alt');
+    await expect.poll(() => cut(page)).toEqual([`A1:audio@${first}+30<90`, `V1:video@${first}+30<90`]);
+
+    // From the pool the same file still goes to the timeline whole.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.source')).toHaveCount(0);
+    const second = frameAt(v1.x + 900);
+    await carry('.asset[aria-label="testsrc.mp4"]', v1.x + 900);
+    await expect.poll(ghost).toEqual([30, 30, 120, 120]);
+    await page.mouse.up();
+    await expect
+      .poll(() => cut(page))
+      .toEqual(
+        [
+          `A1:audio@${first}+30<90`,
+          `A1:audio@${second}+120<0`,
+          `V1:video@${first}+30<90`,
+          `V1:video@${second}+120<0`,
+        ].sort(),
+      );
+  });
+});
+
+test.describe('missing media', () => {
+  test('the viewer says why the picture under the playhead is black', async ({ page }) => {
+    await newProject(page);
+    await importFixtures(page, ['testsrc.mp4']);
+    // The file on V1 for four seconds. Over its second and third second, on V2, a clip of a file
+    // the project lists but that is on neither this device nor a server; and after both, a clip
+    // of a file the project no longer lists at all.
+    await page.evaluate(() => {
+      const { cmd, session, ui } = (window as any).tandem;
+      const [asset] = Object.values(session.store.get().assets) as any[];
+      cmd.addAsset(asset, { frame: 0 });
+      const p = session.store.get();
+      const shot = (Object.values(p.clips) as any[]).find((c) => c.type === 'video');
+      const v2 = (Object.values(p.tracks) as any[]).find((t) => t.kind === 'video' && t.order === 1);
+      const over = { ...shot, trackId: v2.id, linkId: null };
+      session.store.commit([
+        { op: 'addAsset', asset: { ...asset, id: 'away', name: 'away.mp4', uploaded: false } },
+        { op: 'addClip', clip: { ...over, id: 'away-clip', assetId: 'away', start: 30, duration: 60 } },
+        { op: 'addClip', clip: { ...over, id: 'lost-clip', assetId: 'gone', start: 150, duration: 30 } },
+      ]);
+      ui.getState().clearSelection();
+    });
+    const seek = (frame: number) =>
+      page.evaluate((frame) => (window as any).tandem.cmd.seek(frame, false), frame);
+    const notice = page.locator('.viewer__media');
+
+    // The timeline marks the two clips; the viewer speaks for the one the playhead is on.
+    await expect(page.locator('.clip[data-missing="true"]')).toHaveCount(2);
+    await seek(10);
+    await expect(notice).toHaveCount(0);
+    await seek(40);
+    await expect(notice).toHaveText('Media offline: away.mp4');
+    await expect(notice).toHaveAttribute('role', 'status');
+    await seek(160);
+    await expect(notice).toHaveText('Media offline: testsrc.mp4');
+    await seek(100);
+    await expect(notice).toHaveCount(0);
+
+    // The line is not in the way of the pointer: a press on it reaches the picture under it.
+    await seek(40);
+    const line = (await notice.boundingBox())!;
+    const frame = (await page.locator('.viewer__frame').boundingBox())!;
+    expect(Math.abs(line.x + line.width / 2 - (frame.x + frame.width / 2))).toBeLessThan(1);
+    await page.mouse.click(line.x + line.width / 2, line.y + line.height / 2);
+    expect(await page.evaluate(() => (window as any).tandem.ui.getState().selection)).toEqual(['away-clip']);
+    await expect(page.locator('.gizmo__body')).toBeVisible();
+    await expect(notice).toBeVisible();
+
+    // A track that is hidden shows nothing, so there is nothing to explain.
+    const hide = page.getByRole('button', { name: 'Hide track' }).first();
+    await hide.click();
+    await expect(notice).toHaveCount(0);
+    await page.getByRole('button', { name: 'Show track' }).click();
+    await expect(notice).toHaveText('Media offline: away.mp4');
+
+    // It follows the playhead while it runs: there over the clip, gone after it.
+    await seek(20);
+    await expect(notice).toHaveCount(0);
+    await page.evaluate(() => {
+      const said: (string | null)[] = ((window as any).said = []);
+      new MutationObserver(() => {
+        const now = document.querySelector('.viewer__media')?.textContent ?? null;
+        if (said[said.length - 1] !== now) said.push(now);
+      }).observe(document.querySelector('.viewer__frame')!, { childList: true, subtree: true });
+      (window as any).tandem.session.player.play();
+    });
+    await page.waitForFunction(() => (window as any).tandem.session.player.getFrame() >= 100);
+    await page.evaluate(() => (window as any).tandem.session.player.pause());
+    await expect(notice).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).said)).toEqual(['Media offline: away.mp4', null]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { SlidersHorizontal, X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   clamp,
   DEFAULT_COMPRESSOR,
@@ -16,6 +16,8 @@ import { beginGesture, commit } from '../../state/props';
 import { cx, IconButton, NumberField, Slider, Switch, tip } from '../../ui/core';
 import { isDoublePress, type Press } from '../../ui/press';
 import { useFaderKeys } from '../inspector/sliderKeys';
+import { watchLevels, type Levels } from '../timeline/levels';
+import { AT_REST, meterStep, type MeterChannel } from './meter';
 import './mixer.css';
 
 const DB_MIN = -60;
@@ -76,38 +78,40 @@ export function Mixer() {
   );
 }
 
-function useMeter(read: () => number[]) {
+/** The levels a meter shows, one for each of its channels, out of everything the player reports. */
+type Channels = (levels: Levels) => number[];
+
+/**
+ * The bars and peak marks of a meter, moved without rendering. All meters of the mixer and of the
+ * track headers are told the same reading by one loop, which runs while the player plays and until
+ * the meters have come to rest after it: a strip that read the levels for itself would ask the
+ * analyser of every track once more per frame, and go on asking with nothing playing.
+ */
+function useMeter(pick: Channels) {
+  const player = usePlayer();
   const refs = useRef<(HTMLDivElement | null)[]>([]);
   const peaks = useRef<(HTMLDivElement | null)[]>([]);
   useEffect(() => {
-    let raf = 0;
-    const shown: number[] = [];
-    const hold: { v: number; t: number }[] = [];
-    const loop = () => {
-      raf = requestAnimationFrame(loop);
-      const levels = read();
-      const now = performance.now();
-      levels.forEach((level, i) => {
-        shown[i] = level > (shown[i] ?? 0) ? level : (shown[i] ?? 0) * 0.92;
-        const h = hold[i] ?? { v: 0, t: 0 };
-        if (shown[i] >= h.v || now - h.t > 1200) hold[i] = { v: shown[i], t: now };
+    if (!player) return;
+    const channels: MeterChannel[] = [];
+    return watchLevels(player, (levels, elapsed) => {
+      pick(levels).forEach((level, i) => {
+        const channel = (channels[i] = meterStep(channels[i] ?? AT_REST, level, elapsed));
         const el = refs.current[i];
         if (el) {
-          el.style.transform = `scaleY(${levelToPos(shown[i])})`;
-          el.dataset.clip = String(shown[i] >= 1);
+          el.style.transform = `scaleY(${levelToPos(channel.shown)})`;
+          el.dataset.clip = String(channel.shown >= 1);
         }
         const pk = peaks.current[i];
-        if (pk) pk.style.bottom = `${levelToPos(hold[i].v) * 100}%`;
+        if (pk) pk.style.bottom = `${levelToPos(channel.peak) * 100}%`;
       });
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [read]);
+    });
+  }, [player, pick]);
   return { refs, peaks };
 }
 
-function Meter({ channels, read }: { channels: number; read: () => number[] }) {
-  const { refs, peaks } = useMeter(read);
+function Meter({ channels, pick }: { channels: number; pick: Channels }) {
+  const { refs, peaks } = useMeter(pick);
   return (
     <div className="meter">
       {Array.from({ length: channels }, (_, i) => (
@@ -194,14 +198,11 @@ function Strip({
   onFx: () => void;
   readOnly: boolean;
 }) {
-  const player = usePlayer();
   // What the strip's controls are called: by the track's name, or by its place where it has none.
   const name = t.name || label;
   const update = (patch: Partial<Track>, merge = false) =>
     commit([{ op: 'updateTrack', id: t.id, patch }], merge);
-  const read = useRef(() => [player?.levels().tracks[t.id] ?? 0]);
-  read.current = () => [player?.levels().tracks[t.id] ?? 0];
-  const reader = useRef(() => read.current()).current;
+  const level = useCallback((levels: Levels) => [levels.tracks[t.id] ?? 0], [t.id]);
   return (
     <div className="strip" data-muted={t.muted} inert={readOnly}>
       <div className="strip__name">
@@ -223,7 +224,7 @@ function Strip({
         <span className="mono">{panText(t.pan)}</span>
       </div>
       <div className="strip__main">
-        <Meter channels={1} read={reader} />
+        <Meter channels={1} pick={level} />
         <Fader label={`Volume, ${name}`} value={t.volume} onChange={(volume) => update({ volume }, true)} />
       </div>
       <NumberField
@@ -239,8 +240,10 @@ function Strip({
         ariaLabel={`Volume, ${name}`}
       />
       <div className="strip__btns">
+        {/* The letters are what a mixer shows. Read out, each button says what it does, and to which track. */}
         <button
           className={cx('strip__btn', t.muted && 'strip__btn--mute')}
+          aria-label={`Mute, ${name}`}
           aria-pressed={t.muted}
           onClick={() => update({ muted: !t.muted })}
           {...tip('Mute')}
@@ -249,6 +252,7 @@ function Strip({
         </button>
         <button
           className={cx('strip__btn', t.solo && 'strip__btn--solo')}
+          aria-label={`Solo, ${name}`}
           aria-pressed={t.solo}
           onClick={() => update({ solo: !t.solo })}
           {...tip('Solo')}
@@ -261,6 +265,7 @@ function Strip({
             (t.eq?.enabled || t.compressor?.enabled) && 'strip__btn--fx',
             fxOpen && 'strip__btn--open',
           )}
+          aria-label={`EQ and compressor, ${name}`}
           aria-pressed={fxOpen}
           onClick={onFx}
           {...tip('EQ & compressor')}
@@ -403,11 +408,9 @@ function TrackFx({
   );
 }
 
+const masterLevels: Channels = (levels) => levels.master;
+
 function MasterStrip() {
-  const player = usePlayer();
-  const read = useRef(() => [0, 0]);
-  read.current = () => player?.levels().master ?? [0, 0];
-  const reader = useRef(() => read.current()).current;
   return (
     <div className="strip strip--master">
       <div className="strip__name">
@@ -418,7 +421,7 @@ function MasterStrip() {
       </div>
       <div className="strip__pan" />
       <div className="strip__main">
-        <Meter channels={2} read={reader} />
+        <Meter channels={2} pick={masterLevels} />
       </div>
       <div className="strip__hint">Meters are post-fader peak. Red means the mix is clipping.</div>
     </div>

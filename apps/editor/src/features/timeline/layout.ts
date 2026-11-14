@@ -1,4 +1,4 @@
-import { displayTracks, trackLabel, type Project, type Track } from '@tandem/core';
+import { displayTracks, trackLabel, type ID, type Project, type Track } from '@tandem/core';
 
 export const HEADER_W = 156;
 export const RULER_H = 30;
@@ -26,15 +26,22 @@ export interface Lane {
   height: number;
 }
 
-/** Vertical layout of track lanes, top to bottom as displayed. */
-export function layoutLanes(project: Project): { lanes: Lane[]; height: number } {
+/**
+ * Vertical layout of track lanes, top to bottom as displayed. A track named in `heights` is drawn
+ * at that height instead of its own: the view of someone who cannot change the track itself.
+ */
+export function layoutLanes(
+  project: Project,
+  heights?: Readonly<Record<ID, number>> | null,
+): { lanes: Lane[]; height: number } {
   const lanes: Lane[] = [];
   let y = 4;
   let prevKind: string | null = null;
   for (const track of displayTracks(project)) {
     if (prevKind && prevKind !== track.kind) y += GROUP_GAP;
-    lanes.push({ track, label: trackLabel(project, track), top: y, height: track.height });
-    y += track.height + LANE_GAP;
+    const height = heights?.[track.id] ?? track.height;
+    lanes.push({ track, label: trackLabel(project, track), top: y, height });
+    y += height + LANE_GAP;
     prevKind = track.kind;
   }
   return { lanes, height: y + LANES_TAIL };

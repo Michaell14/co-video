@@ -5,6 +5,7 @@ import {
   CloudDownload,
   CloudOff,
   CloudUpload,
+  FileWarning,
   Film,
   FolderInput,
   Gauge,
@@ -14,6 +15,7 @@ import {
   MonitorPlay,
   Plus,
   RefreshCw,
+  Replace,
   RotateCw,
   Search,
   Sparkles,
@@ -29,6 +31,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type HTMLAttributes,
   type ReactNode,
 } from 'react';
@@ -49,6 +52,7 @@ import {
 } from '@tandem/core';
 import { currentSession, useMediaStatus, useProject, useSession, useSessionMeta } from '../../session/hooks';
 import { cmd, withMarkers } from '../../state/commands';
+import { mediaAvailable } from '../../state/media';
 import { commit } from '../../state/props';
 import { useUI, type LibraryTab } from '../../state/ui';
 import { confirm } from '../../ui/confirm';
@@ -56,8 +60,9 @@ import { Button, cx, hideTip, IconButton, openContextMenu, tip } from '../../ui/
 import { beginDrag, useDrag, type DragPayload } from '../../ui/dnd';
 import { handFocus, usingKeyboard } from '../../ui/layers';
 import { onTabListKey } from '../editor/tabs';
+import { decodeNotice } from './fault';
 import { FxThumb } from './fxPreview';
-import { picked, restOfDrop, type PickMode } from './pool';
+import { picked, replaceTarget, restOfDrop, type PickMode } from './pool';
 import { search } from './search';
 import { tileToward } from './tiles';
 import './library.css';
@@ -150,8 +155,11 @@ function TileGrid({
     // them on the document for as long as it is open. Heard on the window, ahead of both, they
     // have one owner while a tile shows the focus ring.
     const onKey = (e: KeyboardEvent): void => {
-      const from = e.target as HTMLElement;
-      if (byPointer.current || !el.contains(from) || !from.matches('[data-tile]')) return;
+      // A key heard on the window was not always pressed on an element: with nothing focused in
+      // the page it is pressed on the document, or on the window itself.
+      const from = e.target;
+      if (!(from instanceof HTMLElement) || byPointer.current) return;
+      if (!el.contains(from) || !from.matches('[data-tile]')) return;
       if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
       if (e.key === ' ' && space.current) {
         e.preventDefault();
@@ -633,12 +641,16 @@ function AssetCard({
   const status = useMediaStatus(asset.id);
   // Asked as a yes or no, a card is drawn again when its own answer changes, not with every edit.
   const used = useProject((p) => usedAssets(p.clips).has(asset.id));
+  // Likewise what this browser cannot decode of the file: the verdict on another file is not this
+  // card's. It is known once the timeline has opened the file, so for files that have a clip there.
+  const fault = useSyncExternalStore(session.thumbs.subscribeFaults, () => session.thumbs.fault(asset.id));
   // Only a file that has just come into the pool arrives; one the pool shows again is simply there.
   const [added] = useState(() => !pool.known.has(asset.id));
   useEffect(() => void pool.known.add(asset.id), [pool, asset.id]);
-  const available = status.local || (asset.uploaded && meta.shared);
-  // A file this device could not keep goes with the page, unless the server has it by then.
-  const unkept = status.unsaved === 'failed' && !(asset.uploaded && meta.shared);
+  const available = mediaAvailable(asset, status, meta.shared);
+  // A file this device could not keep goes with the page, unless the server has it by then: it is
+  // asked whether the file could be had without the copy here.
+  const unkept = status.unsaved === 'failed' && !mediaAvailable(asset, { local: false }, meta.shared);
   const Icon =
     asset.kind === 'audio'
       ? AudioLines
@@ -730,10 +742,22 @@ function AssetCard({
           ]);
           return;
         }
+        // The one clip that is selected in the timeline can be given this file in place of its
+        // own. Whether the two fit is for the command to say, with the reason, when it is asked.
+        const project = session.store.get();
+        const target =
+          asset.kind !== 'lut' && session.canEdit ? replaceTarget(project, useUI.getState().selection) : null;
         openContextMenu(e, [
           asset.kind === 'lut'
             ? { label: 'Apply to selected clips', icon: <Wand2 />, onSelect: () => cmd.applyLut(asset.id) }
             : { label: 'Add to timeline', icon: <Plus />, onSelect: () => cmd.addAsset(asset) },
+          target !== null && project.clips[target].assetId !== asset.id
+            ? {
+                label: 'Replace selected clip with this',
+                icon: <Replace />,
+                onSelect: () => cmd.replaceClip(target, asset.id),
+              }
+            : null,
           asset.kind !== 'lut'
             ? {
                 label: 'Open in source monitor',
@@ -835,6 +859,16 @@ function AssetCard({
                 <CloudOff style={{ color: 'var(--amber)' }} />
               </span>
             ) : null}
+            {fault && available && (
+              <span
+                className="asset__fault"
+                role="img"
+                aria-label={decodeNotice(asset, fault)}
+                {...tip(decodeNotice(asset, fault))}
+              >
+                <FileWarning style={{ color: 'var(--amber)' }} />
+              </span>
+            )}
           </span>
           {(asset.hdr || status.proxy) && (
             <span className="asset__badges">

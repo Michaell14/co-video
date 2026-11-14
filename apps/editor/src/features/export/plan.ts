@@ -46,3 +46,59 @@ export function hasUnseen(found: readonly ExportWarning[], shown: readonly Expor
   const seen = new Set(shown.map((w) => `${w.clipId}|${kindOf(w)}`));
   return found.some((w) => !seen.has(`${w.clipId}|${kindOf(w)}`));
 }
+
+/**
+ * The highest whole number from `lowest` up to, but not including, `refused` that `accepts`, or
+ * null when not even `lowest` is accepted. `refused` is a number already known not to be, and what
+ * is asked about has a ceiling: above the first number that is refused, every number is. The
+ * ceiling is found by halving, in about as many questions as `refused - lowest` has binary digits.
+ */
+export async function highestAccepted(
+  lowest: number,
+  refused: number,
+  accepts: (n: number) => Promise<boolean>,
+): Promise<number | null> {
+  if (lowest >= refused || !(await accepts(lowest))) return null;
+  let accepted = lowest;
+  let above = refused;
+  while (above - accepted > 1) {
+    const middle = Math.floor((accepted + above) / 2);
+    if (await accepts(middle)) accepted = middle;
+    else above = middle;
+  }
+  return accepted;
+}
+
+/** What the video encoder said to the settings an export would give it. */
+export type EncoderVerdict =
+  | { accepted: true }
+  | {
+      accepted: false;
+      /** The highest bitrate it does take with everything else as chosen, in bits per second. */
+      limit: number | null;
+      /** It would take the settings were the choice of encoder left to the browser. */
+      acceleration: boolean;
+    };
+
+/** A bitrate as the dialog writes it: `200 Mbps`, `12.5 Mbps`. */
+export const describeBitrate = (bits: number): string => `${Math.round(bits / 1e5) / 10} Mbps`;
+
+/**
+ * What the dialog says about settings the encoder refuses, and what to change: the ceiling on the
+ * bitrate where there is one, the choice of encoder where that is what stands in the way.
+ */
+export function refusalNotice(
+  verdict: Extract<EncoderVerdict, { accepted: false }>,
+  asked: {
+    codec: string;
+    size: string;
+    bitrate: number;
+    hardware: 'no-preference' | 'prefer-hardware' | 'prefer-software';
+  },
+): string {
+  if (verdict.limit !== null)
+    return `${asked.codec} at ${asked.size} takes at most ${describeBitrate(verdict.limit)} in this browser. Lower the bitrate, or choose another codec.`;
+  if (verdict.acceleration)
+    return `This browser has no ${asked.hardware === 'prefer-software' ? 'software' : 'GPU'} encoder for ${asked.codec} at ${asked.size}. Set Acceleration to Automatic.`;
+  return `This browser’s ${asked.codec} encoder does not take ${asked.size} at ${describeBitrate(asked.bitrate)}. Choose another codec, size or frame rate.`;
+}

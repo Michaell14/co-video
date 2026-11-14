@@ -82,6 +82,36 @@
   font-size: var(--text-xs);
   animation: slide-up var(--dur-2) var(--ease-out);
 }
+/* Why the picture is black, said in the middle of it. It lies under the handles and takes no
+   press: whatever is laid out in the viewer is reached through it. */
+.viewer__media {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  padding: 5px 10px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg-0) 78%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  color: var(--fg-2);
+  font-size: var(--text-xs);
+  pointer-events: none;
+}
+.viewer__media svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.viewer__media span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Transform handles */
 .gizmo {
@@ -409,6 +439,16 @@
 }
 .source__add {
   margin-left: auto;
+}
+/* The icon and the name are one thing to take hold of, and give way to the buttons like the name. */
+.source__grip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.source__grip[data-live] {
+  cursor: grab;
 }
 .source__name {
   font-size: var(--text-sm);

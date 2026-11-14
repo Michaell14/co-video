@@ -27,6 +27,24 @@
   color: var(--fg-2);
   font-size: var(--text-sm);
 }
+/* What is the matter with the clip's file, under its name. */
+.insp__trouble {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding-left: 2px;
+  color: var(--fg-2);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+.insp__trouble svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin-top: 2px;
+  color: var(--amber);
+}
 .insp__empty {
   color: var(--fg-3);
   font-size: var(--text-sm);

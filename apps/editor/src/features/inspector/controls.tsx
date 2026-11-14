@@ -1,6 +1,14 @@
 /** Building blocks for property panels: collapsible sections and keyframe-aware rows. */
 import { ChevronDown, ChevronLeft, ChevronRight, Diamond } from 'lucide-react';
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from 'react';
 import {
   animated,
   baseValue,
@@ -21,10 +29,10 @@ import { useSession } from '../../session/hooks';
 import { cmd } from '../../state/commands';
 import { beginGesture, localFrameOf, patchClips, setClipValues } from '../../state/props';
 import {
-  ColorField,
+  ColorField as KitColorField,
   Labelled,
   LabelText,
-  NumberField,
+  NumberField as KitNumberField,
   openContextMenu,
   Select,
   Slider,
@@ -32,6 +40,36 @@ import {
   tip,
   useCollapsed,
 } from '../../ui/core';
+
+/** What the fields of a panel stand for, as text that is another text for anything else. */
+const Subject = createContext('');
+
+/**
+ * Says what the fields under it stand for: the clips of the selection, the clip the Colour panel
+ * is on. A field keeps what is typed into it until that is applied. A press of the pointer applies
+ * it first, whatever the press goes on to do. But a panel also comes to show other clips with no
+ * press at all: a collaborator removes the selected clip, a command selects another, playback
+ * carries the Colour panel on to the next shot. The row is then drawn for those clips, and what
+ * was typed was not typed for them. A field under another subject is therefore another field, and
+ * an entry that was not applied goes with the one it was typed into, as Escape would have left
+ * it. Only the fields are made anew: a slider or a switch that has the keyboard keeps it.
+ */
+export function FieldSubject({ of, children }: { of: string; children: ReactNode }) {
+  return <Subject.Provider value={of}>{children}</Subject.Provider>;
+}
+
+/** What the controls here stand for, as the `FieldSubject` around them says it. */
+export const useFieldSubject = (): string => useContext(Subject);
+
+/** The kit's number field, for a row of a panel: see `FieldSubject`. */
+export function NumberField(props: ComponentProps<typeof KitNumberField>) {
+  return <KitNumberField key={useContext(Subject)} {...props} />;
+}
+
+/** The kit's colour field, for a row of a panel: see `FieldSubject`. */
+export function ColorField(props: ComponentProps<typeof KitColorField>) {
+  return <KitColorField key={useContext(Subject)} {...props} />;
+}
 
 export function Section({
   id,
@@ -209,15 +247,7 @@ export function KeyframeNav({ clip, path }: { clip: Clip; path: string }) {
   );
 }
 
-/** A timecode to type into: `1:00`, a frame count, `2.5s`, or `+12` / `-12` to move by frames. */
-export function TimecodeField({
-  value,
-  fps,
-  onCommit,
-  ariaLabel,
-  min = 0,
-  mixed,
-}: {
+interface TimecodeFieldProps {
   value: number;
   fps: Fps;
   onCommit: (frame: number) => void;
@@ -225,7 +255,17 @@ export function TimecodeField({
   min?: number;
   /** The selection holds different values: any entry applies to all of it. */
   mixed?: boolean;
-}) {
+}
+
+/**
+ * A timecode to type into: `1:00`, a frame count, `2.5s`, or `+12` / `-12` to move by frames. Like
+ * the other fields of a panel it stands for the `FieldSubject` around it.
+ */
+export function TimecodeField(props: TimecodeFieldProps) {
+  return <TimecodeEntry key={useContext(Subject)} {...props} />;
+}
+
+function TimecodeEntry({ value, fps, onCommit, ariaLabel, min = 0, mixed }: TimecodeFieldProps) {
   const input = useRef<HTMLInputElement>(null);
   const [text, setText] = useState<string | null>(null);
   // Readable in the same tick it changes: Enter and Escape blur the field from inside their own
@@ -261,7 +301,8 @@ export function TimecodeField({
   useLayoutEffect(() => {
     if (!pending) return;
     const settle = (e: PointerEvent) => {
-      if (!input.current?.contains(e.target as Node)) latest.current();
+      // Heard on the window, where the target of a press need not be a node of the page.
+      if (!(e.target instanceof Node && input.current?.contains(e.target))) latest.current();
     };
     window.addEventListener('pointerdown', settle, true);
     return () => window.removeEventListener('pointerdown', settle, true);

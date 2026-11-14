@@ -228,11 +228,13 @@
 .asset__proxy[data-off='true'] {
   opacity: 0.5;
 }
+/* What is going on with the file, and beside it what this browser cannot decode of it. */
 .asset__status {
   position: absolute;
   left: 4px;
   top: 4px;
   display: flex;
+  gap: 3px;
 }
 .asset__status span,
 .asset__retry {

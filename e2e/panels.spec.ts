@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { clips, ffprobe, hasFfprobe, newProject } from './helpers';
+import { clips, ffprobe, hasFfprobe, importFixtures, newProject } from './helpers';
 
 const SAMPLE = ['audio@0+360', 'text@18+90', 'video@0+120', 'video@120+120', 'video@240+120'];
 
@@ -94,9 +94,10 @@ const burst = (page: Page, keys: string[]): Promise<void> =>
   page.evaluate(async (keys) => {
     for (const name of keys) {
       const shiftKey = name.startsWith('Shift+');
-      const key = shiftKey ? name.slice(6) : name;
+      const ctrlKey = name.startsWith('Control+');
+      const key = name.slice(name.indexOf('+') + 1);
       document.activeElement!.dispatchEvent(
-        new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true }),
+        new KeyboardEvent('keydown', { key, shiftKey, ctrlKey, bubbles: true, cancelable: true }),
       );
       await new Promise((turn) => setTimeout(turn));
     }
@@ -479,7 +480,17 @@ test.describe('inspector', () => {
     for (const name of ['Pan, A1', 'Volume, A1']) await one('slider', name);
     await one('textbox', 'Volume, A1');
     await expect(page.getByRole('slider', { name: 'Pan, A1' })).toHaveAttribute('aria-valuetext', 'C');
-    await page.locator('.strip').first().getByRole('button', { name: 'FX' }).click();
+    // The strip's buttons show a letter and say what they do, and to which track.
+    for (const [name, shown] of [
+      ['Mute, A1', 'M'],
+      ['Solo, A1', 'S'],
+      ['EQ and compressor, A1', 'FX'],
+    ]) {
+      await one('button', name);
+      await expect(page.getByRole('button', { name, exact: true })).toHaveText(shown);
+      await expect(page.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'false');
+    }
+    await page.getByRole('button', { name: 'EQ and compressor, A1' }).click();
     for (const name of ['EQ high', 'Compressor threshold', 'Compressor make-up gain'])
       await one('slider', name);
 
@@ -487,6 +498,8 @@ test.describe('inspector', () => {
     await expect(page.locator('.exp .spinner')).toHaveCount(0);
     await one('button', 'Codec H.264 (AVC)');
     await one('group', 'Quality');
+    // The other group of choices stands under the row label 'Export', which says too little by itself.
+    await one('group', 'Export range');
     await expect(page.getByRole('option', { name: /· project$/ })).toHaveCount(0);
     await page.locator('.exp .row', { hasText: 'Resolution' }).locator('.select').click();
     await expect(page.getByRole('option', { name: '1920×1080 · project' })).toHaveCount(1);
@@ -529,6 +542,56 @@ test.describe('inspector', () => {
     expect(await places()).toEqual(before);
     await page.waitForTimeout(900);
     await expect(toast(page, 'The next clip is in the way')).toHaveCount(0);
+
+    // Where what follows cannot move, the clip stops at the next one as it does without ripple
+    // editing, and the panel says why: once, when the gesture has ended. Here the next clip has
+    // its sound on a locked track, and the two would be parted.
+    await page.evaluate(() => {
+      const { session, cmd } = (window as any).tandem;
+      cmd.addTrack('audio');
+      const p = session.store.get();
+      const all = Object.values(p.clips) as any[];
+      const a2 = (Object.values(p.tracks) as any[]).find((t) => t.kind === 'audio' && t.order === 1);
+      const music = all.find((c) => c.type === 'audio');
+      const fractal = all.find((c) => c.name === 'fractal.mp4');
+      const sound = { ...music, id: 'sound', trackId: a2.id, start: 120, duration: 120, linkId: 'pair' };
+      session.store.commit([
+        { op: 'addClip', clip: sound },
+        { op: 'updateClip', id: fractal.id, patch: { linkId: 'pair' } },
+        { op: 'updateTrack', id: a2.id, patch: { locked: true } },
+      ]);
+    });
+    const refusal = page.locator('.toast', { hasText: 'Unlock A2 to ripple' });
+    const track = await box(speed.locator('.slider').first());
+    const y = track.y + track.height / 2;
+    // 100% lies three sevenths along the slider, which runs from an eighth of the speed to 16 times.
+    await page.mouse.move(track.x + (track.width * 3) / 7, y);
+    await page.mouse.down();
+    for (let step = 1; step <= 8; step++) {
+      await page.mouse.move(track.x + track.width * (3 / 7 - step * 0.02), y);
+      await expect(refusal).toHaveCount(0);
+    }
+    await page.mouse.up();
+    await expect(refusal).toHaveCount(1);
+    await expect(refusal).toHaveText('Unlock A2 to ripple: a linked clip on it has to move too.');
+    const slowed = await clip(page, 'dusk.mp4');
+    expect(slowed.speed).toBeLessThan(0.6);
+    expect(slowed.duration).toBe(120);
+    expect(await places()).toEqual(before);
+    // The same gesture, now that the track can follow, says nothing.
+    await undo(page);
+    await expect(refusal).toHaveCount(0, { timeout: 10_000 });
+    await page.evaluate(() => {
+      const { session } = (window as any).tandem;
+      const a2 = (Object.values(session.store.get().tracks) as any[]).find(
+        (t) => t.kind === 'audio' && t.order === 1,
+      );
+      session.store.commit([{ op: 'updateTrack', id: a2.id, patch: { locked: false } }]);
+    });
+    await enter(field, '50');
+    expect(await places()).toEqual(['V1:aurora.mp4@360+120', 'V1:dusk.mp4@0+240', 'V1:fractal.mp4@240+120']);
+    await page.waitForTimeout(900);
+    await expect(refusal).toHaveCount(0);
   });
 
   test('an effect added by hand is brought into view, and removing one keeps the keyboard in the list', async ({
@@ -626,6 +689,140 @@ test.describe('inspector', () => {
     await page.locator(`[data-clip="${fractal.id}"]`).click();
     expect((await clip(page, 'aurora.mp4')).start).toBe(417);
     expect((await clip(page, 'fractal.mp4')).start).toBe(120);
+  });
+
+  test('a number typed and not applied stays with the clip it was typed for', async ({ page }) => {
+    await sample(page);
+    const dusk = await clip(page, 'dusk.mp4');
+    const fractal = await clip(page, 'fractal.mp4');
+    const title = inspector(page).locator('.insp__title');
+    const opacity = inspector(page).getByRole('textbox', { name: 'Opacity', exact: true });
+    const opacities = async () => [
+      (await clip(page, 'dusk.mp4')).opacity,
+      (await clip(page, 'fractal.mp4')).opacity,
+    ];
+    const depth = await undoDepth(page);
+
+    // The panel comes to show the next clip without a press of the pointer, here by the command
+    // that Ctrl+Down runs (pressed in the field itself, the key is the field's). What was typed
+    // for the first clip goes to neither: the field is the next clip's, and nobody is typing in it.
+    await select(page, [dusk.id]);
+    await opacity.click();
+    await opacity.pressSequentially('37');
+    await page.evaluate(() => (window as any).tandem.cmd.selectClip(1));
+    await expect(title).toHaveText('fractal.mp4');
+    await expect(opacity).toHaveValue('100');
+    await expect(opacity).not.toBeFocused();
+    await page.keyboard.press('Tab');
+    expect(await opacities()).toEqual([1, 1]);
+    expect(await undoDepth(page)).toBe(depth);
+
+    // Only the fields are new with the selection. A slider that has the keyboard keeps it, and
+    // goes on to work on the clip the key selected.
+    await select(page, [dusk.id]);
+    const slider = inspector(page).getByRole('slider', { name: 'Opacity', exact: true });
+    await slider.focus();
+    await page.keyboard.press('Control+ArrowDown');
+    await expect(title).toHaveText('fractal.mp4');
+    await expect(slider).toBeFocused();
+    await page.keyboard.press('Home');
+    await expect.poll(opacities).toEqual([1, 0]);
+    await undo(page);
+
+    // A press that selects another clip ends the entry first, for the clip it was typed for.
+    await select(page, [dusk.id]);
+    await opacity.click();
+    await opacity.pressSequentially('50');
+    await page.locator(`[data-clip="${fractal.id}"]`).click();
+    expect(await opacities()).toEqual([0.5, 1]);
+    await undo(page);
+
+    // With nothing selected the Colour panel is on the clip under the playhead, and moves on to
+    // the next shot as the playhead does. A number typed for the first shot is not the second's.
+    const temperatures = async () =>
+      [await clip(page, 'dusk.mp4'), await clip(page, 'fractal.mp4')].map((c) => c.grade?.temperature ?? 0);
+    await set(page, { selection: [], workspace: 'color' });
+    await seek(page, 110);
+    const shown = page.locator('.color__clip');
+    await expect(shown).toContainText('dusk.mp4');
+    const temp = page.getByRole('textbox', { name: 'Temp', exact: true });
+    await temp.click();
+    await temp.pressSequentially('0.5');
+    await seek(page, 150);
+    await expect(shown).toContainText('fractal.mp4');
+    await expect(temp).toHaveValue('0.00');
+    await expect(temp).not.toBeFocused();
+    await page.keyboard.press('Tab');
+    expect(await temperatures()).toEqual([0, 0]);
+    // Typed and applied while the panel stays on its clip, it is that clip's.
+    await enter(temp, '0.5');
+    expect(await temperatures()).toEqual([0, 0.5]);
+  });
+
+  test('the panel says when the file of what is selected is offline or cannot be decoded', async ({
+    page,
+  }) => {
+    await sample(page);
+    await importFixtures(page, ['testsrc.webm']);
+    const card = page.locator('.asset', { hasText: 'testsrc.webm' });
+    await expect(card).toBeVisible();
+    const dusk = await clip(page, 'dusk.mp4');
+    const trouble = inspector(page).locator('.insp__trouble');
+    // A clip of a file the project lists but that is on neither this device nor a server, and one
+    // of a file the project no longer has.
+    await page.evaluate(() => {
+      const { session } = (window as any).tandem;
+      const p = session.store.get();
+      const dusk = (Object.values(p.clips) as any[]).find((c) => c.name === 'dusk.mp4');
+      const spare = { ...dusk, transIn: null, transOut: null, effects: [] };
+      session.store.commit([
+        {
+          op: 'addAsset',
+          asset: { ...p.assets[dusk.assetId], id: 'away', name: 'away.mp4', uploaded: false },
+        },
+        { op: 'addClip', clip: { ...spare, id: 'away', assetId: 'away', name: 'away.mp4', start: 400 } },
+        { op: 'addClip', clip: { ...spare, id: 'gone', assetId: 'gone', name: 'gone.mp4', start: 540 } },
+      ]);
+    });
+
+    await select(page, [dusk.id]);
+    await expect(inspector(page).locator('.insp__title')).toHaveText('dusk.mp4');
+    await expect(trouble).toHaveCount(0);
+    // The line stands under the clip's name, and says what the pool says of the same file.
+    await select(page, ['away']);
+    await expect(trouble).toHaveText('Media offline: not on this device or the server');
+    const name = await box(inspector(page).getByRole('textbox', { name: 'Clip name' }));
+    const start = await box(inspector(page).getByLabel('Start', { exact: true }));
+    const line = await box(trouble);
+    expect(line.y).toBeGreaterThanOrEqual(name.y + name.height);
+    expect(line.y + line.height).toBeLessThanOrEqual(start.y);
+    await expect(page.locator('.asset[aria-label="away.mp4"]')).toHaveAttribute('data-offline', 'true');
+    await select(page, ['gone']);
+    await expect(trouble).toHaveText('Media offline: its file is no longer in the project');
+    // Clips of different files have no one file to speak of.
+    await select(page, ['away', dusk.id]);
+    await expect(inspector(page).locator('.insp__title')).toHaveText('2 clips');
+    await expect(trouble).toHaveCount(0);
+
+    // From here on this browser decodes no picture. A shot selected with its linked sound is
+    // told about the picture; the sound by itself has nothing the matter with it.
+    await page.evaluate(() => {
+      VideoDecoder.isConfigSupported = async (config) => ({ supported: false, config });
+    });
+    await seek(page, 700);
+    await card.locator('.asset__add').click();
+    await expect(inspector(page).locator('.insp__title')).toHaveText('2 clips');
+    await expect(page.locator('.clip__chip', { hasText: 'Unsupported' })).toBeVisible();
+    await expect(trouble).toHaveText(/^This browser cannot decode the picture of this file \(vp0?9/);
+    const sound = await page.evaluate(
+      () =>
+        (Object.values((window as any).tandem.session.store.get().clips) as any[]).find(
+          (c) => c.type === 'audio' && c.name === 'testsrc.webm',
+        ).id,
+    );
+    await select(page, [sound]);
+    await expect(inspector(page).locator('.insp__title')).toHaveText('testsrc.webm');
+    await expect(trouble).toHaveCount(0);
   });
 
   test('headings and labels are spelt the way the rest of the interface is', async ({ page }) => {
@@ -1012,6 +1209,68 @@ test.describe('colour', () => {
     expect(await frame()).toBe(at);
   });
 
+  test('a run of key presses on a wheel ends with the clip it was made on', async ({ page }) => {
+    await sample(page);
+    const dusk = await clip(page, 'dusk.mp4');
+    await set(page, { workspace: 'color', selection: [dusk.id] });
+    const lifts = async () =>
+      [await clip(page, 'dusk.mp4'), await clip(page, 'fractal.mp4')].map((c) => c.grade?.lift ?? null);
+    const puck = page.getByRole('slider', { name: 'Lift colour balance', exact: true });
+    await puck.focus();
+    const depth = await undoDepth(page);
+    // Two presses on the first shot, the key that selects the next clip, and two more: all within
+    // the time that makes presses one run, and the wheel keeps the keyboard throughout.
+    await burst(page, ['ArrowRight', 'ArrowRight', 'Control+ArrowDown', 'ArrowRight', 'ArrowRight']);
+    await expect(page.locator('.color__clip')).toContainText('fractal.mp4');
+    await expect(puck).toBeFocused();
+    const [first, second] = await lifts();
+    expect(first).not.toBeNull();
+    expect(second).toEqual(first);
+    // Each shot has its own undo step: taking back the second leaves the first as it was graded.
+    expect(await undoDepth(page)).toBe(depth + 2);
+    await undo(page);
+    expect(await lifts()).toEqual([first, null]);
+  });
+
+  test('what is printed on the band of tonal zones is readable to its light end', async ({ page }) => {
+    await sample(page);
+    await set(page, { workspace: 'color' });
+    await page.getByRole('tab', { name: 'HDR' }).click();
+    await expect(page.locator('.zone')).toHaveCount(6);
+    // The band is a gradient that gets lighter to the right. Each text is measured against the
+    // lightest ground it could ever stand on, the band's far end, in the colour it is printed in.
+    const ratios = await page.locator('.zones').evaluate((zones) => {
+      const stops = Array.from(
+        getComputedStyle(zones).backgroundImage.matchAll(/rgba?\(([^)]+)\)(?:\s+([\d.]+)%)?/g),
+        (stop) => ({ colour: `rgb(${stop[1]})`, at: stop[2] === undefined ? null : Number(stop[2]) / 100 }),
+      );
+      const band = document.createElement('canvas');
+      band.width = 256;
+      band.height = 1;
+      const paint = band.getContext('2d', { willReadFrequently: true })!;
+      const gradient = paint.createLinearGradient(0, 0, band.width, 0);
+      stops.forEach((stop, i) => gradient.addColorStop(stop.at ?? (i === 0 ? 0 : 1), stop.colour));
+      paint.fillStyle = gradient;
+      paint.fillRect(0, 0, band.width, 1);
+      const ground = Array.from(paint.getImageData(band.width - 1, 0, 1, 1).data.slice(0, 3));
+      const luminance = (rgb: number[]): number => {
+        const [r, g, b] = rgb.map((v) =>
+          v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4,
+        );
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      };
+      return ['.zone__val', '.zone__label', '.zone__stops'].map((selector) => {
+        const [r, g, b, alpha = 1] = getComputedStyle(zones.querySelector(selector)!)
+          .color.match(/[\d.]+/g)!
+          .map(Number);
+        const ink = [r, g, b].map((v, i) => v * alpha + ground[i] * (1 - alpha));
+        return (luminance(ink) + 0.05) / (luminance(ground) + 0.05);
+      });
+    });
+    expect(ratios).toHaveLength(3);
+    for (const ratio of ratios) expect(ratio).toBeGreaterThanOrEqual(4.5);
+  });
+
   test('scopes are read again only when the viewer has drawn a frame', async ({ page }) => {
     await sample(page);
     await set(page, { workspace: 'color' });
@@ -1085,7 +1344,7 @@ test.describe('mixer', () => {
 
     // EQ and compressor open under the strips, inside the panel, and act on their track.
     const before = await heights();
-    await page.locator('.strip').first().getByRole('button', { name: 'FX' }).click();
+    await page.getByRole('button', { name: 'EQ and compressor, A1' }).click();
     const drawer = page.locator('.mixer__fx');
     await expect(drawer).toContainText('A1');
     const open = await heights();
@@ -1120,12 +1379,13 @@ test.describe('mixer', () => {
     await undo(page);
     expect((await a1()).volume).toBe(-9);
 
-    // Solo and mute show what they are switched to while the pointer is still on the button.
+    // Solo and mute show what they are switched to while the pointer is still on the button, in
+    // the colours the track's header has for them.
     for (const [name, colour] of [
-      ['S', '--amber'],
-      ['M', '--red'],
+      ['Solo, A1', '--track-solo'],
+      ['Mute, A1', '--track-mute'],
     ]) {
-      const button = page.locator('.strip').first().getByRole('button', { name, exact: true });
+      const button = page.getByRole('button', { name, exact: true });
       await button.click();
       await expect(button).toHaveAttribute('aria-pressed', 'true');
       expect(await button.evaluate((el) => el.matches(':hover'))).toBe(true);
@@ -1133,6 +1393,60 @@ test.describe('mixer', () => {
       await button.click();
       await expect(button).toHaveAttribute('aria-pressed', 'false');
     }
+  });
+
+  test('all meters share one reading of the levels a frame, and none is taken at rest', async ({ page }) => {
+    await sample(page);
+    await page.evaluate(() => (window as any).tandem.cmd.addTrack('audio'));
+    await set(page, { workspace: 'audio' });
+    // Three strips and the mix, and the headers of the same tracks in the timeline below them.
+    await expect(page.locator('.strip')).toHaveCount(4);
+    /** How often the levels were read during `ms`, and how many frames the page drew meanwhile. */
+    const reads = (ms: number): Promise<{ calls: number; frames: number }> =>
+      page.evaluate(async (ms) => {
+        const { player } = (window as any).tandem.session;
+        const count = { calls: 0, frames: 0 };
+        const read = player.levels;
+        player.levels = function (this: unknown) {
+          count.calls++;
+          return read.call(this);
+        };
+        let counting = true;
+        const frame = (): void => {
+          if (!counting) return;
+          count.frames++;
+          requestAnimationFrame(frame);
+        };
+        requestAnimationFrame(frame);
+        await new Promise((done) => setTimeout(done, ms));
+        counting = false;
+        delete player.levels;
+        return count;
+      }, ms);
+    const shown = () =>
+      page.evaluate(() => ({
+        bars: Array.from(document.querySelectorAll<HTMLElement>('.meter__bar'), (el) => el.style.transform),
+        peaks: Array.from(document.querySelectorAll<HTMLElement>('.meter__peak'), (el) => el.style.bottom),
+      }));
+    const moving = (bar: string): boolean => bar !== '' && bar !== 'scaleY(0)';
+
+    expect((await reads(1000)).calls).toBe(0);
+
+    await seek(page, 0);
+    await page.evaluate(() => (window as any).tandem.session.player.play());
+    // The music plays on A1: its bar and both bars of the mix move, the empty tracks' do not.
+    await expect.poll(async () => (await shown()).bars.map(moving)).toEqual([true, false, false, true, true]);
+    const playing = await reads(1000);
+    expect(playing.calls).toBeGreaterThan(0);
+    expect(playing.calls).toBeLessThanOrEqual(playing.frames + 1);
+
+    // Stopped, the bars fall back and the peak marks let go. The levels are read for a moment
+    // longer than that takes, and then not at all.
+    await page.evaluate(() => (window as any).tandem.session.player.pause());
+    await expect.poll(shown).toEqual({ bars: Array(5).fill('scaleY(0)'), peaks: Array(5).fill('0%') });
+    await expect.poll(async () => (await reads(500)).calls).toBe(0);
+    expect((await reads(1000)).calls).toBe(0);
+    expect(await shown()).toEqual({ bars: Array(5).fill('scaleY(0)'), peaks: Array(5).fill('0%') });
   });
 
   test('a fader is a slider for the keyboard, in decibels', async ({ page }) => {
@@ -1480,5 +1794,126 @@ test.describe('export', () => {
     await page.keyboard.press('Enter');
     await expect(dialog.getByText('Export failed.')).toBeVisible({ timeout: 60_000 });
     await expect(exportButton(page)).toBeFocused();
+  });
+
+  /** A local project of one small solid clip, `frames` long, with the export dialog open on it. */
+  async function smallExport(page: Page, frames: number): Promise<void> {
+    await newLocal(page);
+    await page.evaluate((frames) => {
+      const { session, cmd, ui } = (window as any).tandem;
+      session.store.commit([{ op: 'settings', patch: { width: 320, height: 180 } }]);
+      cmd.addSolid('#c04020');
+      const solid = Object.values(session.store.get().clips)[0] as any;
+      session.store.commit([{ op: 'updateClip', id: solid.id, patch: { duration: frames } }]);
+      ui.getState().set({ dialog: 'export' });
+    }, frames);
+    await expect(page.locator('.exp')).toBeVisible();
+    await probed(page);
+  }
+
+  test('settings the encoder will not take are said before anything is written', async ({ page }) => {
+    await smallExport(page, 12);
+    const dialog = page.getByRole('dialog');
+    const refused = dialog.locator('.exp__refused');
+    const bitrate = dialog.getByRole('textbox', { name: 'Bitrate', exact: true });
+    const started = async () =>
+      (await page.locator('.exp__run').count()) + (await page.locator('.exp__failed').count());
+    await expect(codec(page)).toHaveText(/H\.264/);
+    await expect(refused).toHaveCount(0);
+
+    // The field takes more than the software H.264 encoder does at this size. The dialog names
+    // the ceiling for this codec and size, and does not offer the export.
+    await enter(bitrate, '400');
+    await expect(refused).toHaveText(
+      /^H\.264 \(AVC\) at 320×180 takes at most [\d.]+ Mbps in this browser\. Lower the bitrate, or choose another codec\.$/,
+    );
+    await expect(dialog.getByRole('alert')).toHaveText(/takes at most/);
+    await expect(exportButton(page)).toBeDisabled();
+    // The ceiling is one: at it the export is offered again, a step above it is not.
+    const limit = Number(/at most ([\d.]+) Mbps/.exec(await refused.innerText())![1]);
+    expect(limit).toBeGreaterThanOrEqual(100);
+    expect(limit).toBeLessThan(400);
+    await enter(bitrate, (limit + 0.1).toFixed(1));
+    await expect(bitrate).toHaveValue((limit + 0.1).toFixed(1));
+    await expect(refused).toHaveText(new RegExp(`at most ${limit} Mbps`));
+    await enter(bitrate, String(limit));
+    await expect(refused).toHaveCount(0);
+    await expect(exportButton(page)).toBeEnabled();
+
+    // Typed and not applied, with Export pressed straight away: the press applies the number, and
+    // the answer to it comes before anything is started.
+    await bitrate.click();
+    await bitrate.press('Control+a');
+    await bitrate.pressSequentially('400');
+    const button = await box(exportButton(page));
+    await page.mouse.click(button.x + button.width / 2, button.y + button.height / 2);
+    await expect(refused).toBeVisible();
+    await expect(exportButton(page)).toBeDisabled();
+    expect(await started()).toBe(0);
+
+    // A kind of encoder this browser does not have for the codec is said the same way.
+    await enter(bitrate, '8');
+    await expect(refused).toHaveCount(0);
+    await page.evaluate(() => {
+      const real = VideoEncoder.isConfigSupported.bind(VideoEncoder);
+      VideoEncoder.isConfigSupported = (config) =>
+        config.hardwareAcceleration === 'prefer-hardware'
+          ? Promise.resolve({ supported: false, config })
+          : real(config);
+    });
+    const acceleration = dialog.locator('.row', { hasText: 'Acceleration' }).locator('.select');
+    await acceleration.click();
+    await page.getByRole('option', { name: 'Prefer GPU encoder' }).click();
+    await expect(refused).toHaveText(
+      'This browser has no GPU encoder for H.264 (AVC) at 320×180. Set Acceleration to Automatic.',
+    );
+    await expect(exportButton(page)).toBeDisabled();
+    await acceleration.click();
+    await page.getByRole('option', { name: 'Automatic' }).click();
+    await expect(refused).toHaveCount(0);
+    expect(await started()).toBe(0);
+
+    // A bitrate that is not a whole number of bits once multiplied out is exported like any other.
+    await enter(bitrate, '4.1');
+    const download = page.waitForEvent('download');
+    await exportButton(page).click();
+    await download;
+    await expect(page.getByText('Export complete')).toBeVisible({ timeout: 100_000 });
+  });
+
+  test('a save prompt that fails is said with its reason, and the export is downloaded instead', async ({
+    page,
+  }) => {
+    await smallExport(page, 90);
+    const dialog = page.getByRole('dialog');
+    const said = toast(page, 'cannot be written straight to a file');
+    // Three seconds at this bitrate are estimated above the size up to which an export is built
+    // in memory without asking.
+    await enter(dialog.getByRole('textbox', { name: 'Bitrate', exact: true }), '200');
+    await expect
+      .poll(async () => Number(/≈ ([\d.]+) MB/.exec(await page.locator('.exp__est').innerText())?.[1]))
+      .toBeGreaterThan(64);
+    const prompt = (fails: string): Promise<void> =>
+      page.evaluate((fails) => {
+        (window as any).showSaveFilePicker = () =>
+          Promise.reject(new DOMException('No prompt can be shown here.', fails));
+      }, fails);
+
+    // Closed by the person, the prompt is "not now": nothing starts, and there is nothing to say.
+    await prompt('AbortError');
+    await exportButton(page).click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('.exp__run')).toHaveCount(0);
+    await expect(said).toHaveCount(0);
+
+    // Refused by the browser, it is no reason to lose the export, and no secret either.
+    await prompt('SecurityError');
+    await exportButton(page).click();
+    await expect(page.locator('.exp__run')).toBeVisible();
+    await expect(said).toHaveText(
+      'This export cannot be written straight to a file, so it will be downloaded when it is done. The browser’s reason: No prompt can be shown here.',
+    );
+    await dialog.getByRole('button', { name: 'Cancel export' }).click();
+    await expect(page.locator('.exp__presets')).toBeVisible({ timeout: 60_000 });
   });
 });

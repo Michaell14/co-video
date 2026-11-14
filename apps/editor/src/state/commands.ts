@@ -597,7 +597,10 @@ export const cmd = {
     ui().clearSelection();
   },
   setTool(tool: Tool): void {
-    ui().set({ tool });
+    // The blade and the slip tool do nothing but edit: without the access to, asking for one is
+    // refused like the edit itself.
+    if (tool === 'blade' || tool === 'slip') editing(() => ui().set({ tool }));
+    else ui().set({ tool });
   },
 
   // ───────────────────────────────────────────────────────────── editing ──

@@ -42,12 +42,12 @@ import { usePlayer, useProject, useSession, useSessionMeta } from '../../session
 import { cmd } from '../../state/commands';
 import { beginGesture, commit, patchClips } from '../../state/props';
 import { useUI } from '../../state/ui';
-import { Button, IconButton, NumberField, Select, Slider, tip, toast } from '../../ui/core';
+import { Button, IconButton, Select, Slider, tip, toast } from '../../ui/core';
 import { usingKeyboard } from '../../ui/layers';
 import { isDoublePress, type Press } from '../../ui/press';
 import { sliderKey } from '../../ui/slider';
 import { onTabListKey } from '../editor/tabs';
-import { Row } from '../inspector/controls';
+import { FieldSubject, NumberField, Row } from '../inspector/controls';
 import { useLiveSelect } from '../inspector/live';
 import { ProjectSettingsForm } from '../inspector/ProjectSettings';
 import { isShortcut, keepKey, useFaderKeys, useKeyRun } from '../inspector/sliderKeys';
@@ -234,10 +234,14 @@ export function ColorPanel() {
                 <span>{trackName} is locked. Unlock the track to grade this clip.</span>
               </div>
             )}
-            {tab === 'wheels' && <WheelsTab grade={grade} set={set} frozen={frozen} />}
-            {tab === 'curves' && <CurvesTab grade={grade} set={set} frozen={frozen} />}
-            {tab === 'hdr' && <HdrTab grade={grade} set={set} frozen={frozen} />}
-            {tab === 'lut' && <LutTab grade={grade} set={set} clip={clip} frozen={frozen} />}
+            {/* The panel moves on to another clip with the selection, and with the playhead while
+                nothing is selected. A number typed for one clip is not carried over to the next. */}
+            <FieldSubject of={clip.id}>
+              {tab === 'wheels' && <WheelsTab grade={grade} set={set} frozen={frozen} />}
+              {tab === 'curves' && <CurvesTab grade={grade} set={set} frozen={frozen} />}
+              {tab === 'hdr' && <HdrTab grade={grade} set={set} frozen={frozen} />}
+              {tab === 'lut' && <LutTab grade={grade} set={set} clip={clip} frozen={frozen} />}
+            </FieldSubject>
           </>
         )}
       </div>

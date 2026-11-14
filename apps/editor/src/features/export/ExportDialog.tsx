@@ -30,11 +30,19 @@ import {
 import { usePlayerState, useProject, useSession } from '../../session/hooks';
 import { cmd, downloadBlob } from '../../state/commands';
 import { useUI } from '../../state/ui';
-import { Button, Dialog, NumberField, Segmented, Select, tip } from '../../ui/core';
+import { Button, Dialog, NumberField, Segmented, Select, tip, toast } from '../../ui/core';
 import { describeSize } from '../../ui/labels';
 import { spendKeys } from '../../ui/layers';
 import { Row } from '../inspector/controls';
-import { groupProblems, hasUnseen, usableCodec, type ProblemPlace } from './plan';
+import { askEncoder, type Encoding } from './encoder';
+import {
+  groupProblems,
+  hasUnseen,
+  refusalNotice,
+  usableCodec,
+  type EncoderVerdict,
+  type ProblemPlace,
+} from './plan';
 import './export.css';
 
 type Quality = 'low' | 'medium' | 'high' | 'max';
@@ -283,8 +291,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const span =
     draft.range === 'inout' && range ? { in: range.in, out: Math.min(range.out, end) } : { in: 0, out: end };
   const seconds = framesToSeconds(Math.max(0, span.out - span.in), s);
+  // In whole bits: a tenth of a megabit is not always a whole number of them once multiplied out
+  // (4.1 Mbps is not), and an encoder is configured with nothing else.
   const videoBitrate = draft.customMbps
-    ? draft.customMbps * 1e6
+    ? Math.round(draft.customMbps * 1e6)
     : suggestBitrate(width, height, fps, videoCodec ?? draft.videoCodec, draft.quality, hdr);
   const estBytes = audioOnly ? seconds * 48000 * 4 : (seconds * (videoBitrate + draft.audioKbps * 1000)) / 8;
   const noVideoEncoder = !audioOnly && support !== null && videoCodec === null;
@@ -309,6 +319,28 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   };
   const latest = useRef(settings);
   latest.current = settings;
+
+  // The encoder is asked about exactly what the export would give it: a bitrate above what it
+  // takes for this codec and size, or a kind of encoder the browser does not have, otherwise
+  // fails the export after the person has been asked where to save it. Like the encoders
+  // themselves, the answer is kept with the question it belongs to.
+  const encoding: Encoding | null = !audioOnly && !hdr && videoCodec ? settings : null;
+  const encodingKey = encoding
+    ? [videoCodec, width, height, videoBitrate, rate.fpsNum, rate.fpsDen, draft.hardware].join('|')
+    : null;
+  const [answered, setAnswered] = useState<{ key: string; verdict: EncoderVerdict } | null>(null);
+  useEffect(() => {
+    if (encodingKey === null) return;
+    let cancelled = false;
+    void askEncoder(latest.current).then((verdict) => {
+      if (!cancelled) setAnswered({ key: encodingKey, verdict });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [encodingKey]);
+  const verdict = answered?.key === encodingKey ? answered.verdict : null;
+  const refused = verdict && !verdict.accepted ? verdict : null;
 
   // Look for media the export cannot get at while the settings are still on screen, so the gaps
   // are known before a long render and not after it. Only the range and whether there is a
@@ -343,6 +375,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   }, []);
 
   const start = async () => {
+    // Settings the encoder refuses are not started: the dialog says what to change. When its
+    // answer is in, nothing is awaited for it.
+    if (encoding && !(verdict ?? (await askEncoder(encoding))).accepted) return;
+    if (closed.current) return;
     const resolver = session.exportResolver();
     const now = session.store.get();
     // The list on screen stands for what is being exported unless the project or the range has
@@ -386,6 +422,13 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         writable = await handle.createWritable();
       } catch (err) {
         if ((err as DOMException)?.name === 'AbortError') return;
+        // The browser would not ask, or would not let the file be written. The export is not
+        // lost to that: it is built in memory and downloaded, and the person is told why the
+        // question they expected never came.
+        toast(
+          `This export cannot be written straight to a file, so it will be downloaded when it is done. The browser’s reason: ${err instanceof Error && err.message ? err.message : String(err)}`,
+          'error',
+        );
       }
     }
 
@@ -605,7 +648,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <Button
             variant="primary"
             icon={<Download />}
-            disabled={end === 0 || noVideoEncoder || support === null || checking}
+            disabled={end === 0 || noVideoEncoder || support === null || checking || refused !== null}
             onClick={() => void start()}
           >
             {checking ? 'Checking media…' : problems?.length ? 'Export anyway' : 'Export'}
@@ -647,6 +690,19 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <div className="callout callout--warn">
             <TriangleAlert />
             <div>The timeline is empty — add a clip before exporting.</div>
+          </div>
+        )}
+        {refused && videoCodec && (
+          <div className="callout callout--warn exp__refused" role="alert">
+            <TriangleAlert />
+            <div>
+              {refusalNotice(refused, {
+                codec: VIDEO_CODEC_LABELS[videoCodec] ?? videoCodec,
+                size: describeSize(width, height),
+                bitrate: videoBitrate,
+                hardware: draft.hardware,
+              })}
+            </div>
           </div>
         )}
         {!!problems?.length && (
@@ -802,6 +858,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             <Row label="Export">
               <Segmented
                 block
+                ariaLabel="Export range"
                 value={draft.range}
                 options={[
                   { value: 'all', label: 'Entire timeline' },

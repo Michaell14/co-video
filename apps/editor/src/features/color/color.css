@@ -347,14 +347,15 @@
   flex: none;
 }
 
-/* HDR zones */
+/* HDR zones. The band runs from black towards the highlights, and stops where the dimmest of the
+   labels printed on it (the stops, white at 0.7) still stands at 4.5:1 over its lightest end. */
 .zones {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   gap: 4px;
   padding: 10px 6px 8px;
   border-radius: var(--r-md);
-  background: linear-gradient(90deg, #060607, #1b1b1f 45%, #4a4a52 80%, #9a9aa6);
+  background: linear-gradient(90deg, #060607, #151518 45%, #33333a 80%, #55555f);
   box-shadow: inset 0 0 0 1px var(--line-2);
 }
 .zone {

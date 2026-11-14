@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { importFixtures, newProject } from './helpers';
+import { importFixtures, newProject, noReloads } from './helpers';
 
 /** `track:type@start+duration` for every clip, sorted, with tracks named V1, A1, … */
 function layout(page: Page): Promise<string[]> {
@@ -92,6 +92,9 @@ const toast = (page: Page, text: string) => page.locator('.toast', { hasText: te
 const menuItem = (page: Page, text: string) => page.locator('[role="menu"] .menu-item', { hasText: text });
 
 test.describe('timeline', () => {
+  // A page that reloads because someone saved a file has lost what the test had set up in it.
+  test.beforeEach(({ page }) => noReloads(page));
+
   test('the empty hint is one sentence, a rename can be abandoned, and the transport fits a narrow viewer', async ({
     page,
   }) => {
@@ -1219,18 +1222,19 @@ test.describe('timeline', () => {
         return clearRect.apply(this, args);
       };
       const frame = () => new Promise((r) => requestAnimationFrame(r));
+      const began = performance.now();
       /**
        * The lanes painted while `commit` ran `times`, a frame apart. What a commit paints is
        * painted with every commit. A thumbnail, a stretch of waveform or an upload that finishes
        * paints lanes too, whenever it happens to arrive, so a measurement that holds more than
-       * the commits may account for is made again: for a minute, after which the last one stands.
+       * the commits may account for is made again: for a minute over all of them, after which
+       * the last one stands.
        */
       const during = async (
         times: number,
         commit: (i: number) => void,
         explained: (lanes: Element[]) => boolean,
       ): Promise<Element[]> => {
-        const began = performance.now();
         for (;;) {
           painted.length = 0;
           for (let i = 0; i < times; i++) {
@@ -1260,14 +1264,39 @@ test.describe('timeline', () => {
           }),
         (lanes) => lanes.length <= 5 && new Set(lanes).size <= 1,
       );
+      // What a file does to the project when its upload finishes or its poster arrives: its
+      // record changes, and with it the list of all files. First a file no clip shows, then the
+      // music's.
+      const spare = { ...session.store.get().assets[music.assetId], id: 'spare', name: 'spare.ogg' };
+      session.store.commit([{ op: 'addAsset', asset: spare }]);
+      const touch = (id: string) => (i: number) =>
+        session.store.commit([{ op: 'updateAsset', id, patch: { size: spare.size + 1 + i } }]);
+      const forSpare = await during(5, touch('spare'), (lanes) => lanes.length === 0);
+      const forFile = await during(
+        5,
+        touch(music.assetId),
+        (lanes) => lanes.length <= 5 && new Set(lanes).size <= 1,
+      );
       proto.clearRect = clearRect;
-      return { forTitle: forTitle.length, forMusic: forMusic.length, lanes: new Set(forMusic).size };
+      return {
+        forTitle: forTitle.length,
+        forMusic: forMusic.length,
+        lanes: new Set(forMusic).size,
+        forSpare: forSpare.length,
+        forFile: forFile.length,
+        fileLanes: new Set(forFile).size,
+      };
     });
     // The title has no picture on a lane canvas; the music's waveform follows its volume.
     expect(paints.forTitle).toBe(0);
     expect(paints.forMusic).toBeGreaterThan(0);
     expect(paints.forMusic).toBeLessThanOrEqual(5);
     expect(paints.lanes).toBe(1);
+    // A change to a file paints the lanes that show the file, and no lane when none does.
+    expect(paints.forSpare).toBe(0);
+    expect(paints.forFile).toBeGreaterThan(0);
+    expect(paints.forFile).toBeLessThanOrEqual(5);
+    expect(paints.fileLanes).toBe(1);
   });
 
   test('a clip whose media is gone has the red strip that says so, however short it is', async ({ page }) => {
@@ -1857,6 +1886,37 @@ test.describe('timeline: keyboard, drops and marks', () => {
     expect(await state()).toMatchObject({ focus: 'dusk.mp4' });
     await page.keyboard.press('ArrowRight');
     expect(await state()).toMatchObject({ focus: 'fractal.mp4', ring: ['fractal.mp4'] });
+
+    // The same when the wheel takes the clip out of the range that is drawn, and when the view
+    // pages on under a running playhead: the keyboard is still in the lanes, the arrows have not
+    // gone back to stepping through frames, and scrolled back the clip has its ring as before.
+    await page.keyboard.press('Home');
+    expect(await state()).toMatchObject({ focus: 'dusk.mp4', ring: ['dusk.mp4'] });
+    const from = (await view(page)).scrollX;
+    const lanes = await box(page, '.lanes');
+    await page.mouse.move(lanes.x + 300, lanes.y + 40);
+    await page.keyboard.down('Shift');
+    for (let i = 0; i < 12; i++) await page.mouse.wheel(0, 500);
+    await page.keyboard.up('Shift');
+    await expect.poll(async () => (await view(page)).scrollX).toBe(from + 6000);
+    const ringed = page.locator('.clip[data-focus="true"]');
+    await expect(ringed).not.toBeInViewport();
+    expect(await state()).toMatchObject({ focus: 'dusk.mp4', ring: ['dusk.mp4'] });
+    await page.evaluate(() => (window as any).tandem.ui.getState().set({ scrollX: 0 }));
+    await expect(ringed).toBeInViewport();
+    expect(await state()).toMatchObject({ focus: 'dusk.mp4', ring: ['dusk.mp4'] });
+    await page.evaluate(() => {
+      const { player } = (window as any).tandem.session;
+      player.seek(200);
+      player.play();
+    });
+    await expect.poll(async () => (await view(page)).scrollX).toBeGreaterThan(4000);
+    await page.evaluate(() => (window as any).tandem.session.player.pause());
+    await expect(ringed).not.toBeInViewport();
+    expect(await state()).toMatchObject({ focus: 'dusk.mp4', ring: ['dusk.mp4'] });
+    const stopped = (await state()).frame;
+    await page.keyboard.press('ArrowRight');
+    expect(await state()).toMatchObject({ focus: 'fractal.mp4', ring: ['fractal.mp4'], frame: stopped });
   });
 
   test('timeline buttons have names, markers open from the keyboard, and mute is one colour everywhere', async ({
@@ -1921,6 +1981,27 @@ test.describe('timeline: keyboard, drops and marks', () => {
     await expect(menuItem(page, 'Delete track')).toBeVisible();
     await expect(menuItem(page, 'Export captions from this track')).toHaveCount(0);
     await page.keyboard.press('Escape');
+
+    // A track name too long for its header is a stop for Tab, and the keyboard that rests there
+    // is shown all of it, as the pointer is. A name that fits is no stop.
+    const [v1, a1] = await page.evaluate(() => {
+      const tracks = Object.values((window as any).tandem.session.store.get().tracks) as any[];
+      return ['video', 'audio'].map((kind) => tracks.find((t) => t.kind === kind && t.order === 0).id);
+    });
+    await commit(page, [
+      { op: 'updateTrack', id: v1, patch: { name: 'Main' } },
+      { op: 'updateTrack', id: a1, patch: { name: 'Interview with the director, second take' } },
+    ]);
+    const long = page.locator('.th__name', { hasText: 'Interview' });
+    await expect(long).toHaveAttribute('tabindex', '0');
+    await expect(page.locator('.th__name', { hasText: 'Main' })).not.toHaveAttribute('tabindex');
+    await page.locator('.th[data-kind="video"]').last().getByRole('button', { name: 'Lock track' }).focus();
+    await page.keyboard.press('Tab');
+    await expect(long).toBeFocused();
+    await expect(page.getByRole('tooltip')).toHaveText('Interview with the director, second take');
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'Mute track' }).first()).toBeFocused();
+    await expect(page.getByRole('tooltip')).toHaveText('Mute track');
 
     // Muted is red and soloed amber, in the track's header and on its strip in the mixer.
     await page.evaluate(() => (window as any).tandem.ui.getState().set({ workspace: 'audio' }));
@@ -2192,6 +2273,132 @@ test.describe('timeline: keyboard, drops and marks', () => {
     await expect(page.locator('.clip__kf')).toHaveCount(3);
   });
 
+  test('the level line of a selected sound clip is dragged and takes keyframes, and the clip is still taken hold of as before', async ({
+    page,
+  }) => {
+    await sample(page);
+    // The music: 360 frames on A1 at −4 dB, with a fade at either end.
+    const music = await clip(page, 'pulse.ogg');
+    expect(music).toMatchObject({ volume: -4, start: 0 });
+    const read = () =>
+      page.evaluate((id) => {
+        const p = (window as any).tandem.session.store.get();
+        const c = p.clips[id];
+        return {
+          volume: c.volume as number,
+          keys: ((c.keyframes.volume ?? []) as any[]).map((k) => `${k.t}:${k.v}`).join(' '),
+          start: c.start as number,
+          track: `A${p.tracks[c.trackId].order + 1}`,
+        };
+      }, music.id);
+    const untouched = { volume: -4, keys: '', start: 0, track: 'A1' };
+    const { ppf } = await view(page);
+    /**
+     * The point of the clip's level line at `frame`, or `off` pixels below it. In a lane of the
+     * default height the line has 31 px under the 17 px label strip for the 60 dB from −48 to +12.
+     */
+    const onLine = async (frame: number, off = 0, db = -4): Promise<[number, number]> => {
+      const b = await boxOf(page, music.id);
+      return [b.x + frame * ppf, b.y + 19 + 31 * (1 - (db + 48) / 60) + off];
+    };
+    const hold = () => page.locator('.lanes').getAttribute('data-level');
+    const drag = async (from: [number, number], by: [number, number]) => {
+      await dragTo(page, from, [from[0] + by[0], from[1] + by[1]], 4);
+    };
+
+    // The line of a clip that is not selected is left alone: pressed there and taken straight
+    // down, the clip goes to the next track as it would from anywhere else on it.
+    await page.mouse.move(...(await onLine(180)));
+    expect(await hold()).toBeNull();
+    await drag(await onLine(180), [0, 54]);
+    await page.mouse.up();
+    expect(await read()).toEqual({ ...untouched, track: 'A2' });
+    await undo(page);
+    expect(await read()).toEqual(untouched);
+
+    // Selected, the pointer says so on the line, and a drag up or down sets the level of the
+    // clip: shown beside the pointer as it goes, and one step to undo.
+    await page.evaluate(() => (window as any).tandem.ui.getState().clearSelection());
+    await page.mouse.click(...(await onLine(180)));
+    expect(await view(page)).toMatchObject({ selection: 1 });
+    await page.mouse.move(...(await onLine(181)));
+    expect(await hold()).toBe('move');
+    await page.mouse.move(...(await onLine(181, 8)));
+    expect(await hold()).toBeNull();
+    await drag(await onLine(180), [0, 10]);
+    expect(await dropMode(page)).toBe('−23.4 dB');
+    // Nothing is committed while it is held, and the line is drawn where it is taken to.
+    expect((await read()).volume).toBe(-4);
+    expect(await view(page)).toMatchObject({ preview: true });
+    await page.mouse.up();
+    expect(await read()).toEqual({ ...untouched, volume: -23.4 });
+    expect(await dropMode(page)).toBeNull();
+    await undo(page);
+    expect(await read()).toEqual(untouched);
+    // Escape lets go of it and leaves the level as it was.
+    await drag(await onLine(180), [0, -8]);
+    expect(await dropMode(page)).toBe('+11.5 dB');
+    await page.keyboard.press('Escape');
+    expect(await view(page)).toMatchObject({ preview: false });
+    await page.mouse.up();
+    expect(await read()).toEqual(untouched);
+
+    // The clip is still moved from anywhere on it. Sideways from the line itself; and to another
+    // track from just beside the line, where a drag straight down is no drag of the level.
+    await drag(await onLine(180), [15 * ppf, 1]);
+    await page.mouse.up();
+    expect(await read()).toEqual({ ...untouched, start: 15 });
+    await undo(page);
+    await drag(await onLine(180, 6), [0, 54]);
+    await page.mouse.up();
+    expect(await read()).toEqual({ ...untouched, track: 'A2' });
+    await undo(page);
+    expect(await read()).toEqual(untouched);
+    // A press on the line that goes nowhere is a click on the clip, which stays selected.
+    await page.mouse.click(...(await onLine(180)));
+    expect(await view(page)).toMatchObject({ selection: 1 });
+    expect(await read()).toEqual(untouched);
+
+    // With Ctrl the press makes a keyframe there, holding the level the line has there.
+    await page.keyboard.down('Control');
+    await page.mouse.move(...(await onLine(100)));
+    expect(await hold()).toBe('add');
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.mouse.click(...(await onLine(200)));
+    await page.keyboard.up('Control');
+    expect(await read()).toEqual({ ...untouched, keys: '100:-4 200:-4' });
+    await undo(page);
+    expect((await read()).keys).toBe('100:-4');
+    await page.evaluate(() => (window as any).tandem.cmd.redo());
+
+    // A keyframe on the line is dragged up and down, in one step; the line between keyframes is
+    // not taken hold of, so the clip is; and a keyframe that is only pressed takes the playhead.
+    await page.mouse.move(...(await onLine(200)));
+    expect(await hold()).toBe('move');
+    await drag(await onLine(200), [3, 10]);
+    expect(await dropMode(page)).toBe('−23.4 dB');
+    await page.mouse.up();
+    expect(await read()).toEqual({ ...untouched, keys: '100:-4 200:-23.4' });
+    await undo(page);
+    expect((await read()).keys).toBe('100:-4 200:-4');
+    await page.mouse.move(...(await onLine(150)));
+    expect(await hold()).toBeNull();
+    await drag(await onLine(150), [0, 54]);
+    await page.mouse.up();
+    expect(await read()).toEqual({ ...untouched, keys: '100:-4 200:-4', track: 'A2' });
+    await undo(page);
+    await page.mouse.click(...(await onLine(100)));
+    expect(await page.evaluate(() => (window as any).tandem.session.player.getFrame())).toBe(100);
+    expect((await read()).keys).toBe('100:-4 200:-4');
+    // The marks along the bottom of the clip still move the same keyframes in time.
+    await expect(page.locator('.clip__kf')).toHaveCount(2);
+    const mark = await box(page, '.clip__kf >> nth=1');
+    await dragTo(page, [mark.x + mark.width / 2, mark.y + mark.height / 2], [mark.x + 3 + 20 * ppf, mark.y]);
+    await page.mouse.up();
+    expect((await read()).keys).toBe('100:-4 220:-4');
+  });
+
   test('clips that lost their track or share frames with another are said, and can be put right', async ({
     page,
   }) => {
@@ -2247,5 +2454,173 @@ test.describe('timeline: keyboard, drops and marks', () => {
     await expect(menuItem(page, 'Split at playhead')).toBeVisible();
     await expect(menuItem(page, 'Move to a free track')).toHaveCount(0);
     await page.keyboard.press('Escape');
+  });
+
+  test('someone who may only view finds what edits switched off, and what changes the view at hand', async ({
+    page,
+    browser,
+  }) => {
+    await sample(page);
+    const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
+    test.skip(!meta.online || !meta.shared, 'no collaboration server, or it is not taking new projects');
+    const a1 = await page.evaluate(
+      () =>
+        (Object.values((window as any).tandem.session.store.get().tracks) as any[]).find(
+          (t) => t.kind === 'audio' && t.order === 0,
+        ).id,
+    );
+    await commit(page, [{ op: 'updateTrack', id: a1, patch: { muted: true } }]);
+    await expect(page.locator('.conn')).toContainText('All changes synced');
+    const link: string = await page.evaluate(() => (window as any).tandem.session.inviteLink('viewer'));
+    const context = await browser.newContext();
+    await noReloads(context);
+    const guest = await context.newPage();
+    await guest.goto(link);
+    await guest.waitForFunction(
+      () => Object.keys((window as any).tandem?.session?.store.get().clips ?? {}).length === 5,
+    );
+    expect(await guest.evaluate(() => (window as any).tandem.session.getMeta().role)).toBe('viewer');
+    const ui = () =>
+      guest.evaluate(() => {
+        const s = (window as any).tandem.ui.getState();
+        return { tool: s.tool as string, ppf: s.ppf as number, selection: s.selection.length as number };
+      });
+    const refusals = toast(guest, 'You have view-only access to this project.');
+
+    // Looking is not editing: a clip can be selected, and the buttons that would change the
+    // project are off whether or not one is.
+    const dusk = await clipBox(guest, 'dusk.mp4');
+    await guest.mouse.click(dusk.x + dusk.width / 2, dusk.y + dusk.height / 2);
+    expect((await ui()).selection).toBe(1);
+    const timeline = guest.locator('.tl');
+    const button = (name: string) => timeline.getByRole('button', { name, exact: true });
+    for (const name of [
+      'Blade tool',
+      'Slip tool',
+      'Split at playhead',
+      'Delete',
+      'Ripple delete',
+      'Ripple editing',
+      'Markers follow ripple edits',
+      'Add marker',
+      'Add text',
+      'Record voiceover',
+      'Add video track',
+      'Add audio track',
+    ]) {
+      await expect(button(name)).toBeDisabled();
+    }
+    for (const name of [
+      'Selection tool',
+      'Hand tool',
+      'Snapping',
+      'Linked selection',
+      'Zoom out',
+      'Zoom in',
+      'Fit timeline',
+    ]) {
+      await expect(button(name)).toBeEnabled();
+    }
+    // Every button of a track header writes to the track. What the track is set to still shows.
+    const headers = await guest
+      .locator('.th button')
+      .evaluateAll((all) => all.map((b) => (b as HTMLButtonElement).disabled));
+    expect(headers).toHaveLength(10);
+    expect(headers).not.toContain(false);
+    await expect(guest.getByRole('button', { name: 'Unmute track' })).toHaveAttribute('aria-pressed', 'true');
+    // The clips offer nothing to trim or fade them by.
+    await expect(guest.locator('.clip__trim').first()).toBeHidden();
+
+    // Menus keep what can be chosen without the access to edit, and show the rest as out of reach.
+    const entries = () =>
+      guest
+        .locator('[role="menu"] .menu-item')
+        .evaluateAll((all) =>
+          all
+            .filter((b) => !(b as HTMLButtonElement).disabled)
+            .map((b) => b.querySelector('.menu-item__label')!.textContent),
+        );
+    await guest.mouse.click(dusk.x + dusk.width / 2, dusk.y + dusk.height / 2, { button: 'right' });
+    await expect(menuItem(guest, 'Cut')).toBeDisabled();
+    await expect(menuItem(guest, 'Ripple delete')).toBeDisabled();
+    expect(await entries()).toEqual([
+      'Copy',
+      'Match frame',
+      'Reveal in media pool',
+      'In and out…',
+      'Attributes…',
+    ]);
+    await expect(guest.locator('[role="menu"] .menu-swatch')).toHaveCount(0);
+    await guest.keyboard.press('Escape');
+    const ruler = await box(guest, '.ruler');
+    await guest.mouse.click(ruler.x + 700, ruler.y + 8, { button: 'right' });
+    await expect(menuItem(guest, 'Add marker here')).toBeDisabled();
+    expect(await entries()).toEqual(['Mark in', 'Mark out', 'Mark clip', 'Go to in', 'Go to out']);
+    await guest.keyboard.press('Escape');
+    await guest
+      .locator('.th[data-kind="video"]')
+      .first()
+      .click({ button: 'right', position: { x: 60, y: 30 } });
+    await expect(menuItem(guest, 'Rename')).toBeDisabled();
+    expect(await entries()).toEqual(['Export captions from this track']);
+    await guest.keyboard.press('Escape');
+    const empty = await laneBox(guest, 'A2');
+    await guest.mouse.click(empty.x + 300, empty.y + empty.height / 2, { button: 'right' });
+    await expect(menuItem(guest, 'Add audio track')).toBeDisabled();
+    expect(await entries()).toEqual([]);
+    await guest.keyboard.press('Escape');
+    await expect(guest.locator('[role="menu"]')).toHaveCount(0);
+
+    // What only changes the view works: zooming, and the height a track is drawn at, which is the
+    // viewer's own and leaves the track of everyone else as it is.
+    const { ppf } = await ui();
+    await button('Zoom in').click();
+    expect((await ui()).ppf).toBeGreaterThan(ppf);
+    await button('Fit timeline').click();
+    const heights = (of: Page) =>
+      of.locator('.lane').evaluateAll((all) => all.map((lane) => lane.getBoundingClientRect().height));
+    const before = await heights(guest);
+    const grip = await box(guest, '.th__resize');
+    await dragTo(guest, [grip.x + 40, grip.y + 3], [grip.x + 40, grip.y + 33]);
+    await guest.mouse.up();
+    expect(await heights(guest)).toEqual([before[0] + 30, ...before.slice(1)]);
+    expect(await heights(page)).toEqual(before);
+    await expect(refusals).toHaveCount(0);
+
+    // The source monitor shows a file to anyone, and takes it to the timeline for no one who may
+    // not edit.
+    await guest.locator('.asset', { hasText: 'dusk.mp4' }).dblclick();
+    await expect(guest.locator('.source__name')).toHaveText('dusk.mp4');
+    for (const name of ['Insert', 'Add to timeline']) {
+      await expect(guest.locator('.source__foot button', { hasText: name })).toBeDisabled();
+    }
+    await expect(guest.locator('.source__grip')).not.toHaveAttribute('data-live');
+    await guest.keyboard.press('Escape');
+    await expect(guest.locator('.source')).toHaveCount(0);
+    await expect(refusals).toHaveCount(0);
+
+    // The key of a tool that edits is refused like any other edit, and the tool is not taken up.
+    await guest.keyboard.press('b');
+    await expect(refusals).toHaveCount(1);
+    expect((await ui()).tool).toBe('select');
+    await guest.keyboard.press('h');
+    expect((await ui()).tool).toBe('hand');
+    await guest.keyboard.press('v');
+    expect((await ui()).tool).toBe('select');
+
+    // Access can change while the project is open. The buttons follow it, and a tool that edits
+    // is put down when the access to edit goes.
+    const access = (role: string) =>
+      guest.evaluate((role) => (window as any).tandem.session.applyRole(role), role);
+    await access('editor');
+    await expect(button('Add marker')).toBeEnabled();
+    await expect(button('Blade tool')).toBeEnabled();
+    await expect(guest.locator('.clip__trim').first()).toBeVisible();
+    await button('Blade tool').click();
+    expect((await ui()).tool).toBe('blade');
+    await access('viewer');
+    await expect(button('Add marker')).toBeDisabled();
+    await expect.poll(async () => (await ui()).tool).toBe('select');
+    await context.close();
   });
 });

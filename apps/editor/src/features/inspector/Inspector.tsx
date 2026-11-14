@@ -5,6 +5,8 @@ import {
   ArrowDown,
   ArrowUp,
   CaseUpper,
+  CloudOff,
+  FileWarning,
   FlipHorizontal2,
   FlipVertical2,
   Italic,
@@ -16,7 +18,7 @@ import {
   Unlink2,
   SlidersHorizontal,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import {
   clipEnd,
   DEFAULT_MASK,
@@ -36,6 +38,7 @@ import {
   type Clip,
   type FitMode,
   type Mask,
+  type Project,
   type ProjectSettings,
   type ShapeProps,
   type TextProps,
@@ -45,35 +48,40 @@ import { isNeutralGrade } from '@tandem/engine';
 import { FONTS, fontByFamily } from '../../fonts';
 import { currentSession, useSession, useSessionMeta } from '../../session/hooks';
 import { cmd, effectiveSelection } from '../../state/commands';
+import { mediaAvailable } from '../../state/media';
 import { beginGesture, commit, patchClips, setClipValues } from '../../state/props';
 import {
   speedEdits,
   speedGesture,
   speedGestureCutShort,
+  speedRippleEdits,
   speedStepped,
   type SpeedGesture,
 } from '../../state/timing';
 import { useUI } from '../../state/ui';
 import {
   Button,
-  ColorField,
   IconButton,
   KEY_RUN_MS,
   Labelled,
   LabelText,
   MenuButton,
-  NumberField,
   Segmented,
   Select,
   Slider,
   Switch,
   TextField,
   tip,
+  toast,
 } from '../../ui/core';
 import { handFocus, usingKeyboard } from '../../ui/layers';
+import { decodeNotice } from '../library/fault';
 import {
+  ColorField,
+  FieldSubject,
   KeyframeButton,
   KeyframeNav,
+  NumberField,
   NumericRow,
   ParamControl,
   Row,
@@ -133,12 +141,22 @@ export function Inspector() {
 
   let title = 'Project';
   let body: React.ReactNode;
+  // The fields of the panel stand for what it shows: these clips, in this order, or this
+  // transition. What was typed into one and not applied is not for anything else it comes to show.
   if (selTrans && transClip) {
     title = 'Transition';
-    body = <TransitionInspector settings={settings} clip={transClip} side={selTrans.side} />;
+    body = (
+      <FieldSubject of={`${transClip.id} ${selTrans.side}`}>
+        <TransitionInspector settings={settings} clip={transClip} side={selTrans.side} />
+      </FieldSubject>
+    );
   } else if (clips.length) {
     title = clips.length === 1 ? clips[0].name || labelFor(clips[0]) : `${clips.length} clips`;
-    body = <ClipInspector settings={settings} clips={clips} />;
+    body = (
+      <FieldSubject of={clips.map((c) => c.id).join(' ')}>
+        <ClipInspector settings={settings} clips={clips} />
+      </FieldSubject>
+    );
   } else {
     body = (
       <div className="insp__project">
@@ -209,6 +227,9 @@ function ClipInspector({ settings, clips }: { settings: ProjectSettings; clips: 
 function ClipSection({ clips, settings: s }: { clips: Clip[]; settings: ProjectSettings }) {
   const first = clips[0];
   const ids = clips.map((c) => c.id);
+  // One clip of a file, or a shot selected with its linked sound: where everything selected is of
+  // one file, what is the matter with that file is said, once.
+  const file = clips.every((c) => c.assetId === first.assetId) ? first.assetId : null;
   return (
     <Section id="clip" title="Clip">
       {/* A title is known by its text, which is what the timeline shows for it. */}
@@ -223,11 +244,9 @@ function ClipSection({ clips, settings: s }: { clips: Clip[]; settings: ProjectS
           />
         </Row>
       )}
-      {/* A field stands for the clips it was drawn for: with other clips it is another field, and
-          what was being typed into it is not theirs. */}
+      {file && <MediaTrouble assetId={file} clips={clips} />}
       <Row label="Start">
         <TimecodeField
-          key={ids.join(' ')}
           value={Math.min(...clips.map((c) => c.start))}
           fps={s}
           onCommit={(frame) => cmd.moveTo(frame, ids)}
@@ -236,7 +255,6 @@ function ClipSection({ clips, settings: s }: { clips: Clip[]; settings: ProjectS
       </Row>
       <Row label="Duration">
         <TimecodeField
-          key={ids.join(' ')}
           value={first.duration}
           mixed={clips.some((c) => c.duration !== first.duration)}
           min={1}
@@ -249,6 +267,42 @@ function ClipSection({ clips, settings: s }: { clips: Clip[]; settings: ProjectS
         <span className="mono insp__read">{formatTimecode(Math.max(...clips.map(clipEnd)), s)}</span>
       </Row>
     </Section>
+  );
+}
+
+/**
+ * Why the clips have no picture to show or no sound to play, where that is the doing of the file
+ * they are all of. The timeline marks such a clip Offline or Unsupported; here, where the clip is
+ * looked at, it is said in words, by the rule the timeline and the media pool go by. The line is
+ * drawn again when its own answer changes, not with every step of an upload or every file that is
+ * opened.
+ */
+function MediaTrouble({ assetId, clips }: { assetId: string; clips: Clip[] }) {
+  const session = useSession();
+  const { shared } = useSessionMeta();
+  const asset = useLiveSelect((p) => p.assets[assetId]);
+  const offline = useSyncExternalStore(
+    session.media.subscribe,
+    () => !asset || !mediaAvailable(asset, session.media.get(assetId), shared),
+  );
+  const fault = useSyncExternalStore(session.thumbs.subscribeFaults, () => session.thumbs.fault(assetId));
+  // Of what cannot be decoded, the part these clips show: a sound clip is not told about a picture.
+  const undecodable = {
+    picture: !!fault?.picture && clips.some((c) => c.type !== 'audio'),
+    sound: !!fault?.sound && clips.some((c) => c.type === 'audio'),
+  };
+  if (!offline && !undecodable.picture && !undecodable.sound) return null;
+  return (
+    <p className="insp__trouble">
+      {offline ? <CloudOff /> : <FileWarning />}
+      <span>
+        {!asset
+          ? 'Media offline: its file is no longer in the project'
+          : offline
+            ? 'Media offline: not on this device or the server'
+            : decodeNotice(asset, undecodable)}
+      </span>
+    </p>
   );
 }
 
@@ -570,6 +624,10 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
   // ends, not the way there. The slider's double-click reset comes without a start of its own, so
   // it belongs to the press before it.
   const gesture = useRef<SpeedGesture | null>(null);
+  // The clips and markers as the gesture under way found them: what each of its steps is planned on.
+  const found = useRef<Pick<Project, 'clips' | 'markers'> | null>(null);
+  // The gesture whose outcome has been said, so that a second end of the same one says nothing.
+  const told = useRef<SpeedGesture | null>(null);
   const offer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const begin = () => {
     gesture.current = null;
@@ -581,22 +639,38 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
     const store = currentSession()?.store;
     if (!store) return;
     const { rippleMode, markersFollow } = useUI.getState();
-    const g = speedGesture(gesture.current, store.get(), effectiveSelection(store.get()), {
+    const before = store.get();
+    const g = speedGesture(gesture.current, before, effectiveSelection(before), {
       ripple: rippleMode,
       markers: markersFollow,
     });
-    if (g !== gesture.current) beginGesture();
+    if (g !== gesture.current) {
+      beginGesture();
+      found.current = { clips: before.clips, markers: before.markers };
+    }
     commit(speedEdits(g, store.get(), speed), true);
     gesture.current = speedStepped(g, store.get());
   };
-  // A gesture that left a clip cut short at the next one says so, and offers to make room.
+  // A gesture that left a clip cut short at the next one says so, and offers to make room. One
+  // that ripples moved what follows out of the way instead; where that was refused, the clip
+  // stopped at the next one all the same, and the reason is said once, for where the gesture ended.
   const end = () => {
     const g = gesture.current;
     clearTimeout(offer.current);
-    if (!g || g.ripple) return;
+    if (!g) return;
     const say = () => {
-      const store = currentSession()?.store;
-      if (store) cmd.offerSpeedRoom(speedGestureCutShort(g, store.get()));
+      const p = currentSession()?.store.get();
+      if (!p) return;
+      if (!g.ripple) {
+        cmd.offerSpeedRoom(speedGestureCutShort(g, p));
+        return;
+      }
+      const id = Object.keys(g.from).find((id) => p.clips[id]);
+      if (!found.current || id === undefined || told.current === g) return;
+      told.current = g;
+      // The plan of the gesture's last step, asked once more for its reason.
+      const { refused } = speedRippleEdits({ ...p, ...found.current }, g.ids, p.clips[id].speed);
+      if (refused) toast(refused);
     };
     // Every arrow key pressed in the number field is a gesture of its own: the offer waits until
     // the keys have rested, as a run of them on the slider does.
