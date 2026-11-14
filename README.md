@@ -188,7 +188,8 @@ While the source monitor is open, `Space`, `J` `K` `L`, the arrow keys (with `Sh
 marks and `Alt+X` clears them. `,` and `.` do not nudge then: like `F9` and `F10` they put what is
 marked (the whole file when nothing is) on the timeline at the playhead. `,` inserts it: every
 unlocked track is cut at the playhead and what follows moves later to make room. `.` adds it on a
-free track and changes nothing else. The monitor stays open after either, and `Esc` closes it.
+free track and leaves every other clip where it is. The monitor stays open after either, and `Esc`
+closes it.
 
 ## Browser support
 
