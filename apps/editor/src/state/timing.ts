@@ -21,7 +21,8 @@ import {
   type Marker,
   type Project,
 } from '@tandem/core';
-import { markerEdits, trimSpans, type Rippled, type RippleSpan } from './edits';
+import { markerEdits, rippleFollower, trimSpans, type Rippled, type RippleSpan } from './edits';
+import { following } from './follow';
 
 /** What a change of speed can alter on a clip. */
 type Timing = Pick<Clip, 'speed' | 'duration' | 'sourceIn' | 'fadeIn' | 'fadeOut' | 'keyframes'>;
@@ -256,7 +257,7 @@ const framesOf = (markers: Project['markers']): Frames =>
 /** Where a gesture that ripples found, or left, everything its ripple can move. */
 interface Placed {
   clips: Frames;
-  /** Null when the markers do not follow ripple edits. */
+  /** Null when comments and markers do not follow ripple edits. */
   markers: Frames | null;
 }
 
@@ -282,7 +283,8 @@ export interface SpeedGesture {
   /**
    * Set when the gesture ripples: every step moves what follows the clips, so the gesture also
    * keeps where every clip (and marker) was when it began and after its last step, and each step
-   * is planned on the timeline as it was found.
+   * is planned on the timeline as it was found. Where the review comments were is kept with the
+   * undo step the gesture is recorded as (see `CommentMover`).
    */
   ripple: { from: Placed; left: Placed } | null;
 }
@@ -290,7 +292,7 @@ export interface SpeedGesture {
 export interface SpeedGestureOptions {
   /** Ripple editing is on: what follows the clips moves with their ends. */
   ripple?: boolean;
-  /** Markers follow ripple edits. */
+  /** Comments and markers follow ripple edits. */
   markers?: boolean;
 }
 
@@ -328,7 +330,8 @@ export function speedGesture(
  * One step of a gesture in the project as it is now. Each patch also restores whatever an earlier
  * step changed and this one does not (a fade it shortened, a source range it moved). A gesture
  * that ripples plans the step on the timeline as it found it, and the edits are what takes the
- * project from where the last step left it to that plan.
+ * project from where the last step left it to that plan. Committed with `commit`, they take the
+ * review comments from where the gesture found them to where the plan puts them.
  */
 export function speedEdits(g: SpeedGesture, p: Project, speed: number): Edit[] {
   const clips = { ...p.clips };
@@ -358,7 +361,7 @@ export function speedEdits(g: SpeedGesture, p: Project, speed: number): Edit[] {
   for (const m of Object.values(planned.markers)) {
     if (p.markers[m.id].frame !== m.frame) edits.push({ op: 'setMarker', marker: m });
   }
-  return edits;
+  return from.markers ? following(edits, rippleFollower(found, plan.edits, plan.spans), true) : edits;
 }
 
 /** `g` after its step has been committed and `p` is what came of it. */

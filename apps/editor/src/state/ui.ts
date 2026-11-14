@@ -49,7 +49,10 @@ export interface UIState {
   snapping: boolean;
   rippleMode: boolean;
   linkedSelection: boolean;
-  /** Markers move with the clips when a ripple edit takes time out of the sequence or puts it in. */
+  /**
+   * Markers and review comments move with the clips when a ripple edit takes time out of the
+   * sequence or puts it in. One switch for both: it is named after the markers it began with.
+   */
   markersFollow: boolean;
   /** The transition the `Add default transition` command applies: the last one the user chose. */
   defaultTransition: string;

@@ -32,6 +32,7 @@ import {
   type EffectDef,
   type FrameDesc,
   type Grade,
+  type ID,
   type Layer,
   type Primaries,
   type Project,
@@ -40,7 +41,7 @@ import {
 import { runEffect, transitionProgram, type FxContext } from './effectRunner';
 import { waitForFence } from './fence';
 import { Glx, PRESENT_VS, type Program, type RenderTarget } from './glx';
-import { layerMatrix, layoutLayer } from './layout';
+import { layerMatrix, layoutLayer, withClipAtRest } from './layout';
 import { bakeCurves, gradeUniforms, hasHueCurves, hasRgbCurves, isNeutralGrade } from './grade';
 import {
   BLEND_FS,
@@ -148,6 +149,11 @@ export class Compositor {
   width = 2;
   height = 2;
   stats: RenderStats = { layers: 0, passes: 0, missing: 0 };
+  /**
+   * The clip that is drawn at rest, without the animation it comes and goes with: a title while it
+   * is being typed into, so that all of its text is there and holds still under the caret.
+   */
+  atRest: ID | null = null;
 
   private readonly quadVao: WebGLVertexArrayObject;
   private readonly layerProgram: Program;
@@ -310,7 +316,7 @@ export class Compositor {
 
     for (const layer of desc.layers) {
       this.stats.layers++;
-      acc = this.compositeLayer(layer, acc);
+      acc = this.compositeLayer(this.atRest === null ? layer : withClipAtRest(layer, this.atRest), acc);
     }
 
     glx.release(this.last);

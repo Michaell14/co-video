@@ -2687,7 +2687,8 @@ test.describe('media engine', () => {
  * decoder. It fails on every chunk (`dead`) or on the chunks whose times are in `bad`
  * (microseconds), as a decoder does: after what it was given before has come out. From its output
  * number `after` on it gives twice the samples at twice the rate (`double`) and two channels for
- * one (`stereo`), as the decoder of a stream that does not declare what it decodes to.
+ * one (`stereo`), as the decoder of a stream that does not declare what it decodes to. The bytes
+ * of the chunk whose time is `keep` are kept in `kept`.
  *
  * `decodeAudioData`, given an ADTS stream: `own: 'refuses'` rejects it; `'cuts'` drops the 2112
  * samples from the front that a browser may take for the priming of Apple's encoder; `'loses'`
@@ -2711,6 +2712,9 @@ async function openSoundLab(page: Page): Promise<void> {
       own: '' as '' | 'refuses' | 'cuts' | 'loses',
       /** Decoders set up for the file under test. */
       made: 0,
+      /** The time of a chunk of the file under test to keep the bytes of, and the bytes. */
+      keep: -1,
+      kept: null as Uint8Array | null,
     };
     const Real = (window as any).AudioDecoder;
     const changed = (data: AudioData): AudioData => {
@@ -2774,6 +2778,10 @@ async function openSoundLab(page: Page): Promise<void> {
       decode(chunk: EncodedAudioChunk) {
         if (this.failed) throw new DOMException('The decoder is closed.', 'InvalidStateError');
         if (this.failing) return;
+        if (this.ours && chunk.timestamp === decoders.keep) {
+          decoders.kept = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(decoders.kept);
+        }
         if (!this.ours || !(decoders.dead || decoders.bad.includes(chunk.timestamp)))
           return this.real.decode(chunk);
         this.failing = true;
@@ -3071,13 +3079,10 @@ test.describe('sound that does not decode as it should', () => {
       const first = await (await lab.library.get('a')).audio.getFirstTimestamp();
       const at = (n: number) => Math.max(0, Math.trunc((first + n * packet) * 1e6));
       const project = sound.project(asset, rate, 180);
+      Object.assign(decoders, { rate, keep: at(100) });
       const clean = await sound.exported(project);
-      // No other decoder to turn to: what is lost is what the one decoder cannot give.
-      Object.assign(decoders, { rate, own: 'refuses' });
-      const broken = async (bad: number[], dead = false) => {
-        Object.assign(decoders, { bad: bad.map(at), dead, made: 0 });
-        sound.anew('a');
-        const out = await sound.exported(project);
+      const exportOf = async (of: unknown) => {
+        const out = await sound.exported(of);
         // Where the export is not the clean one, in packets from the start of the file's sound.
         const differs: number[] = [];
         for (let i = 0; i < clean.channels[0].length; i++) {
@@ -3095,6 +3100,25 @@ test.describe('sound that does not decode as it should', () => {
           made: decoders.made,
           seconds: out.seconds,
         };
+      };
+
+      // A file in which packet 100 really is damaged, and the page's decoder as it is: the bytes
+      // the decoder was given for it are found in the file and spoilt there.
+      const file = new Uint8Array(await (await fetch('/fixtures/stereo-441.mp4')).arrayBuffer());
+      const bytes: Uint8Array = decoders.kept;
+      let where = -1;
+      for (let i = 0; where < 0 && i + bytes.length <= file.length; i++)
+        if (bytes.every((byte, k) => file[i + k] === byte)) where = i;
+      for (let k = 4; k < bytes.length; k += 7) file[where + k] ^= 0x5a;
+      const damaged = await lab.addFile('damaged', URL.createObjectURL(new Blob([file])), 'damaged.mp4');
+      const real = await exportOf(sound.project(damaged, rate, 180));
+
+      // The decoder made to fail, and no other to turn to: what is lost is what the one cannot give.
+      Object.assign(decoders, { own: 'refuses' });
+      const broken = async (bad: number[], dead = false) => {
+        Object.assign(decoders, { bad: bad.map(at), dead, made: 0 });
+        sound.anew('a');
+        return exportOf(project);
       };
       const one = await broken([60]);
       const run = await broken([60, 61, 62, 63, 64, 65, 66, 67, 68, 69]);
@@ -3117,6 +3141,8 @@ test.describe('sound that does not decode as it should', () => {
       graph.dispose();
       await ctx.close();
       return {
+        found: where >= 0,
+        real,
         one,
         run,
         two,
@@ -3129,6 +3155,21 @@ test.describe('sound that does not decode as it should', () => {
     const cause = 'EncodingError: Decoding error.';
     const stretch =
       'A stretch of the audio in “stereo-441.mp4” could not be decoded, so the export is silent there.';
+    // The damaged packet costs itself and at most the three behind it, at 2.3 s. Whether this
+    // browser's decoder stops at such a packet or makes something of it is its own business: if it
+    // stops, that is said once, with what it said.
+    expect(r.found).toBe(true);
+    expect(r.real.differs[0]).toBe(100);
+    expect(r.real.differs.every((n: number) => n >= 100 && n <= 103)).toBe(true);
+    expect(r.real.warnings.length).toBeLessThanOrEqual(1);
+    for (const warning of r.real.warnings) {
+      expect(warning).toMatchObject({
+        lost: 'stretch',
+        frame: 68,
+        message: stretch.replace('stereo-441.mp4', 'damaged.mp4'),
+      });
+      expect(warning.cause).toMatch(/\S/);
+    }
     // Packet 60 and the two a decoder started behind it needs to get going: 70 ms, at 1.37 s.
     expect(r.one.differs).toEqual([60, 61, 62]);
     expect(r.one.silent).toEqual([[60, 63]]);
@@ -3168,7 +3209,7 @@ test.describe('sound that does not decode as it should', () => {
     expect(r.level).toBe(0);
     // The console is told what failed once for a file, however often it does, and why the
     // browser's own decoder is of no help.
-    expect(warned.filter((line) => line.includes('decoding failed'))).toEqual(
+    expect(warned.filter((line) => line.startsWith('[audio] a: decoding failed'))).toEqual(
       Array(6).fill('[audio] a: decoding failed (webcodecs) EncodingError: Decoding error.'),
     );
     expect(warned.filter((line) => line.includes('cannot stand in'))).toHaveLength(1);

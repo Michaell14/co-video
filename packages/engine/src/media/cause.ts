@@ -7,7 +7,8 @@ const ADDRESS = /\b(?:blob:)?[a-z][a-z0-9+.-]*:\/\/[^\s"'<>)]+/gi;
  * names can have spaces in them, so where a message names two files the first name goes as well.
  */
 const WINDOWS_FOLDERS = /\b[a-z]:\\(?:[^\\"'<>\n]+\\)*/gi;
-const FOLDERS = /(?<![\w.])\/(?:[^/"'<>\n]+\/)+/g;
+/** A path begins at a slash that follows no word: `and/or` and `1/2` are not paths. What precedes it is kept. */
+const FOLDERS = /(^|[^\w.])\/(?:[^/"'<>\n]+\/)+/g;
 
 /** The last part of an address, without what follows a `?` or a `#`: a file's name, if it has one. */
 const lastPart = (address: string): string =>
@@ -31,7 +32,7 @@ export function describeCause(err: unknown): string {
   said = said
     .replace(ADDRESS, lastPart)
     .replace(WINDOWS_FOLDERS, '')
-    .replace(FOLDERS, '')
+    .replace(FOLDERS, '$1')
     .replace(/\s+/g, ' ')
     .trim();
   if (!said) return 'Unknown error';

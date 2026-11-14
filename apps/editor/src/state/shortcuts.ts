@@ -466,7 +466,7 @@ export const COMMANDS: Command[] = [
   },
   {
     id: 'markers-follow',
-    title: 'Toggle markers follow ripple edits',
+    title: 'Toggle comments and markers follow ripple edits',
     group: 'Markers',
     run: () => cmd.toggleMarkersFollow(),
   },

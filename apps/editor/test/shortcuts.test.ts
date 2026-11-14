@@ -60,11 +60,15 @@ describe('command catalogue', () => {
     expect(reserved.filter((k) => bound.has(k))).toEqual([]);
   });
 
-  it('offers every way of pasting attributes, and the marker switch, in the palette', () => {
+  it('offers every way of pasting attributes, and the switch for what follows a ripple, in the palette', () => {
     for (const id of ['paste-attrs', 'paste-grade', 'paste-effects', 'paste-transform', 'paste-sound']) {
       expect(COMMANDS.find((c) => c.id === id)?.title, id).toMatch(/^Paste attributes/);
     }
-    expect(COMMANDS.find((c) => c.id === 'markers-follow')?.title).toBe('Toggle markers follow ripple edits');
+    // One switch for comments and markers, named for both. The words it was known by are still in
+    // the name, so the palette finds it by them.
+    expect(COMMANDS.find((c) => c.id === 'markers-follow')?.title).toBe(
+      'Toggle comments and markers follow ripple edits',
+    );
   });
 
   it('starts the default transition from one that exists', () => {

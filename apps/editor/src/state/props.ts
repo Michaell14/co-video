@@ -4,6 +4,7 @@ import { currentSession } from '../session/hooks';
 import { toast } from '../ui/core';
 import { refuseEdit } from './access';
 import { unlocked } from './edits';
+import { commitEdits } from './follow';
 
 /** Clip-local frame under the playhead, clamped into the clip. */
 export function localFrameOf(clip: Clip): number {
@@ -89,8 +90,11 @@ export function patchClips(
   if (edits.length) s.store.commit(edits, { merge });
 }
 
-/** Commit raw edits if the user may edit. */
+/**
+ * Commit raw edits if the user may edit. The edits of a ripple, as `withMarkers` and `speedEdits`
+ * hand them out, take the review comments along (see `commitEdits`).
+ */
 export function commit(edits: Edit[], merge = false): void {
   const s = guard();
-  if (s && edits.length) s.store.commit(edits, { merge });
+  if (s && edits.length) commitEdits(s, edits, { merge });
 }

@@ -82,7 +82,6 @@ import {
   copiedAttributes,
   duplicateClips,
   markerBeside,
-  markerEdits,
   matchFrameAt,
   nearestEdge,
   openGapAt,
@@ -99,8 +98,8 @@ import {
   trimReference,
   unlocked,
   type AttributeMode,
-  type RippleSpan,
 } from './edits';
+import { commitEdits, withMarkers } from './follow';
 import {
   durationEdits,
   makeRoomEdits,
@@ -148,13 +147,8 @@ export function effectiveSelection(p: Project, ids: ID[] = ui().selection): ID[]
   return unlocked(p, ui().linkedSelection ? withLinked(p, valid) : valid);
 }
 
-/**
- * The edits of a ripple together with those that take the markers along (see `markerEdits`), to
- * be committed as one step. Just the ripple's while `Markers follow ripple edits` is switched off.
- */
-export function withMarkers(p: Project, r: { edits: Edit[]; spans: RippleSpan[] }): Edit[] {
-  return ui().markersFollow ? [...r.edits, ...markerEdits(p, r.edits, r.spans)] : r.edits;
-}
+// The timeline and the media pool plan ripples of their own and take this from here.
+export { withMarkers };
 
 /** Timeline viewport width in CSS pixels; set by the Timeline component. */
 let timelineWidth = 800;
@@ -240,7 +234,7 @@ function moveEdge(delta: number | 'playhead'): void {
     if (r.refused) toast(r.refused);
     else if (!r.moved) toast('That edge cannot move any further that way.', 'info');
     if (!r.edits.length) return;
-    s.store.commit(withMarkers(p, r));
+    commitEdits(s, withMarkers(p, r));
     if (delta === 'playhead') return;
     // Show the frame being cut to, as a trim by dragging does.
     const trimmed = s.store.get().clips[clip.id];
@@ -274,7 +268,7 @@ function offerRoom(s: Session, short: CutShort[]): void {
         }
         const r = makeRoomEdits(p, wants);
         if (r.refused) toast(r.refused);
-        else if (r.edits.length) s.store.commit(withMarkers(p, r));
+        else if (r.edits.length) commitEdits(s, withMarkers(p, r));
       }),
   });
 }
@@ -382,7 +376,7 @@ function pasteClipboard(insert: boolean): void {
     const span = Math.max(...clips.map(clipEnd)) - Math.min(...clips.map((c) => c.start));
     const room = insert ? openGapAt(p, frame(), span) : null;
     const r = pasteClips(room ? applyPreview(p, room.edits) : p, clips, frame());
-    s.store.commit(room ? [...withMarkers(p, room), ...r.edits] : r.edits);
+    commitEdits(s, room ? withMarkers(p, room, r.edits) : r.edits);
     ui().select(r.created);
   });
 }
@@ -625,7 +619,7 @@ export const cmd = {
       const hold = Math.max(1, Math.round(fpsOf(p.settings) * 2));
       const r = freezeFrame(p, pick, f, hold);
       if (!r.edits.length) return;
-      s.store.commit(withMarkers(p, { edits: r.edits, spans: [{ from: f, by: hold }] }));
+      commitEdits(s, withMarkers(p, { edits: r.edits, spans: [{ from: f, by: hold }] }));
       ui().select(r.created);
     });
   },
@@ -662,7 +656,7 @@ export const cmd = {
             toast(r.refused);
             return;
           }
-          s.store.commit(withMarkers(p, r));
+          commitEdits(s, withMarkers(p, r));
           s.player?.setRange(null);
         } else if (range) {
           const tracks = Object.values(p.tracks)
@@ -678,7 +672,7 @@ export const cmd = {
           toast(r.refused);
           return;
         }
-        s.store.commit(withMarkers(p, r));
+        commitEdits(s, withMarkers(p, r));
       } else s.store.commit(deleteClips(p, ids));
       ui().clearSelection();
     });
@@ -708,7 +702,7 @@ export const cmd = {
     editing((s, p) => {
       const r = duplicateClips(p, effectiveSelection(p));
       if (!r.edits.length) return;
-      s.store.commit(withMarkers(p, r));
+      commitEdits(s, withMarkers(p, r));
       ui().select(r.created);
     });
   },
@@ -776,7 +770,7 @@ export const cmd = {
         return;
       }
       if (!r.edits.length) return;
-      s.store.commit(withMarkers(p, r));
+      commitEdits(s, withMarkers(p, r));
       // The cut the trim was made at: where the trimmed clips begin now.
       const after = s.store.get();
       if (edge === 'start') cmd.seek(Math.min(...ids.filter(under).map((id) => after.clips[id].start)));
@@ -786,7 +780,7 @@ export const cmd = {
     editing((s, p) => {
       const r = closeGapAt(p, frame());
       if (r.refused) toast(r.refused);
-      else if (r.edits.length) s.store.commit(withMarkers(p, r));
+      else if (r.edits.length) commitEdits(s, withMarkers(p, r));
       else toast('There is no gap under the playhead to close.', 'info');
     });
   },
@@ -799,7 +793,7 @@ export const cmd = {
       }
       const r = closeGapOn(p, trackId, at);
       if (r.refused) toast(r.refused);
-      else if (r.edits.length) s.store.commit(withMarkers(p, r));
+      else if (r.edits.length) commitEdits(s, withMarkers(p, r));
     });
   },
   /** Move the edge of the selection nearest the playhead by `delta` frames (see `moveEdge`). */
@@ -820,7 +814,7 @@ export const cmd = {
       const ids = effectiveSelection(p);
       if (ui().rippleMode) {
         const r = speedRippleEdits(p, ids, speed, reverse);
-        if (r.edits.length) s.store.commit(withMarkers(p, r));
+        if (r.edits.length) commitEdits(s, withMarkers(p, r));
         if (r.refused) toast(r.refused);
         return;
       }
@@ -854,7 +848,7 @@ export const cmd = {
         ...effectiveSelection(p, [id]).filter((other) => other !== id),
       ]);
       const r = durationEdits(p, groups, frames, ui().rippleMode);
-      if (r.edits.length) s.store.commit(withMarkers(p, r));
+      if (r.edits.length) commitEdits(s, withMarkers(p, r));
       if (r.refused) toast(r.refused);
       else if (r.limited) toast('Stopped at the end of the media or at the next clip.', 'info');
     });
@@ -926,20 +920,18 @@ export const cmd = {
         return;
       }
       const at = opts.frame ?? frame();
-      let working = p;
-      const pre: Edit[] = [];
+      let room: ReturnType<typeof openGapAt> | null = null;
       if (opts.insert) {
         const len =
           asset.kind === 'image'
             ? secondsToFrame(5, p.settings)
             : secondsToFrame((opts.sourceOut ?? asset.duration) - (opts.sourceIn ?? 0), p.settings);
-        const room = openGapAt(p, at, Math.max(1, len));
-        pre.push(...withMarkers(p, room));
-        // Compute placement against the timeline as it will look once the gap is open.
-        working = applyPreview(p, pre);
+        room = openGapAt(p, at, Math.max(1, len));
       }
+      // Compute placement against the timeline as it will look once the gap is open.
+      const working = room ? applyPreview(p, room.edits) : p;
       const r = addAssetToTimeline(working, asset, { frame: at, ...opts });
-      s.store.commit([...pre, ...r.edits]);
+      commitEdits(s, room ? withMarkers(p, room, r.edits) : r.edits);
       if (!opts.keepSelection) ui().select(r.created);
       const end = Math.max(...r.created.map((id) => clipEnd(s.store.get().clips[id])));
       if (opts.frame === undefined) cmd.seek(end);
@@ -1076,12 +1068,19 @@ export const cmd = {
     else if (!Object.keys(p.markers).length) toast('There are no markers yet. Press M to add one.', 'info');
   },
 
-  /** Switch whether markers move with the shots they stand on when a ripple edit moves those. */
+  /**
+   * Switch whether review comments and markers move with the shots they stand on when a ripple
+   * edit moves those.
+   */
   toggleMarkersFollow(): void {
     const follow = !ui().markersFollow;
     ui().set({ markersFollow: follow });
     // Run from the palette there is no switch to look at, so the command says which way it now is.
-    toast(follow ? 'Markers follow ripple edits.' : 'Markers stay where they are through ripple edits.');
+    toast(
+      follow
+        ? 'Comments and markers follow ripple edits.'
+        : 'Comments and markers stay where they are through ripple edits.',
+    );
   },
 
   // ─────────────────────────────────────────────── effects & transitions ──

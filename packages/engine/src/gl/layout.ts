@@ -2,8 +2,8 @@
  * Layer layout: where a clip's picture lands in the frame. Shared by the compositor (to draw) and
  * by the editor's on-canvas transform handles (to hit-test and drag), so the two can never disagree.
  */
-import type { Clip, ClipLayer, Project } from '@tandem/core';
-import { fontEpoch, generatorKey, rasterizeGenerator } from '../generators';
+import { IDENTITY_ANIM, type Clip, type ClipLayer, type ID, type Layer, type Project } from '@tandem/core';
+import { fontEpoch, generatorKey, layoutText, rasterizeGenerator } from '../generators';
 
 export interface LayerBox {
   /** Un-scaled layout box in frame pixels. */
@@ -75,6 +75,21 @@ export function layoutLayer(
   };
 }
 
+/** `L` as it is drawn between its entrance and its exit: without the animation it comes and goes with. */
+export function layerAtRest(L: ClipLayer): ClipLayer {
+  return L.anim === IDENTITY_ANIM ? L : { ...L, anim: IDENTITY_ANIM };
+}
+
+/** `layer` with the clip `id` at rest (see `layerAtRest`), on either side of a transition too. */
+export function withClipAtRest(layer: Layer, id: ID): Layer {
+  if (layer.kind === 'clip') {
+    return layer.layer.clip.id === id ? { ...layer, layer: layerAtRest(layer.layer) } : layer;
+  }
+  if (layer.a?.clip.id !== id && layer.b?.clip.id !== id) return layer;
+  const rest = (L: ClipLayer | null) => (L?.clip.id === id ? layerAtRest(L) : L);
+  return { ...layer, a: rest(layer.a), b: rest(layer.b) };
+}
+
 /** Column-major mat3 mapping the unit quad to clip space for a layout box. */
 export function layerMatrix(b: LayerBox, W: number, H: number): Float32Array {
   const a = b.boxW * b.sx;
@@ -119,7 +134,11 @@ export function measureClip(clip: Clip, project: Project): { w: number; h: numbe
   const key = generatorKey(clip, width, height, 1, fontEpoch());
   let m = measureCache.get(key);
   if (!m) {
-    const r = rasterizeGenerator(clip, width, height, 1);
+    // A title is as large as its text is laid out, which is known without drawing it.
+    const r =
+      clip.type === 'text' && clip.text
+        ? layoutText(clip.text, width, height)
+        : rasterizeGenerator(clip, width, height, 1);
     if (!r) return null;
     m = { w: r.width, h: r.height };
     if (measureCache.size > 200) measureCache.clear();

@@ -16,6 +16,7 @@ export * from './frame';
 export * from './color';
 export * from './presence';
 export * from './review';
+export * from './follow';
 export * from './srt';
 export * from './protocol';
 export * from './loudness';

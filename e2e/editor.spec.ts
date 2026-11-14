@@ -624,6 +624,24 @@ const range = (page: Page): Promise<{ in: number; out: number } | null> =>
 
 const toast = (page: Page, text: string): Locator => page.locator('.toast', { hasText: text });
 
+/** Pin a review comment to `frame`, typed into the comments panel the way it is done by hand. */
+async function pinNote(page: Page, frame: number, text: string): Promise<void> {
+  await seek(page, frame);
+  const box = page.getByPlaceholder('Add a comment at the playhead…');
+  if (!(await box.isVisible())) await page.keyboard.press('Shift+C');
+  await box.fill(text);
+  await box.press('Enter');
+  await expect(page.locator('.comment', { hasText: text })).toBeVisible();
+}
+
+/** The frame each review comment is pinned to, by what it says. */
+const notes = (page: Page): Promise<Record<string, number>> =>
+  page.evaluate(() =>
+    Object.fromEntries(
+      (window as any).tandem.session.review.get().map((c: any) => [c.text, c.frame] as const),
+    ),
+  );
+
 /** Run the command the palette finds for `text`, from the keyboard. */
 async function fromPalette(page: Page, text: string): Promise<void> {
   await page.keyboard.press('Control+k');
@@ -705,11 +723,11 @@ test.describe('editing from the keyboard', () => {
 
     // With the switch off the markers stay where they are, and the command says which way it is.
     await fromPalette(page, 'markers follow');
-    await expect(toast(page, 'Markers stay where they are through ripple edits.')).toBeVisible();
+    await expect(toast(page, 'Comments and markers stay where they are through ripple edits.')).toBeVisible();
     await page.keyboard.press('Shift+g');
     expect(await markers(page)).toEqual([120, 250]);
     await fromPalette(page, 'markers follow');
-    await expect(toast(page, 'Markers follow ripple edits.')).toBeVisible();
+    await expect(toast(page, 'Comments and markers follow ripple edits.')).toBeVisible();
     await seek(page, 300);
     await page.keyboard.press('Shift+g');
     await expect(toast(page, 'There is no gap under the playhead to close.')).toBeVisible();
@@ -751,6 +769,107 @@ test.describe('editing from the keyboard', () => {
     await page.keyboard.press('Shift+Delete');
     expect((await rows(page)).V2).toBeUndefined();
     expect(await markers(page)).toEqual([120, 240, 250]);
+  });
+
+  test('one switch keeps comments and markers where they are through a ripple, and says so for both', async ({
+    page,
+  }) => {
+    await sampleProject(page);
+    await page.evaluate(() => {
+      const { cmd } = (window as any).tandem;
+      cmd.seek(250);
+      cmd.addMarker();
+    });
+    await pinNote(page, 250, 'Hold this a beat longer');
+    const card = page.locator('.comment', { hasText: 'Hold this a beat longer' });
+    const pin = page.locator('.ruler__comment');
+    await expect(card.locator('.comment__tc')).toHaveText('00:00:08:10');
+    const [first] = await idsOf(page, 'video');
+    const rippleOutFirst = async () => {
+      await page.locator(`[data-clip="${first}"]`).click();
+      await page.keyboard.press('Shift+Delete');
+      expect(await rows(page)).toEqual({ A1: ['0-360'], V1: ['0-120', '120-240'], V2: ['18-108'] });
+    };
+
+    // Off: the shots come up, and neither the marker nor the note goes with them.
+    await page.locator(`[data-clip="${first}"]`).click();
+    await fromPalette(page, 'markers follow');
+    await expect(toast(page, 'Comments and markers stay where they are through ripple edits.')).toBeVisible();
+    expect(await page.evaluate(() => (window as any).tandem.ui.getState().markersFollow)).toBe(false);
+    await rippleOutFirst();
+    expect(await markers(page)).toEqual([120, 250]);
+    expect(await notes(page)).toEqual({ 'Hold this a beat longer': 250 });
+    await expect(card.locator('.comment__tc')).toHaveText('00:00:08:10');
+    await expect(pin).toHaveAttribute('aria-label', / at 00:00:08:10$/);
+    await page.keyboard.press('Control+z');
+    expect(await rows(page)).toEqual(SAMPLE);
+    expect(await notes(page)).toEqual({ 'Hold this a beat longer': 250 });
+
+    // On again, found in the palette by the words for either: both follow, and return together.
+    await fromPalette(page, 'comments and markers');
+    await expect(toast(page, 'Comments and markers follow ripple edits.')).toBeVisible();
+    expect(await page.evaluate(() => (window as any).tandem.ui.getState().markersFollow)).toBe(true);
+    await rippleOutFirst();
+    expect(await markers(page)).toEqual([0, 130]);
+    expect(await notes(page)).toEqual({ 'Hold this a beat longer': 130 });
+    await expect(card.locator('.comment__tc')).toHaveText('00:00:04:10');
+    await expect(pin).toHaveAttribute('aria-label', / at 00:00:04:10$/);
+    await page.keyboard.press('Control+z');
+    expect(await rows(page)).toEqual(SAMPLE);
+    expect(await markers(page)).toEqual([120, 250]);
+    expect(await notes(page)).toEqual({ 'Hold this a beat longer': 250 });
+    await expect(card.locator('.comment__tc')).toHaveText('00:00:08:10');
+  });
+
+  test('a drag of the speed slider under ripple editing keeps a comment on its shot, and is one step to undo', async ({
+    page,
+  }) => {
+    await sampleProject(page);
+    await pinNote(page, 250, 'Hold this a beat longer');
+    // In a window of this width the comments stand where the inspector does.
+    await page.getByRole('button', { name: 'Close comments' }).click();
+    const [, second, third] = await idsOf(page, 'video');
+    await page.locator(`[data-clip="${second}"]`).click();
+    await page.keyboard.press('r');
+    const inspector = page.locator('[aria-label="Inspector"]');
+    await inspector.locator('.section__head', { hasText: 'Speed' }).click();
+    const track = (await inspector
+      .locator('.section', { hasText: 'Presets' })
+      .locator('.slider')
+      .first()
+      .boundingBox())!;
+    const y = track.y + track.height / 2;
+    /** How far into the third shot the note stands, and where that shot begins. */
+    const onThird = async () => {
+      const shot = await clip(page, third);
+      return {
+        start: shot.start as number,
+        into: (await notes(page))['Hold this a beat longer'] - shot.start,
+      };
+    };
+
+    // 100% lies three sevenths along the slider. Faster, then slower than it began, in one drag:
+    // every step moves the third shot, and the note is ten frames into it after each.
+    await page.mouse.move(track.x + (track.width * 3) / 7, y);
+    await page.mouse.down();
+    const starts: number[] = [];
+    for (const step of [2, 4, 6, 3, -2, -4]) {
+      await page.mouse.move(track.x + track.width * (3 / 7 + step * 0.02), y);
+      const now = await onThird();
+      expect(now.into).toBe(10);
+      starts.push(now.start);
+    }
+    await page.mouse.up();
+    expect(Math.min(...starts)).toBeLessThan(240);
+    expect(starts[starts.length - 1]).toBeGreaterThan(240);
+    expect((await clip(page, second)).speed).toBeLessThan(1);
+
+    // The whole drag is one step, for the clips and for the note.
+    await page.evaluate(() => (window as any).tandem.cmd.undo());
+    expect(await rows(page)).toEqual(SAMPLE);
+    expect(await notes(page)).toEqual({ 'Hold this a beat longer': 250 });
+    await page.evaluate(() => (window as any).tandem.cmd.redo());
+    expect(await onThird()).toEqual({ start: starts[starts.length - 1], into: 10 });
   });
 
   test('Alt+Up and Alt+Down move the picture of a sync clip and leave its sound on its track', async ({

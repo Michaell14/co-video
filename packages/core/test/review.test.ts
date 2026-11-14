@@ -153,6 +153,47 @@ describe('ReviewStore merging', () => {
     expect(calls).toBe(4);
     expect(s.get()).toEqual([]);
   });
+
+  it('moves several comments as one change and writes nothing but the frames that differ', () => {
+    const { a, b, sync } = reviewers();
+    const first = a.add({ ...ana, frame: 10, text: 'First', x: null, y: null });
+    const second = a.add({ ...ben, frame: 20, text: 'Second', x: 0.5, y: 0.5 });
+    const third = a.add({ ...ana, frame: 30, text: 'Third', x: null, y: null });
+    sync();
+    let calls = 0;
+    a.subscribe(() => calls++);
+    let updates = 0;
+    a.doc.on('update', () => updates++);
+    a.move(
+      new Map([
+        [first, 40],
+        [second, 5],
+        [third, 30],
+        ['missing', 7],
+      ]),
+    );
+    expect([calls, updates]).toEqual([1, 1]);
+    // The list is in the order of the frames again.
+    expect(a.get().map((c) => [c.text, c.frame])).toEqual([
+      ['Second', 5],
+      ['Third', 30],
+      ['First', 40],
+    ]);
+    expect(Array.from(a.doc.getMap('commentFields').keys()).sort()).toEqual(
+      [`${first}/frame`, `${second}/frame`].sort(),
+    );
+    a.move(new Map());
+    a.move(new Map([[first, 40]]));
+    expect([calls, updates]).toEqual([1, 1]);
+    // Someone who resolves and answers at that moment keeps both, and the author is who it was.
+    b.update(second, { resolved: true });
+    b.reply(second, { ...ana, text: 'Done' });
+    sync();
+    for (const s of [a, b]) {
+      expect(s.get()[0]).toMatchObject({ id: second, frame: 5, resolved: true, authorName: 'Ben', x: 0.5 });
+      expect(s.get()[0].replies.map((r) => r.text)).toEqual(['Done']);
+    }
+  });
 });
 
 describe('ReviewStore with hostile data', () => {

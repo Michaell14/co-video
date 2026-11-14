@@ -1616,6 +1616,38 @@ const undo = async (page: Page): Promise<void> => {
   await page.evaluate(() => (window as any).tandem.cmd.undo());
 };
 
+/** Pin a review comment of the person at the keyboard to `frame`. */
+const pinNote = (page: Page, frame: number, text: string): Promise<void> =>
+  page.evaluate(
+    ([frame, text]) => {
+      const { session } = (window as any).tandem;
+      const { user } = session.getMeta();
+      session.review.add({
+        frame,
+        text,
+        authorId: user.id,
+        authorName: user.name,
+        authorColor: user.color,
+        x: null,
+        y: null,
+      });
+    },
+    [frame, text] as const,
+  );
+
+/** The frames the review comments are pinned to, in the order of the list. */
+const noteFrames = (page: Page): Promise<number[]> =>
+  page.evaluate(() => (window as any).tandem.session.review.get().map((c: any) => c.frame));
+
+/** The frames the comment pins on the ruler are drawn at, from left to right. */
+const pinFrames = (page: Page): Promise<number[]> =>
+  page.evaluate(() => {
+    const { ppf, scrollX } = (window as any).tandem.ui.getState();
+    return Array.from(document.querySelectorAll<HTMLElement>('.ruler__comment'))
+      .map((pin) => Math.round((parseFloat(pin.style.left) + scrollX) / ppf))
+      .sort((a, b) => a - b);
+  });
+
 test.describe('timeline: keyboard, drops and marks', () => {
   // These tests are long, and a page that reloads because someone saved a file loses the project.
   test.beforeEach(({ page }) => page.context().routeWebSocket(/\/\?token=/, () => {}));
@@ -2036,7 +2068,7 @@ test.describe('timeline: keyboard, drops and marks', () => {
     }
   });
 
-  test('a roll moves the cut of picture and sound together, and a ripple trim takes the markers along', async ({
+  test('a roll moves the cut of picture and sound together, and a ripple trim takes markers and comments along', async ({
     page,
   }) => {
     await threeShots(page);
@@ -2079,7 +2111,9 @@ test.describe('timeline: keyboard, drops and marks', () => {
     await undo(page);
     expect(await cuts()).toEqual([straight, straight]);
 
-    // A ripple trim by dragging: the markers on the shots that move up move with them.
+    // A ripple trim by dragging: the markers on the shots that move up move with them, and so do
+    // the review comments and their pins on the ruler. One in the frames that were trimmed off
+    // goes to the cut.
     await commit(page, [
       {
         op: 'setMarker',
@@ -2087,6 +2121,10 @@ test.describe('timeline: keyboard, drops and marks', () => {
       },
       { op: 'setMarker', marker: { id: 'on-first', frame: 40, name: 'First', color: '#ffb547', note: '' } },
     ]);
+    await pinNote(page, 155, 'On the second shot');
+    await pinNote(page, 30, 'On the first shot');
+    await pinNote(page, 85, 'In its last frames');
+    expect(await pinFrames(page)).toEqual([30, 85, 155]);
     const first = (await clipsOn(page, 'V1'))[0];
     const b = await boxOf(page, first.id);
     await page.keyboard.down('Alt');
@@ -2095,8 +2133,12 @@ test.describe('timeline: keyboard, drops and marks', () => {
     await page.keyboard.up('Alt');
     expect((await row(page, 'V1'))[0]).toBe('testsrc.mp4@0+80');
     expect(await markerFrames(page)).toEqual([40, 140]);
+    expect(await noteFrames(page)).toEqual([30, 80, 145]);
+    expect(await pinFrames(page)).toEqual([30, 80, 145]);
     await undo(page);
     expect(await markerFrames(page)).toEqual([40, 150]);
+    expect(await noteFrames(page)).toEqual([30, 85, 155]);
+    expect(await pinFrames(page)).toEqual([30, 85, 155]);
   });
 
   test('a drop with Ctrl goes in between the clips instead of over them', async ({ page }) => {
@@ -2104,6 +2146,7 @@ test.describe('timeline: keyboard, drops and marks', () => {
     await commit(page, [
       { op: 'setMarker', marker: { id: 'm', frame: 300, name: 'Third', color: '#ffb547', note: '' } },
     ]);
+    await pinNote(page, 310, 'On the third shot');
     const { ppf } = await view(page);
     const v1 = await laneBox(page, 'V1');
     const third = (await clipsOn(page, 'V1'))[2];
@@ -2122,12 +2165,15 @@ test.describe('timeline: keyboard, drops and marks', () => {
     expect(await row(page, 'A1')).toEqual(reordered);
     expect((await clipsOn(page, 'V1'))[0].id).toBe(third.id);
     expect(await dropMode(page)).toBeNull();
-    // The marker stays on its shot, and all of it is one step to undo.
+    // The marker and the comment stay on their shot, and all of it is one step to undo.
     expect(await markerFrames(page)).toEqual([60]);
+    expect(await noteFrames(page)).toEqual([70]);
+    expect(await pinFrames(page)).toEqual([70]);
     await undo(page);
     expect(await row(page, 'V1')).toEqual(THREE_SHOTS);
     expect(await row(page, 'A1')).toEqual(THREE_SHOTS);
     expect(await markerFrames(page)).toEqual([300]);
+    expect(await noteFrames(page)).toEqual([310]);
 
     // Without the key the same drop overwrites, as it always did.
     await dragTo(page, [from.x + 30, from.y + 8], [v1.x + 30 + 4 * ppf, from.y + 8], 12);
@@ -2156,8 +2202,10 @@ test.describe('timeline: keyboard, drops and marks', () => {
       'testsrc.mp4@330+120',
     ]);
     expect(await markerFrames(page)).toEqual([390]);
+    expect(await noteFrames(page)).toEqual([400]);
     await undo(page);
     expect(await row(page, 'A1')).toEqual(THREE_SHOTS);
+    expect(await noteFrames(page)).toEqual([310]);
 
     // Paste insert does the same with what was copied, at the playhead.
     const second = (await clipsOn(page, 'V1'))[1];

@@ -166,6 +166,19 @@ export class ReviewStore {
     });
   }
 
+  /**
+   * Put comments at other frames, by id, as one change: everyone sees them move together, and
+   * every list of them is told once. Only frames are written. A comment's text, its replies and
+   * whether it is resolved have keys of their own, and stay whatever anyone makes of them at the
+   * same moment.
+   */
+  move(frames: ReadonlyMap<ID, number>): void {
+    if (!frames.size) return;
+    this.doc.transact(() => {
+      for (const [id, frame] of frames) this.update(id, { frame });
+    });
+  }
+
   remove(id: ID): void {
     this.doc.transact(() => {
       this.yComments.delete(id);

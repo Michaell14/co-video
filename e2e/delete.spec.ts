@@ -738,7 +738,7 @@ test.describe('media that has left the server', () => {
     expect(await flags(guest)).toEqual([false]);
     await expect(file.locator('.asset__retry')).toHaveCount(0);
     await file.locator('.asset__status span').hover();
-    await expect(guest.locator('.tip')).toHaveText('Media offline: not on this device or the server');
+    await expect(guest.getByRole('tooltip')).toHaveText('Media offline: not on this device or the server');
 
     // The owner comes back with the file on their device. It goes up again like a new one, and
     // the guest gets it.

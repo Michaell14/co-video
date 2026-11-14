@@ -36,17 +36,49 @@ async function copyLink(dialog: Locator, access: 'Can edit' | 'Can comment' | 'C
   return field.inputValue();
 }
 
-async function join(page: Page, link: string): Promise<void> {
+async function join(page: Page, link: string, clips = 1): Promise<void> {
   await noReloads(page);
   await page.goto(link);
   await expect(page.locator('.tl')).toBeVisible();
   await page.waitForFunction(() => !!(window as any).tandem?.session?.player);
-  await expect.poll(() => clipCount(page)).toBe(1);
+  await expect.poll(() => clipCount(page)).toBe(clips);
   // The key in the link is taken out of the address once the server has accepted it.
   await expect(page).toHaveURL(/#\/p\/[\w-]+$/);
 }
 
 const comment = (page: Page, text: string): Locator => page.locator('.comment', { hasText: text });
+
+/** The comments as the panel lists them: what each says and the timecode it is pinned to. */
+const thread = (page: Page): Promise<string[]> =>
+  page
+    .locator('.comment')
+    .evaluateAll((cards) =>
+      cards.map(
+        (card) =>
+          `${card.querySelector('.comment__text')!.textContent} @ ${card.querySelector('.comment__tc')!.textContent}`,
+      ),
+    );
+
+/**
+ * The shot a comment is on, and how many frames into it: what has to stay the same when a ripple
+ * moves the shot. Null when the comment stands on no shot.
+ */
+const shotUnder = (page: Page, text: string): Promise<string | null> =>
+  page.evaluate((text) => {
+    const { session } = (window as any).tandem;
+    const { frame } = session.review.get().find((c: any) => c.text === text);
+    const shot = (Object.values(session.store.get().clips) as any[]).find(
+      (c) => c.type === 'video' && c.start <= frame && frame < c.start + c.duration,
+    );
+    return shot ? `${shot.name}+${frame - shot.start}` : null;
+  }, text);
+
+/** Where the pin of the comment at `timecode` is drawn on the timeline's ruler, in frames. */
+const pinnedAt = (page: Page, timecode: string): Promise<number> =>
+  page.locator(`.ruler__comment[aria-label$=" at ${timecode}"]`).evaluate((pin: HTMLElement) => {
+    const { ppf, scrollX } = (window as any).tandem.ui.getState();
+    return Math.round((parseFloat(pin.style.left) + scrollX) / ppf);
+  });
 
 /** The part of a text field's content that is selected. */
 const selection = (field: Locator): Promise<string> =>
@@ -218,6 +250,131 @@ test.describe('sharing and review', () => {
         ),
       )
       .toEqual([{ text: 'Trim this shot', resolved: true, replies: ['Done'] }]);
+    await theirs.close();
+
+    expect(errors).toEqual([]);
+    expect(guestErrors).toEqual([]);
+  });
+
+  test('a note pinned to a shot stays on it when the owner ripples the cut, for both of them, and returns with the undo', async ({
+    page,
+    context,
+    browser,
+  }) => {
+    const errors = trackErrors(page);
+    await noReloads(page);
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await newProject(page);
+    const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
+    test.skip(!meta.online || !meta.shared, 'collaboration server not reachable');
+    // The bundled sample: three shots of four seconds on V1, a title over the first, music under all.
+    await page.evaluate(() => void (window as any).tandem.cmd.loadSample());
+    await expect(page.locator('.clip')).toHaveCount(5, { timeout: 60_000 });
+
+    const dialog = await openShare(page);
+    const link = await copyLink(dialog, 'Can comment');
+    await page.keyboard.press('Escape');
+    const theirs = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const guest = await theirs.newPage();
+    const guestErrors = trackErrors(guest);
+    await join(guest, link, 5);
+    const guestName: string = await guest.evaluate(() => (window as any).tandem.session.getMeta().user.name);
+
+    // The guest pins a note ten frames into the third shot and one into the second; the owner one
+    // on the first.
+    const seek = (who: Page, frame: number) =>
+      who.evaluate((frame) => (window as any).tandem.cmd.seek(frame), frame);
+    await guest.keyboard.press('Shift+C');
+    const theirBox = guest.getByPlaceholder('Add a comment at the playhead…');
+    await seek(guest, 250);
+    await theirBox.fill('Hold this a beat longer');
+    await theirBox.press('Enter');
+    await seek(guest, 130);
+    await theirBox.fill('Tighten');
+    await theirBox.press('Enter');
+    await page.keyboard.press('Shift+C');
+    await expect(comment(page, 'Tighten')).toBeVisible();
+    const box = page.getByPlaceholder('Add a comment at the playhead…');
+    await seek(page, 60);
+    await box.fill('Cold open');
+    await box.press('Enter');
+    const pinned = [
+      'Cold open @ 00:00:02:00',
+      'Tighten @ 00:00:04:10',
+      'Hold this a beat longer @ 00:00:08:10',
+    ];
+    for (const who of [page, guest]) {
+      await expect.poll(() => thread(who)).toEqual(pinned);
+      expect(await shotUnder(who, 'Hold this a beat longer')).toBe('aurora.mp4+10');
+      expect(await pinnedAt(who, '00:00:08:10')).toBe(250);
+    }
+
+    // The owner ripple-deletes the first shot: the two shots after it come up by four seconds.
+    const first: string = await page.evaluate(
+      () =>
+        (Object.values((window as any).tandem.session.store.get().clips) as any[]).find(
+          (c) => c.name === 'dusk.mp4',
+        ).id,
+    );
+    await page.locator(`.clip[data-clip="${first}"]`).click();
+    await page.keyboard.press('Shift+Delete');
+    const moved = [
+      'Cold open @ 00:00:00:00',
+      'Tighten @ 00:00:00:10',
+      'Hold this a beat longer @ 00:00:04:10',
+    ];
+    for (const who of [page, guest]) {
+      // Both read the same timecodes, in the order of the frames: the note on the shot that was
+      // removed stands on the cut it left, the others where they were on their shots.
+      await expect.poll(() => thread(who)).toEqual(moved);
+      expect(await shotUnder(who, 'Hold this a beat longer')).toBe('aurora.mp4+10');
+      expect(await shotUnder(who, 'Tighten')).toBe('fractal.mp4+10');
+      expect(await pinnedAt(who, '00:00:04:10')).toBe(130);
+      await expect(who.locator('.ruler__comment')).toHaveCount(3);
+      await expect(who.locator('.ruler__comment[aria-label$=" at 00:00:08:10"]')).toHaveCount(0);
+    }
+    // The guest's playhead is still on frame 130, which is now the note on the third shot.
+    await expect(comment(guest, 'Hold this a beat longer')).toHaveAttribute('data-current', 'true');
+    await expect(comment(guest, 'Tighten')).toHaveAttribute('data-current', 'false');
+    // It is still the guest's note, and nothing about it says that someone else touched it: the
+    // guest may delete it, the owner's copy names the guest, and the thread is as it was.
+    const theirCard = comment(guest, 'Hold this a beat longer');
+    await expect(theirCard.getByRole('button', { name: 'Delete' })).toBeVisible();
+    await expect(comment(guest, 'Cold open').getByRole('button', { name: 'Delete' })).toHaveCount(0);
+    await expect(comment(page, 'Hold this a beat longer').locator('.comment__head b')).toHaveText(guestName);
+    await expect(comment(page, 'Hold this a beat longer')).not.toHaveClass(/comment--resolved/);
+    await expect(comment(page, 'Hold this a beat longer').locator('.comment__reply')).toHaveCount(0);
+
+    // What the guest does to a note meanwhile is kept when the owner takes the edit back: the
+    // answer and the resolved state stay, and only the frames return. One press of undo for all.
+    await comment(guest, 'Tighten').getByRole('button', { name: 'Reply' }).click();
+    const reply = guest.getByPlaceholder('Reply…');
+    await reply.fill('From the wide, please');
+    await reply.press('Enter');
+    await comment(guest, 'Cold open').getByRole('button', { name: 'Resolve' }).click();
+    await expect(comment(page, 'Cold open')).toHaveCount(0);
+    await page.keyboard.press('Control+z');
+    for (const who of [page, guest]) {
+      await expect.poll(() => thread(who)).toEqual(pinned.slice(1));
+      expect(await shotUnder(who, 'Hold this a beat longer')).toBe('aurora.mp4+10');
+      expect(await pinnedAt(who, '00:00:08:10')).toBe(250);
+      await expect(comment(who, 'Tighten').locator('.comment__reply')).toContainText('From the wide, please');
+    }
+    expect(
+      await guest.evaluate(() =>
+        (window as any).tandem.session.review
+          .get()
+          .map((c: any) => [c.text, c.frame, c.resolved, c.replies.length]),
+      ),
+    ).toEqual([
+      ['Cold open', 60, true, 0],
+      ['Tighten', 130, false, 1],
+      ['Hold this a beat longer', 250, false, 0],
+    ]);
+
+    // And the redo moves them again.
+    await page.keyboard.press('Control+Shift+z');
+    for (const who of [page, guest]) await expect.poll(() => thread(who)).toEqual(moved.slice(1));
     await theirs.close();
 
     expect(errors).toEqual([]);

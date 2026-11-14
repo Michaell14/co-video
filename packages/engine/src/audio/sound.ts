@@ -118,7 +118,11 @@ export class Sound {
           // A decoder started again begins with what it needs to get going, which was given before.
           if (end !== null && wb.timestamp < end - NO_GAP) continue;
           if (hole !== null) {
-            if (wb.timestamp > hole + NO_GAP) report({ lost: 'stretch', from: hole, cause });
+            // Sound is back. Something is missing before it only if this start was put behind
+            // the place of the failure: a decoder that begins there and gives nothing until
+            // later (a track that starts late, a gap in the file) has left nothing out.
+            const skipped = pos !== undefined && pos > hole + NO_GAP;
+            if (skipped && wb.timestamp > hole + NO_GAP) report({ lost: 'stretch', from: hole, cause });
             hole = null;
           }
           const k = knownOf(assetId);

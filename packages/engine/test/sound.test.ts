@@ -214,6 +214,15 @@ describe('Sound', () => {
     expect(fake.starts).toEqual([20, 0]);
   });
 
+  it('takes sound that begins later than what was asked for as that, not as a hole', async () => {
+    // Asked from five packets before the track's first: the decoder that takes over begins where
+    // the other failed, and what it gives first is the first there is.
+    const fake = track({ bad: new Set(range(0, 400)), other: new Set() });
+    const { given, told } = await read(fake, -5 * PACKET, 40 * PACKET);
+    expect(given).toEqual(range(0, 40));
+    expect(told).toEqual([]);
+  });
+
   it('goes on with the decoder it has when the browser’s own gives nothing either', async () => {
     const fake = track({ bad: new Set([0, 1]), other: new Set(range(0, 400)) });
     const { given, told } = await read(fake);

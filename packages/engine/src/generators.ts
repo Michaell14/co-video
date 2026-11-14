@@ -99,56 +99,100 @@ function graphemes(s: string): string[] {
   return Array.from(segmenter.segment(s), (x) => x.segment);
 }
 
-function wrapLines(ctx: Ctx2D, text: string, maxWidth: number | null): string[] {
+/**
+ * The lines `text` is set in when a line may be no wider than `maxWidth`: broken where it says so,
+ * and where it has to be, at white space. A browser wraps preformatted text by the same rules, so
+ * an editable element laid over a title breaks its lines where the title does.
+ *
+ * - White space never takes a line of its own. Where a line is broken, the white space there
+ *   belongs to neither line; at the end of a paragraph as much of it stays as fits.
+ * - A word wider than the box is broken between characters, never inside one.
+ */
+export function wrapLines(text: string, maxWidth: number | null, measure: (line: string) => number): string[] {
   const out: string[] = [];
   for (const para of text.split('\n')) {
-    if (!maxWidth || ctx.measureText(para).width <= maxWidth) {
+    if (!maxWidth || measure(para) <= maxWidth) {
       out.push(para);
       continue;
     }
     let line = '';
     for (const word of para.split(/(\s+)/)) {
-      const candidate = line + word;
-      if (line && ctx.measureText(candidate.trimEnd()).width > maxWidth) {
+      if (!word.trim()) {
+        line += word;
+        continue;
+      }
+      if (line && measure(line + word) > maxWidth) {
         out.push(line.trimEnd());
-        line = word.trimStart();
-      } else line = candidate;
-      // A single word wider than the box: break it by character.
-      while (ctx.measureText(line).width > maxWidth && line.length > 1) {
-        let cut = line.length - 1;
-        while (cut > 1 && ctx.measureText(line.slice(0, cut)).width > maxWidth) cut--;
-        out.push(line.slice(0, cut));
-        line = line.slice(cut);
+        line = word;
+      } else line += word;
+      if (measure(line) <= maxWidth) continue;
+      // A single word wider than the box.
+      const units = graphemes(line);
+      line = '';
+      for (const unit of units) {
+        if (line && measure(line + unit) > maxWidth) {
+          out.push(line);
+          line = unit;
+        } else line += unit;
       }
     }
-    out.push(line.trimEnd());
+    const said = line.trimEnd().length;
+    while (line.length > said && measure(line) > maxWidth) line = line.slice(0, -1);
+    out.push(line);
   }
   return out;
 }
 
-export interface Raster {
-  canvas: AnyCanvas;
-  /** Size of the drawing in frame pixels. The canvas is smaller when that would not fit a texture. */
+/**
+ * How the text of a title is set: everything about its drawing that is measured rather than
+ * painted. The rasteriser draws by it, the layer is laid out by its size, and the editor lays the
+ * element a title is typed into over the title by the same numbers.
+ */
+export interface TextLayout {
+  /** The font as a canvas takes it, and its size in pixels. */
+  font: string;
+  size: number;
+  /** Space added after each character, in pixels. */
+  spacing: number;
+  /** Height of a line, in pixels. */
+  lineHeight: number;
+  /** The lines as they are drawn (in capitals where the title asks for that), and how wide each is. */
+  lines: string[];
+  widths: number[];
+  /** Where in the drawing the area lies that the lines are set in, and its size. */
+  x: number;
+  y: number;
+  textWidth: number;
+  textHeight: number;
+  /** Size of the whole drawing: stroke, shadow and background need room around the lines. */
   width: number;
   height: number;
 }
 
 /**
- * Draw a text block. `chars` (0…1) reveals a prefix of the characters for typewriter animations
- * while keeping the layout of the full text, so nothing jumps as letters appear.
+ * Tell a context how to set type: by the font's own measures at every size. Left to itself a
+ * canvas may fit the letters to the pixel grid, which gives a line another width at each size and
+ * another one than the same line has in the page.
  */
-export function rasterizeText(t: TextProps, frameW: number, frameH: number, chars = 1): Raster {
+function setType(ctx: Ctx2D, layout: Pick<TextLayout, 'font' | 'spacing'>): void {
+  ctx.font = layout.font;
+  if ('letterSpacing' in ctx) ctx.letterSpacing = `${layout.spacing}px`;
+  if ('textRendering' in ctx) ctx.textRendering = 'geometricPrecision';
+}
+
+/** Lay out the text of a title for a frame of the given size. Nothing is drawn. */
+export function layoutText(t: TextProps, frameW: number, frameH: number): TextLayout {
   const px = Math.max(1, t.size * frameH);
-  const probe = makeCanvas(2, 2).getContext('2d') as Ctx2D;
   const font = fontSpec(t, px);
-  probe.font = font;
-  const spacing = `${(t.letterSpacing * px).toFixed(2)}px`;
-  if ('letterSpacing' in probe) (probe as unknown as { letterSpacing: string }).letterSpacing = spacing;
+  const spacing = Number((t.letterSpacing * px).toFixed(2));
+  const probe = makeCanvas(2, 2).getContext('2d') as Ctx2D;
+  setType(probe, { font, spacing });
+  const measure = (line: string): number => probe.measureText(line).width;
 
   const content = t.uppercase ? t.content.toUpperCase() : t.content;
   const maxWidth = t.boxWidth ? t.boxWidth * frameW : null;
-  const lines = wrapLines(probe, content, maxWidth);
-  const widths = lines.map((l) => probe.measureText(l).width);
+  const lines = wrapLines(content, maxWidth, measure);
+  const widths = lines.map(measure);
   const textW = Math.max(1, maxWidth ?? 0, ...widths);
   const lineH = px * t.lineHeight;
   const textH = Math.max(lineH, lines.length * lineH);
@@ -163,8 +207,39 @@ export function rasterizeText(t: TextProps, frameW: number, frameH: number, char
   const padX = Math.ceil(Math.max(strokePad + overhang, bgPadX) + shadowPad);
   const padY = Math.ceil(Math.max(strokePad + overhang, bgPadY) + shadowPad);
 
-  const w = Math.ceil(textW + padX * 2);
-  const h = Math.ceil(textH + padY * 2);
+  return {
+    font,
+    size: px,
+    spacing,
+    lineHeight: lineH,
+    lines,
+    widths,
+    x: padX,
+    y: padY,
+    textWidth: textW,
+    textHeight: textH,
+    width: Math.ceil(textW + padX * 2),
+    height: Math.ceil(textH + padY * 2),
+  };
+}
+
+export interface Raster {
+  canvas: AnyCanvas;
+  /** Size of the drawing in frame pixels. The canvas is smaller when that would not fit a texture. */
+  width: number;
+  height: number;
+}
+
+/**
+ * Draw a text block. `chars` (0…1) reveals a prefix of the characters for typewriter animations
+ * while keeping the layout of the full text, so nothing jumps as letters appear.
+ */
+export function rasterizeText(t: TextProps, frameW: number, frameH: number, chars = 1): Raster {
+  const layout = layoutText(t, frameW, frameH);
+  const { size: px, lines, widths, lineHeight: lineH, width: w, height: h } = layout;
+  const { x: padX, y: padY, textWidth: textW, textHeight: textH } = layout;
+  const bgPadX = t.bg.enabled ? t.bg.padX * px : 0;
+  const bgPadY = t.bg.enabled ? t.bg.padY * px : 0;
   const k = fitScale(w, h);
   // Text layer without shadow; composited once so stroke + fill cast a single shadow.
   const layer = makeCanvas(w * k, h * k);
@@ -183,8 +258,7 @@ export function rasterizeText(t: TextProps, frameW: number, frameH: number, char
     ctx.fill();
   }
 
-  ctx.font = font;
-  if ('letterSpacing' in ctx) (ctx as unknown as { letterSpacing: string }).letterSpacing = spacing;
+  setType(ctx, layout);
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.lineJoin = 'round';
