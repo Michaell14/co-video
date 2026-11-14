@@ -220,8 +220,9 @@ that arrived, and the connection has two heartbeats of grace after the last of w
 left the server. While something is waiting, a ping waits behind it, and a large document on a
 slow link takes longer than a heartbeat: then the one sign of life is that the client took some of
 it since the heartbeat before, measured on the socket itself (what its finished writes come to,
-and how much of the write under way is still to go). Neither a pong nor incoming data counts then. A client that sends but does not read would
-otherwise keep its place, and its copy of the document, for as long as it liked.
+and how much of the write under way is still to go). Neither a pong nor incoming data counts then.
+A client that sends but does not read would otherwise keep its place, and its copy of the document,
+for as long as it liked.
 
 ## 3. The render engine (`packages/engine`)
 

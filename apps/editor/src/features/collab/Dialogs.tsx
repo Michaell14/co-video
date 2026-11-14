@@ -35,14 +35,15 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const canInvite = meta.role === 'owner' || meta.role === 'editor';
   // A link the browser would not copy is left selected in its field, with the keyboard on it, so
-  // that the usual keys copy it from there.
-  const [byHand, setByHand] = useState(false);
+  // that the usual keys copy it from there. The refusals are counted because every press takes the
+  // keyboard off the field, and the server answers two presses in one second with the same link.
+  const [refusals, setRefusals] = useState(0);
   const linkRow = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    const field = byHand && link ? linkRow.current?.querySelector('input') : null;
+    const field = refusals ? linkRow.current?.querySelector('input') : null;
     field?.focus();
     field?.select();
-  }, [byHand, link]);
+  }, [refusals]);
 
   const copy = async () => {
     setBusy(true);
@@ -55,7 +56,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
           () => true,
           () => false,
         )) ?? false;
-      setByHand(!copied);
+      setRefusals(copied ? 0 : (n) => n + 1);
       if (copied) toast(`${ROLE_COPY[role].label} link copied`, 'success');
       else
         toast('This page cannot reach the clipboard. The link is selected: copy it from its field.', 'info');
@@ -198,7 +199,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                 ariaLabel="Share link"
               />
               <Button variant="primary" icon={<Copy />} disabled={busy} onClick={() => void copy()}>
-                {link && !byHand ? 'Copy again' : 'Copy link'}
+                {link && !refusals ? 'Copy again' : 'Copy link'}
               </Button>
             </div>
           </>

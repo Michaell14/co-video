@@ -44,12 +44,6 @@ moment carries on in a page that has forgotten everything it set up, and fails i
 nothing to do with the change. Do not edit while a run is going, or have the test call
 `noReloads(page)` from `e2e/helpers.ts` before it opens the page.
 
-To see the editor as it is without HTTPS, open it under a name that is not `localhost` (Chromium's
-`--host-resolver-rules="MAP tandem.test 127.0.0.1"` makes one up). If `HTTPS_PROXY` is set on your
-machine, start that browser without it: Chromium fetches the page directly but sends its WebSockets
-to such a name through the proxy, and the editor then reports a project as offline that the server
-is serving perfectly well.
-
 A test that fails leaves a folder in `test-results/` with a screenshot, the page's accessibility
 tree and a trace of everything the test did: `pnpm exec playwright show-trace` followed by the
 path of the `trace.zip` opens it. CI keeps the same folder as an artifact of the failed job.
@@ -61,6 +55,14 @@ The smoke test builds the editor, the website and the server, starts the built s
 second person joining by link, an export, a reload with no network. It fails on any console error,
 on any request for a file the build does not have, and on anything the pages' security policy
 blocks.
+
+To see the editor as it is without HTTPS, build and start the server (`pnpm build`, then
+`pnpm start`) and open it under a name that is not `localhost`: a Chromium started with
+`--host-resolver-rules="MAP tandem.test 127.0.0.1"` finds it at `http://tandem.test:8787/app/`. The
+editor's dev server will not do for this: it answers a name it was not told about with "Blocked
+request". If `HTTPS_PROXY` is set on your machine, start that browser without it: Chromium fetches
+the page directly but sends its WebSockets to such a name through the proxy, and the editor then
+reports a project as offline that the server is serving perfectly well.
 
 ## Where things live
 

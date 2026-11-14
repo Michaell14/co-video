@@ -48,6 +48,10 @@ async function join(page: Page, link: string): Promise<void> {
 
 const comment = (page: Page, text: string): Locator => page.locator('.comment', { hasText: text });
 
+/** The part of a text field's content that is selected. */
+const selection = (field: Locator): Promise<string> =>
+  field.evaluate((el: HTMLInputElement) => el.value.slice(el.selectionStart!, el.selectionEnd!));
+
 /**
  * Make the page what a browser makes of one served over plain HTTP from a name that is not
  * localhost: everything that is kept for HTTPS is missing from it. Call before the page is opened.
@@ -212,9 +216,14 @@ test.describe('sharing and review', () => {
     await expect(field).toBeFocused();
     await expect(dialog.getByRole('button', { name: 'Copy link' })).toBeVisible();
     const link = await field.inputValue();
-    expect(
-      await field.evaluate((el: HTMLInputElement) => el.value.slice(el.selectionStart!, el.selectionEnd!)),
-    ).toBe(link);
+    expect(await selection(field)).toBe(link);
+
+    // Every press takes the keyboard off the field, and two presses in one second get the same link
+    // from the server: the second leaves it under the keyboard as the first did.
+    await page.waitForFunction(() => Date.now() % 1000 < 300);
+    for (let press = 0; press < 2; press++) await dialog.getByRole('button', { name: 'Copy link' }).click();
+    await expect(field).toBeFocused();
+    expect(await selection(field)).toBe(await field.inputValue());
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
 
