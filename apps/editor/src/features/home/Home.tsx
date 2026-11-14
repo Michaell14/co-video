@@ -40,20 +40,22 @@ import {
   TextField,
   tip,
   toast,
-  whileBusy,
+  useBusy,
   type MenuEntry,
 } from '../../ui/core';
 import { COLOR_MODE_OPTIONS, describeResolution, describeSize } from '../../ui/labels';
 import { duplicateProject, projectFromFile, renameProject } from './manage';
 import './home.css';
 
-const STARTERS: {
+interface Starter {
   label: string;
   w: number;
   h: number;
   fps: [number, number];
   aspect: string;
-}[] = [
+}
+
+const STARTERS: Starter[] = [
   { label: 'Landscape', w: 1920, h: 1080, fps: [30, 1], aspect: '16 / 9' },
   { label: 'Vertical', w: 1080, h: 1920, fps: [30, 1], aspect: '9 / 16' },
   { label: '4K UHD', w: 3840, h: 2160, fps: [24, 1], aspect: '16 / 9' },
@@ -175,24 +177,13 @@ export function Home() {
 
         <section className="home__starters" aria-label="New project">
           {STARTERS.map((s) => (
-            <button
+            <StarterCard
               key={s.label}
-              className="starter"
+              starter={s}
+              busy={creating === s.label}
               disabled={creating !== null && creating !== s.label}
-              {...whileBusy(creating === s.label, () =>
-                create(s.label, { width: s.w, height: s.h, fpsNum: s.fps[0], fpsDen: s.fps[1] }),
-              )}
-            >
-              <div className="starter__frame">
-                <div className="starter__shape" style={{ aspectRatio: s.aspect }}>
-                  {creating === s.label ? <span className="spinner" /> : <Plus />}
-                </div>
-              </div>
-              <div className="starter__label">{s.label}</div>
-              <div className="starter__hint mono">
-                {describeSize(s.w, s.h)} · {describeFps({ fpsNum: s.fps[0], fpsDen: s.fps[1] })} fps
-              </div>
-            </button>
+              onCreate={(settings) => void create(s.label, settings)}
+            />
           ))}
           <div className="home__side">
             <Button icon={<Film />} onClick={() => setCustom(true)} disabled={creating !== null}>
@@ -259,6 +250,36 @@ export function Home() {
       )}
       {join && <JoinDialog onClose={() => setJoin(false)} />}
     </div>
+  );
+}
+
+/** A ready-made canvas. The whole card is the button that makes a project of it. */
+function StarterCard({
+  starter: s,
+  busy,
+  disabled,
+  onCreate,
+}: {
+  starter: Starter;
+  busy: boolean;
+  disabled: boolean;
+  onCreate: (settings: Partial<ProjectSettings>) => void;
+}) {
+  const press = useBusy(busy, () =>
+    onCreate({ width: s.w, height: s.h, fpsNum: s.fps[0], fpsDen: s.fps[1] }),
+  );
+  return (
+    <button className="starter" disabled={disabled} {...press}>
+      <div className="starter__frame">
+        <div className="starter__shape" style={{ aspectRatio: s.aspect }}>
+          {busy ? <span className="spinner" /> : <Plus />}
+        </div>
+      </div>
+      <div className="starter__label">{s.label}</div>
+      <div className="starter__hint mono">
+        {describeSize(s.w, s.h)} · {describeFps({ fpsNum: s.fps[0], fpsDen: s.fps[1] })} fps
+      </div>
+    </button>
   );
 }
 

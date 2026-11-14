@@ -1540,8 +1540,14 @@ test.describe('projects, links and media', () => {
     await expect(share).toContainText('The server did not accept this project’s link');
     // Asked from the keyboard, which stays on the button while the server is asked and after.
     await expect(share.getByRole('button', { name: 'Try again' })).toBeFocused();
-    await page.keyboard.press('Enter');
+    await page.keyboard.down('Enter');
     await expect(toast(page, 'The server still does not accept the link.')).toBeVisible();
+    // The key is still down when the answer is there, and a key that is down repeats: the server
+    // was asked once for all of it.
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.waitForTimeout(300);
+    await page.keyboard.up('Enter');
     expect(asked).toBe(2);
     expect(await linkAside(page, id)).toMatchObject({ token });
     await expect(share.getByRole('button', { name: 'Try again' })).toBeFocused();

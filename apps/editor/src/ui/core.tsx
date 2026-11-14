@@ -262,7 +262,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: 'sm' | 'md' | 'lg';
   block?: boolean;
   icon?: ReactNode;
-  /** What the button's own press began is still under way; see `whileBusy`. */
+  /** What the button's own press began is still under way; see `useBusy`. */
   busy?: boolean;
   ref?: Ref<HTMLButtonElement>;
 }
@@ -285,8 +285,19 @@ const swallow: MouseEventHandler = (e) => {
  * moves there has the whole page composited again for every frame it moves (see ui.css). A call
  * site whose work takes long says so in the button's words. A button of another kind (a card
  * pressed as a whole) spreads the result itself.
+ *
+ * Keeping the keyboard, the button also keeps getting the repeats of a key that stays down, and
+ * the work may be over within milliseconds: a held Enter would start it again with every repeat
+ * from then on. A key that is down as the work begins has set it going, and one that is down as
+ * it ends was refused while it ran, by the button or by a field that asks as the button does.
+ * Either has done its work until it is let go; pressed anew, it acts.
  */
-export function whileBusy<T extends Element>(busy: boolean | undefined, onClick?: MouseEventHandler<T>) {
+export function useBusy<T extends Element>(busy: boolean | undefined, onClick?: MouseEventHandler<T>) {
+  useLayoutEffect(() => {
+    if (!busy) return;
+    spendKeys();
+    return spendKeys;
+  }, [busy]);
   return busy ? { 'aria-disabled': true, 'aria-busy': true, onClick: swallow } : { onClick };
 }
 
@@ -302,7 +313,7 @@ export function Button({
   ...rest
 }: ButtonProps) {
   // Switched off for a reason of its own, it is simply off: nobody is waiting on it.
-  const working = !!busy && !rest.disabled;
+  const press = useBusy(!!busy && !rest.disabled, onClick);
   return (
     <button
       type="button"
@@ -314,7 +325,7 @@ export function Button({
         className,
       )}
       {...rest}
-      {...whileBusy(working, onClick)}
+      {...press}
     >
       {icon}
       {children}

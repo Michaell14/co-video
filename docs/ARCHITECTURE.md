@@ -435,10 +435,12 @@ when it starts.
   panel, Delete with its card) would leave the keyboard on nothing. `handFocus` (`ui/layers.ts`)
   says where it goes instead, for people working from the keyboard; a pointer press decides about
   focus by itself. A button that waits for what its own press began is not switched off meanwhile,
-  which would drop the keyboard the same way: `busy` on the kit's `Button` (`whileBusy` for a
-  button of another kind) keeps it in place, says that it is at work and takes no press. It shows
-  nothing that turns, because over a dialog's live backdrop blur whatever keeps moving has the
-  whole page composited again for every frame.
+  which would drop the keyboard the same way: `busy` on the kit's `Button` (`useBusy` for a
+  button of another kind) keeps it in place, says that it is at work and takes no press. A key
+  that is down as the work begins or ends is spent (`spendKeys`), so that the repeats of a held
+  Enter do not start the work again once it is done. It shows nothing that turns, because over a
+  dialog's live backdrop blur whatever keeps moving has the whole page composited again for every
+  frame.
 - **Two tokens are about more than colour.** `--panel-pad` is the one distance between a panel's
   edge and its content, so rows, tiles and cards of every panel start on the same line.
   `--line-control` is the edge of a control that has nothing but its edge to be told by (an empty

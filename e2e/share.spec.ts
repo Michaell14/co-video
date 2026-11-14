@@ -82,6 +82,15 @@ const aMoment = (page: Page): Promise<void> =>
   page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 300)));
 
 /**
+ * What a keyboard goes on sending for a key that is down and stays down: the press again and
+ * again, marked as a repeat. Then long enough for those to have started what they should not.
+ */
+async function keepDown(page: Page, key: string): Promise<void> {
+  for (let n = 0; n < 3; n++) await page.keyboard.down(key);
+  await aMoment(page);
+}
+
+/**
  * Make the page what a browser makes of one served over plain HTTP from a name that is not
  * localhost: everything that is kept for HTTPS is missing from it. Call before the page is opened.
  */
@@ -347,6 +356,8 @@ test.describe('sharing and review', () => {
     await page.keyboard.press('Enter');
     await page.keyboard.press('Space');
     await copy.click({ force: true });
+    // The last press of all is not let go until after the answer.
+    await page.keyboard.down('Enter');
     await aMoment(page);
     expect(invites.asked()).toBe(1);
     await expect(copy).toBeFocused();
@@ -358,6 +369,10 @@ test.describe('sharing and review', () => {
     await expect(again).toBeEnabled();
     await expect(field).toHaveValue(/#\/p\/[\w-]+\?t=/);
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(await field.inputValue());
+    // A key that stays down repeats. This one was refused by the button at work, and is not a
+    // press of the button now that it would act again.
+    await keepDown(page, 'Enter');
+    await page.keyboard.up('Enter');
     expect(invites.asked()).toBe(1);
     // Tab goes on from the button, in both directions: not from the top of the dialog.
     await page.keyboard.press('Shift+Tab');
@@ -387,19 +402,26 @@ test.describe('sharing and review', () => {
     await page.keyboard.press('Enter');
     await expect.poll(saves.asked).toBe(1);
     await expect(save).toHaveAttribute('aria-busy', 'true');
-    await page.keyboard.press('Enter');
+    // Asked again while that is saved, with a key that then stays down.
+    await page.keyboard.down('Enter');
     await aMoment(page);
     expect(saves.asked()).toBe(1);
     saves.answer();
     await expect(listed).toHaveCount(1);
+    await expect(save).not.toHaveAttribute('aria-busy');
     await expect(name).toBeFocused();
+    // Still down once the version is there, it saves no second one from the emptied field.
+    await keepDown(page, 'Enter');
+    await page.keyboard.up('Enter');
+    expect(saves.asked()).toBe(1);
 
-    // From the button, which stays where it is and as wide as it was.
+    // From the button, which stays where it is and as wide as it was. The key that presses it
+    // stays down, as a key easily does for longer than a server takes to answer.
     await page.keyboard.type('Second cut');
     await page.keyboard.press('Tab');
     await expect(save).toBeFocused();
     const wide = await widthOf(save);
-    await page.keyboard.press('Enter');
+    await page.keyboard.down('Enter');
     await expect.poll(saves.asked).toBe(2);
     await expect(save).toBeFocused();
     await expect(save).toHaveAttribute('aria-busy', 'true');
@@ -408,11 +430,22 @@ test.describe('sharing and review', () => {
     // What else the dialog could start waits for it, and those buttons really are off.
     await expect(listed.getByRole('button', { name: 'Restore' })).toBeDisabled();
     await expect(listed.getByRole('button', { name: 'Restore' })).not.toHaveAttribute('aria-busy');
-    await page.keyboard.press('Enter');
-    await aMoment(page);
+    await keepDown(page, 'Enter');
     expect(saves.asked()).toBe(2);
     saves.answer();
     await expect(listed).toHaveCount(2);
+    await expect(save).toBeFocused();
+    await expect(save).not.toHaveAttribute('aria-busy');
+    // The button is ready again under a key that has not come up. That key has saved its version:
+    // one long Enter is one version, not one for every repeat the answer left time for.
+    await keepDown(page, 'Enter');
+    expect(saves.asked()).toBe(2);
+    // Let go and pressed anew, it saves the next.
+    await page.keyboard.up('Enter');
+    await page.keyboard.press('Enter');
+    await expect.poll(saves.asked).toBe(3);
+    saves.answer();
+    await expect(listed).toHaveCount(3);
     await expect(save).toBeFocused();
     await expect(save).not.toHaveAttribute('aria-busy');
     await page.keyboard.press('Tab');

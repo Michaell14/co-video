@@ -264,8 +264,9 @@ The rest of the editor is within reach of the keyboard as well:
   that offers something to do (“Undo”, “Try again”) stays for nine seconds and waits while the
   pointer or the keyboard is on it
 - A button that is at work on what it was pressed for (a link being made, a version saved or
-  restored, a project published) keeps the keyboard and takes no second press. Where the answer
-  puts something else in its place, the keyboard goes on from what stands there
+  restored, a project published) keeps the keyboard and takes no second press, and a key held
+  down on it presses it once. Where the answer puts something else in its place, the keyboard
+  goes on from what stands there
 
 ## Browser support
 
