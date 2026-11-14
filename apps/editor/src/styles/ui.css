@@ -88,6 +88,42 @@
   background: var(--bg-4);
   box-shadow: inset 0 0 0 1px var(--line-1);
 }
+/* At work on what its own press began, a button is not switched off: it keeps the keyboard, and
+   with it the ring, which the opacity of a disabled button would dim along with the rest. So it is
+   the same plain button dimmed part by part, and it does not answer the pointer. */
+.btn[aria-busy='true'] {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line-1) 40%, transparent);
+}
+.btn[aria-busy='true'],
+.btn[aria-busy='true']:hover,
+.btn[aria-busy='true']:active {
+  color: color-mix(in srgb, var(--fg-1) 40%, transparent);
+  background: color-mix(in srgb, var(--bg-4) 40%, transparent);
+  transform: none;
+}
+.btn--ghost[aria-busy='true'] {
+  box-shadow: none;
+}
+.btn--ghost[aria-busy='true'],
+.btn--ghost[aria-busy='true']:hover,
+.btn--ghost[aria-busy='true']:active {
+  background: transparent;
+}
+/* The spinner stands where the icon was. A button of words alone keeps them, unseen, for its
+   width, and the spinner turns in their middle. */
+.btn[data-busy='label'] {
+  position: relative;
+}
+.btn[data-busy='label'],
+.btn[data-busy='label']:hover,
+.btn[data-busy='label']:active {
+  color: transparent;
+}
+.btn[data-busy='label'] .spinner {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+}
 /* A button's own shadow, or a variant's lack of one, must not take the place of the focus ring. */
 .btn:focus-visible {
   box-shadow: var(--ring);

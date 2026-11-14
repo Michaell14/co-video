@@ -17,11 +17,17 @@ interface Picker {
   refuse: string | null;
   /** Hand out files whose every write fails, as on a disk that has no room. */
   full: boolean;
+  /**
+   * Hand out files that are not put in place when they are closed, but only once
+   * `window.__finishClosing()` is called; `closing` says that one is waiting for it.
+   */
+  slow: boolean;
+  closing: boolean;
 }
 
 async function standInPicker(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const picker: Picker = { picks: [], asked: [], refuse: null, full: false };
+    const picker: Picker = { picks: [], asked: [], refuse: null, full: false, slow: false, closing: false };
     (window as any).__picker = picker;
     (window as any).showSaveFilePicker = async (options: {
       suggestedName: string;
@@ -36,11 +42,23 @@ async function standInPicker(page: Page): Promise<void> {
       picker.picks.push(name);
       const directory = await navigator.storage.getDirectory();
       const handle = await directory.getFileHandle(name, { create: true });
-      if (!picker.full) return handle;
+      if (!picker.full && !picker.slow) return handle;
+      const { full, slow } = picker;
       return {
         createWritable: async () => {
           const writable = await handle.createWritable();
-          writable.write = () => Promise.reject(new DOMException('The disk is full.', 'QuotaExceededError'));
+          if (full)
+            writable.write = () =>
+              Promise.reject(new DOMException('The disk is full.', 'QuotaExceededError'));
+          if (slow) {
+            const close = writable.close.bind(writable);
+            writable.close = async () => {
+              picker.closing = true;
+              await new Promise<void>((finish) => ((window as any).__finishClosing = finish));
+              picker.closing = false;
+              return close();
+            };
+          }
           return writable;
         },
       };
@@ -166,6 +184,74 @@ test.describe('export to a file on disk', () => {
     expect(second.bytes.subarray(4, 8).toString('latin1')).toBe('ftyp');
     expect((await picked(page, first)).size).toBe(0);
     expect(unexpected(errors)).toEqual([]);
+  });
+
+  test('a cancel while the file is finished leaves it empty; while it is put in place there is none', async ({
+    page,
+  }) => {
+    const errors = trackErrors(page);
+    const warnings: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'warning') warnings.push(message.text());
+    });
+    await largeExport(page, 90);
+    const dialog = page.getByRole('dialog');
+    const stage = dialog.locator('.exp__run .kv dd').first();
+    const cancel = dialog.getByRole('button', { name: 'Cancel export' });
+    // Every frame is drawn and encoded by the time the encoder is flushed: the export is held
+    // there, at the start of what finishes the file.
+    await page.evaluate(() => {
+      const Real = (window as any).VideoEncoder;
+      const held = ((window as any).__held = { flushes: 0, letGo: () => {} });
+      const hold = new Promise<void>((go) => (held.letGo = go));
+      (window as any).VideoEncoder = class extends Real {
+        async flush() {
+          held.flushes++;
+          await hold;
+          return super.flush();
+        }
+      };
+    });
+
+    await exportButton(page).click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__held.flushes), { timeout: 100_000 })
+      .toBeGreaterThan(0);
+    await expect(stage).toHaveText('Writing file');
+    // Cancel is still offered, and it still cancels: the dialog is back on its settings with
+    // nothing said to have failed or to be complete, and the picked file has nothing in it.
+    await cancel.click();
+    await page.evaluate(() => (window as any).__held.letGo());
+    await expect(exportButton(page)).toHaveText('Export', { timeout: 60_000 });
+    await expect(page.locator('.exp__failed')).toHaveCount(0);
+    await expect(page.getByText('Export complete')).toHaveCount(0);
+    const first = (await picker(page)).picks[0];
+    expect((await picked(page, first)).size).toBe(0);
+
+    // Closing the file is what puts it in the place that was picked, and that cannot be stopped
+    // or taken back. While it lasts Cancel is not to be had, and the dialog says so.
+    await setPicker(page, { slow: true });
+    await exportButton(page).click();
+    await expect(page.locator('.exp__run')).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(cancel).toBeFocused();
+    await expect.poll(async () => (await picker(page)).closing, { timeout: 100_000 }).toBe(true);
+    await expect(stage).toHaveText('Saving file');
+    await expect(cancel).toBeDisabled();
+    await expect(page.locator('.exp__run')).toContainText('This last step cannot be cancelled.');
+    // The keyboard was on the button that is withdrawn, and stays in the dialog.
+    await expect(dialog).toBeFocused();
+    const second = (await picker(page)).picks[1];
+    expect((await picked(page, second)).size).toBe(0);
+
+    await page.evaluate(() => (window as any).__finishClosing());
+    await expect(page.getByText('Export complete')).toBeVisible({ timeout: 100_000 });
+    await expect(dialog.getByRole('button', { name: 'Done' })).toBeFocused();
+    expect((await picked(page, second)).bytes.subarray(4, 8).toString('latin1')).toBe('ftyp');
+    expect((await picked(page, first)).size).toBe(0);
+    expect(unexpected(errors)).toEqual([]);
+    // The cancelled export had nothing left to stop, and did not go on to stop it.
+    expect(warnings.filter((text) => text.includes('finalized'))).toEqual([]);
   });
 
   test('a file that cannot be written fails the export with the reason, and nothing is left in it', async ({

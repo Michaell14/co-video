@@ -1,5 +1,6 @@
 import { CircleAlert, CircleCheck, Download, Film, Info, TriangleAlert } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   describeFps,
   formatBytes,
@@ -34,7 +35,7 @@ import { Button, Dialog, NumberField, Segmented, Select, tip, toast } from '../.
 import { describeSize } from '../../ui/labels';
 import { spendKeys } from '../../ui/layers';
 import { Row } from '../inspector/controls';
-import { askEncoder, type Encoding } from './encoder';
+import { askEncoder, encodingKey } from './encoder';
 import {
   groupProblems,
   hasUnseen,
@@ -160,6 +161,13 @@ type Phase =
     }
   | { kind: 'error'; message: string };
 
+/**
+ * Whether a running export has gone past the point up to which it can be cancelled: its file is
+ * being put in the place that was picked, or has been.
+ */
+const pastCancelling = (progress: ExportProgress): boolean =>
+  progress.phase === 'saving' || progress.phase === 'done';
+
 /** How many timecodes one problem lists before the rest are only counted. */
 const MAX_PLACES = 8;
 
@@ -243,11 +251,13 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   // failure. While the export runs it rests on the dialog itself, where neither Enter nor a
   // habitual Space cancels the render; Cancel is one Tab away. It rests there after a cancel as
   // well: stopping takes a moment to come through, and a second press by someone who is waiting
-  // for it must not land on Export and start the render again.
-  const placed = useRef(phase.kind);
+  // for it must not land on Export and start the render again. And it returns there from Cancel
+  // when the file is being put in place, where that button is withdrawn.
+  const step = phase.kind === 'running' && pastCancelling(phase.progress) ? 'saving' : phase.kind;
+  const placed = useRef(step);
   useLayoutEffect(() => {
-    if (placed.current === phase.kind) return;
-    placed.current = phase.kind;
+    if (placed.current === step) return;
+    placed.current = step;
     const dialog = content.current?.closest<HTMLElement>('[role="dialog"]');
     const next =
       phase.kind === 'done' || phase.kind === 'error'
@@ -257,7 +267,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     // not go on to press the button the keyboard is handed to.
     spendKeys();
     (next ?? dialog)?.focus();
-  }, [phase.kind]);
+  }, [step, phase.kind]);
 
   const audioOnly = draft.container === 'wav';
   const hdr = hdrProject && draft.dynamicRange !== 'sdr' && !audioOnly;
@@ -320,26 +330,24 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const latest = useRef(settings);
   latest.current = settings;
 
-  // The encoder is asked about exactly what the export would give it: a bitrate above what it
-  // takes for this codec and size, or a kind of encoder the browser does not have, otherwise
-  // fails the export after the person has been asked where to save it. Like the encoders
-  // themselves, the answer is kept with the question it belongs to.
-  const encoding: Encoding | null = !audioOnly && !hdr && videoCodec ? settings : null;
-  const encodingKey = encoding
-    ? [videoCodec, width, height, videoBitrate, rate.fpsNum, rate.fpsDen, draft.hardware].join('|')
-    : null;
+  // The encoder is asked about exactly what the export would give it, for an 8-bit picture or a
+  // 10-bit one: a bitrate above what it takes for this codec and size, or a kind of encoder the
+  // browser does not have, otherwise fails the export after the person has been asked where to
+  // save it. Like the encoders themselves, the answer is kept with the question it belongs to.
+  const encoding = !audioOnly && videoCodec ? settings : null;
+  const question = encoding ? encodingKey(encoding) : null;
   const [answered, setAnswered] = useState<{ key: string; verdict: EncoderVerdict } | null>(null);
   useEffect(() => {
-    if (encodingKey === null) return;
+    if (question === null) return;
     let cancelled = false;
     void askEncoder(latest.current).then((verdict) => {
-      if (!cancelled) setAnswered({ key: encodingKey, verdict });
+      if (!cancelled) setAnswered({ key: question, verdict });
     });
     return () => {
       cancelled = true;
     };
-  }, [encodingKey]);
-  const verdict = answered?.key === encodingKey ? answered.verdict : null;
+  }, [question]);
+  const verdict = answered?.key === question ? answered.verdict : null;
   const refused = verdict && !verdict.accepted ? verdict : null;
 
   // Look for media the export cannot get at while the settings are still on screen, so the gaps
@@ -445,8 +453,14 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       const result = await exportProject(session.store.get(), resolver, settings, {
         writable,
         signal: ctrl.signal,
-        onProgress: (progress) =>
-          setPhase((prev) => (prev.kind === 'running' ? { ...prev, progress } : prev)),
+        onProgress: (progress) => {
+          const show = () => setPhase((prev) => (prev.kind === 'running' ? { ...prev, progress } : prev));
+          // The engine goes on to put the file in place as soon as it has said so, and from then
+          // on a cancel changes nothing. Cancel is withdrawn before this returns, so that no press
+          // can find the button live and be ignored.
+          if (pastCancelling(progress)) flushSync(show);
+          else show();
+        },
         onWarning: (w) =>
           setPhase((prev) => (prev.kind === 'running' ? { ...prev, warnings: [...prev.warnings, w] } : prev)),
       });
@@ -513,14 +527,17 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   if (phase.kind === 'running') {
     const p = phase.progress;
     const pct = p.totalFrames ? Math.min(100, (p.frame / p.totalFrames) * 100) : 0;
+    const saving = pastCancelling(p);
     const stage =
       p.phase === 'preparing'
         ? 'Preparing'
         : p.phase === 'finalizing'
           ? 'Writing file'
-          : audioOnly
-            ? 'Mixing audio'
-            : 'Rendering';
+          : saving
+            ? 'Saving file'
+            : audioOnly
+              ? 'Mixing audio'
+              : 'Rendering';
     return (
       <Dialog
         solid
@@ -531,6 +548,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <Button
             key="cancel"
             variant={phase.warnings.length ? 'danger' : 'default'}
+            disabled={saving}
             onClick={() => abort.current?.abort()}
           >
             Cancel export
@@ -586,8 +604,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             </div>
           )}
           <p className="form__hint">
-            Rendering happens on this machine, frame by frame, at full quality. Keep this tab visible —
-            browsers slow down background tabs.
+            {saving
+              ? 'The file is finished and is being saved where you chose. This last step cannot be cancelled.'
+              : 'Rendering happens on this machine, frame by frame, at full quality. Keep this tab visible — browsers slow down background tabs.'}
           </p>
         </div>
       </Dialog>
@@ -713,7 +732,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             <TriangleAlert />
             <div>
               {refusalNotice(refused, {
-                codec: VIDEO_CODEC_LABELS[videoCodec] ?? videoCodec,
+                codec: `${hdr ? '10-bit ' : ''}${VIDEO_CODEC_LABELS[videoCodec] ?? videoCodec}`,
                 size: describeSize(width, height),
                 bitrate: videoBitrate,
                 hardware: draft.hardware,

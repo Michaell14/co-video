@@ -11,6 +11,7 @@ import {
   useState,
   type ButtonHTMLAttributes,
   type CSSProperties,
+  type MouseEventHandler,
   type ReactNode,
   type RefObject,
 } from 'react';
@@ -37,6 +38,17 @@ export const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(' ');
+}
+
+/**
+ * Where in the page an event happened. One sent to the window itself happened at no node: it is
+ * inside nothing, and `contains` does not take a window for an answer.
+ */
+const nodeOf = (target: EventTarget | null): Node | null => (target instanceof Node ? target : null);
+
+/** The element an event happened at, when that is `root` or something inside it. */
+function within(root: Element, target: EventTarget | null): Element | null {
+  return target instanceof Element && root.contains(target) ? target : null;
 }
 
 // ──────────────────────────────────────────────────────────────── kbd ──
@@ -151,7 +163,8 @@ function watchTip(anchor: Element, arrived: boolean): void {
   });
   removed.observe(document.body, { childList: true, subtree: true });
   const onScroll = (e: Event) => {
-    if ((e.target as Node).contains(anchor)) hideTip();
+    // The window scrolls everything in it.
+    if (nodeOf(e.target)?.contains(anchor) ?? true) hideTip();
   };
   const watchScroll = () => window.addEventListener('scroll', onScroll, true);
   // The keyboard arriving at an element scrolls it into view, and the page is told of that
@@ -248,6 +261,28 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: 'sm' | 'md' | 'lg';
   block?: boolean;
   icon?: ReactNode;
+  /** What the button's own press began is still under way; see `whileBusy`. */
+  busy?: boolean;
+}
+
+/** A press on a busy button is nobody's: not its own, and not that of whatever it stands in. */
+const swallow: MouseEventHandler = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+};
+
+/**
+ * What a button carries for as long as what its own press began is under way, in place of being
+ * switched off for that time. Switched off it would drop the keyboard: a browser takes focus from
+ * a control as it is disabled, and the next Tab starts again from the top of the dialog or the
+ * page. A busy button stays where it is and says that it is at work. It only does not act: Enter
+ * and Space press a button as the pointer does, and none of them reaches `onClick`.
+ *
+ * `Button` takes this as its `busy`. A button of another kind (a card pressed as a whole) spreads
+ * the result itself.
+ */
+export function whileBusy<T extends Element>(busy: boolean | undefined, onClick?: MouseEventHandler<T>) {
+  return busy ? { 'aria-disabled': true, 'aria-busy': true, onClick: swallow } : { onClick };
 }
 
 export function Button({
@@ -255,10 +290,14 @@ export function Button({
   size = 'md',
   block,
   icon,
+  busy,
   className,
   children,
+  onClick,
   ...rest
 }: ButtonProps) {
+  // Switched off for a reason of its own, it is simply off: nobody is waiting on it.
+  const working = !!busy && !rest.disabled;
   return (
     <button
       type="button"
@@ -269,9 +308,13 @@ export function Button({
         block && 'btn--block',
         className,
       )}
+      // The spinner stands where the icon was, or in place of the words where there is no icon:
+      // either way the button keeps its width (ui.css).
+      data-busy={working ? (icon ? 'icon' : 'label') : undefined}
       {...rest}
+      {...whileBusy(working, onClick)}
     >
-      {icon}
+      {working ? <span className="spinner" /> : icon}
       {children}
     </button>
   );
@@ -564,8 +607,11 @@ export function Slider({
 
 // ───────────────────────────────────────────────────── typed entries ──
 
-/** Fields holding text that is not applied yet. Each is told of every press, to settle on it. */
-const pendingEntries = new Set<(pressed: Node) => void>();
+/**
+ * Fields holding text that is not applied yet. Each is told of every press, to settle on it:
+ * where the press was, or `null` for one that was nowhere in the page.
+ */
+const pendingEntries = new Set<(pressed: Node | null) => void>();
 
 if (typeof window !== 'undefined') {
   // Added as the module loads, so it runs ahead of every listener a component adds: nothing may
@@ -574,7 +620,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener(
     'pointerdown',
     (e) => {
-      for (const settle of pendingEntries) settle(e.target as Node);
+      for (const settle of pendingEntries) settle(nodeOf(e.target));
     },
     true,
   );
@@ -611,7 +657,7 @@ function useEntry(field: RefObject<HTMLElement | null>, apply: (text: string) =>
   const pending = text !== null;
   useLayoutEffect(() => {
     if (!pending) return;
-    const settle = (pressed: Node) => {
+    const settle = (pressed: Node | null) => {
       if (!field.current?.contains(pressed)) latest.current();
     };
     pendingEntries.add(settle);
@@ -916,7 +962,7 @@ function PopoverPanel({
       if (!el) return;
       if (e.key === 'Escape') {
         // A field holding an edit that is not applied yet takes Escape first, to drop that edit.
-        if (el.contains(e.target as Node) && (e.target as Element).matches('[data-dirty]')) return;
+        if (within(el, e.target)?.matches('[data-dirty]')) return;
         e.stopPropagation();
         onClose();
         return;
@@ -934,8 +980,8 @@ function PopoverPanel({
       }
       // Text typed into one of the popover's own fields is that field's business, and so are the
       // keys of a slider in it.
-      const target = e.target as Element;
-      if (el.contains(target) && (isTextEntry(target) || target.matches('[role="slider"]'))) return;
+      const target = within(el, e.target);
+      if (target && (isTextEntry(target) || target.matches('[role="slider"]'))) return;
       e.stopPropagation();
       if (!items.length) return;
       const current = items.indexOf(document.activeElement as HTMLElement);
@@ -970,7 +1016,7 @@ function PopoverPanel({
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
       const el = ref.current;
-      const target = e.target as Node;
+      const target = nodeOf(e.target);
       // The trigger closes its own popover, and a layer opened on top is not "outside".
       if (!el || el.contains(target) || trigger?.current?.contains(target) || !isTopLayer(el)) return;
       live.current();
@@ -1524,7 +1570,7 @@ export function Dialog({
     if (!el) return;
     if (e.key === 'Tab') trapTab(el, e);
     // A field holding an edit that is not applied yet takes Escape first, to drop that edit.
-    else if (e.key === 'Escape' && !(e.target as Element).matches?.('[data-dirty]')) {
+    else if (e.key === 'Escape' && !(e.target instanceof Element && e.target.matches('[data-dirty]'))) {
       e.stopPropagation();
       onClose();
     }

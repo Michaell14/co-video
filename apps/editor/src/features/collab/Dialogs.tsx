@@ -8,6 +8,7 @@ import { usePeers, useSession, useSessionMeta } from '../../session/hooks';
 import { deleteLocalProject } from '../../session/projects';
 import { confirm } from '../../ui/confirm';
 import { Button, Dialog, Segmented, TextField, toast } from '../../ui/core';
+import { focusables, handFocus } from '../../ui/layers';
 import './collab.css';
 
 const ROLE_COPY: Record<Exclude<Role, 'owner'>, { label: string; text: string }> = {
@@ -83,7 +84,11 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const retry = async () => {
+  const retry = async (pressed: HTMLElement) => {
+    // Accepted, the link's two buttons give way to what a shared project is shared with: the
+    // keyboard goes on from the first control of that.
+    const content = pressed.closest<HTMLElement>('.dialog__body');
+    handFocus(pressed, () => content && focusables(content)[0]);
     setBusy(true);
     const answer = await session.retryLink();
     setBusy(false);
@@ -124,8 +129,8 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
             variant="primary"
             size="lg"
             icon={<RotateCcw />}
-            disabled={busy}
-            onClick={() => void retry()}
+            busy={busy}
+            onClick={(e) => void retry(e.currentTarget)}
           >
             {busy ? 'Asking the server…' : 'Try again'}
           </Button>
@@ -156,13 +161,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
           Publishing uploads the project and its media to your collaboration server so others can join. You
           stay the owner.
         </p>
-        <Button
-          variant="primary"
-          size="lg"
-          icon={<UploadCloud />}
-          disabled={busy}
-          onClick={() => void publish()}
-        >
+        <Button variant="primary" size="lg" icon={<UploadCloud />} busy={busy} onClick={() => void publish()}>
           {busy ? 'Publishing…' : 'Publish and share'}
         </Button>
       </div>
@@ -198,7 +197,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                 style={{ flex: 1, height: 28 }}
                 ariaLabel="Share link"
               />
-              <Button variant="primary" icon={<Copy />} disabled={busy} onClick={() => void copy()}>
+              <Button variant="primary" icon={<Copy />} busy={busy} onClick={() => void copy()}>
                 {link && !refusals ? 'Copy again' : 'Copy link'}
               </Button>
             </div>
@@ -256,7 +255,9 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
   const meta = useSessionMeta();
   const [versions, setVersions] = useState<VersionInfo[] | null>(null);
   const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
+  // One thing at a time: a version is being saved, or the one with this id is being restored.
+  const [saving, setSaving] = useState(false);
+  const [restoring, setRestoring] = useState<string | null>(null);
   const token = session.token;
 
   const load = () => {
@@ -266,8 +267,9 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
   useEffect(load, [token, meta.shared, session.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = async () => {
-    if (!token) return;
-    setBusy(true);
+    // Enter in the name field asks as the button does, and has no button to be refused by.
+    if (!token || saving || restoring !== null) return;
+    setSaving(true);
     try {
       await api.saveVersion(
         session.id,
@@ -281,7 +283,7 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not save version', 'error');
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
   };
 
@@ -293,7 +295,7 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
       confirmLabel: 'Restore version',
     });
     if (!go) return;
-    setBusy(true);
+    setRestoring(v.id);
     try {
       const data = await api.versionData(session.id, token, v.id);
       const doc = new Y.Doc();
@@ -305,7 +307,7 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not restore version', 'error');
     } finally {
-      setBusy(false);
+      setRestoring(null);
     }
   };
 
@@ -332,7 +334,12 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
                 ariaLabel="Version name"
                 onEnter={() => void save()}
               />
-              <Button variant="primary" disabled={busy} onClick={() => void save()}>
+              <Button
+                variant="primary"
+                busy={saving}
+                disabled={restoring !== null}
+                onClick={() => void save()}
+              >
                 Save version
               </Button>
             </div>
@@ -357,7 +364,13 @@ export function VersionsDialog({ onClose }: { onClose: () => void }) {
                   </div>
                   {v.auto && <span className="badge">Auto</span>}
                   {session.canEdit && (
-                    <Button size="sm" icon={<RotateCcw />} disabled={busy} onClick={() => void restore(v)}>
+                    <Button
+                      size="sm"
+                      icon={<RotateCcw />}
+                      busy={restoring === v.id}
+                      disabled={saving || (restoring !== null && restoring !== v.id)}
+                      onClick={() => void restore(v)}
+                    >
                       Restore
                     </Button>
                   )}

@@ -27,6 +27,7 @@ import {
   type AudioCodec,
   type OutputFormat,
   type VideoCodec,
+  type VideoEncodingAdditionalOptions,
 } from 'mediabunny';
 import {
   audibleTracks,
@@ -66,7 +67,11 @@ export interface ExportSettings {
 }
 
 export interface ExportProgress {
-  phase: 'preparing' | 'rendering' | 'finalizing' | 'done';
+  /**
+   * `saving` is only met when the export is written to a file that was picked: the finished file
+   * is being put in place, and from this report on the export can no longer be cancelled.
+   */
+  phase: 'preparing' | 'rendering' | 'finalizing' | 'saving' | 'done';
   frame: number;
   totalFrames: number;
   /** Rendered frames per second (rolling). */
@@ -241,6 +246,73 @@ function hdrCodecString(
   return undefined;
 }
 
+/**
+ * The settings an export's video encoder is set up from. `dynamicRange` is the one the picture
+ * really comes out in: `exportProject` gives a project that is not an HDR one an SDR picture
+ * whatever was asked for, and whoever asks about the encoder ahead of it has to say the same.
+ */
+export type VideoEncodingSettings = Pick<
+  ExportSettings,
+  | 'videoCodec'
+  | 'width'
+  | 'height'
+  | 'fpsNum'
+  | 'fpsDen'
+  | 'videoBitrate'
+  | 'keyFrameInterval'
+  | 'hardwareAcceleration'
+  | 'dynamicRange'
+>;
+
+export interface VideoEncoding {
+  codec: VideoCodec;
+  width: number;
+  height: number;
+  frameRate: number;
+  /** Whole bits per second: an encoder is configured with nothing else. */
+  bitrate: number;
+  keyFrameInterval: number;
+  /** A 10-bit picture is encoded under a full codec string that names its depth and transfer. */
+  options: Pick<VideoEncodingAdditionalOptions, 'hardwareAcceleration' | 'latencyMode' | 'fullCodecString'>;
+}
+
+/**
+ * How the video encoder of an export with these settings is set up. `exportProject` creates its
+ * encoder from this and `encoderAccepts` asks about it ahead of time, so the question put before
+ * an export is the one the export itself meets at its first frame.
+ */
+export function videoEncoding(settings: VideoEncodingSettings): VideoEncoding {
+  const { videoCodec: codec, width, height } = settings;
+  const frameRate = settings.fpsNum / settings.fpsDen;
+  return {
+    codec,
+    width,
+    height,
+    frameRate,
+    bitrate: Math.round(settings.videoBitrate),
+    keyFrameInterval: settings.keyFrameInterval,
+    options: {
+      hardwareAcceleration: settings.hardwareAcceleration,
+      latencyMode: 'quality',
+      fullCodecString:
+        settings.dynamicRange === 'sdr'
+          ? undefined
+          : hdrCodecString(codec, width, height, frameRate, settings.dynamicRange === 'pq' ? 16 : 18),
+    },
+  };
+}
+
+/**
+ * Whether this browser's video encoder takes what an export with these settings would ask of it.
+ * An export that is refused finds out at its first frame, after the person has chosen where to
+ * save it; this is the same question, asked before. An answer is kept for as long as the page
+ * lives (by mediabunny, per configuration), so asking again costs nothing and tells nothing new.
+ */
+export function encoderAccepts(settings: VideoEncodingSettings): Promise<boolean> {
+  const { codec, width, height, frameRate, bitrate, options } = videoEncoding(settings);
+  return canEncodeVideo(codec, { width, height, bitrate, frameRate, ...options }).catch(() => false);
+}
+
 export interface CodecSupport {
   video: VideoCodec[];
   audio: AudioCodec[];
@@ -297,6 +369,11 @@ export function suggestBitrate(
 export interface ExportHandle {
   /** File System Access writable, when the user picked a destination up front. */
   writable?: FileSystemWritableFileStream;
+  /**
+   * Aborting ends the export with `ExportCancelled` and nothing made: no result, and a `writable`
+   * aborted, which leaves the picked file without a byte of the export. It is honoured until the
+   * file is finished; only the closing of a `writable` (progress phase `saving`) is past stopping.
+   */
   signal?: AbortSignal;
   onProgress?: (p: ExportProgress) => void;
   /** Called as soon as a problem is met, with the same objects that end up in `ExportResult.warnings`. */
@@ -474,28 +551,19 @@ export async function exportProject(
     compositor.setSize(settings.width, settings.height);
     sources = new SourceManager(compositor.glx, library);
     sources.sequential = true;
-    const common = {
-      codec: settings.videoCodec,
-      bitrate: settings.videoBitrate,
-      keyFrameInterval: settings.keyFrameInterval,
-      hardwareAcceleration: settings.hardwareAcceleration,
-      latencyMode: 'quality' as const,
+    const encoding = videoEncoding({ ...settings, dynamicRange: hdr ? settings.dynamicRange : 'sdr' });
+    const config = {
+      codec: encoding.codec,
+      bitrate: encoding.bitrate,
+      keyFrameInterval: encoding.keyFrameInterval,
+      ...encoding.options,
     };
     if (hdr) {
-      sampleSource = new VideoSampleSource({
-        ...common,
-        fullCodecString: hdrCodecString(
-          settings.videoCodec,
-          settings.width,
-          settings.height,
-          outFps,
-          settings.dynamicRange === 'pq' ? 16 : 18,
-        ),
-      });
-      output.addVideoTrack(sampleSource, { frameRate: outFps });
+      sampleSource = new VideoSampleSource(config);
+      output.addVideoTrack(sampleSource, { frameRate: encoding.frameRate });
     } else {
-      canvasSource = new CanvasSource(canvas, common);
-      output.addVideoTrack(canvasSource, { frameRate: outFps });
+      canvasSource = new CanvasSource(canvas, config);
+      output.addVideoTrack(canvasSource, { frameRate: encoding.frameRate });
     }
   }
 
@@ -620,10 +688,19 @@ export async function exportProject(
     check();
     report('finalizing', totalFrames);
     await output.finalize();
-    if (handle.writable) await handle.writable.close();
+    const mimeType = await output.getMimeType().catch(() => format.mimeType);
+    // Flushing the encoders and writing the end of the file takes its time, and a cancel that
+    // came in meanwhile is one like any other: nothing has been handed over yet. Nothing is
+    // awaited between this look and the result, or the closing of the file.
+    check();
+    if (handle.writable) {
+      // What was written so far went to the side; closing is what puts it in the place that was
+      // picked, and that can neither be stopped half-way nor be taken back.
+      report('saving', totalFrames);
+      await handle.writable.close();
+    }
     report('done', totalFrames);
 
-    const mimeType = await output.getMimeType().catch(() => format.mimeType);
     const buffer = target instanceof BufferTarget ? target.buffer : null;
     return {
       blob: buffer ? new Blob([buffer], { type: format.mimeType }) : null,
@@ -635,7 +712,8 @@ export async function exportProject(
       warnings: log.warnings,
     };
   } catch (err) {
-    await output.cancel().catch(() => {});
+    // A finalised output has let go of its encoders and has nothing left to cancel.
+    if (output.state !== 'finalized') await output.cancel().catch(() => {});
     if (handle.writable) await handle.writable.abort().catch(() => {});
     throw err;
   } finally {

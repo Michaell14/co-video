@@ -1803,17 +1803,27 @@ test.describe('export', () => {
     await expect(exportButton(page)).toBeFocused();
   });
 
-  /** A local project of one small solid clip, `frames` long, with the export dialog open on it. */
-  async function smallExport(page: Page, frames: number): Promise<void> {
+  /**
+   * A local project of one small solid clip, `frames` long, with the export dialog open on it.
+   * `project` is what its settings have besides the small size.
+   */
+  async function smallExport(
+    page: Page,
+    frames: number,
+    project: Record<string, unknown> = {},
+  ): Promise<void> {
     await newLocal(page);
-    await page.evaluate((frames) => {
-      const { session, cmd, ui } = (window as any).tandem;
-      session.store.commit([{ op: 'settings', patch: { width: 320, height: 180 } }]);
-      cmd.addSolid('#c04020');
-      const solid = Object.values(session.store.get().clips)[0] as any;
-      session.store.commit([{ op: 'updateClip', id: solid.id, patch: { duration: frames } }]);
-      ui.getState().set({ dialog: 'export' });
-    }, frames);
+    await page.evaluate(
+      ({ frames, project }) => {
+        const { session, cmd, ui } = (window as any).tandem;
+        session.store.commit([{ op: 'settings', patch: { ...project, width: 320, height: 180 } }]);
+        cmd.addSolid('#c04020');
+        const solid = Object.values(session.store.get().clips)[0] as any;
+        session.store.commit([{ op: 'updateClip', id: solid.id, patch: { duration: frames } }]);
+        ui.getState().set({ dialog: 'export' });
+      },
+      { frames, project },
+    );
     await expect(page.locator('.exp')).toBeVisible();
     await probed(page);
   }
@@ -1971,5 +1981,128 @@ test.describe('export', () => {
     );
     await dialog.getByRole('button', { name: 'Cancel export' }).click();
     await expect(page.locator('.exp__presets')).toBeVisible({ timeout: 60_000 });
+  });
+
+  test('Cancel pressed when every frame is drawn still cancels, and nothing is downloaded', async ({
+    page,
+  }) => {
+    await smallExport(page, 12);
+    const dialog = page.getByRole('dialog');
+    const downloads: string[] = [];
+    page.on('download', (file) => downloads.push(file.suggestedFilename()));
+    // The encoder is flushed once the last frame has gone to it: the export is held there, where
+    // the file is being finished and there is nothing left to draw.
+    await page.evaluate(() => {
+      const Real = (window as any).VideoEncoder;
+      const held = ((window as any).held = { flushes: 0, letGo: () => {} });
+      const hold = new Promise<void>((go) => (held.letGo = go));
+      (window as any).VideoEncoder = class extends Real {
+        async flush() {
+          held.flushes++;
+          await hold;
+          return super.flush();
+        }
+      };
+    });
+    await exportButton(page).click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).held.flushes), { timeout: 60_000 })
+      .toBeGreaterThan(0);
+    await expect(dialog.locator('.exp__run .kv dd').first()).toHaveText('Writing file');
+
+    // Cancel is offered there as before, and is no less a cancel: the settings come back, and
+    // neither a file nor word of one follows.
+    await dialog.getByRole('button', { name: 'Cancel export' }).click();
+    await page.evaluate(() => (window as any).held.letGo());
+    await expect(page.locator('.exp__presets')).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText('Export complete')).toHaveCount(0);
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+    expect(downloads).toEqual([]);
+
+    // The export after it makes the only file there is.
+    const download = page.waitForEvent('download');
+    await exportButton(page).click();
+    await download;
+    await expect(page.getByText('Export complete')).toBeVisible({ timeout: 100_000 });
+    expect(downloads).toEqual(['Untitled project.mp4']);
+  });
+
+  test('a 10-bit export is asked about under its own codec string, before the save prompt', async ({
+    page,
+  }) => {
+    // Three seconds: at the bitrates below the export is estimated above the size up to which it
+    // is built in memory, so one that started would ask where to save first.
+    await smallExport(page, 90, { colorMode: 'hdr-pq', toneMap: 'bt2390' });
+    const dialog = page.getByRole('dialog');
+    const refused = dialog.locator('.exp__refused');
+    const bitrate = dialog.getByRole('textbox', { name: 'Bitrate', exact: true });
+    const started = async () =>
+      (await page.locator('.exp__run').count()) + (await page.locator('.exp__failed').count());
+    await expect(range(page)).toContainText('HDR10');
+    if ((await codec(page).innerText()).includes('No encoder')) {
+      // A browser with no 10-bit encoder for MP4 at all has nothing to be asked about: that is
+      // what stands in the way there, and what the dialog names.
+      await expect(codec(page)).toHaveText('No encoder available for this format in 10-bit');
+      await expect(exportButton(page)).toBeDisabled();
+      await expect(refused).toHaveCount(0);
+      return;
+    }
+    await expect(codec(page)).toHaveText(/HEVC|VP9|AV1/);
+    await expect(refused).toHaveCount(0);
+    await expect(exportButton(page)).toBeEnabled();
+
+    // An encoder that takes a 10-bit picture up to 200 Mbps and has no GPU version for one, and a
+    // save prompt that notes it was shown and is closed again. An 8-bit picture is not affected,
+    // so a question put under an 8-bit codec string would find nothing to say.
+    await page.evaluate(() => {
+      const real = VideoEncoder.isConfigSupported.bind(VideoEncoder);
+      VideoEncoder.isConfigSupported = (config) =>
+        /^vp09\.02\.|^av01\.0\.\d\dM\.10\.|^hvc1\.2\./.test(config.codec)
+          ? Promise.resolve({
+              supported: (config.bitrate ?? 0) <= 200e6 && config.hardwareAcceleration !== 'prefer-hardware',
+              config,
+            })
+          : real(config);
+      (window as any).prompts = 0;
+      (window as any).showSaveFilePicker = () => {
+        (window as any).prompts++;
+        return Promise.reject(new DOMException('Closed.', 'AbortError'));
+      };
+    });
+    const prompts = (): Promise<number> => page.evaluate(() => (window as any).prompts);
+
+    // Typed and not applied, with Export pressed straight away: the ceiling is named for the
+    // 10-bit picture, and neither the export nor the question where to save it has begun.
+    await bitrate.click();
+    await bitrate.press('Control+a');
+    await bitrate.pressSequentially('400');
+    const button = await box(exportButton(page));
+    await page.mouse.click(button.x + button.width / 2, button.y + button.height / 2);
+    await expect(refused).toHaveText(
+      /^10-bit (H\.265 \(HEVC\)|VP9|AV1) at 320×180 takes at most 200 Mbps in this browser\. Lower the bitrate, or choose another codec\.$/,
+    );
+    await expect(exportButton(page)).toBeDisabled();
+    expect(await started()).toBe(0);
+    expect(await prompts()).toBe(0);
+
+    // The kind of encoder is found to be in the way the same.
+    await enter(bitrate, '200');
+    await expect(refused).toHaveCount(0);
+    const acceleration = dialog.locator('.row', { hasText: 'Acceleration' }).locator('.select');
+    await acceleration.click();
+    await page.getByRole('option', { name: 'Prefer GPU encoder' }).click();
+    await expect(refused).toHaveText(
+      /^This browser has no GPU encoder for 10-bit (H\.265 \(HEVC\)|VP9|AV1) at 320×180\. Set Acceleration to Automatic\.$/,
+    );
+    await expect(exportButton(page)).toBeDisabled();
+    await acceleration.click();
+    await page.getByRole('option', { name: 'Automatic' }).click();
+    await expect(refused).toHaveCount(0);
+    expect(await prompts()).toBe(0);
+
+    // At the ceiling the export is offered, and pressing it gets as far as the save prompt.
+    await exportButton(page).click();
+    await expect.poll(prompts).toBe(1);
+    expect(await started()).toBe(0);
   });
 });

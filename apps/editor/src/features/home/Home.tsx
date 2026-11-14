@@ -40,6 +40,7 @@ import {
   TextField,
   tip,
   toast,
+  whileBusy,
   type MenuEntry,
 } from '../../ui/core';
 import { COLOR_MODE_OPTIONS, describeResolution, describeSize } from '../../ui/labels';
@@ -77,7 +78,9 @@ export function Home() {
   const listSaved = useSyncExternalStore(registry.subscribe, registry.saved);
   const sorted = useMemo(() => projects.slice().sort((a, b) => b.updatedAt - a.updatedAt), [projects]);
   const [online, setOnline] = useState<boolean | null>(null);
-  const [creating, setCreating] = useState(false);
+  // Which of the ways in is making a project, for as long as that takes: a starter by its label,
+  // `custom` or `file`. That one is busy; the others are off until it is done.
+  const [creating, setCreating] = useState<string | null>(null);
   const [custom, setCustom] = useState(false);
   const [join, setJoin] = useState(false);
   const [name, setName] = useState(() => getUser().name);
@@ -91,26 +94,26 @@ export function Home() {
     idle(() => void import('../editor/Editor'));
   }, []);
 
-  const create = async (settings: Partial<ProjectSettings>) => {
+  const create = async (by: string, settings: Partial<ProjectSettings>) => {
     if (creating) return;
-    setCreating(true);
+    setCreating(by);
     try {
       const id = await createProject({ name: 'Untitled project', ...settings });
       navigate(id);
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not create the project', 'error');
-      setCreating(false);
+      setCreating(null);
     }
   };
 
   const openFile = async (file: File) => {
     if (creating) return;
-    setCreating(true);
+    setCreating('file');
     try {
       const made = await projectFromFile(file);
       if (!made) {
         toast('That is not a Tandem project file.', 'error');
-        setCreating(false);
+        setCreating(null);
         return;
       }
       navigate(made.id);
@@ -123,7 +126,7 @@ export function Home() {
       );
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not open the project file', 'error');
-      setCreating(false);
+      setCreating(null);
     }
   };
 
@@ -175,12 +178,14 @@ export function Home() {
             <button
               key={s.label}
               className="starter"
-              disabled={creating}
-              onClick={() => create({ width: s.w, height: s.h, fpsNum: s.fps[0], fpsDen: s.fps[1] })}
+              disabled={creating !== null && creating !== s.label}
+              {...whileBusy(creating === s.label, () =>
+                create(s.label, { width: s.w, height: s.h, fpsNum: s.fps[0], fpsDen: s.fps[1] }),
+              )}
             >
               <div className="starter__frame">
                 <div className="starter__shape" style={{ aspectRatio: s.aspect }}>
-                  <Plus />
+                  {creating === s.label ? <span className="spinner" /> : <Plus />}
                 </div>
               </div>
               <div className="starter__label">{s.label}</div>
@@ -190,10 +195,15 @@ export function Home() {
             </button>
           ))}
           <div className="home__side">
-            <Button icon={<Film />} onClick={() => setCustom(true)} disabled={creating}>
+            <Button icon={<Film />} onClick={() => setCustom(true)} disabled={creating !== null}>
               Custom project…
             </Button>
-            <Button icon={<FileUp />} onClick={() => fileInput.current?.click()} disabled={creating}>
+            <Button
+              icon={<FileUp />}
+              onClick={() => fileInput.current?.click()}
+              busy={creating === 'file'}
+              disabled={creating !== null && creating !== 'file'}
+            >
               Open project file…
             </Button>
             <Button icon={<Users />} onClick={() => setJoin(true)}>
@@ -240,7 +250,13 @@ export function Home() {
         </section>
       </main>
 
-      {custom && <CustomProjectDialog onClose={() => setCustom(false)} onCreate={create} busy={creating} />}
+      {custom && (
+        <CustomProjectDialog
+          onClose={() => setCustom(false)}
+          onCreate={(settings) => void create('custom', settings)}
+          busy={creating === 'custom'}
+        />
+      )}
       {join && <JoinDialog onClose={() => setJoin(false)} />}
     </div>
   );
@@ -387,7 +403,7 @@ function RenameDialog({ project, onClose }: { project: ProjectEntry; onClose: ()
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" disabled={busy || !name.trim()} onClick={() => void save()}>
+          <Button variant="primary" busy={busy} disabled={!name.trim()} onClick={() => void save()}>
             Rename
           </Button>
         </>
@@ -434,7 +450,7 @@ function CustomProjectDialog({
           </Button>
           <Button
             variant="primary"
-            disabled={busy}
+            busy={busy}
             onClick={() =>
               onCreate({
                 name: name.trim() || 'Untitled project',
