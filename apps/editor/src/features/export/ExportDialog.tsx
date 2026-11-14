@@ -428,7 +428,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         });
         writable = await handle.createWritable();
       } catch (err) {
-        if ((err as DOMException)?.name === 'AbortError') return;
+        if (closed.current || (err as DOMException)?.name === 'AbortError') return;
         // The browser would not ask, or would not let the file be written. The export is not
         // lost to that: it is built in memory and downloaded, and the person is told why the
         // question they expected never came.
@@ -436,6 +436,14 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           `This export cannot be written straight to a file, so it will be downloaded when it is done. The browser’s reason: ${err instanceof Error && err.message ? err.message : String(err)}`,
           'error',
         );
+      }
+      // The prompt is the browser's own and stays open over whatever becomes of the page under
+      // it: the dialog can be gone by the time it is answered, with a session that had to be
+      // opened afresh or a project that was left. Nothing is exported for a dialog that is not
+      // there, and the file is left as the prompt made it.
+      if (closed.current) {
+        await writable?.abort().catch(() => {});
+        return;
       }
     }
 
@@ -535,6 +543,13 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             : audioOnly
               ? 'Mixing audio'
               : 'Rendering';
+    // What there is to do about gaps is to cancel, and that is said for as long as it can be
+    // done: not while the file is being put in place, beside a Cancel that is withdrawn.
+    const gapsAdvice = saving
+      ? null
+      : phase.warnings.some((w) => w.reason === 'timeout')
+        ? 'A file that keeps the export waiting can cost up to eight seconds on every frame of its clip. Cancel to sort the media out first, or let the export run on.'
+        : 'Cancel to sort the media out first, or let the export run on.';
     return (
       <Dialog
         solid
@@ -594,9 +609,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <div>
                 <b>This export will have gaps.</b>
                 <ProblemList warnings={phase.warnings} fps={s} />
-                {phase.warnings.some((w) => w.reason === 'timeout')
-                  ? 'A file that keeps the export waiting can cost up to eight seconds on every frame of its clip. Cancel to sort the media out first, or let the export run on.'
-                  : 'Cancel to sort the media out first, or let the export run on.'}
+                {gapsAdvice}
               </div>
             </div>
           )}

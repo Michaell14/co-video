@@ -484,18 +484,29 @@ test.describe('collaboration', () => {
     await expect.poll(() => peer(page, bId)).not.toBeNull();
     const crashed = page.locator('.splash[role=alert]');
 
-    // One state with every field wrong, sent the way any link holder can: straight to the room.
-    await b.evaluate(() => {
-      (window as any).tandem.session.awareness.setLocalState({
-        user: { id: 'intruder', name: 12345, color: 'url(https://example.com/seen.png)' },
-        role: 'superuser',
-        playhead: 'NaN',
-        playing: 1,
-        selection: 7,
-        cursor: 'x',
-        dragging: 5,
-        page: 3,
-      });
+    // What a link holder sends straight to the room, in place of what their editor would say. The
+    // editor in that page says its own state again, whole, a moment after its player has anything
+    // to report, as it does when it has just come up, and would talk over a state said once.
+    // Someone who means it goes on saying theirs: from here on whatever the page announces is the
+    // state it was last given.
+    const announce = (state: unknown): Promise<void> =>
+      b.evaluate((state) => {
+        const { awareness } = (window as any).tandem.session;
+        const say = ((window as any).__say ??= awareness.setLocalState.bind(awareness));
+        awareness.setLocalState = (own: unknown) => say(own === null ? null : state);
+        say(state);
+      }, state);
+
+    // One state with every field wrong.
+    await announce({
+      user: { id: 'intruder', name: 12345, color: 'url(https://example.com/seen.png)' },
+      role: 'superuser',
+      playhead: 'NaN',
+      playing: 1,
+      selection: 7,
+      cursor: 'x',
+      dragging: 5,
+      page: 3,
     });
     await expect.poll(async () => (await peer(page, bId))?.user.id).toBe('intruder');
     const read = await peer(page, bId);
@@ -519,27 +530,22 @@ test.describe('collaboration', () => {
       const all = Object.values((window as any).tandem.session.store.get().clips) as any[];
       return { clipIds: all.map((c) => c.id), trackId: all[0].trackId };
     });
-    await b.evaluate(
-      ({ clipIds, trackId }) => {
-        // Well under what the server relays, far over what anyone needs to see.
-        const many = Array.from({ length: 1000 }, (_, i) => `made-up-${i}`);
-        (window as any).tandem.session.awareness.setLocalState({
-          user: {
-            id: 'intruder',
-            name: 'E'.repeat(20_000),
-            color: 'red; background: url(https://example.com/seen.png)',
-          },
-          role: 'editor',
-          playhead: 30,
-          playing: false,
-          selection: [...clipIds, ...many],
-          cursor: { area: 'timeline', x: 30, y: trackId },
-          dragging: many.map((id, i) => ({ id, start: i * 12, duration: 10, trackId })),
-          page: 'edit',
-        });
+    // Well under what the server relays, far over what anyone needs to see.
+    const many = Array.from({ length: 1000 }, (_, i) => `made-up-${i}`);
+    await announce({
+      user: {
+        id: 'intruder',
+        name: 'E'.repeat(20_000),
+        color: 'red; background: url(https://example.com/seen.png)',
       },
-      { clipIds, trackId },
-    );
+      role: 'editor',
+      playhead: 30,
+      playing: false,
+      selection: [...clipIds, ...many],
+      cursor: { area: 'timeline', x: 30, y: trackId },
+      dragging: many.map((id, i) => ({ id, start: i * 12, duration: 10, trackId })),
+      page: 'edit',
+    });
     await expect.poll(async () => (await peer(page, bId))?.selection.length).toBe(100);
     const long = await peer(page, bId);
     expect(long.user.name).toBe('E'.repeat(60));

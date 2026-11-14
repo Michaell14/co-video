@@ -15,6 +15,11 @@ interface Picker {
   asked: { suggestedName: string; extensions: string[] }[];
   /** Make the prompt fail with a `DOMException` of this name instead of answering. */
   refuse: string | null;
+  /**
+   * Leave the prompt open, as it is for as long as the person has not answered it, until
+   * `window.__answerPrompt()` is called.
+   */
+  open: boolean;
   /** Hand out files whose every write fails, as on a disk that has no room. */
   full: boolean;
   /**
@@ -27,7 +32,15 @@ interface Picker {
 
 async function standInPicker(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const picker: Picker = { picks: [], asked: [], refuse: null, full: false, slow: false, closing: false };
+    const picker: Picker = {
+      picks: [],
+      asked: [],
+      refuse: null,
+      open: false,
+      full: false,
+      slow: false,
+      closing: false,
+    };
     (window as any).__picker = picker;
     (window as any).showSaveFilePicker = async (options: {
       suggestedName: string;
@@ -38,6 +51,7 @@ async function standInPicker(page: Page): Promise<void> {
         extensions: options.types.flatMap((type) => Object.values(type.accept).flat()),
       });
       if (picker.refuse) throw new DOMException('The stand-in save prompt was told to fail.', picker.refuse);
+      if (picker.open) await new Promise<void>((answer) => ((window as any).__answerPrompt = answer));
       const name = `picked-${picker.picks.length}-${options.suggestedName}`;
       picker.picks.push(name);
       const directory = await navigator.storage.getDirectory();
@@ -121,6 +135,28 @@ async function openDialog(page: Page): Promise<void> {
 
 const exportButton = (page: Page) => page.locator('.dialog__foot .btn--primary');
 
+/**
+ * Hold the exports of this page where the video encoder is flushed: every frame is drawn and
+ * encoded by then, and the file is still to be finished. `window.__held.flushes` counts the
+ * exports that have got there, and `window.__held.letGo()` lets them go on.
+ */
+async function holdAtFlush(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const Real = (window as any).VideoEncoder;
+    const held = ((window as any).__held = { flushes: 0, letGo: () => {} });
+    const hold = new Promise<void>((go) => (held.letGo = go));
+    (window as any).VideoEncoder = class extends Real {
+      async flush() {
+        held.flushes++;
+        await hold;
+        return super.flush();
+      }
+    };
+  });
+}
+
+const heldAtFlush = (page: Page): Promise<number> => page.evaluate(() => (window as any).__held.flushes);
+
 /** What `trackErrors` collected, without the health checks this file fails to keep its projects local. */
 const unexpected = (errors: string[]): string[] => errors.filter((e) => !e.endsWith('net::ERR_FAILED'));
 
@@ -198,25 +234,10 @@ test.describe('export to a file on disk', () => {
     const dialog = page.getByRole('dialog');
     const stage = dialog.locator('.exp__run .kv dd').first();
     const cancel = dialog.getByRole('button', { name: 'Cancel export' });
-    // Every frame is drawn and encoded by the time the encoder is flushed: the export is held
-    // there, at the start of what finishes the file.
-    await page.evaluate(() => {
-      const Real = (window as any).VideoEncoder;
-      const held = ((window as any).__held = { flushes: 0, letGo: () => {} });
-      const hold = new Promise<void>((go) => (held.letGo = go));
-      (window as any).VideoEncoder = class extends Real {
-        async flush() {
-          held.flushes++;
-          await hold;
-          return super.flush();
-        }
-      };
-    });
+    await holdAtFlush(page);
 
     await exportButton(page).click();
-    await expect
-      .poll(() => page.evaluate(() => (window as any).__held.flushes), { timeout: 100_000 })
-      .toBeGreaterThan(0);
+    await expect.poll(() => heldAtFlush(page), { timeout: 100_000 }).toBeGreaterThan(0);
     await expect(stage).toHaveText('Writing file');
     // Cancel is still offered, and it still cancels: the dialog is back on its settings with
     // nothing said to have failed or to be complete, and the picked file has nothing in it.
@@ -253,6 +274,65 @@ test.describe('export to a file on disk', () => {
     // The export cancelled with its file finished had no encoder left to stop, and did not ask
     // for one to be stopped: the library that encodes remarks on that.
     expect(warnings.filter((text) => text.includes('finalized'))).toEqual([]);
+  });
+
+  test('an export with gaps says to cancel while that can be done, and not while its file is put in place', async ({
+    page,
+  }) => {
+    await largeExport(page, 90);
+    const dialog = page.getByRole('dialog');
+    const stage = dialog.locator('.exp__run .kv dd').first();
+    const cancel = dialog.getByRole('button', { name: 'Cancel export' });
+    const gaps = dialog.locator('.exp__run .callout--warn');
+    // The last half second of what is exported is a clip of a file that is neither on this device
+    // nor on a server.
+    await page.evaluate(() => {
+      const { session } = (window as any).tandem;
+      const p = session.store.get();
+      const last = (Object.values(p.clips) as any[])
+        .filter((c) => c.type === 'video')
+        .sort((a, b) => b.start - a.start)[0];
+      const end = last.start + last.duration;
+      session.store.commit([
+        {
+          op: 'addAsset',
+          asset: { ...p.assets[last.assetId], id: 'lost', name: 'holiday.mp4', uploaded: false },
+        },
+        {
+          op: 'addClip',
+          clip: { ...last, id: 'lost1', assetId: 'lost', name: 'holiday.mp4', start: end, duration: 15 },
+        },
+      ]);
+      session.player.setRange({ in: end - 75, out: end + 15 });
+    });
+    await expect(exportButton(page)).toHaveText('Export anyway');
+    await holdAtFlush(page);
+    await setPicker(page, { slow: true });
+
+    await exportButton(page).click();
+    await expect.poll(() => heldAtFlush(page), { timeout: 100_000 }).toBeGreaterThan(0);
+    await expect(stage).toHaveText('Writing file');
+    // The file is still being finished: Cancel is there, and is what the gaps are answered with.
+    await expect(cancel).toBeEnabled();
+    await expect(gaps).toContainText('This export will have gaps.');
+    await expect(gaps).toContainText('Cancel to sort the media out first, or let the export run on.');
+
+    await page.evaluate(() => (window as any).__held.letGo());
+    await expect.poll(async () => (await picker(page)).closing, { timeout: 100_000 }).toBe(true);
+    await expect(stage).toHaveText('Saving file');
+    await expect(cancel).toBeDisabled();
+    // The gaps are still listed, and nothing points to a button that is no longer to be had.
+    await expect(gaps).toContainText('This export will have gaps.');
+    await expect(gaps.locator('.exp__problems li')).toHaveText([
+      /“holiday\.mp4” is not on this device or the server, so it is missing from the export\./,
+    ]);
+    await expect(gaps).not.toContainText('Cancel');
+    await expect(gaps).not.toContainText('let the export run on');
+
+    await page.evaluate(() => (window as any).__finishClosing());
+    await expect(page.getByText('Exported with gaps')).toBeVisible({ timeout: 100_000 });
+    const whole = await picked(page, (await picker(page)).picks[0]);
+    expect(whole.bytes.subarray(4, 8).toString('latin1')).toBe('ftyp');
   });
 
   test('a file that cannot be written fails the export with the reason, and nothing is left in it', async ({
@@ -299,5 +379,38 @@ test.describe('export to a file on disk', () => {
     expect(file.suggestedFilename()).toBe('Untitled project.mp4');
     await expect(page.locator('.exp__done')).not.toContainText('Saved to the location you chose');
     expect((await picker(page)).picks).toEqual([]);
+  });
+
+  test('a save prompt answered once its dialog has gone starts no export', async ({ page }) => {
+    const errors = trackErrors(page);
+    await largeExport(page, 90);
+    await page.evaluate(() => {
+      const Real = (window as any).VideoEncoder;
+      (window as any).__encoders = 0;
+      (window as any).VideoEncoder = class extends Real {
+        constructor(init: unknown) {
+          super(init);
+          (window as any).__encoders++;
+        }
+      };
+    });
+    await setPicker(page, { open: true });
+    await exportButton(page).click();
+    await expect.poll(async () => (await picker(page)).asked.length).toBe(1);
+
+    // The prompt is the browser's own and stays open over whatever becomes of the page under it.
+    // Here the project is left, and the dialog goes with it.
+    await page.goBack();
+    await expect(page.locator('.home__hero')).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.evaluate(() => (window as any).__answerPrompt());
+    await expect.poll(async () => (await picker(page)).picks.length).toBe(1);
+    // An export that started all the same would have its encoder well within this second. None
+    // is made, and the file is left as the prompt made it.
+    await page.waitForTimeout(1000);
+    expect(await page.evaluate(() => (window as any).__encoders)).toBe(0);
+    expect((await picked(page, (await picker(page)).picks[0])).size).toBe(0);
+    expect(unexpected(errors)).toEqual([]);
   });
 });
