@@ -1374,16 +1374,39 @@ test.describe('library', () => {
     const search = page.getByLabel('Search media');
     const dusk = page.locator('.asset', { hasText: 'dusk.mp4' });
     const duskClip = page.locator('.clip', { hasText: 'dusk.mp4' });
+    // The mark lasts a moment, so it is watched for from before the press that asks for it: a look
+    // afterwards comes too late when the machine is slow.
+    const watchMark = () =>
+      page.evaluate(() => {
+        const w = window as any;
+        w.__marked = false;
+        w.__markWatch?.disconnect();
+        w.__markWatch = new MutationObserver(() => {
+          const card = document.querySelector('.asset[data-revealed="true"]');
+          if (card?.textContent?.includes('dusk.mp4')) w.__marked = true;
+        });
+        w.__markWatch.observe(document.body, {
+          subtree: true,
+          childList: true,
+          attributes: true,
+          attributeFilter: ['data-revealed'],
+        });
+      });
+    const marked = () => page.waitForFunction(() => (window as any).__marked === true);
+    const reveal = async () => {
+      await duskClip.click({ button: 'right', position: { x: 30, y: 30 } });
+      await watchMark();
+      await page.getByRole('menuitem', { name: 'Reveal in media pool' }).click();
+    };
 
     // The pool is narrowed to something else: the search and the filter give way.
     await page.locator('.chips .chip', { hasText: 'Audio' }).click();
     await search.fill('pulse');
     await expect(page.locator('.asset')).toHaveCount(1);
     await expect(dusk).toHaveCount(0);
-    await duskClip.click({ button: 'right', position: { x: 30, y: 30 } });
-    await page.getByRole('menuitem', { name: 'Reveal in media pool' }).click();
+    await reveal();
     await expect(dusk).toBeInViewport({ ratio: 0.9 });
-    await expect(dusk).toHaveAttribute('data-revealed', 'true');
+    await marked();
     await expect(search).toHaveValue('');
     expect(await pressed()).toContain('All');
     await expect(page.locator('.asset')).toHaveCount(4);
@@ -1394,19 +1417,17 @@ test.describe('library', () => {
     await page.locator('.pool__grid').evaluate((el) => (el.scrollTop = 0));
     await search.fill('mp4');
     await expect(page.locator('.asset')).toHaveCount(3);
-    await duskClip.click({ button: 'right', position: { x: 30, y: 30 } });
-    await page.getByRole('menuitem', { name: 'Reveal in media pool' }).click();
-    await expect(dusk).toHaveAttribute('data-revealed', 'true');
+    await reveal();
+    await marked();
     await expect(dusk).toBeInViewport({ ratio: 0.9 });
     await expect(search).toHaveValue('mp4');
 
     // From the Colour workspace, where the library is not on screen at all.
     await setUI(page, { workspace: 'color' });
     await expect(panel(page, 'Library')).toHaveCount(0);
-    await duskClip.click({ button: 'right', position: { x: 30, y: 30 } });
-    await page.getByRole('menuitem', { name: 'Reveal in media pool' }).click();
+    await reveal();
     await expect(dusk).toBeInViewport({ ratio: 0.9 });
-    await expect(dusk).toHaveAttribute('data-revealed', 'true');
+    await marked();
     expect(await tandem(page, (t) => t.ui.getState().workspace)).toBe('edit');
 
     // The audio workspace has the pool on screen, so there it is shown beside the mixer.
@@ -1414,18 +1435,16 @@ test.describe('library', () => {
     await setUI(page, { workspace: 'audio' });
     await expect(mixer).toBeVisible();
     await expect(dusk).not.toHaveAttribute('data-revealed', 'true', { timeout: 5000 });
-    await duskClip.click({ button: 'right', position: { x: 30, y: 30 } });
-    await page.getByRole('menuitem', { name: 'Reveal in media pool' }).click();
-    await expect(dusk).toHaveAttribute('data-revealed', 'true');
+    await reveal();
+    await marked();
     expect(await tandem(page, (t) => t.ui.getState().workspace)).toBe('audio');
     await expect(mixer).toBeVisible();
     // Comments standing in for the library there make way for it.
     await setUI(page, { commentsOpen: true });
     await expect(panel(page, 'Library')).toHaveCount(0);
-    await duskClip.click({ button: 'right', position: { x: 30, y: 30 } });
-    await page.getByRole('menuitem', { name: 'Reveal in media pool' }).click();
+    await reveal();
     await expect(dusk).toBeInViewport({ ratio: 0.9 });
-    await expect(dusk).toHaveAttribute('data-revealed', 'true');
+    await marked();
     await expect(panel(page, 'Comments')).toHaveCount(0);
     expect(await tandem(page, (t) => t.ui.getState().workspace)).toBe('audio');
     await expect(mixer).toBeVisible();
@@ -1438,9 +1457,10 @@ test.describe('library', () => {
     await expect(input).toBeFocused();
     await input.fill('reveal in media pool');
     await expect(page.locator('.palette__item')).toHaveCount(1);
+    await watchMark();
     await page.keyboard.press('Enter');
     await expect(dusk).toBeInViewport({ ratio: 0.9 });
-    await expect(dusk).toHaveAttribute('data-revealed', 'true');
+    await marked();
 
     // A title has no file to show.
     await page.locator('.clip', { hasText: 'Edit in tandem' }).click({ button: 'right' });
