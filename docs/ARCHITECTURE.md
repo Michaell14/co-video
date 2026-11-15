@@ -226,11 +226,18 @@ that was dropped moves nothing, and after someone else's change of frame rate th
 read at the present rate. A commit that joins the step before it adds to that step's note.
 
 The speed slider under ripple editing commits at every move of the pointer and plans each step from
-where the drag began. Such an edit names its gesture (`FollowOptions.gesture`), and the mover keeps
-with the gesture, not with an undo step, the frame each comment had when the gesture first moved
-it: a gesture is not always recorded as one step. Its first step is written at once and later ones
-when the drag rests for `GESTURE_REST_MS`, or sooner when its undo or another edit needs the
-comments in place.
+where the drag began. Such an edit names its gesture (`FollowOptions.gesture`, a `GestureStep`), and
+the mover keeps the frame each comment had when the gesture began with the gesture, not with an undo
+step, because a gesture is not always recorded as one step. A comment that somebody makes or moves
+while the drag is under way has no frame from where the drag began. The mover notes the frame it was
+put at and the step it came after, and asks each later step where it takes a frame of that step's
+timeline (`GestureStep.since`). `speedEdits` answers by planning that step again from the speed it
+set. So such a comment stays on the shot it was put on, and comes back when time that was taken out
+from under it is put back. The drag is not started anew for it: that would plan the clips again from
+the middle of the drag, round their lengths a second time and lose the fades the drag had shortened.
+Its first step is written at once and later ones when the drag rests for `GESTURE_REST_MS`, or
+sooner when its undo or another edit needs the comments in place. A comment that somebody moves or
+deletes in the meantime keeps what they did.
 
 ### The server (`apps/server`)
 
@@ -259,11 +266,13 @@ Project creation is limited per address and hour (`MAX_CREATES_PER_HOUR`).
 **Deleting.** The owner's link deletes a project for everyone (`DELETE /api/projects/:id`). The
 server first records the id under `deleted/` and from that moment answers every request and
 connection for the project with `410`; then it closes the rooms without saving them (close code
-`4410`), cuts off the transfers under way and removes the directory. The record is what makes this
-hold against everything still in flight: `ProjectStore.dir`, the one place an id becomes a path,
-refuses a deleted project, so a late write has nowhere to land, the id is never given out again,
-and a deletion that a crash cut short is finished at the next start. A version is deleted by the
-owner or an editor (`DELETE /api/projects/:id/versions/:versionId`).
+`4410`, `WS_CLOSE_PROJECT_DELETED` in `packages/core/src/protocol.ts`, from which the server and the
+editor both take it and its message `PROJECT_DELETED`), cuts off the transfers under way and removes
+the directory. The record is what makes this hold against everything still in flight:
+`ProjectStore.dir`, the one place an id becomes a path, refuses a deleted project, so a late write
+has nowhere to land, the id is never given out again, and a deletion that a crash cut short is
+finished at the next start. A version is deleted by the owner or an editor (`DELETE
+/api/projects/:id/versions/:versionId`).
 
 **Unused media.** A media file leaves the server when nothing can need it any more: no asset of the
 project document and no stored version refers to it (`sweep.ts`). For this the server reads one
@@ -478,10 +487,20 @@ all, plain AAC-LC is decoded by the browser's other decoder (`audio/adts.ts`): t
 128 at a time behind the three that lead up to them, as an ADTS stream through `decodeAudioData`,
 cut into one buffer per packet at the packet's time. That decoder is trusted only after it has
 placed a built-in test stream to the sample, and a stretch that comes back with another number of
-samples than its packets hold is not used. Which decoder a file is on is remembered per asset for
-as long as the page lives and forgotten with `MediaLibrary.invalidate`. A clip that plays backwards
-keeps the sound that did decode when its decoder stops: what could not be given is then a stretch
-at the clip's start, and is reported as one.
+samples than its packets hold is not used. Which decoder a file is on is remembered per asset for as
+long as the page lives and forgotten with `MediaLibrary.invalidate`. A clip that plays backwards
+keeps the sound that did decode when its decoder stops: what could not be given is then a stretch at
+the clip's start, and is reported as one.
+
+In the preview the mixer's reports reach the editor through `Player.onAudioProblem`. The timeline's
+media cache keeps them by clip and kind, a stretch or the rest (`TimelineMedia.heard`,
+`features/timeline/soundLoss.ts`). Each is kept as a place in the clip's file, so it follows the
+clip when it is moved, slipped or played at another speed, and however often the mixer says it again
+(it does on every play) it is one mark. It is let go when the clip goes, is of another file or is
+turned round, no longer plays the place, or when its file is read anew (`TimelineMedia.refresh`).
+Sound of which nothing decodes is a fault of the file instead (`DecodeFault.sound`, with the
+decoder's `cause`) and is not also kept by clip. Normalise loudness reads through `Sound` too, so it
+measures what plays.
 
 The player's master clock is the audio clock, offset by output latency, so picture follows sound.
 If the audio context is not running yet the player uses a monotonic clock and hands over cleanly
@@ -499,37 +518,38 @@ when it starts.
   them and fitted to the window each time it is laid out (`features/editor/layout.ts`), so a layout
   made on a large monitor still shows every panel on a laptop and comes back when the window grows.
   The track heights set by someone who may not edit are kept the same way, per project
-  (`laneHeights` in `state/ui.ts`); an editor's are part of the project.
+  (`laneHeights` in `state/ui.ts`); an editor's are part of the project. They leave with a project
+  deleted from the device (`forgetLaneHeights`, called by `deleteLocalProject`), from storage at
+  once, since the next save keeps what it finds stored for projects its tab did not size.
 - **Dialogs, the palette, menus and popovers are a stack of layers** (`ui/layers.ts`). The topmost
-  layer gets every key before anything else in the page, a modal one makes what is beneath it
-  inert, and the editor's own shortcuts stand down while any layer is open. A command chosen in
-  the palette runs once the palette is out of the page and within the same key press, so a dialog
-  it opens finds the keyboard where the palette was called from, and a file chooser is opened by
-  the person's own press as far as the browser is concerned.
+  layer gets every key before anything else in the page, a modal one makes what is beneath it inert,
+  and the editor's own shortcuts stand down while any layer is open. A command chosen in the palette
+  runs once the palette is out of the page and within the same key press, so a dialog it opens finds
+  the keyboard where the palette was called from, and a file chooser is opened by the person's own
+  press as far as the browser is concerned.
 - **A row's label names its controls.** `Labelled` and `LabelText` (`ui/core.tsx`) make a row of a
   panel or a form: the kit's fields, sliders, selects, switches and segmented controls inside it
-  take their accessible name from the row's label unless they are given one, so a property is
-  named once, where it is drawn. `ui/labels.ts` holds the wording of frame sizes and colour modes
-  for every place that shows them.
-- **Focus is handed on, not dropped.** A control whose own action removes it (Close with its
-  panel, Delete with its card) would leave the keyboard on nothing. `handFocus` (`ui/layers.ts`)
-  says where it goes instead, for people working from the keyboard; a pointer press decides about
-  focus by itself. A button that waits for what its own press began is not switched off meanwhile,
-  which would drop the keyboard the same way: `busy` on the kit's `Button` (`useBusy` for a
-  button of another kind) keeps it in place, says that it is at work and takes no press. A key
-  that is down as the work begins or ends is spent (`spendKeys`), so that the repeats of a held
-  Enter do not start the work again once it is done; Space, which presses a button as it comes
-  up, is refused as it goes down. The kit's `Button` shows nothing that turns while it is busy,
-  because over a dialog's live backdrop blur whatever keeps moving has the whole page composited
-  again for every frame.
+  take their accessible name from the row's label unless they are given one, so a property is named
+  once, where it is drawn. `ui/labels.ts` holds the wording of frame sizes and colour modes for
+  every place that shows them.
+- **Focus is handed on, not dropped.** A control whose own action removes it (Close with its panel,
+  Delete with its card) would leave the keyboard on nothing. `handFocus` (`ui/layers.ts`) says where
+  it goes instead, for people working from the keyboard; a pointer press decides about focus by
+  itself. A button that waits for what its own press began is not switched off meanwhile, which
+  would drop the keyboard the same way: `busy` on the kit's `Button` (`useBusy` for a button of
+  another kind) keeps it in place, says that it is at work and takes no press. A key that is down as
+  the work begins or ends is spent (`spendKeys`), so that the repeats of a held Enter do not start
+  the work again once it is done; Space, which presses a button as it comes up, is refused as it
+  goes down. The kit's `Button` shows nothing that turns while it is busy, because over a dialog's
+  live backdrop blur whatever keeps moving has the whole page composited again for every frame.
 - **Two tokens are about more than colour.** `--panel-pad` is the one distance between a panel's
   edge and its content, so rows, tiles and cards of every panel start on the same line.
   `--line-control` is the edge of a control that has nothing but its edge to be told by (an empty
   field, the chosen segment): it holds 3:1 against the surfaces around it, which the hairlines do
   not.
 - **The timeline** is DOM for clips (so hover, selection and drag feedback are just CSS) with one
-  canvas per lane underneath for filmstrips and waveforms. Only clips near the viewport exist in
-  the DOM; scrolling is a transform on one element; the playhead is moved outside React.
+  canvas per lane underneath for filmstrips and waveforms. Only clips near the viewport exist in the
+  DOM; scrolling is a transform on one element; the playhead is moved outside React.
 - **Media** is stored in the Origin Private File System. Thumbnails and waveform peaks are
   generated lazily by priority — what is on screen now is always computed before what you have
   scrolled past.
@@ -541,18 +561,26 @@ when it starts.
   `layoutText` (`packages/engine/src/generators.ts`) is the one function that measures a title
   (`rasterizeText` draws by it, `measureClip` sizes the layer by it), and `titleField` turns its
   measures and the layer's box into the field's size, padding, type size and CSS matrix. Type is
-  laid out at the size it has on screen and only turned by the matrix, so the browser's caret
-  stays a pixel wide in a 4K frame shown small. Canvas and field both set type with
-  `geometricPrecision`, by the font's own measures at every size. The field's lines are broken by
-  the browser and the title's by `wrapLines`, which follows Chromium's rules: all of them between
-  ASCII characters (`breaksBetween`; a browser test compares every pair against a block styled as
-  the field), and those for hyphens, dashes, the ellipsis, quotation marks and no-break spaces
-  beyond ASCII. Like the browser it forgets what stood before the start of a line. Emoji, scripts
-  written without spaces and currency signs count as letters. The field starts from
-  `all: initial`, because anything inherited (the page's font features) moves letters. Undo inside
-  the field is its own (`TypingHistory`): Chromium keeps one undo history for all fields of a page
-  and would go on to another field at the end of this one's. `cmd.editText` decides where a title
-  is typed: on the picture when it is on show at the playhead, in the inspector's field otherwise.
+  laid out at the size it has on screen and only turned by the matrix, so the browser's caret stays
+  a pixel wide in a 4K frame shown small. Canvas and field both set type with `geometricPrecision`,
+  by the font's own measures at every size. The field's lines are broken by the browser and the
+  title's by `wrapLines`, which follows Chromium's rules: all of them between ASCII characters
+  (`breaksBetween`; a browser test compares every pair against a block styled as the field), and
+  those for hyphens, dashes, the ellipsis, quotation marks and no-break spaces beyond ASCII. Like
+  the browser it forgets what stood before the start of a line. Emoji, scripts written without
+  spaces and currency signs count as letters. Whether a word that ends at the edge of the box fits
+  is decided as Chromium decides it (`setLines`). After a space it fits by the line kerned against
+  that space when the title is set from the left, and by the line without it when the title is
+  centred or right-aligned. After a wide East Asian space it fits by the kerned line at any
+  alignment, and after a tab never. A line that fits only by its kerned width is drawn by its own
+  width but counts as no wider than the box, so the field over the title, which is as wide as the
+  box, breaks in the same place. Chromium also rounds a line's width to a sixty-fourth of a pixel at
+  the size the field is shown; the title, drawn alike at every size, does not follow that. The field
+  starts from `all: initial`, because anything inherited (the page's font features) moves letters.
+  Undo inside the field is its own (`TypingHistory`): Chromium keeps one undo history for all fields
+  of a page and would go on to another field at the end of this one's. `cmd.editText` decides where
+  a title is typed: on the picture when it is on show at the playhead, in the inspector's field
+  otherwise.
 
 **Offline.** The production build ships a small generated service worker (see
 `apps/editor/serviceWorker.ts`): the page is network-first with a cached fallback, hashed code and
@@ -580,13 +608,19 @@ when the person asks (Share → Try again), when another link to the same projec
 or when nothing of the project is on the device. A refusal is only what one server said at one
 moment, and a link is not something its holder can get again by themselves.
 
-A project its owner deleted is a third answer, and a final one: the server says `410` to a link
-that was good, or closes the open connections with `4410`. `Session.projectDeleted` keeps what the
-device holds as a local project, drops the link (it is not kept aside, there is nothing to try
-again) and, on a guest's device, marks the entry (`ProjectEntry.deletedByOwner`), which its card
-shows as “No longer shared”. The session also follows the project list: when the copy on the
-device has gone as well, deleted in another tab, it stops writing and shows the project as not
-available, and never lists it again.
+A project its owner deleted is a third answer, and a final one: the server says `410` to a link that
+was good, or closes the open connections with `4410`. `Session.projectDeleted` keeps what the device
+holds as a local project, drops the link (it is not kept aside, there is nothing to try again) and,
+on a guest's device, marks the entry (`ProjectEntry.deletedByOwner`), which its card shows as “No
+longer shared”. `SessionMeta.deleted` records that answer. With nothing of the project on the
+device, the “not available” screen (`Workspace` in `features/editor/Editor.tsx`) says that the owner
+deleted it and offers no “Try again”, because asking again gets the same answer. “Delete for
+everyone…” in the editor's menu leaves the project before anything is asked: the question is the
+card's own, asked by the card as the home screen appears (`askToDeleteForEveryone` in
+`features/home/deletion.ts`). So the session that had the project open is closed before the server
+closes its rooms, and the owner is not told by their own editor that its owner deleted it. The
+session also follows the project list: when the copy on the device has gone as well, deleted in
+another tab, it stops writing and shows the project as not available, and never lists it again.
 
 **Not saving.** A connection can be open and the work still not reach the server: the document has
 reached the size the server allows, the server has no memory for more, or one change is more than

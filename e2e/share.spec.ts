@@ -381,6 +381,195 @@ test.describe('sharing and review', () => {
     expect(guestErrors).toEqual([]);
   });
 
+  test('notes a guest pins, moves and deletes while the owner drags the speed slider stay on their shots, for both of them, and the drag is one step to undo', async ({
+    page,
+    context,
+    browser,
+  }) => {
+    const errors = trackErrors(page);
+    await noReloads(page);
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    // The owner's clock runs as any clock does until the drag below holds it for a moment.
+    await page.clock.install();
+    await newProject(page);
+    const meta = await page.evaluate(() => (window as any).tandem.session.getMeta());
+    test.skip(!meta.online || !meta.shared, 'collaboration server not reachable');
+    // The bundled sample: three shots of four seconds on V1, a title over the first, music under all.
+    await page.evaluate(() => void (window as any).tandem.cmd.loadSample());
+    await expect(page.locator('.clip')).toHaveCount(5, { timeout: 60_000 });
+
+    const dialog = await openShare(page);
+    const link = await copyLink(dialog, 'Can comment');
+    await page.keyboard.press('Escape');
+    const theirs = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const guest = await theirs.newPage();
+    const guestErrors = trackErrors(guest);
+    await join(guest, link, 5);
+
+    await guest.keyboard.press('Shift+C');
+    const box = guest.getByPlaceholder('Add a comment at the playhead…');
+    /** The guest pins a note at `frame`, typed into the panel at the playhead. */
+    const pin = async (frame: number, text: string) => {
+      await guest.evaluate((frame) => (window as any).tandem.cmd.seek(frame), frame);
+      await box.fill(text);
+      await box.press('Enter');
+      await expect(comment(guest, text)).toBeVisible();
+    };
+    /** The guest moves the note that says `text` to `frame`. */
+    const move = (text: string, frame: number) =>
+      guest.evaluate(
+        ([text, frame]) => {
+          const { review } = (window as any).tandem.session;
+          review.update(review.get().find((c: any) => c.text === text).id, { frame });
+        },
+        [text, frame] as const,
+      );
+    const [second, third] = await page.evaluate(() =>
+      (Object.values((window as any).tandem.session.store.get().clips) as any[])
+        .filter((c) => c.type === 'video')
+        .sort((a, b) => a.start - b.start)
+        .slice(1)
+        .map((c) => c.id as string),
+    );
+    /** The second and third shots and the frame of every note, as one of the two has them. */
+    const state = (who: Page) =>
+      who.evaluate(
+        ([second, third]) => {
+          const { session } = (window as any).tandem;
+          const { clips } = session.store.get();
+          return {
+            second: { start: clips[second].start as number, duration: clips[second].duration as number },
+            third: clips[third].start as number,
+            notes: Object.fromEntries(
+              session.review.get().map((c: any) => [c.text, c.frame] as const),
+            ) as Record<string, number>,
+          };
+        },
+        [second, third],
+      );
+    type State = Awaited<ReturnType<typeof state>>;
+    const steps = () =>
+      page.evaluate(() => (window as any).tandem.session.store.undoManager.undoStack.length as number);
+
+    // Where each note belongs, by what it says: so many frames into its shot.
+    const belongs: Record<string, (s: State) => number> = {
+      'Hold this a beat longer': (s) => s.third + 10,
+      Tighten: (s) => s.second.start + 10,
+      'Too dark': (s) => s.third + 60,
+    };
+    await pin(250, 'Hold this a beat longer');
+    await pin(130, 'Tighten');
+    await pin(300, 'Too dark');
+    await expect.poll(async () => Object.keys((await state(page)).notes).length).toBe(3);
+
+    /**
+     * Wait until the owner's drag has rested and written the notes where it has them, and the
+     * guest sees the same. Every note is then where it belongs, and no other note is there.
+     */
+    const rest = async (): Promise<State> => {
+      await expect
+        .poll(async () => {
+          const s = await state(page);
+          return Object.fromEntries(
+            Object.entries(s.notes).map(([text, frame]) => [text, frame - (belongs[text]?.(s) ?? NaN)]),
+          );
+        })
+        .toEqual(Object.fromEntries(Object.keys(belongs).map((text) => [text, 0])));
+      const owner = await state(page);
+      await expect.poll(() => state(guest)).toEqual(owner);
+      return owner;
+    };
+
+    // The owner drags the speed slider of the second shot under ripple editing. 100% lies three
+    // sevenths along it.
+    await page.locator(`.clip[data-clip="${second}"]`).click();
+    await page.keyboard.press('r');
+    const inspector = page.locator('[aria-label="Inspector"]');
+    await inspector.locator('.section__head', { hasText: 'Speed' }).click();
+    const track = (await inspector
+      .locator('.section', { hasText: 'Presets' })
+      .locator('.slider')
+      .first()
+      .boundingBox())!;
+    const y = track.y + track.height / 2;
+    const at = (step: number) => page.mouse.move(track.x + track.width * (3 / 7 + step * 0.02), y);
+    const before = { state: await state(page), steps: await steps() };
+    await page.mouse.move(track.x + (track.width * 3) / 7, y);
+    await page.mouse.down();
+    await at(2);
+    const mid = await rest();
+    expect(mid.third).toBeLessThan(before.state.third);
+
+    // While the owner's button is still down, the guest goes by the picture as it is now: a note
+    // twenty frames into the third shot and one five frames before the end of the second, the
+    // note on the second moved forty frames into the third, and the one sixty frames in deleted.
+    const late = mid.second.duration - 5;
+    await pin(mid.third + 20, 'Warmer here');
+    await pin(mid.second.start + late, 'Cut before the turn');
+    await move('Tighten', mid.third + 40);
+    await comment(guest, 'Too dark').getByRole('button', { name: 'Delete' }).click();
+    await expect(comment(guest, 'Too dark')).toHaveCount(0);
+    const put: Record<string, number> = {
+      Tighten: mid.third + 40,
+      'Warmer here': mid.third + 20,
+      'Cut before the turn': mid.second.start + late,
+    };
+    await expect
+      .poll(async () => (await state(page)).notes)
+      .toEqual({ ...put, 'Hold this a beat longer': mid.third + 10 });
+    belongs.Tighten = (s) => s.third + 40;
+    delete belongs['Too dark'];
+    belongs['Warmer here'] = (s) => s.third + 20;
+    // On the second shot, which is at the cut while the shot is shorter than that.
+    belongs['Cut before the turn'] = (s) => s.second.start + Math.min(late, s.second.duration);
+
+    // Faster still, which takes out the time the note on the second was pinned in, then slower
+    // than the shot began, which puts it back.
+    await at(5);
+    const faster = await rest();
+    expect(faster.second.duration).toBeLessThan(late);
+    expect(faster.notes['Cut before the turn']).toBe(faster.third);
+
+    // A step moves the shots at once and writes the notes once the pointer has rested. A note the
+    // guest moves in that wait is left where the guest put it. The owner's clock is held at the
+    // step, so that the wait lasts until the guest's move has come in. A clock is only held at a
+    // time still to come, and the page's goes on while it is asked for it.
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await at(-3);
+    const slower = await state(page);
+    expect(slower.third).toBeGreaterThan(faster.third);
+    expect(slower.notes).toEqual(faster.notes);
+    await expect.poll(async () => (await state(guest)).third).toBe(slower.third);
+    await move('Warmer here', slower.third + 30);
+    await expect.poll(async () => (await state(page)).notes['Warmer here']).toBe(slower.third + 30);
+    expect((await state(page)).notes['Hold this a beat longer']).toBe(faster.third + 10);
+    await page.clock.resume();
+    put['Warmer here'] = slower.third + 30;
+    belongs['Warmer here'] = (s) => s.third + 30;
+    await rest();
+    await at(-5);
+    const after = await rest();
+    expect(after.second.duration).toBeGreaterThan(late);
+    expect(after.third).toBeGreaterThan(before.state.third);
+    await page.mouse.up();
+    expect(await steps()).toBe(before.steps + 1);
+
+    // One step to undo, for both of them: the shots return, the first note to where it was pinned
+    // before the drag and the others to where the guest put them, and the deleted note stays gone.
+    await page.evaluate(() => (window as any).tandem.cmd.undo());
+    for (const who of [page, guest]) {
+      await expect
+        .poll(() => state(who))
+        .toEqual({ ...before.state, notes: { ...put, 'Hold this a beat longer': 250 } });
+    }
+    await page.evaluate(() => (window as any).tandem.cmd.redo());
+    for (const who of [page, guest]) await expect.poll(() => state(who)).toEqual(after);
+    await theirs.close();
+
+    expect(errors).toEqual([]);
+    expect(guestErrors).toEqual([]);
+  });
+
   test('over plain HTTP a project is shared and synced all the same, and a link the page cannot copy is not called copied', async ({
     page,
     browser,

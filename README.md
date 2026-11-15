@@ -68,8 +68,9 @@ with projects stored in your browser.
   (`Ctrl`-drag on a cut) moves the cut of linked picture and sound together, and with linked
   selection switched off the cut of one of them, for a split edit
 - Markers with a note and a colour, and keys to step from one to the next. Markers and review
-  comments move with ripple edits, so each stays on the shot it was put on, and return when the
-  edit is undone; one switch in the timeline's toolbar keeps both where they are instead
+  comments move with ripple edits, so each stays on the shot it was put on, and return when the edit
+  is undone; one switch, “Comments and markers follow ripple edits” in the timeline's toolbar, the
+  edit commands menu and the palette, keeps both where they are instead
 - A drag that reaches the edge of the timeline scrolls it, and the timeline's menus act where you
   click: “Add marker here”, “Close gap here”
 - **Keyframes on every numeric property** — transform, opacity, crop, volume, pan and every effect
@@ -81,11 +82,12 @@ with projects stored in your browser.
 - Speed changes from 5 % to 10 000 %, reverse playback and freeze frames
 - Titles with 13 bundled open-source typefaces, outlines, shadows, gradients, backgrounds and
   animated in / out presets; shapes, solids and **adjustment layers**
-- A title is typed into where it stands in the picture: double-click it in the viewer and the
-  caret is in its text at that place, in its own type, turned and scaled as it is drawn. A new
-  title starts out that way, with its placeholder selected. `Esc`, `Ctrl+Enter` or a press
-  anywhere else ends the typing, and all of it is one undo step. A title in a box wraps as text
-  does in the browser: at spaces, after a hyphen or a dash, never at a no-break space
+- A title is typed into where it stands in the picture: double-click it in the viewer and the caret
+  is in its text at that place, in its own type, turned and scaled as it is drawn. A new title
+  starts out that way, with its placeholder selected. `Esc`, `Ctrl+Enter` or a press anywhere else
+  ends the typing, and all of it is one undo step. A title in a box wraps as text does in the
+  browser: at spaces, after a hyphen or a dash, never at a no-break space, and a word that ends at
+  the edge stays on the line wherever the browser keeps it
 - Subtitles: import `.srt` / `.vtt` as editable captions, export `.srt` (captions only: titles and
   lower thirds are not subtitles)
 - 18 blend modes, rectangular and elliptical masks with feathering, on-canvas transform handles
@@ -105,14 +107,20 @@ with projects stored in your browser.
 - A clip says what is wrong with it where it lies: **Offline** when its file is on neither this
   device nor the server, **Unsupported** when this browser cannot decode it (**No decoder** where
   the browser has no decoder at all, **Needs HTTPS** on an address that is neither HTTPS nor
-  `localhost`), **Overlap** when it shares frames with another clip of its track (its menu has
-  “Move to a free track”). The viewer says in a line why the picture under the playhead is black,
-  the inspector says it of the selected clip, and the media pool marks a file this browser cannot
-  decode. A clip whose sound has a decoder that gives nothing is marked **Unsupported** as well
-- Sound is not lost at the first error: a damaged stretch of a file costs that stretch (about
-  70 ms for one bad AAC packet) and the rest of the clip plays, and plain AAC-LC that the
-  browser's WebCodecs decoder will not decode at all is decoded by the browser's other decoder
-  instead, sample for sample in the same place
+  `localhost`), **Overlap** when it shares frames with another clip of its track (its menu has “Move
+  to a free track”). The viewer says in a line why the picture under the playhead is black, the
+  inspector says it of the selected clip, and the media pool marks a file this browser cannot
+  decode. A clip whose sound has a decoder that gives nothing is marked **Unsupported** as well, and
+  the inspector says under its sentence what the decoder said. A clip that the preview has played
+  without a part of its sound, because a stretch of its file would not decode or its decoder stopped
+  part-way, plays on and is marked **Sound gap** or **Sound stops**, a warning like **Overlap**: its
+  read-out says from when, and the inspector says it in a sentence with the timecode, which moves
+  the playhead there, and the cause. The mark lasts until the clip no longer plays that place or its
+  file is read anew or replaced
+- Sound is not lost at the first error: a damaged stretch of a file costs that stretch (about 70 ms
+  for one bad AAC packet) and the rest of the clip plays, and plain AAC-LC that the browser's
+  WebCodecs decoder will not decode at all is decoded by the browser's other decoder instead, sample
+  for sample in the same place
 - Projects save to a portable `.tandem` file. Opening one makes a new project, from the home screen
   or the editor; replacing the open project with one is a separate command that asks first
 - The home screen renames, duplicates and deletes the projects on your device. The owner of a
@@ -148,8 +156,10 @@ with projects stored in your browser.
 - A sound clip's level is drawn over its waveform as a line. On a selected clip the line is dragged
   up or down to set the level, a `Ctrl`-click on it makes a volume keyframe, and a keyframe on it is
   dragged like the line
-- **Loudness normalisation** to −14, −16 or −23 LUFS, measured to ITU-R BS.1770 with a peak
-  ceiling (the meter agrees with `ffmpeg -af ebur128` to the tenth of a LU)
+- **Loudness normalisation** to −14, −16 or −23 LUFS, measured to ITU-R BS.1770 with a peak ceiling
+  (the meter agrees with `ffmpeg -af ebur128` to the tenth of a LU); it measures the sound as it
+  plays, through whichever decoder the file is on, and a stretch that would not decode does not
+  count
 - **Voiceover recording** straight onto the timeline: the take lands on a free track where the
   playhead was, as an uncompressed, sample-accurate WAV
 - The same mixer graph renders the preview and the export, so what you hear is what you deliver
@@ -162,29 +172,31 @@ with projects stored in your browser.
 - Time-coded comments with replies and resolve. A comment stays on its shot when the cut is
   rippled: whoever makes the edit moves it, for everyone, and undoing the edit brings it back
 - Share links with **editor**, **commenter** and **viewer** roles, enforced by the server. For
-  someone who may not edit, the inspector, the colour page and the mixer say “Read only”, and
-  their controls and the timeline's editing buttons are out of reach. What they select is outlined
-  in the viewer without the handles to move it by, and the track heights they set are their own,
-  kept per project on the device
+  someone who may not edit, the inspector, the colour page and the mixer say “Read only”, and their
+  controls and the timeline's editing buttons are out of reach. What they select is outlined in the
+  viewer without the handles to move it by, and the track heights they set are their own, kept per
+  project on the device
 - Named versions plus automatic snapshots; restoring one is a single undoable step, and the owner
   and editors can delete a version in the version history
 - Offline-first: the editor is an installable web app that opens with no network, projects and
   media live on your device, and changes merge when you reconnect
 - Media syncs itself — originals upload in resumable chunks and collaborators stream them
-  immediately while a local copy downloads in the background. A transfer the network interrupted
-  is tried again by itself, or at once from the media pool
+  immediately while a local copy downloads in the background. A transfer the network interrupted is
+  tried again by itself, or at once from the media pool
 - The top bar says how the project stands with the server, also when it does not: “Not syncing:
   link refused” for a project whose link the server no longer accepts (Share has “Try again”),
-  “Waiting for the server” while a server that answers has no place for the project yet, and
-  “Not saving to the server” when the server has stopped taking changes, with the reason, such as a
-  project that has reached the size the server allows. The changes stay on the device meanwhile
-  and are offered to the server again every minute
-- Clips that two people put on the same frames are moved apart, and clips whose track someone
-  else removed are kept: a notice in the timeline restores them to a new track or discards them
-- The home screen marks a project whose link was refused and says when the browser has no room
-  left to save the list of projects. The screen that stands in for a project that is not available
-  offers “Try again”. A shared project that has not arrived on a device yet is shown as opening,
-  never as an empty timeline, and a wait that goes on offers the way back to the projects
+  “Waiting for the server” while a server that answers has no place for the project yet, and “Not
+  saving to the server” when the server has stopped taking changes, with the reason, such as a
+  project that has reached the size the server allows. The changes stay on the device meanwhile and
+  are offered to the server again every minute
+- Clips that two people put on the same frames are moved apart, and clips whose track someone else
+  removed are kept: a notice in the timeline restores them to a new track or discards them
+- The home screen marks a project whose link was refused and says when the browser has no room left
+  to save the list of projects. The screen that stands in for a project that is not available offers
+  “Try again”, except for one its owner deleted: that screen says so, says that nothing of it is
+  left on the server, and offers only the way back to the projects. A shared project that has not
+  arrived on a device yet is shown as opening, never as an empty timeline, and a wait that goes on
+  offers the way back to the projects
 
 ![Three people editing one project](docs/images/multiplayer.webp)
 
@@ -257,11 +269,13 @@ the same frame alone; `Shift+G` closes one gap, the picture's, and the other tra
 `Space` plays and pauses, except on a button the keyboard itself moved to (with `Tab`), where it
 presses the button.
 
-While a title is typed into, every key is text: `Space` does not play, `Delete` does not remove
-the clip, and `Ctrl+Z` takes back typing, not the edit before it. `Enter` starts the typing only
-where no control has the keyboard (on a button it presses the button, and on a clip the keyboard
-has walked to it selects); `F2` starts it anywhere. A title that is not on show at the playhead is
-typed in the inspector's field instead, and a title left empty says again what it said before.
+While a title is typed into, every key is text: `Space` does not play, `Delete` does not remove the
+clip, and `Ctrl+Z` takes back typing, not the edit before it. `Enter` starts the typing only where
+no control has the keyboard (on a button it presses the button, and on a clip the keyboard has
+walked to it selects); `F2` starts it anywhere. A title that is not on show at the playhead is typed
+in the inspector's field instead, and a title left empty says again what it said before. The command
+palette has the same as “Type into the selected title”, and says why when there is no one title
+selected that you may type into.
 
 While the source monitor is open, `Space`, `J` `K` `L`, the arrow keys (with `Shift` for a second),
 `Home`, `End`, `I` and `O` drive it instead of the timeline; `Shift+I` and `Shift+O` go to its
@@ -452,17 +466,20 @@ Three ideas carry most of the weight:
   people: anyone with a comment link and a client of their own can rewrite or delete other people's
   comments.
 - Deleting is final. The owner of a shared project can delete it for everyone from its card on the
-  home screen (“Delete for everyone…”): the server then holds nothing of it, every link to it
-  stops working, and people who had it open keep what was on their device as a local project that
-  is no longer shared. Versions can be deleted in the version history by the owner and editors.
-  Neither can be undone, and the server keeps no bin. Media taken out of a project leaves the
-  server once no version refers to it either, `UNUSED_MEDIA_EXPIRY_HOURS` later (a day by
-  default); as long as an automatic version from before still holds the file, it stays.
+  home screen or from the editor's menu (“Delete for everyone…”; from the editor the project is left
+  first and its card asks): the server then holds nothing of it, every link to it stops working, and
+  people who had it open keep what was on their device as a local project that is no longer shared.
+  Versions can be deleted in the version history by the owner and editors. Neither can be undone,
+  and the server keeps no bin. Media taken out of a project leaves the server once no version refers
+  to it either, `UNUSED_MEDIA_EXPIRY_HOURS` later (a day by default); as long as an automatic
+  version from before still holds the file, it stays.
 - Comments follow ripple edits and nothing else: a clip that is moved or trimmed without a ripple,
   or a version that is restored, leaves them at their frames. Two people who ripple at the same
-  moment each move the comments, and for each comment one of the two frames is kept for everyone;
-  it need not be the one that goes with where the clips ended up. A ripple made offline does not
-  move comments that were added meanwhile.
+  moment each move the comments, and for each comment one of the two frames is kept for everyone; it
+  need not be the one that goes with where the clips ended up. A ripple made offline does not move
+  comments that were added meanwhile. A comment that someone makes while the speed slider is being
+  dragged is placed by the picture as the drag's last step left it. When the person who makes it
+  sees the drag late, it can land as far off its shot as the drag moved in between.
 - A second decoder stands in for plain AAC-LC above 24 kHz in MP4, MOV or Matroska only. HE-AAC,
   AAC at 24 kHz and below, AAC in transport streams and other codecs have the one decoder; when it
   fails the export says so, with the cause. HE-AAC could not be tested at all: nothing here can
@@ -471,14 +488,22 @@ Three ideas carry most of the weight:
 - Typing into a title on the picture is tested in Chromium on Linux only: not on macOS, not in
   Safari or Firefox, not with a real input method and not by touch. A tab in a title is drawn as a
   space but typed as a tab stop.
+- In a title with Wrap width on, the field a title is typed into breaks its lines as the browser
+  does, and the picture breaks them as the title does. The two follow the same rules for words,
+  numbers, punctuation, hyphens and dashes, and for a last letter kerned against the space after it.
+  Where they still part, the caret and the selection are drawn a line off from there on: an emoji
+  set against a word, Chinese, Japanese or Thai text, a currency or degree sign next to punctuation,
+  a word too long for the box cut apart in a script face or between two letters the font kerns, or a
+  word that ends within a sixty-fourth of a pixel of the box's edge at the size the field is shown.
+  The text and the picture are right all the same.
 - Zooming the timeline lays out every clip in view again, which shows on a timeline with thousands
   of clips in view at once.
 - The website draws nothing until its script has arrived: its first screen is animated in by that
   script and is not in the page as it is served.
 - Vorbis sound that starts part-way into its file is placed about 20 ms early, in the preview and
   in exports alike (a limit of the decoder library; the offset is constant over the clip).
-- Performance on very long 4K+ timelines has been engineered for (virtualised timeline,
-  look-ahead decode, preview-resolution scaling) but has only been measured on modest hardware.
+- Performance on very long 4K+ timelines has been engineered for (virtualised timeline, look-ahead
+  decode, preview-resolution scaling) but has only been measured on modest hardware.
 
 ## Licence
 

@@ -214,6 +214,28 @@ describe('Sound', () => {
     expect(fake.starts).toEqual([20, 0]);
   });
 
+  it('lets a read begun before the file changed learn nothing for the file as it is now', async () => {
+    const fake = track({ bad: new Set(range(0, 400)), other: new Set() });
+    const sound = new Sound('file', fake as unknown as InputAudioTrack);
+    const old = sound.buffers(0, 60 * PACKET, () => {});
+    // On the browser's own decoder from its first buffer.
+    await old.next();
+    expect(fake.otherStarts).toEqual([0]);
+    // The file is read anew (it was replaced, or its decoder works again) while a voice that is
+    // stopping takes one more buffer from the read it had.
+    forgetSound('file');
+    fake.bad.clear();
+    await old.next();
+    await old.return(undefined);
+    const fresh = await read(fake, 100 * PACKET, 110 * PACKET);
+    expect(fresh.given).toEqual(range(100, 110));
+    // The new read asks the WebCodecs decoder first, and the console was told once.
+    expect(fake.starts).toEqual([0, 100]);
+    expect(
+      vi.mocked(console.warn).mock.calls.filter((call) => String(call[0]).includes('own decoder')),
+    ).toHaveLength(1);
+  });
+
   it('takes sound that begins later than what was asked for as that, not as a hole', async () => {
     // Asked from five packets before the track's first: the decoder that takes over begins where
     // the other failed, and what it gives first is the first there is.

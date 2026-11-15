@@ -97,8 +97,11 @@ export class Sound {
     report: (trouble: SoundTrouble) => void,
   ): AsyncGenerator<WrappedAudioBuffer, void, unknown> {
     const { assetId } = this;
+    // Taken once: a read that began before the file changed (`forgetSound`) learns into what was
+    // known then, not into what the next read of the new file starts from.
+    const k = knownOf(assetId);
     let way: 'webcodecs' | 'browser' =
-      known.get(assetId)?.byBrowser != null && (await this.byBrowser()) ? 'browser' : 'webcodecs';
+      k.byBrowser != null && (await this.byBrowser()) ? 'browser' : 'webcodecs';
     // Where the next start asks from, the end of what was given last, and where a hole began.
     let pos = from;
     let end: number | null = null;
@@ -126,7 +129,6 @@ export class Sound {
             if (skipped && wb.timestamp > hole + NO_GAP) report({ lost: 'stretch', from: hole, cause });
             hole = null;
           }
-          const k = knownOf(assetId);
           if (way === 'browser' && k.byBrowser === null) {
             k.byBrowser = cause;
             console.warn(
@@ -146,7 +148,6 @@ export class Sound {
         if (disposed(err)) throw err;
         const said = describeCause(err);
         cause ||= said;
-        const k = knownOf(assetId);
         if (!k.said.has(`${way}|${said}`)) {
           k.said.add(`${way}|${said}`);
           console.warn(`[audio] ${assetId}: decoding failed (${way})`, err);
