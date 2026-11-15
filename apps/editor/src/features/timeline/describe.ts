@@ -10,7 +10,7 @@ import {
 } from '@tandem/core';
 import type { DecoderGap } from '@tandem/engine';
 import { faultSpoken, soundLossSpoken } from '../library/fault';
-import type { SoundLossKind } from './soundLoss';
+import type { SoundGap } from './soundLoss';
 
 /** A frame as it is read out: minutes, seconds and frames, with hours only when there are any. */
 export function spokenTime(frame: number, settings: Project['settings']): string {
@@ -33,8 +33,8 @@ export interface ClipTrouble {
   undecodable?: boolean;
   /** What keeps the page from decoding any picture, or any sound, where that is why. */
   gap?: DecoderGap | null;
-  /** The preview played it without a part of its sound, which would not decode. */
-  soundLost?: SoundLossKind | null;
+  /** The preview played it without a part of its sound, which would not decode, from `frame` on. */
+  soundLost?: Pick<SoundGap, 'lost' | 'frame'> | null;
   /** It shares frames with another clip of its track. */
   overlapping?: boolean;
 }
@@ -56,7 +56,10 @@ export function describeClip(
   if (trouble.undecodable) {
     parts.push(faultSpoken(clip.type === 'audio' ? 'audio' : 'video', trouble.gap ?? null));
   }
-  if (trouble.soundLost) parts.push(soundLossSpoken(trouble.soundLost));
+  if (trouble.soundLost) {
+    const { lost, frame } = trouble.soundLost;
+    parts.push(soundLossSpoken(lost, frame === null ? null : spokenTime(frame, settings)));
+  }
   if (trouble.overlapping) parts.push('overlaps another clip');
   return parts.join(', ');
 }

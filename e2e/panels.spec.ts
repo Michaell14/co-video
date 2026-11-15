@@ -2543,7 +2543,7 @@ test.describe('sound that decodes in part', () => {
     await expect(mark).toHaveClass(/clip__chip--warn/);
     await expect(sound).toHaveAttribute(
       'aria-label',
-      'stereo-441.mp4, A1, 0:00.00 to 0:06.00, a stretch of its sound could not be decoded',
+      'stereo-441.mp4, A1, 0:00.00 to 0:06.00, a stretch of its sound from 0:01.11 could not be decoded',
     );
     // The picture of the same file decodes, and says nothing.
     await expect(page.locator('.clip[aria-label*=", V1,"] .clip__chip')).toHaveCount(0);
@@ -2593,6 +2593,10 @@ test.describe('sound that decodes in part', () => {
       store.commit(moved);
     });
     await expect(details.first()).toHaveText('At 00:00:02:11');
+    await expect(sound).toHaveAttribute(
+      'aria-label',
+      'stereo-441.mp4, A1, 0:01.00 to 0:07.00, a stretch of its sound from 0:02.11 could not be decoded',
+    );
     // Cut short before the place, the clip no longer plays it, and no longer says it.
     await page.evaluate(() => {
       const { store } = (window as any).tandem.session;
@@ -2649,7 +2653,7 @@ test.describe('sound that decodes in part', () => {
     await expect(mark).toHaveClass(/clip__chip--warn/);
     await expect(sound).toHaveAttribute(
       'aria-label',
-      'stereo-441.mp4, A1, 0:00.00 to 0:06.00, its sound stopped decoding part-way through',
+      /^stereo-441\.mp4, A1, 0:00\.00 to 0:06\.00, its sound stopped decoding at 0:0\d\.\d\d$/,
     );
     await sound.click();
     const said = inspector(page).locator('.insp__trouble[data-sound-lost="rest"]');
@@ -2668,12 +2672,17 @@ test.describe('sound that decodes in part', () => {
     const first = await place();
     expect(first).toBeGreaterThanOrEqual(120);
     expect(first).toBeLessThan(135);
+    // The read-out names the same place, as it is read out.
+    const readOut = (frame: number) =>
+      `stereo-441.mp4, A1, 0:00.00 to 0:06.00, its sound stopped decoding at 0:${String(Math.floor(frame / 30)).padStart(2, '0')}.${String(frame % 30).padStart(2, '0')}`;
+    await expect(sound).toHaveAttribute('aria-label', readOut(first));
     // A play from further on changes nothing; one from further back finds it silent from there.
     await playOver(page, 150, 160);
     expect(await place()).toBe(first);
     await playOver(page, 105, 115);
     await expect.poll(place).toBeLessThan(115);
     expect(await place()).toBeGreaterThanOrEqual(105);
+    await expect(sound).toHaveAttribute('aria-label', readOut(await place()));
     await expect(mark).toHaveCount(1);
     await expect(inspector(page).locator('.insp__trouble')).toHaveCount(1);
   });

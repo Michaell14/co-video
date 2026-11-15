@@ -75,14 +75,21 @@ describe('what the timeline says about clips', () => {
     );
   });
 
-  it('says of a clip that plays without a part of its sound which part, after what else is wrong with it', () => {
+  it('says of a clip that plays without a part of its sound which part and from when, after what else is wrong with it', () => {
     const p = project();
     const sound = p.clips['dusk-sound'];
-    expect(describeClip(sound, 'A1', p.settings, { soundLost: 'stretch' })).toBe(
+    expect(describeClip(sound, 'A1', p.settings, { soundLost: { lost: 'stretch', frame: 101 } })).toBe(
+      'dusk.mp4, A1, 0:02.00 to 0:05.10, a stretch of its sound from 0:03.11 could not be decoded',
+    );
+    expect(
+      describeClip(sound, 'A1', p.settings, { soundLost: { lost: 'rest', frame: 120 }, overlapping: true }),
+    ).toBe('dusk.mp4, A1, 0:02.00 to 0:05.10, its sound stopped decoding at 0:04.00, overlaps another clip');
+    // Of a clip that plays backwards the preview cannot say where.
+    expect(describeClip(sound, 'A1', p.settings, { soundLost: { lost: 'stretch', frame: null } })).toBe(
       'dusk.mp4, A1, 0:02.00 to 0:05.10, a stretch of its sound could not be decoded',
     );
-    expect(describeClip(sound, 'A1', p.settings, { soundLost: 'rest', overlapping: true })).toBe(
-      'dusk.mp4, A1, 0:02.00 to 0:05.10, its sound stopped decoding part-way through, overlaps another clip',
+    expect(describeClip(sound, 'A1', p.settings, { soundLost: { lost: 'rest', frame: null } })).toBe(
+      'dusk.mp4, A1, 0:02.00 to 0:05.10, its sound stopped decoding part-way through',
     );
     expect(describeClip(sound, 'A1', p.settings, { soundLost: null })).toBe(
       'dusk.mp4, A1, 0:02.00 to 0:05.10',

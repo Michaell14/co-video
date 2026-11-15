@@ -1614,6 +1614,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
                 const fault = c.assetId ? session.thumbs.fault(c.assetId) : null;
                 const missing = !!c.assetId && (!live.assets[c.assetId] || offline.has(c.assetId));
                 const undecodable = !!fault && (c.type === 'audio' ? fault.sound : fault.picture);
+                // A clip that has no sound at all here is not also said to lack a part of it.
+                const lost = missing || undecodable ? null : gravest(session.thumbs.soundLost(c, live));
                 return (
                   <ClipView
                     key={c.id}
@@ -1636,8 +1638,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
                     fadeMoved={fading?.id === c.id && fading.moved}
                     missing={missing}
                     undecodable={undecodable}
-                    // A clip that has no sound at all here is not also said to lack a part of it.
-                    soundLost={missing || undecodable ? null : gravest(session.thumbs.soundLost(c, live))}
+                    soundLost={lost?.lost ?? null}
+                    soundLostAt={lost?.frame ?? null}
                     overlapping={overlapping.has(c.id)}
                   />
                 );
@@ -2034,6 +2036,8 @@ interface ClipViewProps {
   undecodable: boolean;
   /** The preview played the clip without a part of its sound, which would not decode. */
   soundLost: SoundLossKind | null;
+  /** The frame of the timeline at which that silence begins, where the preview could say. */
+  soundLostAt: number | null;
   /** The clip shares frames with another clip of its track. */
   overlapping: boolean;
 }
@@ -2059,6 +2063,7 @@ const ClipView = memo(function ClipView({
   missing,
   undecodable,
   soundLost,
+  soundLostAt,
   overlapping,
 }: ClipViewProps) {
   const w = clipWidth(clip.duration, ppf);
@@ -2087,7 +2092,7 @@ const ClipView = memo(function ClipView({
         offline: missing,
         undecodable,
         gap,
-        soundLost,
+        soundLost: soundLost && { lost: soundLost, frame: soundLostAt },
         overlapping,
       })}
       aria-selected={selected}

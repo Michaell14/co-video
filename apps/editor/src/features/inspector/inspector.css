@@ -54,7 +54,8 @@
   overflow-wrap: anywhere;
   user-select: text;
 }
-/* The place, which takes the playhead there: a word apart from what stands before it. */
+/* The place, which takes the playhead there, follows the word before it and its space: no gap of
+   its own, as a link after a sentence has. */
 .insp__cause .insp__linkbtn {
   margin-left: 0;
 }

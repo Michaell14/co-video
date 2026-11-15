@@ -153,5 +153,5 @@ export class SoundLosses {
 }
 
 /** The graver of what a clip is without, which is what its one mark on the timeline says. */
-export const gravest = (gaps: readonly SoundGap[]): SoundLossKind | null =>
-  gaps.some((gap) => gap.lost === 'rest') ? 'rest' : gaps.length ? 'stretch' : null;
+export const gravest = (gaps: readonly SoundGap[]): SoundGap | null =>
+  gaps.find((gap) => gap.lost === 'rest') ?? gaps[0] ?? null;

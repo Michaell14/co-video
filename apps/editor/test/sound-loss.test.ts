@@ -64,14 +64,14 @@ describe('sound the preview played a clip without', () => {
     expect(losses.note({ ...lost(2.5), cause: 'another' }, p)).toBe(true);
     expect(losses.of(p.clips.take, p)).toEqual([{ lost: 'stretch', frame: 75, cause: 'another' }]);
     // Sound that stops for good is another kind, and the graver one.
-    expect(gravest(losses.of(p.clips.take, p))).toBe('stretch');
+    expect(gravest(losses.of(p.clips.take, p))).toEqual({ lost: 'stretch', frame: 75, cause: 'another' });
     expect(losses.note(lost(7, 'rest'), p)).toBe(true);
     expect(losses.note(lost(7, 'rest'), p)).toBe(false);
     expect(losses.of(p.clips.take, p)).toEqual([
       { lost: 'stretch', frame: 75, cause: 'another' },
       { lost: 'rest', frame: 210, cause: CAUSE },
     ]);
-    expect(gravest(losses.of(p.clips.take, p))).toBe('rest');
+    expect(gravest(losses.of(p.clips.take, p))).toEqual({ lost: 'rest', frame: 210, cause: CAUSE });
     expect(gravest([])).toBeNull();
   });
 
@@ -161,6 +161,10 @@ describe('sound the preview played a clip without', () => {
     expect(soundLossChip('rest')).toBe('Sound stops');
     expect(soundLossSpoken('stretch')).toBe('a stretch of its sound could not be decoded');
     expect(soundLossSpoken('rest')).toBe('its sound stopped decoding part-way through');
+    expect(soundLossSpoken('stretch', '0:01.11')).toBe(
+      'a stretch of its sound from 0:01.11 could not be decoded',
+    );
+    expect(soundLossSpoken('rest', '0:04.00')).toBe('its sound stopped decoding at 0:04.00');
     expect(soundLossNotice('stretch')).toBe(
       'A stretch of the sound of this clip could not be decoded and is silent.',
     );

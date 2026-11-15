@@ -77,11 +77,17 @@ export const faultSpoken = (decoder: string, gap: DecoderGap | null): string =>
 export const soundLossChip = (lost: SoundLossKind): string =>
   lost === 'stretch' ? 'Sound gap' : 'Sound stops';
 
-/** In the words that follow the clip's name where the timeline is read out: */
-export const soundLossSpoken = (lost: SoundLossKind): string =>
-  lost === 'stretch'
-    ? 'a stretch of its sound could not be decoded'
-    : 'its sound stopped decoding part-way through';
+/**
+ * In the words that follow the clip's name where the timeline is read out, with the time on the
+ * timeline at which it falls silent where the preview could say (`at`, as it is read out):
+ */
+export function soundLossSpoken(lost: SoundLossKind, at: string | null = null): string {
+  if (lost === 'stretch')
+    return at
+      ? `a stretch of its sound from ${at} could not be decoded`
+      : 'a stretch of its sound could not be decoded';
+  return at ? `its sound stopped decoding at ${at}` : 'its sound stopped decoding part-way through';
+}
 
 /**
  * And in a sentence, where there is room for one. The clip is named where the sentence stands
