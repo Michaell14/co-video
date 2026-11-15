@@ -218,6 +218,8 @@ export interface Waveform {
   /** Seconds analysed so far. */
   loaded: number;
   done: boolean;
+  /** The read found none of the file's sound: what it drew, if anything, lies in front of it. */
+  soundless: boolean;
 }
 
 export const PEAKS_PER_SECOND = 100;
@@ -255,6 +257,7 @@ export class WaveformCache extends Emitter {
         perSecond: PEAKS_PER_SECOND,
         loaded: 0,
         done: false,
+        soundless: false,
       };
       this.waves.set(assetId, w);
       this.queue.push(assetId);
@@ -281,7 +284,9 @@ export class WaveformCache extends Emitter {
           // What will not decode stays flat, as it stays silent when played.
           const sound = new Sound(assetId, media.audio);
           const buffers = sound.buffers(undefined, undefined, ({ lost, cause }) => {
-            if (lost === 'all' && !this.disposed) this.silent(assetId, media, cause);
+            if (lost !== 'all' || this.disposed) return;
+            w.soundless = true;
+            this.silent(assetId, media, cause);
           });
           let lastEmit = 0;
           let lastYield = performance.now();
@@ -333,10 +338,15 @@ export class WaveformCache extends Emitter {
     }
   }
 
+  /**
+   * The file's bytes moved. A waveform that drew some of the file's sound is kept: it is the same
+   * sound, wherever the bytes are now. One that drew none of it is read again, for what it found
+   * (nothing to read, or nothing that decodes) is what has to be asked anew.
+   */
   forget(assetId: string): void {
     const w = this.waves.get(assetId);
     if (w && !w.done) return;
-    if (w && w.loaded === 0) this.waves.delete(assetId);
+    if (w && (w.loaded === 0 || w.soundless)) this.waves.delete(assetId);
   }
 
   dispose(): void {

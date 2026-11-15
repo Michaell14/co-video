@@ -482,15 +482,23 @@ Decoded sound reaches the mixer, an export and the waveforms through `Sound` (`a
 which wraps Mediabunny's `AudioBufferSink`. When the WebCodecs decoder fails, decoding starts again
 behind the packet that stopped it, further on each time it fails at once and a bounded number of
 times; what lies between stays silent, and the mixer's `AudioProblem` says how much was lost
-(`lost`), from where (`at`) and what the decoder said (`cause`). Where the decoder gives nothing at
-all, plain AAC-LC is decoded by the browser's other decoder (`audio/adts.ts`): the track's packets,
-128 at a time behind the three that lead up to them, as an ADTS stream through `decodeAudioData`,
-cut into one buffer per packet at the packet's time. That decoder is trusted only after it has
-placed a built-in test stream to the sample, and a stretch that comes back with another number of
-samples than its packets hold is not used. Which decoder a file is on is remembered per asset for as
-long as the page lives and forgotten with `MediaLibrary.invalidate`. A clip that plays backwards
-keeps the sound that did decode when its decoder stops: what could not be given is then a stretch at
-the clip's start, and is reported as one.
+(`lost`), from where (`at`) and what the decoder said (`cause`). Where the decoder gives none of the
+file's sound (what it gives in front of it, the encoder's priming and the packet it needs to get
+going, does not count), has used up its starts, or would start beyond what a read asked for, AAC
+goes to the browser's other decoder (`audio/adts.ts`): the track's packets, 128 at a time behind the
+three that lead up to them, through `decodeAudioData`, cut into one buffer per packet at the
+packet's time. Plain AAC-LC above 24 kHz goes as an ADTS stream, once the browser has placed a
+built-in test stream to the sample. Everything else (HE-AAC v1 and v2, AAC-LC at 24 kHz and below,
+and plain AAC-LC where the test stream is not placed) goes as an MP4 file of its own
+(`audio/mp4.ts`). That file carries the track's AudioSpecificConfig as it is, is timed in samples at
+the rate the stream decodes to (twice a core of 24 kHz or less unless the config says there is no
+band replication), and has an edit that leaves out the three packets in front. A stretch is used
+only when it comes back with exactly the samples of its packets, or exactly those less the three in
+front (a browser that follows the edit); anything else is not used. A hand-over that fails leaves
+the WebCodecs decoder to go on as it would have. Which decoder a file is on is remembered per asset
+for as long as the page lives and forgotten with `MediaLibrary.invalidate`. A clip that plays
+backwards keeps the sound that did decode when its decoder stops: what could not be given is then a
+stretch at the clip's start, and is reported as one.
 
 In the preview the mixer's reports reach the editor through `Player.onAudioProblem`. The timeline's
 media cache keeps them by clip and kind, a stretch or the rest (`TimelineMedia.heard`,
@@ -499,8 +507,10 @@ clip when it is moved, slipped or played at another speed, and however often the
 (it does on every play) it is one mark. It is let go when the clip goes, is of another file or is
 turned round, no longer plays the place, or when its file is read anew (`TimelineMedia.refresh`).
 Sound of which nothing decodes is a fault of the file instead (`DecodeFault.sound`, with the
-decoder's `cause`) and is not also kept by clip. Normalise loudness reads through `Sound` too, so it
-measures what plays.
+decoder's `cause`) and is not also kept by clip. Which of the two it is, the file's waveform finds
+out, since it reads all of the file: a clip of which the preview heard nothing decode waits for it
+(`TimelineMedia.heard`, `WaveformCache.done`), and is marked only if some of the file's sound
+decodes. Normalise loudness reads through `Sound` too, so it measures what plays.
 
 The player's master clock is the audio clock, offset by output latency, so picture follows sound.
 If the audio context is not running yet the player uses a monotonic clock and hands over cleanly

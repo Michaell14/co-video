@@ -118,9 +118,10 @@ with projects stored in your browser.
   the playhead there, and the cause. The mark lasts until the clip no longer plays that place or its
   file is read anew or replaced
 - Sound is not lost at the first error: a damaged stretch of a file costs that stretch (about 70 ms
-  for one bad AAC packet) and the rest of the clip plays, and plain AAC-LC that the browser's
-  WebCodecs decoder will not decode at all is decoded by the browser's other decoder instead, sample
-  for sample in the same place
+  for one bad AAC packet) and the rest of the clip plays. AAC that the browser's WebCodecs decoder
+  will not decode (AAC-LC at any rate, HE-AAC and HE-AAC v2) is decoded by the browser's other
+  decoder instead, the one that plays a file in a `<video>`. In Chromium it is the same sound,
+  sample for sample, in the same place
 - Projects save to a portable `.tandem` file. Opening one makes a new project, from the home screen
   or the editor; replacing the open project with one is a separate command that asks first
 - The home screen renames, duplicates and deletes the projects on your device. The owner of a
@@ -480,11 +481,15 @@ Three ideas carry most of the weight:
   comments that were added meanwhile. A comment that someone makes while the speed slider is being
   dragged is placed by the picture as the drag's last step left it. When the person who makes it
   sees the drag late, it can land as far off its shot as the drag moved in between.
-- A second decoder stands in for plain AAC-LC above 24 kHz in MP4, MOV or Matroska only. HE-AAC,
-  AAC at 24 kHz and below, AAC in transport streams and other codecs have the one decoder; when it
-  fails the export says so, with the cause. HE-AAC could not be tested at all: nothing here can
-  encode it. In a browser whose own decoder drops the encoder's priming from an AAC stream, the
-  first 2112 samples of a file decoded that way are silent.
+- The second decoder is for AAC in MP4, MOV or Matroska: AAC-LC, HE-AAC and HE-AAC v2. AAC Main,
+  xHE-AAC, low-delay AAC, AAC in transport streams and other codecs have the one decoder; when it
+  fails, the export says so, with the cause. What the second decoder gives is used only when it
+  holds exactly the samples of its packets, so it is never out of place by samples it gained or
+  lost. A browser whose own HE-AAC decoder delays its sound without changing its length (by the 962
+  samples of band replication, 22 ms at 44.1 kHz) puts it that much late, as it does when it plays
+  the file. HE-AAC was tested on one file, by hand, in Chromium: nothing here can encode it. In a
+  browser whose own decoder drops the encoder's priming from an ADTS stream, the first 2112 samples
+  of an AAC-LC file decoded that way are silent.
 - Typing into a title on the picture is tested in Chromium on Linux only: not on macOS, not in
   Safari or Firefox, not with a real input method and not by touch. A tab in a title is drawn as a
   space but typed as a tab stop.

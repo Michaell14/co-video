@@ -5,8 +5,11 @@ import { TimelineMedia } from '../src/features/timeline/mediaCache';
 
 const CAUSE = 'EncodingError: The given encoding is not supported.';
 
-/** What the fake file's sound gives when its waveform reads it: nothing at all, or some sound. */
-const file = { sound: 'none' as 'none' | 'some', reads: 0 };
+/**
+ * What the fake file's sound gives when its waveform reads it: nothing at all, the priming in
+ * front of its sound and none of the sound, or some sound.
+ */
+const file = { sound: 'none' as 'none' | 'priming' | 'some', reads: 0 };
 
 vi.mock('@tandem/engine', async (original) => {
   const real = await original<typeof import('@tandem/engine')>();
@@ -24,12 +27,21 @@ vi.mock('@tandem/engine', async (original) => {
       await new Promise((done) => setTimeout(done, 5));
       if (file.sound === 'none') return report({ lost: 'all', from: 0, cause: CAUSE });
       const samples = new Float32Array(1024).fill(0.5);
-      yield {
-        buffer: { sampleRate: 44100, numberOfChannels: 1, length: 1024, getChannelData: () => samples },
-        timestamp: 0,
-        duration: 1024 / 44100,
+      const duration = 1024 / 44100;
+      const buffer = {
+        sampleRate: 44100,
+        numberOfChannels: 1,
+        length: 1024,
+        duration,
+        getChannelData: () => samples,
       };
-      report({ lost: 'rest', from: 1024 / 44100, cause: CAUSE });
+      if (file.sound === 'priming') {
+        // A packet that begins in front of the sound and reaches into it, and nothing behind it.
+        yield { buffer, timestamp: -duration / 2, duration };
+        return report({ lost: 'all', from: duration / 2, cause: CAUSE });
+      }
+      yield { buffer, timestamp: 0, duration };
+      report({ lost: 'rest', from: duration, cause: CAUSE });
     }
   }
   return { ...real, MediaLibrary: Library, Sound };
@@ -110,6 +122,25 @@ describe('a clip of which the preview heard nothing decode', () => {
     media.heard({ ...none, lost: 'stretch', at: 3 }, p);
     expect(media.soundLost(p.clips.take, p).map((gap) => gap.lost)).toEqual(['stretch', 'rest']);
     expect(file.reads).toBe(1);
+    media.dispose();
+  });
+
+  it('is still said to be the file’s doing once the file is read anew, where its waveform drew what lies in front of the sound', async () => {
+    file.sound = 'priming';
+    const media = new TimelineMedia(async () => null);
+    const p = project();
+    media.heard(none, p);
+    await vi.waitFor(() => expect(media.wave.done('file')).toBe(true));
+    expect(media.wave.get('file', 6)!.loaded).toBeGreaterThan(0);
+    expect(media.fault('file')).toEqual({ picture: false, sound: true, cause: CAUSE });
+    // The file's bytes moved (it finished downloading, or its proxy was turned on or off).
+    media.refresh('file');
+    media.heard(none, p);
+    expect(media.soundLost(p.clips.take, p)).toEqual([]);
+    await vi.waitFor(() => expect(media.wave.done('file')).toBe(true));
+    expect(file.reads).toBe(2);
+    expect(media.fault('file')).toEqual({ picture: false, sound: true, cause: CAUSE });
+    expect(media.soundLost(p.clips.take, p)).toEqual([]);
     media.dispose();
   });
 
