@@ -84,7 +84,8 @@ with projects stored in your browser.
 - A title is typed into where it stands in the picture: double-click it in the viewer and the
   caret is in its text at that place, in its own type, turned and scaled as it is drawn. A new
   title starts out that way, with its placeholder selected. `Esc`, `Ctrl+Enter` or a press
-  anywhere else ends the typing, and all of it is one undo step
+  anywhere else ends the typing, and all of it is one undo step. A title in a box wraps as text
+  does in the browser: at spaces, after a hyphen or a dash, never at a no-break space
 - Subtitles: import `.srt` / `.vtt` as editable captions, export `.srt` (captions only: titles and
   lower thirds are not subtitles)
 - 18 blend modes, rectangular and elliptical masks with feathering, on-canvas transform handles

@@ -543,7 +543,12 @@ when it starts.
   measures and the layer's box into the field's size, padding, type size and CSS matrix. Type is
   laid out at the size it has on screen and only turned by the matrix, so the browser's caret
   stays a pixel wide in a 4K frame shown small. Canvas and field both set type with
-  `geometricPrecision`, by the font's own measures at every size. The field starts from
+  `geometricPrecision`, by the font's own measures at every size. The field's lines are broken by
+  the browser and the title's by `wrapLines`, which follows Chromium's rules: all of them between
+  ASCII characters (`breaksBetween`; a browser test compares every pair against a block styled as
+  the field), and those for hyphens, dashes, the ellipsis, quotation marks and no-break spaces
+  beyond ASCII. Like the browser it forgets what stood before the start of a line. Emoji, scripts
+  written without spaces and currency signs count as letters. The field starts from
   `all: initial`, because anything inherited (the page's font features) moves letters. Undo inside
   the field is its own (`TypingHistory`): Chromium keeps one undo history for all fields of a page
   and would go on to another field at the end of this one's. `cmd.editText` decides where a title
