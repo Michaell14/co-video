@@ -39,9 +39,10 @@ import { TypingHistory, type TextState } from './typingHistory';
  *
  * The field's lines are broken by the browser and the title's by `wrapLines`, which follows the
  * browser's rules for what titles are written in: words, numbers, punctuation, hyphens and
- * dashes. Where the two still part at the edge of a title's box (an emoji set against a word, a
- * script written without spaces), the caret is drawn a line off from there on. The text and the
- * picture are right all the same.
+ * dashes, and a last letter kerned against the space after it. Where the two still part at the
+ * edge of a title's box (an emoji set against a word, a script written without spaces, a word
+ * that ends within a sixty-fourth of a pixel of the edge as the field is shown), the caret is
+ * drawn a line off from there on. The text and the picture are right all the same.
  */
 export function TitleEditor({ scale }: { scale: number }) {
   const session = useSession();

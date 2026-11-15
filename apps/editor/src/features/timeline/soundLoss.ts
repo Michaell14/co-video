@@ -83,7 +83,7 @@ export class SoundLosses {
       this.heard.set(clip.id, heard);
     }
     const loss: Loss = { source, cause: problem.cause ?? '' };
-    // The mixer decodes ahead of what it plays, and can meet trouble at the very end of the clip.
+    // A place the clip does not play, at its end or beyond, is none of the clip's sound.
     if (!plays(clip, project, loss)) return false;
     // One of a kind for a clip, at the first place it was heard: the same however often the clip
     // is played, and from wherever.

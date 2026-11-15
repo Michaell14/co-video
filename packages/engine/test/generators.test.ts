@@ -139,4 +139,34 @@ describe('wrapLines', () => {
     expect(wrap('日本\u3000東京', 3)).toEqual(['日本', '東京']);
     expect(wrap('日本\u3000', 2)).toEqual(['日本\u3000']);
   });
+
+  describe('with a full stop that the font kerns against the white space after it', () => {
+    /** Ten to a character, and a full stop three less in front of white space, as a canvas sets it: a tab as a space. */
+    const kerning = (line: string): number =>
+      10 * measure(line) - 3 * (line.match(/\.[ \t\u3000]/g)?.length ?? 0);
+    const set = (text: string, width: number, align: 'left' | 'center' | 'right'): string[] =>
+      wrapLines(text, width, kerning, align);
+
+    it('counts a word as wide as it is followed by a space in a line set from the left, as a browser does', () => {
+      // "Hello world." is 120 wide on its own and 117 followed by a space.
+      expect(set('Hello world. Next', 118, 'left')).toEqual(['Hello world.', 'Next']);
+      expect(set('Hello world.   Next', 118, 'left')).toEqual(['Hello world.', 'Next']);
+      expect(set('Hello world. ', 118, 'left')).toEqual(['Hello world. ']);
+      expect(set('Hello world. Next', 116, 'left')).toEqual(['Hello', 'world. Next']);
+    });
+
+    it('measures a centred or right-aligned line without the spaces it ends in', () => {
+      for (const align of ['center', 'right'] as const) {
+        expect(set('Hello world. Next', 118, align)).toEqual(['Hello', 'world. Next']);
+        expect(set('Hello world. Next', 120, align)).toEqual(['Hello world.', 'Next']);
+      }
+    });
+
+    it('counts it after the wide space of East Asian text however the line is set, and never after a tab', () => {
+      for (const align of ['left', 'center', 'right'] as const) {
+        expect(set('Hello world.\u3000Next', 118, align)).toEqual(['Hello world.', 'Next']);
+        expect(set('Hello world.\tNext', 118, align)).toEqual(['Hello', 'world.\tNext']);
+      }
+    });
+  });
 });

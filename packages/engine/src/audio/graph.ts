@@ -880,8 +880,15 @@ export class AudioGraph {
       const played = (lastTl - clipStartSec) * per;
       const low = (clip.reverse ? srcB - played : clip.sourceIn) - around + opened.start;
       const high = (clip.reverse ? srcB : clip.sourceIn + played) + around + opened.start;
+      // Where what is played of the clip ends in its file: what this voice plays, or in a render
+      // made in chunks all that the render plays, which one decode serves. A decoder reads a few
+      // packets beyond what it is asked for, and can fail on one behind that end. Nothing that is
+      // played is lost to that, and a play that goes so far meets it again and says where.
+      const reach = this.runs ? high - around : srcTo + opened.start;
       const report: Report = ({ lost: said, from: source, cause }) => {
         if (v.cancelled || !assetId) return;
+        // Less than half a sample short of that end is the end, rounded.
+        if ((source - reach) * rate > -0.5) return;
         // Where a clip that plays forwards falls silent. Backwards, what is lost is heard up to
         // that place, not from it, and where it begins is not known here.
         const heard = clipStartSec + (source - opened.start - clip.sourceIn) / per;

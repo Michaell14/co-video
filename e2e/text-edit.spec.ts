@@ -582,6 +582,113 @@ test.describe('typing into a title on the picture', () => {
     await expect.poll(() => content(page, id)).toBe('HHHH HHH-HHH XH');
   });
 
+  test('a title in a box keeps a full stop the font kerns against a space on the line, where the field keeps it', async ({
+    page,
+  }) => {
+    await newProject(page);
+    await hideOutline(page);
+    const { width, height } = await page.evaluate(() => (window as any).tandem.session.store.get().settings);
+    const font = `700 ${0.09 * height}px "Inter", "Inter Variable", Inter, system-ui, sans-serif`;
+    await fontsFor(page, font, 'H. ');
+    // Inter kerns a full stop against the space after it: "HHH HHH." is narrower followed by a
+    // space than on its own, and the box ends between the two.
+    const [alone, kerned] = await page.evaluate((font) => {
+      const ctx = new OffscreenCanvas(1, 1).getContext('2d')!;
+      ctx.font = font;
+      ctx.textRendering = 'geometricPrecision';
+      const w = (s: string) => ctx.measureText(s).width;
+      return [w('HHH HHH.'), w('HHH HHH. ') - w(' ')];
+    }, font);
+    expect(alone - kerned).toBeGreaterThan(2);
+    const text = { content: 'HHH HHH. HHH', font: 'Inter', weight: 700, size: 0.09, align: 'left' };
+    const id = await addTitle(page, { ...text, boxWidth: (alone + kerned) / 2 / width });
+    await page.evaluate(() => (window as any).tandem.ui.getState().clearSelection());
+    /** The picture once it has stopped changing, its lines and the letters of each. */
+    const settled = async () => {
+      let shot = await picture(page);
+      await expect
+        .poll(async () => {
+          const again = await picture(page);
+          const still =
+            (await difference(page, shot, again)).pixels === 0 &&
+            (await ink(page, again, 'x', 0, 4000)).length > 0;
+          shot = again;
+          return still;
+        })
+        .toBe(true);
+      const lines = await ink(page, shot, 'y', 0, 4000);
+      const letters = await Promise.all(lines.map((line) => ink(page, shot, 'x', ...line)));
+      return { shot, lines, letters };
+    };
+    /** The field's selection from `start` to `end` is marked over the drawn letter `letter` of `line`. */
+    const marked = async (
+      at: Awaited<ReturnType<typeof settled>>,
+      [start, end]: [number, number],
+      line: number,
+      letter: number,
+    ) => {
+      await page.evaluate((id) => (window as any).tandem.cmd.editText(id), id);
+      await expect(field(page)).toBeFocused();
+      await field(page).evaluate(
+        (el: HTMLTextAreaElement, [start, end]) => el.setSelectionRange(start, end),
+        [start, end],
+      );
+      const [left, right] = at.letters[line][letter];
+      await expect
+        .poll(async () => {
+          const { box } = await difference(page, at.shot, await picture(page));
+          return (
+            !!box &&
+            box.top >= (at.lines[line - 1]?.[1] ?? 0) &&
+            box.bottom >= at.lines[line][1] - 1 &&
+            box.bottom <= (at.lines[line + 1]?.[0] ?? Infinity) &&
+            box.left >= (at.letters[line][letter - 1]?.[1] ?? 0) &&
+            box.left <= left + 1 &&
+            box.right >= right - 1 &&
+            box.right <= (at.letters[line][letter + 1]?.[0] ?? Infinity)
+          );
+        })
+        .toBe(true);
+      await page.keyboard.press('Escape');
+      await expect(field(page)).toHaveCount(0);
+    };
+
+    // Set from the left, the full stop stays on the first line, in the picture and in the field.
+    const left = await settled();
+    expect(left.letters.map((line) => line.length)).toEqual([7, 3]);
+    await marked(left, [9, 10], 1, 0);
+    // A double-click on the left half of the second letter of the second line puts the caret in
+    // front of it.
+    const shown = await shownFrame(page);
+    const [from, to] = left.letters[1][1];
+    await page.mouse.dblclick(
+      shown.x + from + (to - from) / 4,
+      shown.y + (left.lines[1][0] + left.lines[1][1]) / 2,
+    );
+    await expect(field(page)).toBeFocused();
+    expect(await caret(page)).toEqual([10, 10]);
+    await page.keyboard.type('X');
+    await expect.poll(() => content(page, id)).toBe('HHH HHH. HXHH');
+    await page.keyboard.press('Escape');
+
+    // Centred, a browser measures the line without the space it ends in: the second word does
+    // not fit after the first, in the picture or in the field.
+    await page.evaluate(
+      ({ id, text }) => {
+        const { session } = (window as any).tandem;
+        const clip = session.store.get().clips[id];
+        session.store.commit([
+          { op: 'updateClip', id, patch: { text: { ...clip.text, ...text, align: 'center' } } },
+        ]);
+        (window as any).tandem.ui.getState().clearSelection();
+      },
+      { id, text },
+    );
+    const centred = await settled();
+    expect(centred.letters.map((line) => line.length)).toEqual([3, 7]);
+    await marked(centred, [4, 5], 1, 0);
+  });
+
   test('an input method composes into the title, and what it composed is one step', async ({ page }) => {
     await newProject(page);
     const id = await addTitle(page, { content: 'ab' });

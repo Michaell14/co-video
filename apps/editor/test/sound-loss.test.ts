@@ -89,8 +89,9 @@ describe('sound the preview played a clip without', () => {
       expect(losses.note({ clipId: 'take', assetId: 'file', reason }, p)).toBe(false);
     expect(losses.note({ ...lost(3), clipId: 'gone' }, p)).toBe(false);
     expect(losses.note({ ...lost(3), assetId: 'another' }, p)).toBe(false);
-    // The mixer decodes a little beyond what plays: trouble where the clip ends is not the clip's.
+    // Trouble where the clip ends, or behind its end, is not the clip's.
     expect(losses.note(lost(8), p)).toBe(false);
+    expect(losses.note(lost(9.5), p)).toBe(false);
     expect(losses.of(p.clips.take, p)).toEqual([]);
   });
 

@@ -2537,6 +2537,29 @@ test.describe('sound that decodes in part', () => {
     await expect(mark).toHaveCount(0);
     await expect(sound).toHaveAttribute('aria-label', 'stereo-441.mp4, A1, 0:00.00 to 0:06.00');
 
+    // Looped over a range that ends in the packet before the bad one, the clip plays all it has
+    // to play there: the decoder reads a little ahead and fails behind the range, which costs
+    // nothing.
+    await seek(page, 40);
+    await page.evaluate(() => {
+      const { cmd, session } = (window as any).tandem;
+      cmd.markOut();
+      cmd.toggleLoop();
+      session.player.seek(0);
+      session.player.play();
+    });
+    await expect.poll(() => frame(page), { timeout: 30_000, intervals: [50] }).toBeGreaterThan(30);
+    await expect.poll(() => frame(page), { timeout: 30_000, intervals: [50] }).toBeLessThan(10);
+    await expect.poll(() => frame(page), { timeout: 30_000, intervals: [50] }).toBeGreaterThan(30);
+    await page.evaluate(() => {
+      const { cmd, session } = (window as any).tandem;
+      session.player.pause();
+      cmd.toggleLoop();
+      cmd.clearRange();
+    });
+    expect(await heard(page)).toEqual([]);
+    await expect(mark).toHaveCount(0);
+
     // Played: a warning on the clip, as an overlap is one, and the same in its read-out.
     await playOver(page, 0, 50);
     await expect(mark).toHaveText('Sound gap');
@@ -2616,6 +2639,35 @@ test.describe('sound that decodes in part', () => {
     await playOver(page, 0, 50);
     await expect(mark).toHaveText('Sound gap');
     await expect(details.first()).toHaveText('At 00:00:01:11');
+
+    // Cut in two before the place and played, with the sound of both halves selected: the
+    // sentence says which of the two it is about.
+    await seek(page, 30);
+    await page.evaluate(() => {
+      const { cmd, ui } = (window as any).tandem;
+      ui.getState().select([]);
+      cmd.split();
+    });
+    await expect(sound).toHaveCount(2);
+    await playOver(page, 0, 50);
+    await page.evaluate(() => {
+      const { session, ui } = (window as any).tandem;
+      const halves = (Object.values(session.store.get().clips) as any[]).filter((c) => c.type === 'audio');
+      ui.getState().select(halves.map((c) => c.id));
+    });
+    await expect(said).toHaveCount(1);
+    await expect(said).toContainText(
+      'A stretch of the sound of “stereo-441.mp4” could not be decoded and is silent.',
+    );
+    await expect(details.first()).toHaveText('At 00:00:01:11');
+    await undo(page);
+    await expect(sound).toHaveCount(1);
+    await sound.click();
+    await playOver(page, 0, 50);
+    await expect(mark).toHaveText('Sound gap');
+    await expect(said).toContainText(
+      'A stretch of the sound of this clip could not be decoded and is silent.',
+    );
 
     // The file read anew, as when it has finished downloading: what was heard of the old bytes
     // is forgotten, by the clip and by the inspector.

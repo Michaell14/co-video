@@ -191,19 +191,52 @@ function breaksAt(para: string, from: number, at: number): boolean {
  * - A hyphen or a dash a line is broken after stays on that line.
  * - What cannot be broken and is wider than the box is broken between characters, never inside
  *   one.
+ * - Whether a word that ends at the edge of the box fits is decided as a browser decides it for a
+ *   line set to `align` (see `setLines`).
  */
 export function wrapLines(
   text: string,
   maxWidth: number | null,
   measure: (line: string) => number,
+  align: TextProps['align'] = 'left',
 ): string[] {
-  const out: string[] = [];
+  return maxWidth ? setLines(text, maxWidth, measure, align).map((l) => l.line) : text.split('\n');
+}
+
+/** A line of a title, and how wide it is where what fits on it is decided. */
+interface SetLine {
+  line: string;
+  fit: number;
+}
+
+/**
+ * `wrapLines` in a box, with the width each line was found to fit in.
+ *
+ * A browser decides whether a word fits by the line as it is set together with the white space
+ * after it, and a font may kern that space against the last letter (Inter does after a full stop
+ * or a comma): the line is then as wide as the two less the white space. Chromium counts that for
+ * a space only in a line set from the left. A centred or right-aligned line is measured without
+ * the spaces it ends in, and a tab is never kerned. A wide space of East Asian text is kerned
+ * however the line is aligned.
+ *
+ * A line is drawn by its own width all the same, which can be wider than the box by that much
+ * (see `layoutText`).
+ */
+function setLines(
+  text: string,
+  maxWidth: number,
+  measure: (line: string) => number,
+  align: TextProps['align'],
+): SetLine[] {
+  const fitting = (line: string): number => {
+    const words = withoutTrail(line);
+    const white = line.slice(words.length);
+    const kerned = white[0] === '\u3000' || (white[0] === ' ' && align === 'left');
+    return kerned ? measure(line) - measure(white) : measure(words);
+  };
+  const out: SetLine[] = [];
+  const fits = (line: string): boolean => fitting(line) <= maxWidth;
   for (const para of text.split('\n')) {
-    if (!maxWidth) {
-      out.push(para);
-      continue;
-    }
-    const fits = (line: string): boolean => measure(withoutTrail(line)) <= maxWidth;
     let from = 0;
     while (!fits(para.slice(from))) {
       // The last place the line can be broken at with all that stands before it inside the box,
@@ -217,7 +250,7 @@ export function wrapLines(
         last = at;
       }
       if (last) {
-        out.push(withoutTrail(para.slice(from, last)));
+        out.push({ line: withoutTrail(para.slice(from, last)), fit: fitting(para.slice(from, last)) });
         from = last;
         continue;
       }
@@ -232,10 +265,10 @@ export function wrapLines(
       // its line as well.
       const next = line === piece ? first : from + line.length;
       if (next === para.length) break;
-      out.push(line);
+      out.push({ line, fit: measure(line) });
       from = next;
     }
-    out.push(para.slice(from));
+    out.push({ line: para.slice(from), fit: fitting(para.slice(from)) });
   }
   return out;
 }
@@ -288,12 +321,16 @@ export function layoutText(t: TextProps, frameW: number, frameH: number): TextLa
 
   const content = t.uppercase ? t.content.toUpperCase() : t.content;
   const maxWidth = t.boxWidth ? t.boxWidth * frameW : null;
-  const lines = wrapLines(content, maxWidth, measure);
+  const set = maxWidth ? setLines(content, maxWidth, measure, t.align) : null;
+  const lines = set ? set.map((l) => l.line) : content.split('\n');
   // In a box, white space that ends a line counts as far as the box goes and no further: typing a
   // space at the edge neither widens the box nor moves a centred line by more than is left of it.
-  const widths = lines.map((line) => {
+  // Nor does a last letter that was kerned against the space after it when the line was found to
+  // fit: the field over the title is as wide as the box, and breaks its lines in it.
+  const widths = lines.map((line, i) => {
     const width = measure(line);
-    return maxWidth && width > maxWidth ? Math.max(maxWidth, measure(withoutTrail(line))) : width;
+    if (!set || !maxWidth || width <= maxWidth) return width;
+    return set[i].fit <= maxWidth ? maxWidth : Math.max(maxWidth, measure(withoutTrail(line)));
   });
   const textW = Math.max(1, maxWidth ?? 0, ...widths);
   const lineH = px * t.lineHeight;

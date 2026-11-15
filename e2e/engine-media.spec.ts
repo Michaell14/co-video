@@ -3265,6 +3265,27 @@ test.describe('sound that does not decode as it should', () => {
       );
       stopAt(100);
       const tail = await sound.exported(two);
+
+      // A clip that ends in its file in the packet before the first that will not decode, with
+      // more of the timeline behind it. The decoder reads a few packets ahead and stops behind
+      // what the clip plays, which costs it nothing, forwards or backwards.
+      const short = (reverse: boolean) =>
+        kit.project(
+          160,
+          90,
+          [asset],
+          [
+            { type: 'audio', assetId: 'a', start: 0, duration: 41, reverse },
+            { type: 'audio', assetId: 'a', start: 60, duration: 30 },
+          ],
+          { sampleRate: rate },
+        );
+      const ahead: { silent: number[][]; warnings: unknown[] }[] = [];
+      for (const reverse of [false, true]) {
+        stopAt(60);
+        const out = await sound.exported(short(reverse));
+        ahead.push({ silent: sound.quiet(out.channels[0], rate, 1e-4), warnings: told(out.warnings) });
+      }
       return {
         backwards: {
           samples: part.channels[0].length,
@@ -3275,6 +3296,7 @@ test.describe('sound that does not decode as it should', () => {
           problems: told(inOneGo.problems),
         },
         tail: { silent: sound.quiet(tail.channels[0], rate, 1e-4), warnings: told(tail.warnings) },
+        ahead,
       };
     });
     const rate = 44100;
@@ -3305,6 +3327,13 @@ test.describe('sound that does not decode as it should', () => {
     expect(Math.abs(r.tail.silent[0][0] * rate - 99 * 1024)).toBeLessThan(16);
     expect(Math.abs(r.tail.silent[0][1] - 5)).toBeLessThan(0.001);
     expect(r.tail.warnings).toEqual([{ ...stretch, frame: 68 }]);
+    // Silent only between the two clips, from frame 41 to frame 60, and nothing said.
+    for (const { silent, warnings } of r.ahead) {
+      expect(silent).toHaveLength(1);
+      expect(Math.abs(silent[0][0] * rate - (41 / 30) * rate)).toBeLessThan(16);
+      expect(Math.abs(silent[0][1] - 2)).toBeLessThan(0.001);
+      expect(warnings).toEqual([]);
+    }
     expect(errors).toEqual([]);
   });
 
@@ -3490,7 +3519,7 @@ test.describe('sound that does not decode as it should', () => {
     expect(r.seek).toBeLessThan(1e-6);
   });
 
-  test('the player passes on what its mixer reports: each stretch that would not decode, once every time the clip is played', async ({
+  test('the player passes on what its mixer reports: each stretch that would not decode, once every time the clip is played, and nothing behind what it plays', async ({
     page,
   }) => {
     await openSoundLab(page);
@@ -3555,9 +3584,49 @@ test.describe('sound that does not decode as it should', () => {
       decoders.bad = [at(40), at(200)];
       player.refreshAsset('a');
       const two = await played(2);
+
+      // The decoder reads a few packets beyond what it is asked for. Looped over a range that ends
+      // in the packet before the bad one, it fails behind what is played, which costs the loop
+      // nothing; a range that takes in the start of the bad packet is without it, each time round.
+      decoders.bad = [at(60)];
+      player.refreshAsset('a');
+      const looped = async (out: number) => {
+        player.setRange({ in: 0, out });
+        player.setLoop(true);
+        player.seek(0);
+        player.play();
+        let loops = 0;
+        for (let last = 0, until = performance.now() + 10_000; loops < 2 && performance.now() < until;) {
+          await wait(20);
+          const frame = player.getFrame();
+          if (frame < last) loops++;
+          last = frame;
+        }
+        player.pause();
+        player.setLoop(false);
+        player.setRange(null);
+        return { loops, problems: problems.splice(0) };
+      };
+      const ahead = await looped(41);
+      const inside = await looped(42);
+      // Played backwards, a clip that ends in its file in the packet before the bad one has all
+      // its sound; one that takes in the bad packet, well before its end, does not. (A voice that
+      // starts late leaves out what is already past, which backwards is the end of the stretch.)
+      const backwards = async (duration: number) => {
+        player.setProject(
+          core.applyEdits(project, [{ op: 'updateClip', id: clip.id, patch: { duration, reverse: true } }]),
+        );
+        player.seek(0);
+        player.play();
+        const until = performance.now() + 10_000;
+        while (player.getState().playing && performance.now() < until) await wait(20);
+        await wait(300);
+        return problems.splice(0);
+      };
+      const reversed = { ahead: await backwards(41), inside: await backwards(60) };
       player.dispose();
       canvas.remove();
-      return { clipId: clip.id as string, packet, healthy, once, again, two };
+      return { clipId: clip.id as string, packet, healthy, once, again, two, ahead, inside, reversed };
     });
     const stretch = (n: number) => ({
       clipId: r.clipId,
@@ -3574,6 +3643,13 @@ test.describe('sound that does not decode as it should', () => {
     expect(r.once.level).toBeGreaterThan(0.05);
     expect(r.again.problems).toEqual([stretch(60)]);
     expect(r.two.problems).toEqual([stretch(40), stretch(200)]);
+    // A range that ends at frame 41 ends a tenth of a frame before packet 60 begins.
+    expect(r.ahead).toEqual({ loops: 2, problems: [] });
+    expect(r.inside.loops).toBe(2);
+    expect(r.inside.problems.length).toBeGreaterThanOrEqual(2);
+    expect(r.inside.problems).toEqual(r.inside.problems.map(() => stretch(60)));
+    expect(r.reversed.ahead).toEqual([]);
+    expect(r.reversed.inside).toEqual([{ ...stretch(60), at: undefined }]);
     expect(errors).toEqual([]);
   });
 });

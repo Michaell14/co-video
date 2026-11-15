@@ -306,7 +306,8 @@ function MediaTrouble({ assetId, clips }: { assetId: string; clips: Clip[] }) {
     offline || undecodable.sound
       ? []
       : clips.flatMap((clip) => session.thumbs.soundLost(clip, project).map((gap) => ({ clip, gap })));
-  const several = new Set(gaps.map(({ clip }) => clip.id)).size > 1;
+  // Beside more than one sound clip, the sentence says which of them it is about.
+  const several = clips.filter((c) => c.type === 'audio').length > 1;
   return (
     <>
       {whole && (
