@@ -38,7 +38,7 @@ import { MediaStore, moveProjectMedia, type TransferResult } from './mediaStore'
 import { fitPoster } from './poster';
 import { displayName, PeerList, published } from './presence';
 import { idbName, whenSynced } from './projects';
-import { getUser, isPoster, registry, setUser } from './registry';
+import { getUser, isPoster, ownsProject, registry, setUser } from './registry';
 import { availabilityOf, tooLargeNotice, turnedAwayNotice } from './saving';
 import { SyncProvider, type SyncStatus } from './sync';
 import { byUrgency, keepUploads, TransferQueue, type Transfer } from './transfers';
@@ -171,6 +171,19 @@ export class Session {
   private reloading = false;
   /** The server rejected this link (bad token, deleted project): retrying will not help. */
   private refused = false;
+  /**
+   * Set once the server has said that the project was deleted by its owner (see `projectDeleted`):
+   * whether the card of the copy this device keeps is to say so.
+   */
+  private deleted: { notice: boolean } | null = null;
+  /** The project list held this project when this session last looked. */
+  private listed = false;
+  /**
+   * The project left the project list while this session had it open: another tab deleted it
+   * from this device. Its databases and its media went with the entry, and what this session
+   * holds of it is in this tab's memory and nowhere else.
+   */
+  private offDevice = false;
   /** The person asked for the link that is kept aside to be tried again. */
   private retrying = false;
   /** The server's latest answer about this project: among other things, how its documents stand. */
@@ -422,6 +435,8 @@ export class Session {
     // A link is a claim until the server confirms it. Until then the session runs on what this
     // device already knows: the stored token and the role it was last confirmed to carry.
     const entry = registry.get(this.id);
+    this.listed = entry !== undefined;
+    this.unsubs.push(registry.subscribe(() => this.followList()));
     const stored = entry?.token ?? null;
     this.offered = urlToken && urlToken !== stored ? urlToken : null;
     this.token = stored ?? (entry ? null : this.offered);
@@ -595,12 +610,14 @@ export class Session {
     ]);
     if (this.destroyed) return 'unreachable';
     if (kept === 'deleted' || link === 'deleted') {
-      // Both links are to this one project, so what either was told holds for the other.
+      // Both links are to this one project, so what either was told holds for the other. Only a
+      // genuine link is told, so what it says about its role is true.
+      const told = [kept === 'deleted' ? stored : null, link === 'deleted' ? this.offered : null];
       if (this.offered) {
         this.offered = null;
         this.onLinkJudged();
       }
-      this.projectDeleted();
+      this.projectDeleted(told.some((token) => !!token && claimedRole(token) === 'owner'));
       return 'refused';
     }
     if (kept === 'unreachable' || link === 'unreachable') {
@@ -667,7 +684,7 @@ export class Session {
     const aside = registry.linkAside(this.id);
     if (this.store.isEmpty()) {
       // With nothing here to open either, the whole entry goes.
-      if (fate === 'forget') registry.remove(this.id);
+      if (fate === 'forget') this.unlist();
       this.setMeta({ denied: true, unlisted: fate === 'forget' });
     } else if (this.meta.shared) {
       this.setMeta({ shared: false, refusedLink: aside?.role ?? null });
@@ -686,35 +703,86 @@ export class Session {
    * Unlike a refusal this is for good, so no link is kept to ask again with. What this device
    * holds of the project stays, as a local project that is no longer shared, and its card says
    * why. With nothing of it here there is nothing to keep, and it leaves the project list.
+   *
+   * `own` says that the link the server answered is the owner's. Then, or when the link this
+   * device keeps for the project is, the project was deleted by whoever is at this device: here
+   * or on another one. Done here, in another tab, that tab was told what is to become of this
+   * device's copy and carries it out a moment after this session hears of the deletion. It
+   * takes the link off the project's entry, or it deletes the project from this device as well
+   * (`followList` hears of that). So the owner's device is not promised a copy that may be on its
+   * way out, and the card of one that stays has nothing to explain. Nor is the entry written
+   * here, where the list may still be known as it was before that tab wrote it: that is left to
+   * this session's next look at the list (`flushRegistry`), a moment from now.
    */
-  private projectDeleted(): void {
+  private projectDeleted(own: boolean): void {
     if (this.destroyed) return;
+    const entry = registry.get(this.id);
+    const owners = own || (entry !== undefined && ownsProject(entry));
     this.refused = true;
+    this.deleted = { notice: !owners };
     this.token = null;
     this.offered = null;
     registry.dropLinkAside(this.id);
     // Transfers that were under way have nowhere to go, and nothing asks for them again.
     this.transfers.want([]);
     this.media.cancelTransfers();
-    if (this.store.isEmpty()) {
-      const listed = registry.get(this.id) !== undefined;
-      if (listed) registry.remove(this.id);
-      this.setMeta({ shared: false, refusedLink: null, denied: true, unlisted: listed });
+    if (this.offDevice) {
+      this.nothingLeft();
       toast(DELETED, 'error');
       return;
     }
-    registry.upsert({ id: this.id, token: null, role: undefined, deletedByOwner: true });
+    if (this.store.isEmpty()) {
+      if (entry) this.unlist();
+      this.setMeta({ shared: false, refusedLink: null, denied: true, unlisted: entry !== undefined });
+      toast(DELETED, 'error');
+      return;
+    }
+    // A look at the list that was already due would come too soon.
+    if (this.registryTimer) clearTimeout(this.registryTimer);
+    this.registryTimer = null;
     this.scheduleRegistry();
     this.setMeta({ shared: false, refusedLink: null });
     this.applyRole('owner');
-    toast(`${DELETED} Your copy stays on this device and is no longer shared.`, 'error');
+    toast(owners ? DELETED : `${DELETED} Your copy stays on this device and is no longer shared.`, 'error');
   }
 
   /** A room was closed because the project was deleted. Its other room hears the same. */
   private onProjectDeleted(): void {
     if (this.destroyed || !this.providers.length) return;
     this.closeRooms();
-    this.projectDeleted();
+    this.projectDeleted(this.meta.role === 'owner');
+  }
+
+  /** Take this project off the project list. That is this session's doing, and no news to it. */
+  private unlist(): void {
+    this.listed = false;
+    registry.remove(this.id);
+  }
+
+  /**
+   * Keep up with the project list, which other tabs write as well. An entry that goes while this
+   * session has the project open is another tab deleting the project from this device, and is
+   * remembered as that. A project that its owner deleted from the server has nothing left
+   * anywhere by then, which is shown at once.
+   */
+  private followList(): void {
+    const listed = registry.get(this.id) !== undefined;
+    const taken = this.listed && !listed;
+    this.listed = listed;
+    if (!taken || this.destroyed) return;
+    this.offDevice = true;
+    if (this.deleted) this.nothingLeft();
+  }
+
+  /**
+   * The project is gone from the server and from this device. The databases this session wrote
+   * to are being deleted, so it stops writing to them, and it shows what opening the project
+   * afresh would: that it is not available. The project list is left as the other tab made it.
+   */
+  private nothingLeft(): void {
+    for (const stored of this.idb) void stored.destroy();
+    this.meta.player?.pause();
+    this.setMeta({ shared: false, refusedLink: null, denied: true, unlisted: true });
   }
 
   /**
@@ -883,7 +951,7 @@ export class Session {
     if (this.destroyed || !this.providers.length) return;
     if (info === 'deleted') {
       this.closeRooms();
-      this.projectDeleted();
+      this.projectDeleted(this.meta.role === 'owner');
     } else if (info === 'refused') {
       this.closeRooms();
       // What the server refused is the token it accepted for this session: the one that is stored.
@@ -1344,6 +1412,8 @@ export class Session {
     if (this.store.isEmpty()) return;
     // A project reached through a link is listed once the server has accepted the link, not before.
     if (this.token && !registry.get(this.id)) return;
+    // Deleted from the server by its owner and from this device in another tab, it is on no list.
+    if (this.deleted && this.offDevice) return;
     const s = p.settings;
     const firstThumb = Object.values(p.assets).find((a) => isPoster(a.thumb))?.thumb ?? null;
     registry.upsert({
@@ -1355,6 +1425,9 @@ export class Session {
       duration: framesToSeconds(sequenceEnd(p), s),
       thumb: firstThumb,
       updatedAt: Date.now(),
+      // What is here of a project that its owner deleted is a local project from now on.
+      ...(this.deleted && { token: null, role: undefined }),
+      ...(this.deleted?.notice && { deletedByOwner: true }),
     });
   }
 }

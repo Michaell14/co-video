@@ -1,4 +1,5 @@
 /** Small filesystem / concurrency helpers shared by the server modules. */
+import { closeSync, fdatasyncSync, fsyncSync, openSync, renameSync, writeFileSync } from 'node:fs';
 import { open, readFile, rename, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as zlib from 'node:zlib';
@@ -85,6 +86,33 @@ export async function atomicWrite(path: string, data: string | Uint8Array, mode 
   }
   await rename(tmp, path);
   await syncDir(dirname(path));
+}
+
+/**
+ * `atomicWrite` within the caller's own turn of the event loop, for a small file that is read,
+ * judged and written again in one go: nothing else gets to run between the read and the write,
+ * so no two of its writers can find each other half-way.
+ */
+export function atomicWriteSync(path: string, data: string, mode = 0o644): void {
+  const tmp = `${path}.tmp`;
+  const file = openSync(tmp, 'w', mode);
+  try {
+    writeFileSync(file, data);
+    fdatasyncSync(file);
+  } finally {
+    closeSync(file);
+  }
+  renameSync(tmp, path);
+  try {
+    const dir = openSync(dirname(path), 'r');
+    try {
+      fsyncSync(dir);
+    } finally {
+      closeSync(dir);
+    }
+  } catch {
+    /* not supported on this platform / filesystem */
+  }
 }
 
 /** Runs async jobs one at a time per key (e.g. per project), in arrival order. */

@@ -2,18 +2,10 @@
  * Deleting a shared project for everyone, as far as it is words and rules: who is offered it, and
  * what is said when the server did not do it.
  */
-import { claimedRole } from '../../session/access';
 import { ApiError } from '../../session/api';
-import type { ProjectEntry } from '../../session/registry';
 
-/**
- * Whether this device holds the owner's link to a shared project, as far as it can tell: the role
- * the server last confirmed, or for an entry from before that was kept, the one the link names.
- * It decides what is offered. Whether the link really is the owner's is for the server to say.
- */
-export function ownsProject(entry: Pick<ProjectEntry, 'token' | 'role'>): boolean {
-  return !!entry.token && (entry.role ?? claimedRole(entry.token)) === 'owner';
-}
+/** Offered to whoever holds the owner's link. Whether it really is that is for the server to say. */
+export { ownsProject } from '../../session/registry';
 
 const UNCHANGED = 'Nothing was changed on this device.';
 

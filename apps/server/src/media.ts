@@ -10,7 +10,7 @@
  * An asset is complete exactly when the extension-less file exists: renaming `.part` to it is
  * the atomic commit of an upload. (Asset ids cannot contain dots, so the three names never clash.)
  */
-import { createWriteStream, unlinkSync } from 'node:fs';
+import { createWriteStream, readFileSync, unlinkSync } from 'node:fs';
 import { mkdir, open, readdir, rename, stat, truncate, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -25,11 +25,11 @@ import type { ProjectStore } from './projects';
 import {
   assertValidId,
   atomicWrite,
+  atomicWriteSync,
   errorCode,
   fileSize,
   isNotFound,
   isValidId,
-  KeyedQueue,
   readFileIfExists,
 } from './util';
 
@@ -115,8 +115,6 @@ export class MediaStore {
   private readonly inFlight = new Set<Promise<void>>();
   /** The downloads under way, by project: they are cut off when their project is deleted. */
   private readonly serving = new Map<string, Set<ServerResponse>>();
-  /** Writes of `unreferenced.json`, one at a time per project. */
-  private readonly notes = new KeyedQueue();
 
   constructor(
     private readonly projects: ProjectStore,
@@ -205,7 +203,6 @@ export class MediaStore {
       for (const holder of holders) holder.abort();
       await Promise.all(holders.map((holder) => holder.done));
     }
-    await this.notes.run(projectId, async () => undefined);
   }
 
   /** The finished assets of a project. Uploads in progress are not among them. */
@@ -234,34 +231,52 @@ export class MediaStore {
   /**
    * The assets of a project that a sweep found to be referred to by nothing, and when each was
    * first found so. A file that cannot be read says nothing, which starts every count anew.
+   *
+   * These notes are read and written within the caller's own turn of the event loop, like the
+   * removal they lead to (`removeNow`). A sweep reads them, looks at the document and deletes in
+   * one go, and the document has a note forgotten the moment it refers to the asset again
+   * (`forgetUnreferenced`): neither ever goes by what the other is about to change.
    */
-  async unreferenced(projectId: string): Promise<Map<string, number>> {
+  unreferenced(projectId: string): Map<string, number> {
     const since = new Map<string, number>();
+    const path = this.unreferencedPath(projectId);
     try {
-      const raw = await readFileIfExists(this.unreferencedPath(projectId));
-      const parsed: unknown = raw ? JSON.parse(raw.toString('utf8')) : null;
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
       if (typeof parsed === 'object' && parsed !== null) {
         for (const [assetId, at] of Object.entries(parsed)) {
           if (isValidId(assetId) && typeof at === 'number' && Number.isFinite(at)) since.set(assetId, at);
         }
       }
-    } catch (err) {
-      if (err instanceof HttpError) throw err;
+    } catch {
+      // Not there, or not to be read: nothing is noted.
     }
     return since;
   }
 
   /** Keep what `unreferenced` answers from now on. With nothing to keep, the file goes. */
-  noteUnreferenced(projectId: string, since: ReadonlyMap<string, number>): Promise<void> {
-    return this.notes.run(projectId, async () => {
-      const path = this.unreferencedPath(projectId);
-      if (since.size > 0) await atomicWrite(path, JSON.stringify(Object.fromEntries(since)));
-      else {
-        await unlink(path).catch((err: unknown) => {
-          if (!isNotFound(err)) throw err;
-        });
-      }
-    });
+  noteUnreferenced(projectId: string, since: ReadonlyMap<string, number>): void {
+    const path = this.unreferencedPath(projectId);
+    if (since.size > 0) {
+      atomicWriteSync(path, JSON.stringify(Object.fromEntries(since)));
+      return;
+    }
+    try {
+      unlinkSync(path);
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+    }
+  }
+
+  /**
+   * Forget what was noted about assets of a project, because its document has just had to do
+   * with them: it refers to them again, or did for a moment. The time for which nothing has
+   * referred to them starts anew with the next sweep that finds it so.
+   */
+  forgetUnreferenced(projectId: string, assetIds: readonly string[]): void {
+    const since = this.unreferenced(projectId);
+    let forgotten = false;
+    for (const assetId of assetIds) forgotten = since.delete(assetId) || forgotten;
+    if (forgotten) this.noteUnreferenced(projectId, since);
   }
 
   /**

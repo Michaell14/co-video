@@ -201,6 +201,18 @@ export async function createTandemServer(options: TandemServerOptions): Promise<
     },
     projectDir: (projectId) => projects.dir(projectId),
     onDocChanged: (projectId) => projects.touch(projectId),
+    onAssetsTouched: (projectId, assetIds) => {
+      try {
+        media.forgetUnreferenced(projectId, assetIds);
+      } catch (err) {
+        // The document has taken the change either way, and an error thrown from the middle of it
+        // would land on whoever sent it. Of a project that is being deleted there is nothing left
+        // to forget.
+        if (!projects.isDeleted(projectId)) {
+          console.error(`[tandem] could not update the notes on unused media of project ${projectId}:`, err);
+        }
+      }
+    },
     saveAutoVersion: async (projectId, version) => {
       try {
         await versions.create(projectId, { name: AUTO_VERSION_NAME, author: '', auto: true }, version);

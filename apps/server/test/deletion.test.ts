@@ -14,7 +14,7 @@ import * as Y from 'yjs';
 import { ASSET_DEFAULTS, ProjectStore as ProjectDocument, WS_MSG_SYNC } from '@tandem/core';
 import type { Asset, Role, VersionInfo } from '@tandem/core';
 import { PROJECT_DELETED, WS_CLOSE_PROJECT_DELETED } from '../src/projects';
-import { assetIdsOf } from '../src/references';
+import { assetIdsOf, watchAssets } from '../src/references';
 import { DELETES_PER_HOUR } from '../src/server';
 import { SilentPeer, sleep, tempDir, upgradeStatus, useServers, waitFor } from './helpers';
 import type { Api, Project } from './helpers';
@@ -579,6 +579,89 @@ describe('media that nothing refers to', () => {
     expect(logged).toEqual([]);
   });
 
+  it('counts from the last time the document referred to a file, also when no sweep found it referred to', async () => {
+    const { api, server, project, refer, store, stored, noted } = await projectWithMedia();
+    const file = `/api/projects/${project.id}/media/asset_one`;
+    await refer('asset_one');
+    await refer('asset_other');
+    await store('asset_one', 'asset_other');
+    const t0 = Date.now();
+    await refer('asset_one', false);
+    await refer('asset_other', false);
+    expect(await server.sweepUnusedMedia(t0)).toBe(0);
+    expect(await server.sweepUnusedMedia(t0 + 23 * HOUR)).toBe(0);
+    expect(await noted()).toEqual(['asset_one', 'asset_other']);
+
+    // Between two sweeps an undo brings one asset back and a redo takes it out again. No sweep
+    // finds it in the document and no version was made of it there, and still it was referred to
+    // an hour ago and not a day: what was noted about it is forgotten the moment it comes back.
+    await refer('asset_one');
+    expect(await noted()).toEqual(['asset_other']);
+    await refer('asset_one', false);
+    expect(await listVersions(api, project)).toEqual([]);
+    expect(await server.sweepUnusedMedia(t0 + 24 * HOUR)).toBe(1);
+    expect(await stored()).toEqual(['asset_one']);
+    expect(await noted()).toEqual(['asset_one']);
+
+    // The next undo, inside the grace period, finds its file.
+    await refer('asset_one');
+    expect((await api.fetch(file, { token: project.token })).status).toBe(200);
+    expect(await noted()).toEqual([]);
+    await refer('asset_one', false);
+
+    // An asset that comes and goes within one change of the document was referred to as well.
+    expect(await server.sweepUnusedMedia(t0 + 30 * HOUR)).toBe(0);
+    expect(await noted()).toEqual(['asset_one']);
+    const passing = await connect(api, project, 'project').whenSynced();
+    const watcher = await connect(api, project, 'project').whenSynced();
+    const theirs = passing.doc.getMap<Y.Map<unknown>>('assets');
+    passing.doc.transact(() => {
+      theirs.set('asset_one', new Y.Map());
+      theirs.delete('asset_one');
+    });
+    // A second change over the same connection shows that the server has taken the first.
+    theirs.set('asset_marker', new Y.Map());
+    await waitFor(() => watcher.doc.getMap('assets').has('asset_marker'), 'the server has both changes');
+    expect(watcher.doc.getMap('assets').has('asset_one')).toBe(false);
+    expect(await noted()).toEqual([]);
+
+    // From the sweep that next finds nothing referring to it, the file has its full time again.
+    expect(await server.sweepUnusedMedia(t0 + 31 * HOUR)).toBe(0);
+    expect(await server.sweepUnusedMedia(t0 + 54 * HOUR)).toBe(0);
+    expect(await stored()).toEqual(['asset_one']);
+    expect(await server.sweepUnusedMedia(t0 + 55 * HOUR)).toBe(1);
+    expect(await stored()).toEqual([]);
+    expect((await api.fetch(file, { token: project.token })).status).toBe(404);
+    expect(logged).toEqual([]);
+  });
+
+  it('has forgotten such a note for good: the sweep of the next start does not go by it', async () => {
+    const dataDir = await tempDir();
+    const first = await projectWithMedia({ dataDir });
+    await first.refer('asset_one');
+    await first.store('asset_one');
+    const t0 = Date.now();
+    // Uploaded three days ago and found to be referred to by nothing two days ago, as the files
+    // have it.
+    const longAgo = new Date(t0 - 72 * HOUR);
+    await utimes(join(first.dir, 'media', 'asset_one'), longAgo, longAgo);
+    await first.refer('asset_one', false);
+    expect(await first.server.sweepUnusedMedia(t0 - 48 * HOUR)).toBe(0);
+    expect(await first.noted()).toEqual(['asset_one']);
+    await first.refer('asset_one');
+    await first.refer('asset_one', false);
+    await Promise.all(clients.splice(0).map((client) => client.close()));
+    await first.server.close();
+
+    // The server sweeps when it starts, which is now: the file is found for the first time again.
+    const { server } = await start({ dataDir, autoSnapshotMs: 0 });
+    expect(await server.sweepUnusedMedia(t0 + 23 * HOUR)).toBe(0);
+    expect(await first.stored()).toEqual(['asset_one']);
+    expect(await server.sweepUnusedMedia(t0 + 25 * HOUR)).toBe(1);
+    expect(await first.stored()).toEqual([]);
+    expect(logged).toEqual([]);
+  });
+
   it('reads the document from disk when nobody has the project open', async () => {
     const { api, server, project, dir, refer, store, stored } = await projectWithMedia({ roomIdleMs: 30 });
     await refer('asset_in_doc');
@@ -812,5 +895,43 @@ describe('media that nothing refers to', () => {
     // A key that could not be the name of a file is not one.
     doc.getMap('assets').set('../secret', new Y.Map());
     expect(assetIdsOf(doc).sort()).toEqual(['asset_one', 'asset_two']);
+  });
+
+  it('hears of every asset an edit of the editor adds, takes out or brings back, as the edit is made', () => {
+    const doc = new Y.Doc();
+    const project = new ProjectDocument(doc);
+    project.initIfEmpty({});
+    const asset = (id: string): Asset => ({ ...ASSET_DEFAULTS, id, name: `${id}.mp4`, kind: 'video' });
+    const heard: string[][] = [];
+    const stop = watchAssets(doc, (assetIds) => heard.push(assetIds.sort()));
+
+    project.commit([
+      { op: 'addAsset', asset: asset('asset_one') },
+      { op: 'addAsset', asset: asset('asset_two') },
+    ]);
+    expect(heard).toEqual([['asset_one', 'asset_two']]);
+    // What an asset says about itself is no news of which assets there are.
+    project.commit([{ op: 'updateAsset', id: 'asset_one', patch: { uploaded: true } }], { undoable: false });
+    expect(heard).toHaveLength(1);
+    project.commit([{ op: 'removeAsset', id: 'asset_one' }]);
+    project.undo();
+    project.redo();
+    expect(heard.slice(1)).toEqual([['asset_one'], ['asset_one'], ['asset_one']]);
+
+    // Back and out again within one change, as a client that was away sends it: referred to all the same.
+    const away = new Y.Doc();
+    Y.applyUpdate(away, Y.encodeStateAsUpdate(doc));
+    const before = Y.encodeStateVector(away);
+    away.getMap('assets').set('asset_one', new Y.Map());
+    away.getMap('assets').delete('asset_one');
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(away, before));
+    expect(assetIdsOf(doc)).toEqual(['asset_two']);
+    expect(heard.slice(4)).toEqual([['asset_one']]);
+
+    // A key that names no file is none, and nothing is heard once it was said to stop.
+    doc.getMap('assets').set('../secret', new Y.Map());
+    stop();
+    project.commit([{ op: 'removeAsset', id: 'asset_two' }]);
+    expect(heard).toHaveLength(5);
   });
 });

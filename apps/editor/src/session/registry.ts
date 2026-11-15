@@ -36,6 +36,14 @@ export interface LinkAside {
   refusedAt: number;
 }
 
+/**
+ * Whether this device holds the owner's link to a shared project, as far as it can tell: the role
+ * the server last confirmed, or for an entry from before that was kept, the one the link names.
+ */
+export function ownsProject(entry: Pick<ProjectEntry, 'token' | 'role'>): boolean {
+  return !!entry.token && (entry.role ?? claimedRole(entry.token)) === 'owner';
+}
+
 const KEY = 'tandem.projects.v1';
 const ASIDE_KEY = 'tandem.links-aside.v1';
 const USER_KEY = 'tandem.user.v1';

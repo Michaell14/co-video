@@ -13,6 +13,9 @@ const card = (page: Page, name: string): Locator => page.locator('.pcard', { has
 
 const toast = (page: Page, text: string): Locator => page.locator('.toast', { hasText: text });
 
+/** What a session says of a deleted project when it has nothing to say about a copy. */
+const DELETED = 'This project was deleted from the collaboration server by its owner.';
+
 const clipCount = (page: Page): Promise<number> =>
   page.evaluate(() => Object.keys((window as any).tandem.session.store.get().clips).length);
 
@@ -242,12 +245,9 @@ test.describe('deleting a project for everyone', () => {
 
     // The guest who had it open is told, and what was on their device is theirs: a local project
     // that is no longer shared, with its media.
-    await expect(
-      toast(
-        guest,
-        'This project was deleted from the collaboration server by its owner. Your copy stays on this device and is no longer shared.',
-      ),
-    ).toBeVisible();
+    await expect(toast(guest, 'deleted from the collaboration server')).toHaveText(
+      `${DELETED} Your copy stays on this device and is no longer shared.`,
+    );
     await guest.waitForFunction(() => !(window as any).tandem.session.getMeta().shared);
     expect(await clipCount(guest)).toBe(1);
     await guest.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Carried on' }));
@@ -302,9 +302,7 @@ test.describe('deleting a project for everyone', () => {
 
     // The viewer, who was not there, finds out on opening the project: the same words, the same copy.
     await card(viewer, 'Doomed').locator('.pcard__open').click();
-    await expect(
-      toast(viewer, 'This project was deleted from the collaboration server by its owner.'),
-    ).toBeVisible();
+    await expect(toast(viewer, DELETED)).toBeVisible();
     await editorReady(viewer);
     expect(await clipCount(viewer)).toBe(1);
     await goHome(viewer);
@@ -316,9 +314,7 @@ test.describe('deleting a project for everyone', () => {
     await noReloads(late);
     await late.goto(editorLink);
     await expect(late.locator('.splash__title')).toHaveText('This project is not available');
-    await expect(
-      toast(late, 'This project was deleted from the collaboration server by its owner.'),
-    ).toBeVisible();
+    await expect(toast(late, 'deleted from the collaboration server')).toHaveText(DELETED);
     await goHome(late);
     await expect(late.locator('.pcard')).toHaveCount(0);
 
@@ -367,6 +363,142 @@ test.describe('deleting a project for everyone', () => {
     await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Still mine' }));
     expect(await clipCount(page)).toBe(2);
     expect(errors).toEqual([]);
+  });
+
+  test('with the project open in another tab of the same browser, nothing of it stays there either', async ({
+    page,
+  }) => {
+    const errors = thrownIn(page);
+    await noReloads(page);
+    const project = await sharedProject(page, 'Twice open');
+    await importFixtures(page, ['green.png']);
+    await expect.poll(() => filesOnDevice(page, project.id)).toHaveLength(1);
+    const home = await page.context().newPage();
+    const homeErrors = thrownIn(home);
+    await goHome(home);
+
+    await card(home, 'Twice open').getByRole('button', { name: 'Options for Twice open' }).click();
+    await home.getByRole('menuitem', { name: 'Delete for everyone…' }).click();
+    const dialog = deleteDialog(home, 'Twice open');
+    await expect(dialog).toContainText(
+      'The project and the media stored for it on this device are deleted as well.',
+    );
+    await dialog.getByRole('button', { name: 'Delete for everyone' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(toast(home, 'Deleted “Twice open” for everyone.')).toBeVisible();
+    await expect(home.locator('.pcard')).toHaveCount(0);
+
+    // The tab that had it open is told what happened, and is not promised a copy: there is none.
+    await expect(toast(page, 'deleted from the collaboration server')).toHaveText(DELETED);
+    await expect(page.locator('.splash__title')).toHaveText('This project is not available');
+    await expect(page.locator('.splash__text')).toContainText('nothing of it is stored on this device');
+
+    // What that tab still has in memory goes nowhere: not into the list, which an open project
+    // writes itself into a moment after every change, and not onto the device.
+    await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Too late' }));
+    await page.waitForTimeout(2500);
+    expect(await registry(home)).toEqual([]);
+    await expect(home.locator('.pcard')).toHaveCount(0);
+    await goHome(page);
+    await expect(page.locator('.home__hero')).toBeVisible();
+    await expect(page.locator('.pcard')).toHaveCount(0);
+    expect(await registry(page)).toEqual([]);
+    expect(await filesOnDevice(home, project.id)).toEqual([]);
+    const databases = await home.evaluate(async () => (await indexedDB.databases()).map((db) => db.name));
+    expect(databases.filter((name) => name?.includes(project.id))).toEqual([]);
+    expect(await asked(home, project)).toBe(410);
+    expect(errors).toEqual([]);
+    expect(homeErrors).toEqual([]);
+  });
+
+  test('with the project open in another tab, keeping a copy: that tab works on with the copy, and its card has nothing to explain', async ({
+    page,
+  }) => {
+    const errors = thrownIn(page);
+    await noReloads(page);
+    const project = await sharedProject(page, 'Kept twice');
+    const home = await page.context().newPage();
+    await goHome(home);
+
+    await card(home, 'Kept twice').getByRole('button', { name: 'Options for Kept twice' }).click();
+    await home.getByRole('menuitem', { name: 'Delete for everyone…' }).click();
+    const dialog = deleteDialog(home, 'Kept twice');
+    await dialog.getByRole('switch', { name: 'Keep a copy on this device' }).click();
+    await dialog.getByRole('button', { name: 'Delete for everyone' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      toast(home, 'Deleted “Kept twice” from the server. The copy on this device is a local project now.'),
+    ).toBeVisible();
+
+    // The tab that has it open hears of the deletion and goes on, with a project that is local.
+    await expect(toast(page, 'deleted from the collaboration server')).toHaveText(DELETED);
+    await page.waitForFunction(() => !(window as any).tandem.session.getMeta().shared);
+    await expect(page.locator('.splash__title')).toHaveCount(0);
+    await page.evaluate(() => (window as any).tandem.cmd.addText({ content: 'Carried on' }));
+    expect(await clipCount(page)).toBe(2);
+
+    // Keeping it was the owner's own decision, whichever tab heard of the deletion first: once
+    // the open project has written itself into the list again, the card still has no notice.
+    await page.waitForTimeout(2500);
+    const [entry] = await registry(home);
+    expect([entry.id, entry.token, entry.role, entry.deletedByOwner]).toEqual([
+      project.id,
+      null,
+      undefined,
+      undefined,
+    ]);
+    await expect(card(home, 'Kept twice').locator('.pcard__unshared')).toHaveCount(0);
+    await expect(card(home, 'Kept twice').locator('.pcard__shared')).toHaveCount(0);
+    await card(home, 'Kept twice').locator('.pcard__open').click();
+    await editorReady(home);
+    expect(await clipCount(home)).toBe(2);
+    expect(await asked(home, project)).toBe(410);
+    expect(errors).toEqual([]);
+  });
+
+  test('a copy that was deleted from the device in another tab is not promised to a guest, nor listed again', async ({
+    page,
+    browser,
+  }) => {
+    await noReloads(page);
+    const project = await sharedProject(page, 'Gone twice');
+    const link = await inviteLink(page, 'editor');
+    const context = await browser.newContext();
+    const guest = await context.newPage();
+    const guestErrors = thrownIn(guest);
+    await join(guest, link);
+    await expect.poll(async () => (await registry(guest)).length, { timeout: 10_000 }).toBe(1);
+
+    // The guest forgets the project in a second tab while the first still has it open.
+    const guestHome = await context.newPage();
+    await goHome(guestHome);
+    await card(guestHome, 'Gone twice').getByRole('button', { name: 'Options for Gone twice' }).click();
+    await guestHome.getByRole('menuitem', { name: 'Delete from this device…' }).click();
+    await guestHome
+      .getByRole('dialog', { name: /from this device\?$/ })
+      .getByRole('button', { name: 'Delete project' })
+      .click();
+    await expect(guestHome.locator('.pcard')).toHaveCount(0);
+    const databases = (): Promise<(string | undefined)[]> =>
+      guestHome.evaluate(async (id) => {
+        const all = await indexedDB.databases();
+        return all.map((db) => db.name).filter((name) => name?.includes(id));
+      }, project.id);
+    await expect.poll(databases).toEqual([]);
+
+    // Then the owner deletes it for everyone. The open tab has no copy to keep and says no such
+    // thing; the project is not available there, and stays off the list.
+    expect(await asked(page, project, 'DELETE')).toBe(204);
+    await expect(toast(guest, 'deleted from the collaboration server')).toHaveText(DELETED);
+    await expect(guest.locator('.splash__title')).toHaveText('This project is not available');
+    await guest.waitForTimeout(2500);
+    expect(await registry(guestHome)).toEqual([]);
+    await goHome(guest);
+    await expect(guest.locator('.pcard')).toHaveCount(0);
+    expect(await registry(guest)).toEqual([]);
+    expect(await databases()).toEqual([]);
+    expect(guestErrors).toEqual([]);
+    await context.close();
   });
 
   test('a server that cannot be reached, refuses or fails is said in the question, and nothing is half-done', async ({

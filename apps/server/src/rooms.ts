@@ -40,7 +40,7 @@ import { DocStore, DocumentTooLargeError, storedDoc, tooLargeToOpen } from './pe
 import type { DocStoreLimits, StoredDoc } from './persistence';
 import { RoomPresence } from './presence';
 import type { PresenceMember } from './presence';
-import { versionOf } from './references';
+import { versionOf, watchAssets } from './references';
 import type { VersionContent } from './references';
 import { RECOUNT_AFTER_STRUCTS, measureUpdate, sameSetAside, setAside, weigh, weightOf } from './updateSize';
 import { delay } from './util';
@@ -322,6 +322,11 @@ export interface RoomHooks {
   /** A document of the project changed. Called for every update, so it must be cheap. */
   onDocChanged(projectId: string): void;
   /**
+   * A change of the `project` document had to do with these assets: it refers to them from now
+   * on, no longer does, or did while it was made. Called within that change.
+   */
+  onAssetsTouched(projectId: string, assetIds: string[]): void;
+  /**
    * Store `version` as an automatic version of the project. Called in the same turn of the event
    * loop the version was taken in.
    */
@@ -345,6 +350,7 @@ export class Room {
   private pins = 0;
   private idleTimer: NodeJS.Timeout | undefined;
   private autoTimer: NodeJS.Timeout | undefined;
+  private unwatchAssets: (() => void) | undefined;
   /** True while the document holds changes that no version (named or automatic) captured yet. */
   private unsnapshotted = false;
   private autoVersion: Promise<void> = Promise.resolve();
@@ -397,6 +403,9 @@ export class Room {
       },
     );
     this.doc.on('update', this.onDocUpdate);
+    if (kind === 'project') {
+      this.unwatchAssets = watchAssets(doc, (assetIds) => opts.onAssetsTouched(projectId, assetIds));
+    }
     if (kind === 'project' && opts.autoSnapshotMs > 0) {
       this.autoTimer = setInterval(() => void this.takeAutoVersion(), opts.autoSnapshotMs);
       this.autoTimer.unref();
@@ -812,6 +821,7 @@ export class Room {
       if (this.idleTimer) clearTimeout(this.idleTimer);
       if (this.autoTimer) clearInterval(this.autoTimer);
       this.doc.off('update', this.onDocUpdate);
+      this.unwatchAssets?.();
       this.presence.close();
       for (const conn of this.conns) leave(conn);
       try {

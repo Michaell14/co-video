@@ -15,6 +15,22 @@ export function assetIdsOf(doc: Y.Doc): string[] {
   return Array.from(doc.getMap('assets').keys()).filter(isValidId);
 }
 
+/**
+ * Have `touched` called with the ids of the assets a change of a project document has to do with:
+ * the ones it adds, replaces or takes out, and also one that it adds and takes out again in the
+ * same breath, which the document then referred to for no longer than that. It is called within
+ * the change, before anything else gets to run. Returns how to stop.
+ */
+export function watchAssets(doc: Y.Doc, touched: (assetIds: string[]) => void): () => void {
+  const assets = doc.getMap('assets');
+  const observer = (event: Y.YMapEvent<unknown>): void => {
+    const ids = Array.from(event.keysChanged).filter(isValidId);
+    if (ids.length > 0) touched(ids);
+  };
+  assets.observe(observer);
+  return () => assets.unobserve(observer);
+}
+
 /** What a version of a project is stored as: the document, and the assets it refers to. */
 export interface VersionContent {
   /** Full document state (`Y.encodeStateAsUpdate`). */

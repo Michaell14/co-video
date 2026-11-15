@@ -165,9 +165,10 @@ starts over.
 document and no stored version refers to it. Taking a file out of a project does not delete it, since an
 undo or a version brings the asset back. The server goes through the media of every project at startup
 and once an hour. A file that nothing refers to is noted in `unreferenced.json` the first time it is found
-so, the note is dropped when the file is referred to again, and the file is deleted when its note and the
-end of its upload are both `UNUSED_MEDIA_EXPIRY_HOURS` old, which is up to two hours more than that
-after it was last referred to. A file uploaded before the edit that adds its asset has arrived is new,
+so. The note is dropped the moment the document refers to the file again, whether or not a sweep comes by
+while it does, and by the next sweep that finds the file in a version. The file is deleted when its note
+and the end of its upload are both `UNUSED_MEDIA_EXPIRY_HOURS` old, which is up to two hours more than
+that after it was last referred to. A file uploaded before the edit that adds its asset has arrived is new,
 and safe for that reason. What a version refers to is recorded when it is made (for a version from before
 that, read from its content once), so the document is only read for projects that hold a file no version
 refers to, from memory if the project is open and from disk otherwise. A project whose document or
