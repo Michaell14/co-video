@@ -3489,4 +3489,91 @@ test.describe('sound that does not decode as it should', () => {
     expect(r.whole).toBeLessThan(1e-6);
     expect(r.seek).toBeLessThan(1e-6);
   });
+
+  test('the player passes on what its mixer reports: each stretch that would not decode, once every time the clip is played', async ({
+    page,
+  }) => {
+    await openSoundLab(page);
+    const errors = trackErrors(page);
+    const r = await page.evaluate(async () => {
+      const { lab, decoders, sound } = window as any;
+      const { core, engine } = lab;
+      lab.init(160, 90);
+      const asset = await lab.addFile('a', '/fixtures/stereo-441.mp4', 'stereo-441.mp4');
+      const rate = 44100;
+      const packet = 1024 / rate;
+      const first = await (await lab.library.get('a')).audio.getFirstTimestamp();
+      const at = (n: number) => Math.max(0, Math.trunc((first + n * packet) * 1e6));
+      const project = sound.project(asset, rate, 180);
+      const clip = Object.values(project.clips)[0] as any;
+      // No other decoder to turn to, so that a play that begins on a bad packet stays where it is.
+      Object.assign(decoders, { rate, own: 'refuses' });
+      const canvas = document.createElement('canvas');
+      document.body.append(canvas);
+      const player = new engine.Player(canvas, project, lab.resolver);
+      const problems: any[] = [];
+      player.onAudioProblem = (p: any) => problems.push(p);
+      const wait = (ms: number) => new Promise((res) => setTimeout(res, ms));
+      /**
+       * Play from the start until `count` problems are in and the playhead is two seconds in,
+       * behind the first of the holes, and a little longer for a problem too many.
+       */
+      const played = async (count: number) => {
+        player.seek(0);
+        player.play();
+        const until = performance.now() + 10_000;
+        while ((problems.length < count || player.getFrame() < 60) && performance.now() < until)
+          await wait(20);
+        await wait(600);
+        const level = Math.max(...player.levels().master);
+        player.pause();
+        return { problems: problems.splice(0), level };
+      };
+
+      // A file that decodes, played with everything that ends a clip's sound early: jumps, and an
+      // edit that cuts the clip short under the playhead and gives it back.
+      player.play();
+      await wait(400);
+      for (const frame of [30, 90, 12, 150, 60, 61, 62, 100, 5]) {
+        player.seek(frame);
+        await wait(40);
+      }
+      player.setProject(
+        core.applyEdits(project, [{ op: 'updateClip', id: clip.id, patch: { duration: 20 } }]),
+      );
+      await wait(400);
+      player.setProject(project);
+      await wait(400);
+      player.pause();
+      const healthy = problems.splice(0);
+
+      // One packet that will not decode, played twice; then two, far apart.
+      decoders.bad = [at(60)];
+      player.refreshAsset('a');
+      const once = await played(1);
+      const again = await played(1);
+      decoders.bad = [at(40), at(200)];
+      player.refreshAsset('a');
+      const two = await played(2);
+      player.dispose();
+      canvas.remove();
+      return { clipId: clip.id as string, packet, healthy, once, again, two };
+    });
+    const stretch = (n: number) => ({
+      clipId: r.clipId,
+      assetId: 'a',
+      reason: 'decode-error',
+      lost: 'stretch',
+      // Where packet `n` begins: the file's first lies one packet before zero.
+      at: expect.closeTo((n - 1) * r.packet, 6),
+      cause: 'EncodingError: Decoding error.',
+    });
+    expect(r.healthy).toEqual([]);
+    expect(r.once.problems).toEqual([stretch(60)]);
+    // The clip plays on behind the hole.
+    expect(r.once.level).toBeGreaterThan(0.05);
+    expect(r.again.problems).toEqual([stretch(60)]);
+    expect(r.two.problems).toEqual([stretch(40), stretch(200)]);
+    expect(errors).toEqual([]);
+  });
 });

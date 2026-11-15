@@ -5,13 +5,19 @@
  *   GET    /api/health                              → { ok, name, version }
  *   POST   /api/projects        { name? }           → { id, token }          (owner token)
  *   GET    /api/projects/:id                        → ProjectInfo
+ *   DELETE /api/projects/:id                        → 204                    (owner)
  *   POST   /api/projects/:id/invites { role }       → { token }              (owner / editor)
  *   GET    /api/projects/:id/versions               → VersionInfo[]
  *   POST   /api/projects/:id/versions { name }      → VersionInfo            (editor+)
  *   GET    /api/projects/:id/versions/:vid          → binary Yjs update
+ *   DELETE /api/projects/:id/versions/:vid          → 204                    (owner / editor)
  *   HEAD   /api/projects/:id/media/:assetId         → Upload-Offset, Upload-Complete headers
  *   PUT    /api/projects/:id/media/:assetId         body = bytes; headers Upload-Offset, Upload-Length
  *   GET    /api/projects/:id/media/:assetId         → bytes, honours Range
+ *
+ * A project its owner deleted is gone for good. From then on every request and every WebSocket
+ * upgrade that comes with a genuine link to it is answered 410 and `{ error: PROJECT_DELETED }`,
+ * whatever it asks for; only the owner's own DELETE, asked again, still gets its 204.
  *
  * WebSocket: /ws/:projectId/:doc?t=<token>  where doc ∈ { project, review }.
  * Messages are y-protocols frames: varUint type (0 = sync, 1 = awareness) followed by the payload.
@@ -26,7 +32,8 @@
  * refusals): 1001 shutting down, 1007 malformed message, 1009 the document is full, the server
  * has no memory to spare for it, or the message is larger than the role may send (only the last
  * comes without an `error` first), 1012 the room is restarting, 1013 a full room gave this place to
- * someone whose role ranks higher: try again later.
+ * someone whose role ranks higher: try again later, 4410 the project was deleted by its owner (an
+ * `error` with `PROJECT_DELETED` comes first): there is nothing to come back to.
  */
 import type { Role } from './presence';
 
@@ -94,6 +101,16 @@ export const docFullMessage = (doc: DocKind): string =>
 export const NO_DOC_MEMORY = 'the server has no memory to spare for more document data';
 /** "Try again later": a full room gave the connection's place to someone who outranks it. */
 export const WS_CLOSE_TRY_AGAIN_LATER = 1013;
+/**
+ * The code the connections to a project are closed with when its owner deletes it. One of the
+ * codes a protocol may define for itself (4000 to 4999), after the HTTP status that says the same.
+ */
+export const WS_CLOSE_PROJECT_DELETED = 4410;
+/**
+ * What a request for a deleted project is told (status 410), and the `error` its open connections
+ * get before they are closed with `WS_CLOSE_PROJECT_DELETED`.
+ */
+export const PROJECT_DELETED = 'this project was deleted by its owner';
 
 /** Which roles may write which document. */
 export function canWriteDoc(role: Role, doc: DocKind): boolean {

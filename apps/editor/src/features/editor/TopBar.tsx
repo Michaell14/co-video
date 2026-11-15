@@ -20,6 +20,7 @@ import {
   SlidersHorizontal,
   SquarePen,
   Subtitles,
+  Trash2,
   Undo2,
 } from 'lucide-react';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
@@ -33,11 +34,13 @@ import {
   useSessionMeta,
   useUndoState,
 } from '../../session/hooks';
+import { registry } from '../../session/registry';
 import { cmd } from '../../state/commands';
 import { COMMANDS } from '../../state/shortcuts';
 import { useUI } from '../../state/ui';
 import { Button, IconButton, MenuButton, Segmented, tip, type MenuEntry } from '../../ui/core';
 import { usingKeyboard } from '../../ui/layers';
+import { askToDeleteForEveryone, ownsProject } from '../home/deletion';
 
 /** What a person in the project may do, as the Share dialog words the access a link gives. */
 const ACCESS: Record<Role, string> = {
@@ -85,6 +88,13 @@ export function TopBar() {
   // Escape leaves the name field by blurring it, and that blur must not store what was typed.
   const abandonName = useRef(false);
   const share = useRef<HTMLButtonElement>(null);
+  // Whoever holds the owner's link to a project that is on a server: what the project's card on
+  // the home screen goes by, which is where the deleting is asked about and done.
+  const ownersLink = useSyncExternalStore(registry.subscribe, () => {
+    const entry = registry.get(session.id);
+    return !!entry && ownsProject(entry);
+  });
+  const owned = meta.shared && ownersLink;
 
   useEffect(() => {
     if (publishedFromKeyboard !== session.id) return;
@@ -224,6 +234,17 @@ export function TopBar() {
             },
             'separator',
             { label: 'Back to projects', icon: <LogOut />, onSelect: () => navigate(null) },
+            // The same question the project's card asks, and asked by that card: the project is
+            // left first (see `askToDeleteForEveryone`).
+            owned && {
+              label: 'Delete for everyone…',
+              icon: <Trash2 />,
+              danger: true,
+              onSelect: () => {
+                askToDeleteForEveryone(session.id);
+                navigate(null);
+              },
+            },
           ]}
         >
           <Menu />
@@ -304,7 +325,7 @@ export function TopBar() {
             command('go-in'),
             command('go-out'),
             {
-              label: 'Markers follow ripple edits',
+              label: 'Comments and markers follow ripple edits',
               checked: markersFollow,
               onSelect: () => cmd.toggleMarkersFollow(),
             },

@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fitPanels } from '../src/features/editor/layout';
-import { laneHeightsToStore, readPrefs, withLaneHeight } from '../src/state/ui';
+import { laneHeightsToStore, readPrefs, withLaneHeight, withoutLaneHeights } from '../src/state/ui';
 
 const FIRST_VISIT = {
   snapping: true,
@@ -179,5 +179,102 @@ describe('the lane heights of someone who may not edit', () => {
     const full = Object.keys(laneHeightsToStore({}, { p1: { v1: 90 } }, many));
     expect(full).toHaveLength(50);
     expect([full[0], full[49]]).toEqual(['project1', 'p1']);
+  });
+});
+
+describe('the lane heights kept for a project that is deleted from this device', () => {
+  const KEY = 'tandem.ui.v1';
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('are taken out of what is stored, and nothing else is', () => {
+    const stored = JSON.stringify({
+      snapping: false,
+      laneHeights: { p1: { v1: 90 }, p2: { v1: 40 } },
+      // Written by a version that knows more than this one.
+      later: { kept: true },
+    });
+    expect(JSON.parse(withoutLaneHeights(stored, 'p1')!)).toEqual({
+      snapping: false,
+      laneHeights: { p2: { v1: 40 } },
+      later: { kept: true },
+    });
+    expect(JSON.parse(withoutLaneHeights('{"laneHeights": {"p1": {"v1": 90}}}', 'p1')!)).toEqual({
+      laneHeights: {},
+    });
+  });
+
+  it('leave storage alone when it holds none for the project', () => {
+    const stored = '{"snapping": false, "laneHeights": {"p1": {"v1": 90}}}';
+    for (const [prefs, project] of [
+      [stored, 'p2'],
+      [stored, 'constructor'],
+      [stored, '__proto__'],
+      [null, 'p1'],
+      ['', 'p1'],
+      ['{', 'p1'],
+      ['null', 'p1'],
+      ['[]', 'p1'],
+      ['{"laneHeights": 7}', 'p1'],
+      ['{"laneHeights": ["p1"]}', 'p1'],
+    ] as const) {
+      expect(withoutLaneHeights(prefs, project), `${prefs} / ${project}`).toBeNull();
+    }
+  });
+
+  it('go from this tab and from storage at once, and the next save does not bring them back', async () => {
+    vi.useFakeTimers();
+    const data = new Map<string, string>();
+    const write = (prefs: object): void => void data.set(KEY, JSON.stringify(prefs));
+    const read = (): Record<string, unknown> => JSON.parse(data.get(KEY) ?? '{}');
+    write({ timelineHeight: 400, laneHeights: { p1: { v1: 90 }, p2: { v1: 40 } } });
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => void data.set(key, value),
+    });
+    // The module as a tab that has just loaded has it: it starts from what is stored.
+    vi.resetModules();
+    const { forgetLaneHeights, useUI } = await import('../src/state/ui');
+    expect(useUI.getState().laneHeights).toEqual({ p1: { v1: 90 }, p2: { v1: 40 } });
+    // Since then another tab has sized the lanes of a project this one has never seen.
+    write({ timelineHeight: 400, laneHeights: { p1: { v1: 90 }, p2: { v1: 40 }, p3: { a1: 30 } } });
+
+    forgetLaneHeights('p1');
+    expect(useUI.getState().laneHeights).toEqual({ p2: { v1: 40 } });
+    expect(read()).toEqual({ timelineHeight: 400, laneHeights: { p2: { v1: 40 }, p3: { a1: 30 } } });
+    forgetLaneHeights('p3');
+    expect(useUI.getState().laneHeights).toEqual({ p2: { v1: 40 } });
+    expect(read().laneHeights).toEqual({ p2: { v1: 40 } });
+    // A project nothing is kept for changes nothing, here or there.
+    const before = [useUI.getState().laneHeights, data.get(KEY)];
+    forgetLaneHeights('p4');
+    expect([useUI.getState().laneHeights, data.get(KEY)]).toEqual(before);
+    expect(useUI.getState().laneHeights).toBe(before[0]);
+
+    // The save that follows any change writes the preferences of this tab, without them.
+    vi.advanceTimersByTime(400);
+    expect(read().laneHeights).toEqual({ p2: { v1: 40 } });
+    useUI.getState().set({ snapping: false });
+    vi.advanceTimersByTime(400);
+    expect(read()).toMatchObject({ snapping: false, timelineHeight: 400, laneHeights: { p2: { v1: 40 } } });
+  });
+
+  it('are let go of by a tab whose storage cannot be read or written', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new DOMException('The operation is insecure.', 'SecurityError');
+      },
+      setItem: () => {
+        throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+      },
+    });
+    vi.resetModules();
+    const { forgetLaneHeights, useUI } = await import('../src/state/ui');
+    useUI.getState().set({ laneHeights: { p1: { v1: 90 } } });
+    expect(() => forgetLaneHeights('p1')).not.toThrow();
+    expect(useUI.getState().laneHeights).toEqual({});
   });
 });

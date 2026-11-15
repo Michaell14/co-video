@@ -23,7 +23,7 @@ import {
   type Project,
   type TransitionDef,
 } from '@tandem/core';
-import { AudioGraph } from './audio/graph';
+import { AudioGraph, type AudioProblem } from './audio/graph';
 import { Compositor, type RenderOptions } from './gl/compositor';
 import { warmNext } from './gl/effectRunner';
 import { MediaLibrary, type MediaResolver } from './media/library';
@@ -62,6 +62,13 @@ type Listener = () => void;
 export class Player {
   readonly library: MediaLibrary;
   stats: PlayerStats = { fps: 0, renderMs: 0, dropped: 0, renderWidth: 0, renderHeight: 0, passes: 0 };
+  /**
+   * Told about each clip the preview plays without its sound, or without a part of it, as the
+   * mixer finds out (see `AudioProblem`). The mixer starts every clip afresh whenever playback
+   * starts, jumps or loops, so the same is said again each time the clip is played: whoever
+   * listens keeps what it has heard of a clip, not a list.
+   */
+  onAudioProblem: ((problem: AudioProblem) => void) | null = null;
 
   private project: Project;
   private state: PlayerState = {
@@ -499,6 +506,7 @@ export class Player {
       }
     }
     this.graph = new AudioGraph(this.audioCtx, this.library, true);
+    this.graph.onProblem = (problem) => this.onAudioProblem?.(problem);
   }
 
   private restartAudio(): void {

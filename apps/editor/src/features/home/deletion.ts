@@ -1,11 +1,27 @@
 /**
- * Deleting a shared project for everyone, as far as it is words and rules: who is offered it, and
- * what is said when the server did not do it.
+ * Deleting a shared project for everyone, as far as it is words and rules: who is offered it, where
+ * the question is asked, and what is said when the server did not do it.
  */
 import { ApiError } from '../../session/api';
 
 /** Offered to whoever holds the owner's link. Whether it really is that is for the server to say. */
 export { ownsProject } from '../../session/registry';
+
+let asked: string | null = null;
+
+/**
+ * Have the home screen ask, the next time it opens, whether `projectId` is to be deleted for
+ * everyone: what choosing that inside the editor does, before going there. The question is put on
+ * the home screen and not over the open project because a project that is open when the server
+ * deletes it is told so like everyone else's, and would say that its owner deleted it to the
+ * owner. `null` takes the request back.
+ */
+export function askToDeleteForEveryone(projectId: string | null): void {
+  asked = projectId;
+}
+
+/** The project the home screen is to ask about, if choosing it inside the editor led there. */
+export const askedToDelete = (): string | null => asked;
 
 const UNCHANGED = 'Nothing was changed on this device.';
 

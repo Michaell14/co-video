@@ -13,6 +13,7 @@ import {
   Snowflake,
   Sparkles,
   Square,
+  TriangleAlert,
   Type,
 } from 'lucide-react';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -72,7 +73,7 @@ import { useUI } from '../../state/ui';
 import { openContextMenu, toast, type MenuEntry } from '../../ui/core';
 import { insideRect, onDrop, useDrag, type DragPayload } from '../../ui/dnd';
 import { usingKeyboard } from '../../ui/layers';
-import { faultChip } from '../library/fault';
+import { faultChip, soundLossChip } from '../library/fault';
 import { editEntry, useCanEdit } from './access';
 import { describeClip, describeSelection } from './describe';
 import { EdgeScroller, laneAxis, timeAxis } from './edgeScroll';
@@ -100,6 +101,7 @@ import {
   type LevelHit,
 } from './levelLine';
 import { insertMove } from './moves';
+import { gravest, type SoundLossKind } from './soundLoss';
 
 const ICONS: Record<ClipType, typeof Film> = {
   video: Film,
@@ -1610,6 +1612,8 @@ export function Lanes({ lanes, height, width, live }: Props) {
                 const win = prev && c.transIn ? cutTransitionWindow(prev, c) : null;
                 const peer = peerSel.get(c.id);
                 const fault = c.assetId ? session.thumbs.fault(c.assetId) : null;
+                const missing = !!c.assetId && (!live.assets[c.assetId] || offline.has(c.assetId));
+                const undecodable = !!fault && (c.type === 'audio' ? fault.sound : fault.picture);
                 return (
                   <ClipView
                     key={c.id}
@@ -1630,8 +1634,10 @@ export function Lanes({ lanes, height, width, live }: Props) {
                     hint={dropHint?.clipId === c.id ? dropHint.side : null}
                     fading={fading?.id === c.id ? fading.side : null}
                     fadeMoved={fading?.id === c.id && fading.moved}
-                    missing={!!c.assetId && (!live.assets[c.assetId] || offline.has(c.assetId))}
-                    undecodable={!!fault && (c.type === 'audio' ? fault.sound : fault.picture)}
+                    missing={missing}
+                    undecodable={undecodable}
+                    // A clip that has no sound at all here is not also said to lack a part of it.
+                    soundLost={missing || undecodable ? null : gravest(session.thumbs.soundLost(c, live))}
                     overlapping={overlapping.has(c.id)}
                   />
                 );
@@ -2026,6 +2032,8 @@ interface ClipViewProps {
   missing: boolean;
   /** What the clip shows of its media cannot be decoded on this page. */
   undecodable: boolean;
+  /** The preview played the clip without a part of its sound, which would not decode. */
+  soundLost: SoundLossKind | null;
   /** The clip shares frames with another clip of its track. */
   overlapping: boolean;
 }
@@ -2050,6 +2058,7 @@ const ClipView = memo(function ClipView({
   fadeMoved,
   missing,
   undecodable,
+  soundLost,
   overlapping,
 }: ClipViewProps) {
   const w = clipWidth(clip.duration, ppf);
@@ -2074,7 +2083,13 @@ const ClipView = memo(function ClipView({
     <div
       className="clip"
       role="option"
-      aria-label={describeClip(clip, track, settings, { offline: missing, undecodable, gap, overlapping })}
+      aria-label={describeClip(clip, track, settings, {
+        offline: missing,
+        undecodable,
+        gap,
+        soundLost,
+        overlapping,
+      })}
       aria-selected={selected}
       aria-disabled={locked || undefined}
       tabIndex={tabStop ? 0 : -1}
@@ -2110,6 +2125,13 @@ const ClipView = memo(function ClipView({
             <span className="clip__chip">
               <FileWarning />
               {faultChip(gap)}
+            </span>
+          )}
+          {soundLost && (
+            // A warning, as an overlap is: the clip plays, and is silent for a part of it.
+            <span className="clip__chip clip__chip--warn">
+              <TriangleAlert />
+              {soundLossChip(soundLost)}
             </span>
           )}
           {overlapping && (

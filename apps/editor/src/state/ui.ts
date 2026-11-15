@@ -198,6 +198,22 @@ export function laneHeightsToStore(
 }
 
 /**
+ * The stored preferences as they are written, without the lane heights kept for `project`: null
+ * when they hold none for it, and there is nothing to write.
+ */
+export function withoutLaneHeights(stored: string | null, project: string): string | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stored ?? 'null');
+  } catch {
+    return null;
+  }
+  if (!isRecord(raw) || !isRecord(raw.laneHeights) || !Object.hasOwn(raw.laneHeights, project)) return null;
+  const others = Object.entries(raw.laneHeights).filter(([id]) => id !== project);
+  return JSON.stringify({ ...raw, laneHeights: Object.fromEntries(others) });
+}
+
+/**
  * The stored preferences, as far as they can be trusted. The entry outlives the version that
  * wrote it and can be edited or damaged, so each field is taken only with the right type and a
  * finite, plausible value, and is otherwise the one a first visit starts from. One bad field
@@ -334,6 +350,23 @@ useUI.subscribe((s) => {
     }
   }, 400);
 });
+
+/**
+ * Let go of the lane heights kept for a project that has been deleted from this device. They leave
+ * what is stored here and now, not with the next save: that one keeps what it finds stored for
+ * every project this tab did not size, and the heights may well be from another tab.
+ */
+export function forgetLaneHeights(project: string): void {
+  try {
+    const without = withoutLaneHeights(localStorage.getItem(PREFS_KEY), project);
+    if (without !== null) localStorage.setItem(PREFS_KEY, without);
+  } catch {
+    /* storage that cannot be read or written is not kept up to date either */
+  }
+  const { laneHeights, set } = useUI.getState();
+  if (!Object.hasOwn(laneHeights, project)) return;
+  set({ laneHeights: Object.fromEntries(Object.entries(laneHeights).filter(([id]) => id !== project)) });
+}
 
 export const MIN_PPF = 0.004;
 export const MAX_PPF = 60;

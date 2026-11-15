@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { clips, ffprobe, hasFfprobe, importFixtures, newProject } from './helpers';
+import { join } from 'node:path';
+import { clips, ffprobe, FIXTURES, hasFfprobe, importFixtures, newProject } from './helpers';
 
 const SAMPLE = ['audio@0+360', 'text@18+90', 'video@0+120', 'video@120+120', 'video@240+120'];
 
@@ -1499,6 +1500,116 @@ test.describe('mixer', () => {
   });
 });
 
+/**
+ * Make the page's decoders fail for the sound of `stereo-441.mp4` (AAC at 44.1 kHz): the
+ * WebCodecs one on its first chunk, and with `both` the one behind `decodeAudioData` as well when
+ * it is given an AAC stream. The decoder an export sets up to measure its own encoder is another
+ * one, and works.
+ *
+ * With `only`, the WebCodecs decoder fails on nothing but the chunks whose times lie between
+ * `from` and `to` (microseconds), and as a decoder does: after what it was given before them has
+ * come out.
+ */
+async function failingSoundDecoders(
+  page: Page,
+  both: boolean,
+  only: { from: number; to?: number } | null = null,
+): Promise<void> {
+  await page.addInitScript(
+    ({ both, only }) => {
+      class Failing extends AudioDecoder {
+        private ours = false;
+        private failing = false;
+        private readonly failed: (error: DOMException) => void;
+        constructor(init: AudioDecoderInit) {
+          super(init);
+          this.failed = init.error;
+        }
+        override configure(config: AudioDecoderConfig): void {
+          this.ours = config.codec.startsWith('mp4a') && config.sampleRate === 44100;
+          super.configure(config);
+        }
+        override decode(chunk: EncodedAudioChunk): void {
+          if (!this.ours) return super.decode(chunk);
+          if (this.failing || this.state === 'closed') return;
+          const error = new DOMException('Decoding error.', 'EncodingError');
+          if (!only) {
+            this.close();
+            queueMicrotask(() => this.failed(error));
+          } else if (chunk.timestamp < only.from || chunk.timestamp >= (only.to ?? Infinity)) {
+            super.decode(chunk);
+          } else {
+            this.failing = true;
+            const fail = (): void => {
+              if (this.state !== 'closed') this.close();
+              this.failed(error);
+            };
+            void this.flush().then(fail, fail);
+          }
+        }
+      }
+      window.AudioDecoder = Failing;
+      if (!both) return;
+      const decode = OfflineAudioContext.prototype.decodeAudioData;
+      OfflineAudioContext.prototype.decodeAudioData = function (
+        this: OfflineAudioContext,
+        bytes: ArrayBuffer,
+      ) {
+        const head = new Uint8Array(bytes, 0, 2);
+        return head[0] === 0xff && head[1] === 0xf1
+          ? Promise.reject(new DOMException('Unable to decode audio data', 'EncodingError'))
+          : decode.call(this, bytes);
+      } as typeof decode;
+    },
+    { both, only },
+  );
+}
+
+/** A project of 320×180 with `stereo-441.mp4` on its timeline: six seconds of picture and of sound. */
+async function recording(page: Page): Promise<{ assetId: string; sound: Locator }> {
+  await newLocal(page);
+  await importFixtures(page, ['stereo-441.mp4']);
+  const assetId = await page.evaluate(() => {
+    const { session, cmd } = (window as any).tandem;
+    session.store.commit([{ op: 'settings', patch: { width: 320, height: 180 } }]);
+    const asset = Object.values(session.store.get().assets)[0] as any;
+    cmd.addAsset(asset);
+    return asset.id as string;
+  });
+  await expect.poll(() => clips(page)).toEqual(['audio@0+180', 'video@0+180']);
+  return { assetId, sound: page.locator('.clip[aria-label*=", A1,"]') };
+}
+
+/** The loudest point of the file's waveform, once all of it has been read. */
+const waveform = async (page: Page, assetId: string): Promise<number> => {
+  const read = () =>
+    page.evaluate((assetId) => {
+      const { session } = (window as any).tandem;
+      const wave = session.thumbs.wave.get(assetId, session.store.get().assets[assetId].duration);
+      return wave.done ? Math.max(...wave.peaks) : null;
+    }, assetId);
+  await expect.poll(read).not.toBeNull();
+  return (await read())!;
+};
+
+/** The highest level the master meter reaches in a few seconds of playing from the start. */
+async function played(page: Page): Promise<number> {
+  await page.evaluate(() => {
+    const { player } = (window as any).tandem.session;
+    player.seek(0);
+    player.play();
+  });
+  const level = () =>
+    page.evaluate(() => Math.max(...((window as any).tandem.session.player.levels().master as number[])));
+  let most = 0;
+  await expect
+    .poll(async () => (most = Math.max(most, await level())), { timeout: 8000, intervals: [50] })
+    .toBeGreaterThan(0.05)
+    .catch(() => {});
+  await page.evaluate(() => (window as any).tandem.session.player.pause());
+  return most;
+}
+
 test.describe('export', () => {
   const codec = (page: Page) => page.locator('.exp .row', { hasText: 'Codec' }).first().locator('.row__ctrl');
   const range = (page: Page) => page.locator('.exp .row', { hasText: 'Dynamic range' }).locator('.row__ctrl');
@@ -2206,92 +2317,6 @@ test.describe('export', () => {
   });
 
   /**
-   * Make the page's decoders fail for the sound of `stereo-441.mp4` (AAC at 44.1 kHz): the
-   * WebCodecs one on its first chunk, and with `both` the one behind `decodeAudioData` as well when
-   * it is given an AAC stream. The decoder an export sets up to measure its own encoder is another
-   * one, and works.
-   */
-  async function failingSoundDecoders(page: Page, both: boolean): Promise<void> {
-    await page.addInitScript((both) => {
-      class Failing extends AudioDecoder {
-        private ours = false;
-        private readonly failed: (error: DOMException) => void;
-        constructor(init: AudioDecoderInit) {
-          super(init);
-          this.failed = init.error;
-        }
-        override configure(config: AudioDecoderConfig): void {
-          this.ours = config.codec.startsWith('mp4a') && config.sampleRate === 44100;
-          super.configure(config);
-        }
-        override decode(chunk: EncodedAudioChunk): void {
-          if (!this.ours) return super.decode(chunk);
-          if (this.state === 'closed') return;
-          this.close();
-          queueMicrotask(() => this.failed(new DOMException('Decoding error.', 'EncodingError')));
-        }
-      }
-      window.AudioDecoder = Failing;
-      if (!both) return;
-      const decode = OfflineAudioContext.prototype.decodeAudioData;
-      OfflineAudioContext.prototype.decodeAudioData = function (
-        this: OfflineAudioContext,
-        bytes: ArrayBuffer,
-      ) {
-        const head = new Uint8Array(bytes, 0, 2);
-        return head[0] === 0xff && head[1] === 0xf1
-          ? Promise.reject(new DOMException('Unable to decode audio data', 'EncodingError'))
-          : decode.call(this, bytes);
-      } as typeof decode;
-    }, both);
-  }
-
-  /** A project of 320×180 with `stereo-441.mp4` on its timeline: six seconds of picture and of sound. */
-  async function recording(page: Page): Promise<{ assetId: string; sound: Locator }> {
-    await newLocal(page);
-    await importFixtures(page, ['stereo-441.mp4']);
-    const assetId = await page.evaluate(() => {
-      const { session, cmd } = (window as any).tandem;
-      session.store.commit([{ op: 'settings', patch: { width: 320, height: 180 } }]);
-      const asset = Object.values(session.store.get().assets)[0] as any;
-      cmd.addAsset(asset);
-      return asset.id as string;
-    });
-    await expect.poll(() => clips(page)).toEqual(['audio@0+180', 'video@0+180']);
-    return { assetId, sound: page.locator('.clip[aria-label*=", A1,"]') };
-  }
-
-  /** The loudest point of the file's waveform, once all of it has been read. */
-  const waveform = async (page: Page, assetId: string): Promise<number> => {
-    const read = () =>
-      page.evaluate((assetId) => {
-        const { session } = (window as any).tandem;
-        const wave = session.thumbs.wave.get(assetId, session.store.get().assets[assetId].duration);
-        return wave.done ? Math.max(...wave.peaks) : null;
-      }, assetId);
-    await expect.poll(read).not.toBeNull();
-    return (await read())!;
-  };
-
-  /** The highest level the master meter reaches in a few seconds of playing from the start. */
-  async function played(page: Page): Promise<number> {
-    await page.evaluate(() => {
-      const { player } = (window as any).tandem.session;
-      player.seek(0);
-      player.play();
-    });
-    const level = () =>
-      page.evaluate(() => Math.max(...((window as any).tandem.session.player.levels().master as number[])));
-    let most = 0;
-    await expect
-      .poll(async () => (most = Math.max(most, await level())), { timeout: 8000, intervals: [50] })
-      .toBeGreaterThan(0.05)
-      .catch(() => {});
-    await page.evaluate(() => (window as any).tandem.session.player.pause());
-    return most;
-  }
-
-  /**
    * Export through the dialog as it opens, and measure the sound of the file that comes of it: on
    * the right the pitch of the tone and where it falls silent, on the left the pitch of the sweep
    * a second and four seconds in, which says where on the timeline it is.
@@ -2390,6 +2415,40 @@ test.describe('export', () => {
     ]);
   });
 
+  test('Normalise loudness measures a file the WebCodecs decoder fails on by the decoder it plays through', async ({
+    page,
+  }) => {
+    /** What Normalise loudness makes of the volume of the recording's sound clip. */
+    const normalised = async (page: Page): Promise<number> => {
+      const { assetId } = await recording(page);
+      await waveform(page, assetId);
+      const volume = () =>
+        page.evaluate(() => {
+          const { session } = (window as any).tandem;
+          const sound = (Object.values(session.store.get().clips) as any[]).find((c) => c.type === 'audio');
+          return { id: sound.id as string, volume: sound.volume as number };
+        });
+      const before = await volume();
+      expect(before.volume).toBe(0);
+      await select(page, [before.id]);
+      await page.evaluate(() => (window as any).tandem.cmd.normalizeLoudness());
+      await expect(toast(page, 'Normalised the clip to -14 LUFS.')).toBeVisible();
+      return (await volume()).volume;
+    };
+    const plain = await normalised(page);
+    // The tone and the sweep of the file are well above the target: the clip is turned down.
+    expect(plain).toBeLessThan(-3);
+    expect(plain).toBeGreaterThan(-7);
+
+    // The same file in a page whose WebCodecs decoder gives nothing of it: measured all the same,
+    // and to the same level.
+    const other = await page.context().newPage();
+    await failingSoundDecoders(other, false);
+    const fallen = await normalised(other);
+    expect(Math.abs(fallen - plain)).toBeLessThanOrEqual(0.1);
+    await other.close();
+  });
+
   test('a clip whose sound no decoder gives says so, and its export says what the decoder said', async ({
     page,
   }) => {
@@ -2400,10 +2459,15 @@ test.describe('export', () => {
     await expect(sound.locator('.clip__chip')).toHaveText('Unsupported');
     await expect(sound).toHaveAttribute('aria-label', /, cannot be decoded in this browser$/);
     await sound.click();
-    await expect(inspector(page)).toContainText(
-      'This browser cannot decode the sound of this file (mp4a.40.2)',
-    );
+    const said = inspector(page).locator('.insp__trouble');
+    await expect(said).toContainText('This browser cannot decode the sound of this file (mp4a.40.2)');
+    await expect(said.locator('.insp__cause')).toHaveText('Cause: EncodingError: Decoding error.');
     expect(await played(page)).toBe(0);
+    // Played, the clip says the same and nothing more: sound of which nothing decodes is the
+    // matter of the file, and is not also put down to the clip as sound it lost while playing.
+    await expect(sound.locator('.clip__chip')).toHaveText('Unsupported');
+    await expect(sound).toHaveAttribute('aria-label', /, cannot be decoded in this browser$/);
+    await expect(said).toHaveCount(1);
 
     const heard = await exported(page);
     expect(heard.loudest).toBeLessThan(1e-4);
@@ -2428,5 +2492,249 @@ test.describe('export', () => {
       }),
     ).toEqual({ select: 'text', smaller: true, below: true });
     await expect(done.locator('.exp__place')).toHaveText(['00:00:00:00']);
+  });
+});
+
+test.describe('sound that decodes in part', () => {
+  /** Everything the preview's mixer tells the session from now on is also kept in `window.heard`. */
+  const listen = (page: Page): Promise<void> =>
+    page.evaluate(() => {
+      const { thumbs } = (window as any).tandem.session;
+      const heard = thumbs.heard.bind(thumbs);
+      (window as any).heard = [];
+      thumbs.heard = (problem: unknown, project: unknown) => {
+        (window as any).heard.push(problem);
+        heard(problem, project);
+      };
+    });
+  const heard = (page: Page): Promise<any[]> => page.evaluate(() => (window as any).heard);
+  const frame = (page: Page): Promise<number> =>
+    page.evaluate(() => (window as any).tandem.session.player.getFrame());
+
+  /** Play from `from` until the playhead has passed `past`, and stop there. */
+  async function playOver(page: Page, from: number, past: number): Promise<void> {
+    await page.evaluate((from) => {
+      const { player } = (window as any).tandem.session;
+      player.seek(from);
+      player.play();
+    }, from);
+    await expect.poll(() => frame(page), { timeout: 30_000, intervals: [50] }).toBeGreaterThan(past);
+    await page.evaluate(() => (window as any).tandem.session.player.pause());
+  }
+
+  test('a clip that plays without a stretch of its sound says so where it lies: once, however often it is played, and until its file is read anew', async ({
+    page,
+  }) => {
+    // Packet 60 of the file, at 1.37 s, and no other decoder to turn to.
+    await failingSoundDecoders(page, true, { from: 1_369_000, to: 1_371_000 });
+    const { assetId, sound } = await recording(page);
+    await listen(page);
+    const mark = sound.locator('.clip__chip');
+    const said = inspector(page).locator('.insp__trouble');
+    // All but a twentieth of a second of the file decodes: it is drawn, it is not “Unsupported”,
+    // and nothing is said of the clip before the preview has played it.
+    expect(await waveform(page, assetId)).toBeGreaterThan(0.3);
+    await expect(mark).toHaveCount(0);
+    await expect(sound).toHaveAttribute('aria-label', 'stereo-441.mp4, A1, 0:00.00 to 0:06.00');
+
+    // Played: a warning on the clip, as an overlap is one, and the same in its read-out.
+    await playOver(page, 0, 50);
+    await expect(mark).toHaveText('Sound gap');
+    await expect(mark).toHaveClass(/clip__chip--warn/);
+    await expect(sound).toHaveAttribute(
+      'aria-label',
+      'stereo-441.mp4, A1, 0:00.00 to 0:06.00, a stretch of its sound could not be decoded',
+    );
+    // The picture of the same file decodes, and says nothing.
+    await expect(page.locator('.clip[aria-label*=", V1,"] .clip__chip')).toHaveCount(0);
+
+    // The inspector says it in a sentence, and under it where and why: smaller, and as text that
+    // can be selected and copied.
+    await sound.click();
+    await expect(said).toHaveCount(1);
+    await expect(said).toContainText(
+      'A stretch of the sound of this clip could not be decoded and is silent.',
+    );
+    const details = said.locator('.insp__cause');
+    await expect(details).toHaveText(['At 00:00:01:11', 'Cause: EncodingError: Decoding error.']);
+    expect(
+      await details.last().evaluate((el) => {
+        const line = el.closest('.insp__trouble')!;
+        return {
+          select: getComputedStyle(el).userSelect,
+          smaller: parseFloat(getComputedStyle(el).fontSize) < parseFloat(getComputedStyle(line).fontSize),
+          below: el.getBoundingClientRect().top > line.getBoundingClientRect().top + 10,
+        };
+      }),
+    ).toEqual({ select: 'text', smaller: true, below: true });
+
+    // Played twice more, the mixer says it twice more, and it is still said once.
+    await playOver(page, 0, 50);
+    await playOver(page, 20, 50);
+    const told = await heard(page);
+    expect(told.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(told.map((problem) => `${problem.reason} ${problem.lost}`))).toEqual(
+      new Set(['decode-error stretch']),
+    );
+    await expect(mark).toHaveCount(1);
+    await expect(said).toHaveCount(1);
+    await expect(details).toHaveCount(2);
+
+    // The place takes the playhead there, and goes with the clip when the clip is moved.
+    await said.getByRole('button', { name: 'Move the playhead to 00:00:01:11' }).click();
+    expect(await frame(page)).toBe(41);
+    await page.evaluate(() => {
+      const { store } = (window as any).tandem.session;
+      const moved = (Object.values(store.get().clips) as any[]).map((c) => ({
+        op: 'updateClip',
+        id: c.id,
+        patch: { start: c.start + 30 },
+      }));
+      store.commit(moved);
+    });
+    await expect(details.first()).toHaveText('At 00:00:02:11');
+    // Cut short before the place, the clip no longer plays it, and no longer says it.
+    await page.evaluate(() => {
+      const { store } = (window as any).tandem.session;
+      const cut = (Object.values(store.get().clips) as any[]).map((c) => ({
+        op: 'updateClip',
+        id: c.id,
+        patch: { duration: 30 },
+      }));
+      store.commit(cut);
+    });
+    await expect(mark).toHaveCount(0);
+    await expect(said).toHaveCount(0);
+    await undo(page);
+    await undo(page);
+    // Found again when the clip is played as it was: it is as true as before.
+    await expect(mark).toHaveCount(0);
+    await playOver(page, 0, 50);
+    await expect(mark).toHaveText('Sound gap');
+    await expect(details.first()).toHaveText('At 00:00:01:11');
+
+    // The file read anew, as when it has finished downloading: what was heard of the old bytes
+    // is forgotten, by the clip and by the inspector.
+    await page.evaluate((id) => (window as any).tandem.session.thumbs.refresh(id), assetId);
+    await expect(mark).toHaveCount(0);
+    await expect(said).toHaveCount(0);
+    await expect(sound).toHaveAttribute('aria-label', 'stereo-441.mp4, A1, 0:00.00 to 0:06.00');
+    await playOver(page, 0, 50);
+    await expect(mark).toHaveText('Sound gap');
+
+    // Another file put in its place: the clip is of that file now, which nobody has played yet.
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.evaluate((id) => void (window as any).tandem.cmd.replaceMedia(id), assetId),
+    ]);
+    await chooser.setFiles(join(FIXTURES, 'stereo-441.mp4'));
+    await expect(toast(page, 'Replaced "stereo-441.mp4"')).toBeVisible();
+    await expect(mark).toHaveCount(0);
+    await expect(said).toHaveCount(0);
+  });
+
+  test('a clip whose sound gives nothing from some place on says that it stops, and from where it was found to', async ({
+    page,
+  }) => {
+    // Everything from three seconds in. The first half of the file decodes, so the file is not
+    // “Unsupported”; a play that begins behind that place gets nothing at all for the clip.
+    await failingSoundDecoders(page, true, { from: 3_000_000 });
+    const { assetId, sound } = await recording(page);
+    const mark = sound.locator('.clip__chip');
+    expect(await waveform(page, assetId)).toBeGreaterThan(0.3);
+    await expect(mark).toHaveCount(0);
+
+    await playOver(page, 120, 135);
+    await expect(mark).toHaveText('Sound stops');
+    await expect(mark).toHaveClass(/clip__chip--warn/);
+    await expect(sound).toHaveAttribute(
+      'aria-label',
+      'stereo-441.mp4, A1, 0:00.00 to 0:06.00, its sound stopped decoding part-way through',
+    );
+    await sound.click();
+    const said = inspector(page).locator('.insp__trouble[data-sound-lost="rest"]');
+    await expect(said).toContainText(
+      'The sound of this clip stopped decoding part-way through and is silent from there.',
+    );
+    const details = said.locator('.insp__cause');
+    await expect(details).toHaveText([/^At 00:00:0\d:\d\d$/, 'Cause: EncodingError: Decoding error.']);
+    /** The frame the inspector names. */
+    const place = async (): Promise<number> => {
+      const [, seconds, frames] = /^At 00:00:(\d\d):(\d\d)$/.exec((await details.first().textContent())!)!;
+      return Number(seconds) * 30 + Number(frames);
+    };
+    // Silent from where that play took the clip up: four seconds in, and as much later as its
+    // sound was in starting, which is a frame or two.
+    const first = await place();
+    expect(first).toBeGreaterThanOrEqual(120);
+    expect(first).toBeLessThan(135);
+    // A play from further on changes nothing; one from further back finds it silent from there.
+    await playOver(page, 150, 160);
+    expect(await place()).toBe(first);
+    await playOver(page, 105, 115);
+    await expect.poll(place).toBeLessThan(115);
+    expect(await place()).toBeGreaterThanOrEqual(105);
+    await expect(mark).toHaveCount(1);
+    await expect(inspector(page).locator('.insp__trouble')).toHaveCount(1);
+  });
+
+  test('nothing is said of a clip whose sound decodes, whatever ends its sound early: a jump, a scrub, an edit under the playhead', async ({
+    page,
+  }) => {
+    const warned: string[] = [];
+    page.on('console', (m) => {
+      if (m.type() === 'warning' && m.text().startsWith('[audio]')) warned.push(m.text().split('\n')[0]);
+    });
+    const { assetId, sound } = await recording(page);
+    expect(await waveform(page, assetId)).toBeGreaterThan(0.3);
+    await listen(page);
+    const playing = (): Promise<boolean> =>
+      page.evaluate(() => (window as any).tandem.session.player.getState().playing);
+
+    await page.evaluate(() => (window as any).tandem.session.player.play());
+    await expect.poll(() => frame(page)).toBeGreaterThan(5);
+    // Jumps, each of which starts the clip's sound over while the last start is still decoding.
+    for (const to of [30, 90, 12, 150, 60, 61, 62, 100, 5]) await seek(page, to);
+    // A scrub along the ruler, begun while it plays.
+    const ruler = await box(page.locator('.ruler'));
+    const ppf = await page.evaluate(() => (window as any).tandem.ui.getState().ppf as number);
+    await page.mouse.move(ruler.x + 20 * ppf, ruler.y + 15);
+    await page.mouse.down();
+    for (let f = 20; f <= 140; f += 4) await page.mouse.move(ruler.x + f * ppf, ruler.y + 15);
+    await page.mouse.up();
+    // A scrub is made at rest: taking hold of the ruler stops the playback.
+    expect(await playing()).toBe(false);
+    expect(await frame(page)).toBeGreaterThan(130);
+    // The clip cut short under the playhead, cut in two there, and given back.
+    await page.evaluate(() => (window as any).tandem.session.player.play());
+    await seek(page, 30);
+    expect(await playing()).toBe(true);
+    await page.evaluate(() => {
+      const { store } = (window as any).tandem.session;
+      const cut = (Object.values(store.get().clips) as any[]).map((c) => ({
+        op: 'updateClip',
+        id: c.id,
+        patch: { duration: 40 },
+      }));
+      store.commit(cut);
+    });
+    await page.waitForTimeout(500);
+    await undo(page);
+    await seek(page, 60);
+    await page.evaluate(() => (window as any).tandem.cmd.split());
+    await expect(page.locator('.clip[aria-label*=", A1,"]')).toHaveCount(2);
+    await page.waitForTimeout(500);
+    await undo(page);
+    await expect(page.locator('.clip')).toHaveCount(2);
+    // And played out to its end.
+    await seek(page, 150);
+    await expect.poll(playing, { timeout: 15_000 }).toBe(false);
+
+    expect(await heard(page)).toEqual([]);
+    await expect(page.locator('.clip__chip')).toHaveCount(0);
+    await expect(sound).toHaveAttribute('aria-label', 'stereo-441.mp4, A1, 0:00.00 to 0:06.00');
+    await sound.click();
+    await expect(inspector(page).locator('.insp__trouble')).toHaveCount(0);
+    expect(warned).toEqual([]);
   });
 });

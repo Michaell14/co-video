@@ -508,7 +508,7 @@ test.describe('top bar', () => {
       'Trim nearest edge right',
       'Extend edit to playhead',
       'Add default transition',
-      'Markers follow ripple edits',
+      'Comments and markers follow ripple edits',
     ])
       await expect(entry(name)).toBeEnabled();
     // Nothing has been copied yet, so there is nothing to paste a part of.
@@ -525,6 +525,8 @@ test.describe('top bar', () => {
     await page.getByRole('button', { name: 'Menu', exact: true }).click();
     await expect(menu.getByRole('menuitem', { name: /^Export…/ })).toBeVisible();
     expect(await fits()).toBe(true);
+    // A project that is on no server has nobody to be deleted for: the menu ends with the way out.
+    await expect(menu.getByRole('menuitem').last()).toHaveText('Back to projects');
     await page.keyboard.press('Escape');
     await open();
 
@@ -538,8 +540,109 @@ test.describe('top bar', () => {
     await open();
     await expect(entry('Paste attributes: grade only')).toBeEnabled();
     await expect(entry('Paste attributes: volume, pan and fades only')).toBeDisabled();
-    await entry('Markers follow ripple edits').click();
-    await expect(toast(page, 'Markers stay where they are through ripple edits.')).toBeVisible();
+    await entry('Comments and markers follow ripple edits').click();
+    await expect(toast(page, 'stay where they are')).toHaveText(
+      'Comments and markers stay where they are through ripple edits.',
+    );
+  });
+
+  test('typing into a title is in the shortcut sheet, and in the palette by name', async ({ page }) => {
+    await page.context().routeWebSocket(/\/\?token=/, () => {});
+    await sample(page);
+    const title = await tandem(page, (t) => {
+      const clip = (Object.values(t.session.store.get().clips) as any[]).find((c) => c.type === 'text');
+      return {
+        id: clip.id as string,
+        start: clip.start as number,
+        end: (clip.start + clip.duration) as number,
+      };
+    });
+    const content = (): Promise<string> =>
+      page.evaluate((id) => (window as any).tandem.session.store.get().clips[id].text.content, title.id);
+    const said = await content();
+
+    // The sheet has the keys the viewer takes for a title, and what the mouse does for one.
+    await page.keyboard.press('Shift+?');
+    const sheet = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    const rows = (heading: string): Promise<[string, string][]> =>
+      sheet
+        .locator('section', { has: page.getByRole('heading', { name: heading, exact: true }) })
+        .locator('.shortcut')
+        .evaluateAll((rows) =>
+          rows.map((row) => {
+            const groups = Array.from(row.querySelectorAll('.kbd-group'), (group) =>
+              Array.from(group.querySelectorAll('.kbd'), (key) => key.textContent).join(' '),
+            );
+            return [
+              row.firstElementChild!.textContent!,
+              groups.length ? groups.join(' or ') : row.lastElementChild!.textContent!,
+            ];
+          }),
+        );
+    expect(await rows('Titles')).toEqual([
+      ['Type into the selected title', '↵'],
+      ['The same, wherever the keyboard is', 'F2'],
+      ['End the typing', 'Esc or Ctrl ↵'],
+    ]);
+    expect(new Map(await rows('Mouse')).get('Type into a title')).toBe('Double-click it in the viewer');
+    await page.keyboard.press('Escape');
+    await expect(sheet).toHaveCount(0);
+
+    const byName = async (): Promise<void> => {
+      await page.keyboard.press('Control+k');
+      const input = page.locator('.palette input');
+      await expect(input).toBeFocused();
+      await input.fill('type into the selected title');
+      await expect(page.locator('.palette__item')).toHaveCount(1);
+      await expect(page.locator('.palette__item')).toHaveText(/^Type into the selected title/);
+      await page.keyboard.press('Enter');
+      await expect(page.locator('.palette')).toHaveCount(0);
+    };
+    const field = page.getByLabel('Title text');
+    const inInspector = panel(page, 'Inspector').getByLabel('Text content');
+
+    // Asked for with nothing it could type into, the command says what it needs.
+    await watchToasts(page);
+    const select = (ids: string[]): Promise<void> => setUI(page, { selection: ids });
+    const film: string = await tandem(
+      page,
+      (t) => (Object.values(t.session.store.get().clips) as any[]).find((c) => c.type === 'video').id,
+    );
+    for (const [i, selection] of [[], [film], [title.id, film]].entries()) {
+      await select(selection);
+      await byName();
+      await expect.poll(() => toastsWith(page, 'Select one title to type into it.')).toBe(i + 1);
+      await expect(field).toHaveCount(0);
+    }
+    expect(await content()).toBe(said);
+
+    // The one title selected and on show: the keyboard is in its text, on the picture, with all
+    // of it selected. The Enter that chose the command is not typed into it.
+    await page.evaluate((frame) => (window as any).tandem.cmd.seek(frame), title.start + 30);
+    await select([title.id]);
+    await byName();
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue(said);
+    await page.keyboard.type('Typed by name');
+    await expect.poll(content).toBe('Typed by name');
+    await page.keyboard.press('Escape');
+    await expect(field).toHaveCount(0);
+
+    // From another workspace it comes back to the one a title is typed in.
+    await setUI(page, { workspace: 'color' });
+    await byName();
+    await expect(field).toBeFocused();
+    expect(await tandem(page, (t) => t.ui.getState().workspace)).toBe('edit');
+    await page.keyboard.press('Escape');
+
+    // A title the playhead is not on is typed in the inspector's field, as with every other way
+    // of asking for its text.
+    await page.evaluate((frame) => (window as any).tandem.cmd.seek(frame), title.end + 30);
+    await byName();
+    await expect(inInspector).toBeFocused();
+    await expect(field).toHaveCount(0);
+    expect(await content()).toBe('Typed by name');
+    expect(await toastsWith(page, 'Select one title to type into it.')).toBe(3);
   });
 });
 

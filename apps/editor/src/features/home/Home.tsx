@@ -15,7 +15,7 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { flushSync } from 'react-dom';
 import {
   canEdit,
@@ -47,8 +47,8 @@ import {
   type MenuEntry,
 } from '../../ui/core';
 import { COLOR_MODE_OPTIONS, describeResolution, describeSize } from '../../ui/labels';
-import { handFocus } from '../../ui/layers';
-import { ownsProject } from './deletion';
+import { handFocus, usingKeyboard } from '../../ui/layers';
+import { askedToDelete, askToDeleteForEveryone, ownsProject } from './deletion';
 import {
   afterDeletedFromServer,
   deleteFromServer,
@@ -114,6 +114,9 @@ export function Home() {
   const [join, setJoin] = useState(false);
   const [name, setName] = useState(() => getUser().name);
   const fileInput = useRef<HTMLInputElement>(null);
+  // What was chosen inside the editor on the way here has been asked by the project's card as it
+  // appeared (see `ProjectCard`), or there is no such card: either way it is not asked later.
+  useEffect(() => askToDeleteForEveryone(null), []);
 
   useEffect(() => {
     document.title = 'Tandem';
@@ -315,6 +318,16 @@ function ProjectCard({ project: p, index }: { project: ProjectEntry; index: numb
   const [deleting, setDeleting] = useState(false);
   const [busy, setBusy] = useState(false);
   const card = useRef<HTMLDivElement>(null);
+
+  // Deleting this project for everyone was chosen inside the editor, which was left for this
+  // screen: the card asks as it appears, and at no later time (the home screen sees to that).
+  // Someone working from the keyboard is put on the card first, so that the question leaves them
+  // there when it closes, as it does when it is asked from the card's menu.
+  useLayoutEffect(() => {
+    if (askedToDelete() !== p.id || !ownsProject(p)) return;
+    if (usingKeyboard()) card.current?.querySelector<HTMLElement>('.pcard__open')?.focus();
+    setDeleting(true);
+  }, []);
 
   const duplicate = async () => {
     if (busy) return;

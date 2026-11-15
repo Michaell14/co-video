@@ -15,6 +15,34 @@ const toast = (page: Page, text: string): Locator => page.locator('.toast', { ha
 
 /** What a session says of a deleted project when it has nothing to say about a copy. */
 const DELETED = 'This project was deleted from the collaboration server by its owner.';
+/** What the screen of a project says that its owner deleted, with nothing of it on this device. */
+const NOTHING_LEFT =
+  'Its owner deleted it from the collaboration server: nothing of it is left there, and nothing of it is stored on this device.';
+
+/**
+ * A project that is not available because its owner deleted it says so on the screen itself, and
+ * offers the way back to the project list and no other: asking the server again changes nothing.
+ */
+async function expectDeletedScreen(page: Page): Promise<void> {
+  await expect(page.locator('.splash__title')).toHaveText('This project is not available');
+  await expect(page.locator('.splash__text')).toContainText(NOTHING_LEFT);
+  await expect(page.locator('.splash').getByRole('button')).toHaveText(['Back to projects']);
+  await expect(page.locator('.splash__label')).toHaveCount(0);
+}
+
+/** Every toast from now on is kept in `window.__toasts`, also the ones that have faded since. */
+async function watchToasts(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const seen: string[] = ((window as any).__toasts = []);
+    new MutationObserver((records) => {
+      for (const r of records)
+        for (const n of Array.from(r.addedNodes))
+          if (n instanceof HTMLElement && n.classList.contains('toast')) seen.push(n.textContent ?? '');
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+}
+
+const toastsSeen = (page: Page): Promise<string[]> => page.evaluate(() => (window as any).__toasts);
 
 const clipCount = (page: Page): Promise<number> =>
   page.evaluate(() => Object.keys((window as any).tandem.session.store.get().clips).length);
@@ -313,9 +341,12 @@ test.describe('deleting a project for everyone', () => {
     const late = await lateContext.newPage();
     await noReloads(late);
     await late.goto(editorLink);
-    await expect(late.locator('.splash__title')).toHaveText('This project is not available');
+    await expectDeletedScreen(late);
     await expect(toast(late, 'deleted from the collaboration server')).toHaveText(DELETED);
-    await goHome(late);
+    // It was never in their list, so the screen does not say that it left it.
+    await expect(late.locator('.splash__text')).not.toContainText('removed from your projects');
+    await late.getByRole('button', { name: 'Back to projects' }).click();
+    await expect(late.locator('.home__hero')).toBeVisible();
     await expect(late.locator('.pcard')).toHaveCount(0);
 
     await guestContext.close();
@@ -365,6 +396,100 @@ test.describe('deleting a project for everyone', () => {
     expect(errors).toEqual([]);
   });
 
+  test('from inside the editor, by keyboard: the project is left first, and its card asks the question', async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(180_000);
+    const errors = thrownIn(page);
+    await noReloads(page);
+    const other = await sharedProject(page, 'Neighbour');
+    const project = await sharedProject(page, 'Open and doomed');
+    const link = await inviteLink(page, 'editor');
+    const menu = page.getByRole('button', { name: 'Menu', exact: true });
+    const entry = page.getByRole('menuitem', { name: 'Delete for everyone…' });
+    const synced = (): Promise<unknown> =>
+      page.waitForFunction(() => (window as any).tandem?.session?.getMeta().synced);
+
+    // Someone else's menu ends with the way back to the project list.
+    const context = await browser.newContext();
+    const guest = await context.newPage();
+    await join(guest, link);
+    await guest.getByRole('button', { name: 'Menu', exact: true }).click();
+    await expect(guest.getByRole('menuitem').last()).toHaveText('Back to projects');
+    await guest.keyboard.press('Escape');
+
+    // The owner's has the entry below it, at the end. Choosing it leaves the project, and the
+    // question is the one its card asks, with the keyboard where no key deletes anything.
+    await watchToasts(page);
+    await menu.focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('End');
+    await expect(entry).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/#\/$/);
+    const dialog = deleteDialog(page, 'Open and doomed');
+    const keep = dialog.getByRole('switch', { name: 'Keep a copy on this device' });
+    await expect(keep).toBeFocused();
+    await expect(keep).toHaveAttribute('aria-checked', 'false');
+    await expect(page.locator('.pcard')).toHaveCount(2);
+
+    // No means no: the project is where it was, and the keyboard is on its card.
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(card(page, 'Open and doomed').locator('.pcard__open')).toBeFocused();
+    expect(await asked(page, project)).toBe(200);
+
+    // The question was asked once. Coming back to the list by the entry above it asks nothing.
+    await page.keyboard.press('Enter');
+    await editorReady(page);
+    await synced();
+    await menu.focus();
+    await page.keyboard.press('Enter');
+    await page.getByRole('menuitem', { name: 'Back to projects' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.home__hero')).toBeVisible();
+    await expect(page.locator('.pcard')).toHaveCount(2);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    // Asked again and meant.
+    await card(page, 'Open and doomed').locator('.pcard__open').focus();
+    await page.keyboard.press('Enter');
+    await editorReady(page);
+    await synced();
+    await menu.focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    await expect(keep).toBeFocused();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Delete for everyone' })).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    // Gone from the list, the device and the server, with the keyboard on the card that is left.
+    await expect(dialog).toHaveCount(0);
+    await expect(card(page, 'Open and doomed')).toHaveCount(0);
+    await expect(toast(page, 'Deleted “Open and doomed” for everyone.')).toBeVisible();
+    await expect(card(page, 'Neighbour').locator('.pcard__open')).toBeFocused();
+    expect((await registry(page)).map((p) => p.id)).toEqual([other.id]);
+    await expect.poll(() => filesOnDevice(page, project.id)).toEqual([]);
+    const databases = await page.evaluate(async () => (await indexedDB.databases()).map((db) => db.name));
+    expect(databases.filter((name) => name?.includes(project.id))).toEqual([]);
+    expect(await asked(page, project)).toBe(410);
+
+    // The guest hears of it from the server, as everyone with the project open does. The owner
+    // had left the project by then and is told only what they did themselves.
+    await expect(toast(guest, 'deleted from the collaboration server')).toHaveText(
+      `${DELETED} Your copy stays on this device and is no longer shared.`,
+    );
+    await page.waitForTimeout(2500);
+    expect(await toastsSeen(page)).toEqual(['Deleted “Open and doomed” for everyone.']);
+    expect((await registry(page)).map((p) => p.id)).toEqual([other.id]);
+    await context.close();
+    expect(errors).toEqual([]);
+  });
+
   test('with the project open in another tab of the same browser, nothing of it stays there either', async ({
     page,
   }) => {
@@ -390,8 +515,8 @@ test.describe('deleting a project for everyone', () => {
 
     // The tab that had it open is told what happened, and is not promised a copy: there is none.
     await expect(toast(page, 'deleted from the collaboration server')).toHaveText(DELETED);
-    await expect(page.locator('.splash__title')).toHaveText('This project is not available');
-    await expect(page.locator('.splash__text')).toContainText('nothing of it is stored on this device');
+    await expectDeletedScreen(page);
+    await expect(page.locator('.splash__text')).toContainText('It has been removed from your projects.');
 
     // What that tab still has in memory goes nowhere: not into the list, which an open project
     // writes itself into a moment after every change, and not onto the device.
@@ -489,7 +614,7 @@ test.describe('deleting a project for everyone', () => {
     // thing; the project is not available there, and stays off the list.
     expect(await asked(page, project, 'DELETE')).toBe(204);
     await expect(toast(guest, 'deleted from the collaboration server')).toHaveText(DELETED);
-    await expect(guest.locator('.splash__title')).toHaveText('This project is not available');
+    await expectDeletedScreen(guest);
     await guest.waitForTimeout(2500);
     expect(await registry(guestHome)).toEqual([]);
     await goHome(guest);

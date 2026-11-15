@@ -1,7 +1,9 @@
 /** The command catalogue: one list drives keyboard shortcuts, the palette and the cheat sheet. */
 import { secondsToFrame } from '@tandem/core';
 import { currentSession } from '../session/hooks';
+import { toast } from '../ui/core';
 import { layerOpen } from '../ui/layers';
+import { refuseEdit } from './access';
 import { cmd } from './commands';
 import { eventKeys } from './keys';
 import { useUI } from './ui';
@@ -22,6 +24,24 @@ const fps = () => {
   const s = currentSession()?.store.get().settings;
   return s ? Math.round(secondsToFrame(1, s)) : 30;
 };
+
+/**
+ * Put the keyboard into the title that is selected, as Enter and F2 do. Those keys do nothing
+ * where there is no one title to type into; a command that was asked for by name says why it
+ * did nothing. A locked track is said by `cmd.editText`, in the words of every edit it refuses.
+ */
+function typeIntoTitle(): void {
+  const session = currentSession();
+  if (!session) return;
+  if (!session.canEdit) {
+    refuseEdit(session.getMeta().role);
+    return;
+  }
+  const { selection } = ui();
+  const clip = selection.length === 1 ? session.store.get().clips[selection[0]] : undefined;
+  if (clip?.type === 'text') cmd.editText(clip.id);
+  else toast('Select one title to type into it.', 'info');
+}
 
 export const COMMANDS: Command[] = [
   // Playback
@@ -244,6 +264,10 @@ export const COMMANDS: Command[] = [
     keys: ['shift+delete', 'shift+backspace'],
     run: () => cmd.delete(true),
   },
+  // Without a key here: Enter and F2 start the typing, and those are the viewer's to take (see
+  // `TitleEditor`). In this list Enter would be taken from every button that kept the focus of a
+  // click, since `handleKey` does not ask what control a key was pressed on.
+  { id: 'edit-text', title: 'Type into the selected title', group: 'Edit', run: typeIntoTitle },
 
   // Timeline
   {

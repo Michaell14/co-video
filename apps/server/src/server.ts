@@ -13,6 +13,7 @@ import type { AddressInfo } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { PROJECT_DELETED } from '@tandem/core';
 import packageJson from '../package.json' with { type: 'json' };
 import { createApiHandler } from './api';
 import { TokenAuthority, extractToken, loadOrCreateSecret } from './auth';
@@ -26,7 +27,7 @@ import {
   docLimit,
 } from './limits';
 import { MediaStore } from './media';
-import { PROJECT_DELETED, ProjectStore } from './projects';
+import { ProjectStore } from './projects';
 import { ConcurrencyLimiter, RateLimiter } from './rateLimit';
 import {
   DEFAULT_HEARTBEAT_MS,

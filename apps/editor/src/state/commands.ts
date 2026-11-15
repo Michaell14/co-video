@@ -57,7 +57,7 @@ import {
   sourcePerFrame,
   clamp,
 } from '@tandem/core';
-import { AudioBufferSink, renderStill, VoiceRecorder } from '@tandem/engine';
+import { renderStill, Sound, VoiceRecorder } from '@tandem/engine';
 import { navigate } from '../App';
 import { fitPanels, windowSize } from '../features/editor/layout';
 import { placeAssets } from '../features/library/pool';
@@ -310,10 +310,12 @@ async function measureClip(s: Session, clip: Clip, p: Project): Promise<Loudness
   if (!media?.audio || !media.audioDecodable) return null;
   const start = media.audioStart + clip.sourceIn;
   const end = start + Math.max(clip.duration * sourcePerFrame(clip, p), 0.05);
-  const sink = new AudioBufferSink(media.audio);
+  // Read as the preview and an export read it: by whichever decoder the file's sound is on, and
+  // without the stretches that will not decode, so that what is measured is what plays.
+  const sound = new Sound(clip.assetId, media.audio);
   let meter: LoudnessMeter | null = null;
   let lastYield = performance.now();
-  for await (const { buffer, timestamp } of sink.buffers(start, end)) {
+  for await (const { buffer, timestamp } of sound.buffers(start, end, () => {})) {
     meter ??= new LoudnessMeter(buffer.sampleRate, buffer.numberOfChannels);
     const from = Math.max(0, Math.round((start - timestamp) * buffer.sampleRate));
     const to = Math.min(buffer.length, Math.round((end - timestamp) * buffer.sampleRate));

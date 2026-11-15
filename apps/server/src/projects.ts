@@ -12,7 +12,7 @@
  */
 import { mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { newProjectId } from '@tandem/core';
+import { newProjectId, PROJECT_DELETED } from '@tandem/core';
 import { HttpError } from './http';
 import {
   assertValidId,
@@ -34,14 +34,6 @@ export interface ProjectMeta {
 
 /** `updatedAt` is coalesced: however busy a project is, its meta.json is rewritten at most this often. */
 const TOUCH_FLUSH_MS = 2000;
-
-/** What a request for a deleted project is told (status 410), and its open connections before they are closed. */
-export const PROJECT_DELETED = 'this project was deleted by its owner';
-/**
- * The code the connections to a project are closed with when it is deleted. One of the codes a
- * protocol may define for itself (4000 to 4999); the editor knows it by the same number.
- */
-export const WS_CLOSE_PROJECT_DELETED = 4410;
 
 export class ProjectStore {
   /** `<dataDir>/projects` */

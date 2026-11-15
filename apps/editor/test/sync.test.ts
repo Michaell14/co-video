@@ -7,19 +7,14 @@ import * as syncProtocol from 'y-protocols/sync';
 import {
   PRESENCE_IGNORED,
   PRESENCE_TOO_FAST,
+  WS_CLOSE_PROJECT_DELETED,
   WS_MSG_AWARENESS,
   WS_MSG_CONTROL,
   WS_MSG_SYNC,
   docFullMessage,
   type ControlMessage,
 } from '@tandem/core';
-import {
-  PATIENT_RETRY_MS,
-  SyncProvider,
-  TAKEN_AFTER_MS,
-  WS_CLOSE_PROJECT_DELETED,
-  withoutOwn,
-} from '../src/session/sync';
+import { PATIENT_RETRY_MS, SyncProvider, TAKEN_AFTER_MS, withoutOwn } from '../src/session/sync';
 
 type Entry = [id: number, clock: number, state: unknown];
 

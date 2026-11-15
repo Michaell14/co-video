@@ -7,8 +7,9 @@
 import type { Asset } from '@tandem/core';
 import { decoderGap, type DecoderGap } from '@tandem/engine';
 import type { DecodeFault } from '../timeline/mediaCache';
+import type { SoundLossKind } from '../timeline/soundLoss';
 
-type Part = keyof DecodeFault;
+type Part = 'picture' | 'sound';
 
 /** What keeps this page from decoding any picture, and any sound: nothing, in most browsers. */
 export type DecoderGaps = Record<Part, DecoderGap | null>;
@@ -66,3 +67,29 @@ export const faultSpoken = (decoder: string, gap: DecoderGap | null): string =>
     : gap === 'absent'
       ? `no ${decoder} decoder in this browser`
       : 'cannot be decoded in this browser';
+
+/**
+ * Sound that is lost in part is another matter, and a lesser one: the clip plays, and is silent
+ * where its file would not decode. That is said of the clip, once the preview has played it and
+ * found out: a stretch that is missing with sound behind it, or everything from where the decoder
+ * stopped. On the clip's mark in the timeline:
+ */
+export const soundLossChip = (lost: SoundLossKind): string =>
+  lost === 'stretch' ? 'Sound gap' : 'Sound stops';
+
+/** In the words that follow the clip's name where the timeline is read out: */
+export const soundLossSpoken = (lost: SoundLossKind): string =>
+  lost === 'stretch'
+    ? 'a stretch of its sound could not be decoded'
+    : 'its sound stopped decoding part-way through';
+
+/**
+ * And in a sentence, where there is room for one. The clip is named where the sentence stands
+ * beside more than one.
+ */
+export function soundLossNotice(lost: SoundLossKind, name: string | null = null): string {
+  const clip = name ? `“${name}”` : 'this clip';
+  return lost === 'stretch'
+    ? `A stretch of the sound of ${clip} could not be decoded and is silent.`
+    : `The sound of ${clip} stopped decoding part-way through and is silent from there.`;
+}

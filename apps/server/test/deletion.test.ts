@@ -11,9 +11,14 @@ import * as encoding from 'lib0/encoding';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as syncProtocol from 'y-protocols/sync';
 import * as Y from 'yjs';
-import { ASSET_DEFAULTS, ProjectStore as ProjectDocument, WS_MSG_SYNC } from '@tandem/core';
+import {
+  ASSET_DEFAULTS,
+  PROJECT_DELETED,
+  ProjectStore as ProjectDocument,
+  WS_CLOSE_PROJECT_DELETED,
+  WS_MSG_SYNC,
+} from '@tandem/core';
 import type { Asset, Role, VersionInfo } from '@tandem/core';
-import { PROJECT_DELETED, WS_CLOSE_PROJECT_DELETED } from '../src/projects';
 import { assetIdsOf, watchAssets } from '../src/references';
 import { DELETES_PER_HOUR } from '../src/server';
 import { SilentPeer, sleep, tempDir, upgradeStatus, useServers, waitFor } from './helpers';

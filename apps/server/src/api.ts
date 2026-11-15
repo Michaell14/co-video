@@ -12,7 +12,7 @@
 import { open } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { canEdit } from '@tandem/core';
+import { canEdit, PROJECT_DELETED, WS_CLOSE_PROJECT_DELETED } from '@tandem/core';
 import type { ProjectInfo, Role } from '@tandem/core';
 import { extractToken, invitableRoles, isRole } from './auth';
 import type { TokenAuthority } from './auth';
@@ -28,7 +28,6 @@ import {
   streamFile,
 } from './http';
 import type { MediaStore } from './media';
-import { PROJECT_DELETED, WS_CLOSE_PROJECT_DELETED } from './projects';
 import type { ProjectMeta, ProjectStore } from './projects';
 import type { RateLimiter } from './rateLimit';
 import type { RoomManager } from './rooms';

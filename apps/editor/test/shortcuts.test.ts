@@ -1,10 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getTransitionDef } from '@tandem/core';
+import { getTransitionDef, type Role } from '@tandem/core';
 import { setCurrentSession } from '../src/session/hooks';
 import type { Session } from '../src/session/session';
 import { ACCESS_NAME, accessNotice } from '../src/state/access';
+import { cmd } from '../src/state/commands';
 import { COMMANDS, handleKey, spaceOperates, watchFocus } from '../src/state/shortcuts';
 import { FIRST_TRANSITION, useUI } from '../src/state/ui';
+import { toast } from '../src/ui/core';
+
+// What a command says when it does nothing is said in a toast: here it is only noted.
+vi.mock('../src/ui/core', async (original) => ({
+  ...(await original<typeof import('../src/ui/core')>()),
+  toast: vi.fn(),
+}));
 
 const keysOf = (id: string): string[] => COMMANDS.find((c) => c.id === id)?.keys ?? [];
 
@@ -73,6 +81,86 @@ describe('command catalogue', () => {
 
   it('starts the default transition from one that exists', () => {
     expect(getTransitionDef(FIRST_TRANSITION)?.name).toBe('Cross Dissolve');
+  });
+
+  it('leaves the keys that start and end the typing of a title to the viewer', () => {
+    // Enter in this list would be taken from every button that a click left focused.
+    const bound = new Set(COMMANDS.flatMap((c) => c.keys ?? []));
+    expect(['enter', 'f2', 'mod+enter'].filter((k) => bound.has(k))).toEqual([]);
+    // The palette offers the same by name.
+    const typing = COMMANDS.find((c) => c.id === 'edit-text');
+    expect([typing?.title, typing?.group, typing?.keys]).toEqual([
+      'Type into the selected title',
+      'Edit',
+      undefined,
+    ]);
+  });
+});
+
+describe('typing into the selected title, asked for by name', () => {
+  const CLIPS = {
+    title: { id: 'title', type: 'text' },
+    credits: { id: 'credits', type: 'text' },
+    film: { id: 'film', type: 'video' },
+  };
+  const run = (): void => COMMANDS.find((c) => c.id === 'edit-text')!.run();
+  const open = (role: Role): void =>
+    setCurrentSession({
+      canEdit: role === 'owner' || role === 'editor',
+      getMeta: () => ({ role }),
+      store: { get: () => ({ clips: CLIPS }) },
+    } as unknown as Session);
+  const editText = vi.spyOn(cmd, 'editText').mockImplementation(() => {});
+
+  afterEach(() => {
+    setCurrentSession(null);
+    useUI.getState().set({ selection: [] });
+    editText.mockClear();
+    vi.mocked(toast).mockClear();
+  });
+
+  it('goes to the one title that is selected', () => {
+    open('editor');
+    useUI.getState().set({ selection: ['credits'] });
+    run();
+    expect(editText.mock.calls).toEqual([['credits']]);
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  it('says what to select when that is nothing, several clips, or no title', () => {
+    open('owner');
+    for (const selection of [[], ['title', 'credits'], ['film'], ['title', 'film'], ['removed']]) {
+      useUI.getState().set({ selection });
+      run();
+      expect(vi.mocked(toast).mock.calls, selection.join()).toEqual([
+        ['Select one title to type into it.', 'info'],
+      ]);
+      vi.mocked(toast).mockClear();
+    }
+    expect(editText).not.toHaveBeenCalled();
+  });
+
+  it('says which access they have to someone who may not edit, whatever is selected', () => {
+    for (const [role, said] of [
+      ['viewer', 'You have view-only access to this project.'],
+      ['commenter', 'You have comment-only access to this project.'],
+    ] as const) {
+      open(role);
+      for (const selection of [[], ['title']]) {
+        useUI.getState().set({ selection });
+        run();
+        expect(vi.mocked(toast).mock.calls, `${role} ${selection.join()}`).toEqual([[said, 'info']]);
+        vi.mocked(toast).mockClear();
+      }
+    }
+    expect(editText).not.toHaveBeenCalled();
+  });
+
+  it('does nothing where no project is open', () => {
+    useUI.getState().set({ selection: ['title'] });
+    run();
+    expect(editText).not.toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
   });
 });
 

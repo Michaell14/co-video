@@ -1995,7 +1995,7 @@ test.describe('timeline: keyboard, drops and marks', () => {
     expect(await markerName()).toBe('Intro');
 
     // The switch for what markers do under a ripple is beside the ripple switch.
-    const follow = page.getByRole('button', { name: 'Markers follow ripple edits' });
+    const follow = page.getByRole('button', { name: 'Comments and markers follow ripple edits' });
     await expect(follow).toHaveAttribute('aria-pressed', 'true');
     await follow.click();
     await expect(follow).toHaveAttribute('aria-pressed', 'false');
@@ -2567,7 +2567,7 @@ test.describe('timeline: keyboard, drops and marks', () => {
       'Delete',
       'Ripple delete',
       'Ripple editing',
-      'Markers follow ripple edits',
+      'Comments and markers follow ripple edits',
       'Add marker',
       'Add text',
       'Record voiceover',

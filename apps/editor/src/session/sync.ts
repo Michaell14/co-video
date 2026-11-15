@@ -9,6 +9,7 @@ import * as syncProtocol from 'y-protocols/sync';
 import type * as Y from 'yjs';
 import {
   PRESENCE_IGNORED,
+  WS_CLOSE_PROJECT_DELETED,
   WS_CLOSE_TOO_BIG,
   WS_CLOSE_TRY_AGAIN_LATER,
   WS_MSG_AWARENESS,
@@ -53,12 +54,6 @@ interface Options {
    */
   onDeleted?: () => void;
 }
-
-/**
- * The code the server closes the connections to a project with when the project is deleted
- * (`WS_CLOSE_PROJECT_DELETED` in apps/server/src/projects.ts is the same number).
- */
-export const WS_CLOSE_PROJECT_DELETED = 4410;
 
 /** How long a connection waits before it tries again when trying at once has no prospect. */
 export const PATIENT_RETRY_MS = 60_000;

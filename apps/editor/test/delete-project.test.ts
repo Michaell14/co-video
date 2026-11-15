@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ownsProject, whyNotDeleted } from '../src/features/home/deletion';
 import { ApiError } from '../src/session/api';
 
@@ -62,5 +62,55 @@ describe('why a project was not deleted from the server', () => {
     const offline = whyNotDeleted(new TypeError('Failed to fetch'));
     expect(offline).toMatch(/could not be reached\. Nothing was changed on this device\./);
     expect(offline).not.toMatch(/Nothing was deleted/);
+  });
+});
+
+describe('deleting a project from this device', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('takes its entry, its databases and the lane heights kept for it, and nothing of another project', async () => {
+    const data = new Map<string, string>([
+      [
+        'tandem.projects.v1',
+        JSON.stringify([
+          { id: 'gone', name: 'Gone', token: link('viewer'), role: 'viewer' },
+          { id: 'stays', name: 'Stays', token: null },
+        ]),
+      ],
+      [
+        'tandem.ui.v1',
+        JSON.stringify({ snapping: false, laneHeights: { gone: { v1: 90 }, stays: { v1: 40 } } }),
+      ],
+    ]);
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => void data.set(key, value),
+      removeItem: (key: string) => void data.delete(key),
+    });
+    const databases: string[] = [];
+    vi.stubGlobal('indexedDB', {
+      deleteDatabase: (name: string) => {
+        databases.push(name);
+        const request: { onsuccess?: () => void } = {};
+        queueMicrotask(() => request.onsuccess?.());
+        return request;
+      },
+    });
+    vi.resetModules();
+    const { deleteLocalProject } = await import('../src/session/projects');
+    const { useUI } = await import('../src/state/ui');
+    expect(useUI.getState().laneHeights).toEqual({ gone: { v1: 90 }, stays: { v1: 40 } });
+
+    await deleteLocalProject('gone');
+    const listed: { id: string }[] = JSON.parse(data.get('tandem.projects.v1')!);
+    expect(listed.map((entry) => entry.id)).toEqual(['stays']);
+    expect(databases).toEqual(['tandem:gone:project', 'tandem:gone:review']);
+    expect(JSON.parse(data.get('tandem.ui.v1')!)).toEqual({
+      snapping: false,
+      laneHeights: { stays: { v1: 40 } },
+    });
+    expect(useUI.getState().laneHeights).toEqual({ stays: { v1: 40 } });
   });
 });

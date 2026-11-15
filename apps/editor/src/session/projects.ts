@@ -5,6 +5,7 @@
 import { IndexeddbPersistence } from 'y-indexeddb';
 import * as Y from 'yjs';
 import { newProjectId, ProjectStore, type Project, type ProjectSettings } from '@tandem/core';
+import { forgetLaneHeights } from '../state/ui';
 import { toast } from '../ui/core';
 import { api, serverAvailable } from './api';
 import { deleteProjectMedia } from './mediaStore';
@@ -72,11 +73,12 @@ export async function createProject(settings: Partial<ProjectSettings>, content?
   return id;
 }
 
-/** Remove a project and its media from this device. */
+/** Remove a project, its media and the preferences kept for it from this device. */
 export async function deleteLocalProject(id: string): Promise<void> {
   registry.remove(id);
   // Deleting a project is the person letting go of it, a link the server refused included.
   registry.dropLinkAside(id);
+  forgetLaneHeights(id);
   await deleteProjectMedia(id);
   for (const name of ['project', 'review']) {
     await new Promise<void>((resolve) => {

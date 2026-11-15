@@ -45,6 +45,19 @@
   margin-top: 2px;
   color: var(--amber);
 }
+/* Under the sentence, where it is and what the decoder said: details to read out or copy, so
+   they can be selected like text. */
+.insp__cause {
+  display: block;
+  color: var(--fg-3);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+/* The place, which takes the playhead there: a word apart from what stands before it. */
+.insp__cause .insp__linkbtn {
+  margin-left: 0;
+}
 .insp__empty {
   color: var(--fg-3);
   font-size: var(--text-sm);

@@ -6,7 +6,16 @@
  * generated first, and thumbnails that were asked for under a view that has been scrolled or zoomed
  * away since are not generated at all.
  */
-import { CanvasSink, MediaLibrary, Sound, type MediaResolver, type OpenMedia } from '@tandem/engine';
+import type { Clip, Project } from '@tandem/core';
+import {
+  CanvasSink,
+  MediaLibrary,
+  Sound,
+  type AudioProblem,
+  type MediaResolver,
+  type OpenMedia,
+} from '@tandem/engine';
+import { SoundLosses, type SoundGap } from './soundLoss';
 
 type Listener = () => void;
 
@@ -222,8 +231,11 @@ export class WaveformCache extends Emitter {
   constructor(
     private readonly library: MediaLibrary,
     private readonly opened: Opened = () => {},
-    /** Called for a file whose sound has a decoder here and still gave nothing. */
-    private readonly silent: Opened = () => {},
+    /**
+     * Called for a file whose sound has a decoder here and still gave nothing, with what the
+     * decoder said.
+     */
+    private readonly silent: (assetId: string, media: OpenMedia, cause: string) => void = () => {},
   ) {
     super();
   }
@@ -260,8 +272,8 @@ export class WaveformCache extends Emitter {
           }
           // What will not decode stays flat, as it stays silent when played.
           const sound = new Sound(assetId, media.audio);
-          const buffers = sound.buffers(undefined, undefined, ({ lost }) => {
-            if (lost === 'all' && !this.disposed) this.silent(assetId, media);
+          const buffers = sound.buffers(undefined, undefined, ({ lost, cause }) => {
+            if (lost === 'all' && !this.disposed) this.silent(assetId, media, cause);
           });
           let lastEmit = 0;
           let lastYield = performance.now();
@@ -328,6 +340,8 @@ export class WaveformCache extends Emitter {
 export interface DecodeFault {
   picture: boolean;
   sound: boolean;
+  /** What the decoder said of the sound, where there is one and it gave nothing. */
+  cause?: string;
 }
 
 /** Caches for one open project. */
@@ -337,8 +351,13 @@ export class TimelineMedia {
   readonly wave: WaveformCache;
   private readonly posters = new Map<string, HTMLImageElement>();
   private readonly faults = new Map<string, DecodeFault>();
-  /** Files whose sound the browser says it can decode, and of which it decoded nothing. */
-  private readonly soundless = new Set<string>();
+  /**
+   * Files whose sound the browser says it can decode, and of which it decoded nothing: what the
+   * decoder said of each.
+   */
+  private readonly soundless = new Map<string, string>();
+  /** Sound the preview played clips without: a part of it, where the rest of the file decodes. */
+  private readonly lost = new SoundLosses();
   private readonly faultListeners = new Set<Listener>();
   private faultsVersion = 0;
 
@@ -346,10 +365,17 @@ export class TimelineMedia {
     this.library = new MediaLibrary(resolver);
     const opened: Opened = (assetId, media) => this.noteFault(assetId, media);
     this.film = new FilmstripCache(this.library, opened);
-    this.wave = new WaveformCache(this.library, opened, (assetId, media) => {
-      this.soundless.add(assetId);
+    this.wave = new WaveformCache(this.library, opened, (assetId, media, cause) => {
+      this.soundless.set(assetId, cause);
+      // Said of the file from here on, and not of its clips as well.
+      if (this.lost.forgetAsset(assetId)) this.faultsChanged();
       this.noteFault(assetId, media);
     });
+  }
+
+  private faultsChanged(): void {
+    this.faultsVersion++;
+    for (const fn of Array.from(this.faultListeners)) fn();
   }
 
   /**
@@ -360,21 +386,49 @@ export class TimelineMedia {
    * as silent, and for the same reason.
    */
   private noteFault(assetId: string, media: OpenMedia): void {
-    const fault = {
+    const cause = this.soundless.get(assetId);
+    const fault: DecodeFault = {
       picture: !!media.video && !media.videoDecodable,
-      sound: !!media.audio && (!media.audioDecodable || this.soundless.has(assetId)),
+      sound: !!media.audio && (!media.audioDecodable || cause !== undefined),
     };
+    if (fault.sound && cause) fault.cause = cause;
     const before = this.faults.get(assetId);
-    if ((before?.picture ?? false) === fault.picture && (before?.sound ?? false) === fault.sound) return;
+    const same =
+      (before?.picture ?? false) === fault.picture &&
+      (before?.sound ?? false) === fault.sound &&
+      before?.cause === fault.cause;
+    if (same) return;
     if (fault.picture || fault.sound) this.faults.set(assetId, fault);
     else this.faults.delete(assetId);
-    this.faultsVersion++;
-    for (const fn of Array.from(this.faultListeners)) fn();
+    this.faultsChanged();
   }
 
   /** What this browser cannot decode of the asset's file, as far as the file has been opened. */
   fault(assetId: string): DecodeFault | null {
     return this.faults.get(assetId) ?? null;
+  }
+
+  /**
+   * What the preview's mixer said of a clip of `project`, the project it plays. Sound that would
+   * not decode is kept by clip (see `SoundLosses`), for whatever shows the clip to say. Of a file
+   * none of whose sound decodes it has been said already: of the file, as a fault of its sound.
+   */
+  heard(problem: AudioProblem, project: Project): void {
+    if (this.soundless.has(problem.assetId)) return;
+    if (this.lost.note(problem, project)) this.faultsChanged();
+  }
+
+  /**
+   * The sound the clip, as it is in `project`, is known to play without. It changes with what
+   * `subscribeFaults` tells of.
+   */
+  soundLost(clip: Clip, project: Project): readonly SoundGap[] {
+    return this.lost.of(clip, project);
+  }
+
+  /** The project changed: what was heard of clips that are gone or play something else is let go. */
+  follow(project: Project): void {
+    if (this.lost.keep(project)) this.faultsChanged();
   }
 
   subscribeFaults = (fn: Listener): (() => void) => {
@@ -401,6 +455,7 @@ export class TimelineMedia {
   refresh(assetId: string): void {
     this.library.invalidate(assetId);
     this.soundless.delete(assetId);
+    if (this.lost.forgetAsset(assetId)) this.faultsChanged();
     this.film.forget(assetId);
     this.wave.forget(assetId);
     this.film.emit();

@@ -75,6 +75,20 @@ describe('what the timeline says about clips', () => {
     );
   });
 
+  it('says of a clip that plays without a part of its sound which part, after what else is wrong with it', () => {
+    const p = project();
+    const sound = p.clips['dusk-sound'];
+    expect(describeClip(sound, 'A1', p.settings, { soundLost: 'stretch' })).toBe(
+      'dusk.mp4, A1, 0:02.00 to 0:05.10, a stretch of its sound could not be decoded',
+    );
+    expect(describeClip(sound, 'A1', p.settings, { soundLost: 'rest', overlapping: true })).toBe(
+      'dusk.mp4, A1, 0:02.00 to 0:05.10, its sound stopped decoding part-way through, overlaps another clip',
+    );
+    expect(describeClip(sound, 'A1', p.settings, { soundLost: null })).toBe(
+      'dusk.mp4, A1, 0:02.00 to 0:05.10',
+    );
+  });
+
   it('describes one selected clip, a clip with what it is linked to, and counts anything else', () => {
     const p = project();
     expect(describeSelection(p, [])).toBe('No clip selected');

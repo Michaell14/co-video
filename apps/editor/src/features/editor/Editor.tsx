@@ -143,26 +143,30 @@ function Workspace() {
   }, []);
 
   if (meta.denied) {
+    // On a project its owner deleted the server has said its last word: the screen says so, and
+    // there is nothing to wait for and nothing to ask again.
+    const gone = meta.deleted;
     return (
       <div className="splash">
         <div className="splash__title">This project is not available</div>
         <p className="splash__text">
-          {meta.unlisted ? (
+          {gone
+            ? 'Its owner deleted it from the collaboration server: nothing of it is left there, and nothing of it is stored on this device.'
+            : meta.unlisted
+              ? 'The collaboration server no longer accepts the link to it, and nothing of it is stored on this device.'
+              : 'It is not stored on this device, and the link either expired or the collaboration server cannot be reached.'}
+          {meta.unlisted && (
             <>
-              The collaboration server no longer accepts the link to it, and nothing of it is stored on this
-              device.
               <br />
               It has been removed from your projects.
             </>
-          ) : (
-            'It is not stored on this device, and the link either expired or the collaboration server cannot be reached.'
           )}
         </p>
-        {!meta.online && <div className="splash__label">Still trying to reach the server…</div>}
+        {!gone && !meta.online && <div className="splash__label">Still trying to reach the server…</div>}
         <div className="splash__actions">
           {/* Every opening asks the server about the link again: a link that was refused for a
               while, or a server that was away, may answer differently now. */}
-          {!meta.unlisted && (
+          {!gone && !meta.unlisted && (
             <Button variant="primary" onClick={() => session.onReload()}>
               Try again
             </Button>

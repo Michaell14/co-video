@@ -246,6 +246,26 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             </div>
           ))}
         </section>
+        {/* Typing into a title is the viewer's: it takes these keys itself, Enter only where no
+            control has the keyboard. They are not in the list above, which is of the keys that
+            work wherever the keyboard is. */}
+        <section>
+          <h4>Titles</h4>
+          {[
+            ['Type into the selected title', 'enter'],
+            ['The same, wherever the keyboard is', 'f2'],
+            ['End the typing', 'escape', 'mod+enter'],
+          ].map(([title, ...keys]) => (
+            <div key={title} className="shortcut">
+              <span>{title}</span>
+              <span className="shortcut__keys">
+                {keys.map((k) => (
+                  <Kbd key={k} keys={k} />
+                ))}
+              </span>
+            </div>
+          ))}
+        </section>
         <section>
           <h4>Mouse</h4>
           {[
@@ -261,6 +281,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             ['Clip volume', 'Drag the level line of a selected clip'],
             ['Volume keyframe', 'Ctrl / ⌘ + click the level line'],
             ['Source monitor to timeline', 'Drag the file’s name'],
+            ['Type into a title', 'Double-click it in the viewer'],
             ['Disable snapping', 'Hold Shift while dragging'],
             ['Fine control', 'Shift / Alt on number fields'],
             ['Reset a control', 'Double-click it'],

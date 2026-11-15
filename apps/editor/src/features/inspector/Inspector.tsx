@@ -15,6 +15,7 @@ import {
   RotateCcw,
   Sparkles,
   Trash2,
+  TriangleAlert,
   Unlink2,
   SlidersHorizontal,
 } from 'lucide-react';
@@ -75,7 +76,8 @@ import {
   toast,
 } from '../../ui/core';
 import { handFocus, usingKeyboard } from '../../ui/layers';
-import { decodeNotice } from '../library/fault';
+import { decodeNotice, soundLossNotice } from '../library/fault';
+import { clipName } from '../timeline/describe';
 import {
   ColorField,
   FieldSubject,
@@ -276,6 +278,10 @@ function ClipSection({ clips, settings: s }: { clips: Clip[]; settings: ProjectS
  * Needs HTTPS); here, where the clip is looked at, it is said in words, by the rule the timeline
  * and the media pool go by. The line is drawn again when its own answer changes, not with every
  * step of an upload or every file that is opened.
+ *
+ * A clip that plays, and was found in the preview to be without a part of its sound (the mark on
+ * the timeline says Sound gap or Sound stops), gets a sentence of its own, and under it where the
+ * silence begins and what the decoder said.
  */
 function MediaTrouble({ assetId, clips }: { assetId: string; clips: Clip[] }) {
   const session = useSession();
@@ -286,23 +292,70 @@ function MediaTrouble({ assetId, clips }: { assetId: string; clips: Clip[] }) {
     () => !asset || !mediaAvailable(asset, session.media.get(assetId), shared),
   );
   const fault = useSyncExternalStore(session.thumbs.subscribeFaults, () => session.thumbs.fault(assetId));
+  // What the preview has found out about the sound of clips comes as the same news.
+  useSyncExternalStore(session.thumbs.subscribeFaults, session.thumbs.getFaultsVersion);
   // Of what cannot be decoded, the part these clips show: a sound clip is not told about a picture.
   const undecodable = {
     picture: !!fault?.picture && clips.some((c) => c.type !== 'audio'),
     sound: !!fault?.sound && clips.some((c) => c.type === 'audio'),
   };
-  if (!offline && !undecodable.picture && !undecodable.sound) return null;
+  const whole = offline || undecodable.picture || undecodable.sound;
+  // Sound that is lost in part, of clips that have their sound otherwise.
+  const project = session.effectiveProject();
+  const gaps =
+    offline || undecodable.sound
+      ? []
+      : clips.flatMap((clip) => session.thumbs.soundLost(clip, project).map((gap) => ({ clip, gap })));
+  const several = new Set(gaps.map(({ clip }) => clip.id)).size > 1;
   return (
-    <p className="insp__trouble">
-      {offline ? <CloudOff /> : <FileWarning />}
-      <span>
-        {!asset
-          ? 'Media offline: its file is no longer in the project'
-          : offline
-            ? 'Media offline: not on this device or the server'
-            : decodeNotice(asset, undecodable)}
-      </span>
-    </p>
+    <>
+      {whole && (
+        <p className="insp__trouble">
+          {offline ? <CloudOff /> : <FileWarning />}
+          <span>
+            {!asset
+              ? 'Media offline: its file is no longer in the project'
+              : offline
+                ? 'Media offline: not on this device or the server'
+                : decodeNotice(asset, undecodable)}
+            {!offline && undecodable.sound && fault?.cause && (
+              <span className="insp__cause">
+                Cause: <span className="mono">{fault.cause}</span>
+              </span>
+            )}
+          </span>
+        </p>
+      )}
+      {gaps.map(({ clip, gap }) => {
+        const timecode = gap.frame === null ? null : formatTimecode(gap.frame, project.settings);
+        return (
+          <p key={`${clip.id} ${gap.lost}`} className="insp__trouble" data-sound-lost={gap.lost}>
+            <TriangleAlert />
+            <span>
+              {soundLossNotice(gap.lost, several ? clipName(clip) : null)}
+              {gap.frame !== null && (
+                <span className="insp__cause">
+                  At{' '}
+                  <button
+                    type="button"
+                    className="insp__linkbtn mono"
+                    aria-label={`Move the playhead to ${timecode}`}
+                    onClick={() => cmd.seek(gap.frame!)}
+                  >
+                    {timecode}
+                  </button>
+                </span>
+              )}
+              {gap.cause && (
+                <span className="insp__cause">
+                  Cause: <span className="mono">{gap.cause}</span>
+                </span>
+              )}
+            </span>
+          </p>
+        );
+      })}
+    </>
   );
 }
 

@@ -17,10 +17,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { canEdit } from '@tandem/core';
+import { canEdit, PROJECT_DELETED } from '@tandem/core';
 import type { Role } from '@tandem/core';
 import { HttpError, parseIntHeader, sendEmpty, streamFile } from './http';
-import { PROJECT_DELETED } from './projects';
 import type { ProjectStore } from './projects';
 import {
   assertValidId,

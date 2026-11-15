@@ -60,6 +60,11 @@ export interface SessionMeta {
   /** The project was taken off the project list: its link was refused and nothing of it is here. */
   unlisted: boolean;
   /**
+   * The server has said that the project was deleted by its owner: nothing of it is left there,
+   * and no link to it is taken again. With `denied`, nothing of it is on this device either.
+   */
+  deleted: boolean;
+  /**
    * The server refused this project's link and it is kept aside: the project runs as a local one
    * until the person has the link tried again (`retryLink`) or lets go of it (`forgetLink`). Holds
    * the access that link gave; null when no link is waiting.
@@ -231,6 +236,7 @@ export class Session {
       user: getUser(),
       denied: false,
       unlisted: false,
+      deleted: false,
       refusedLink: null,
       busy: false,
       notSaving: null,
@@ -474,6 +480,7 @@ export class Session {
     this.unsubs.push(
       this.store.subscribe(() => {
         this.pushProjectToPlayer();
+        this.thumbs.follow(this.store.get());
         this.noteUploads();
         this.keepSelectionUnlocked();
         this.scheduleRegistry();
@@ -733,7 +740,13 @@ export class Session {
     }
     if (this.store.isEmpty()) {
       if (entry) this.unlist();
-      this.setMeta({ shared: false, refusedLink: null, denied: true, unlisted: entry !== undefined });
+      this.setMeta({
+        shared: false,
+        refusedLink: null,
+        denied: true,
+        unlisted: entry !== undefined,
+        deleted: true,
+      });
       toast(DELETED, 'error');
       return;
     }
@@ -741,7 +754,7 @@ export class Session {
     if (this.registryTimer) clearTimeout(this.registryTimer);
     this.registryTimer = null;
     this.scheduleRegistry();
-    this.setMeta({ shared: false, refusedLink: null });
+    this.setMeta({ shared: false, refusedLink: null, deleted: true });
     this.applyRole('owner');
     toast(owners ? DELETED : `${DELETED} Your copy stays on this device and is no longer shared.`, 'error');
   }
@@ -782,7 +795,7 @@ export class Session {
   private nothingLeft(): void {
     for (const stored of this.idb) void stored.destroy();
     this.meta.player?.pause();
-    this.setMeta({ shared: false, refusedLink: null, denied: true, unlisted: true });
+    this.setMeta({ shared: false, refusedLink: null, denied: true, unlisted: true, deleted: true });
   }
 
   /**
@@ -1177,6 +1190,9 @@ export class Session {
       }
     });
     player.subscribe(() => this.setPresence({ playing: player.getState().playing }));
+    // Sound the mixer could not play is kept with what else is known of the media, for the clip
+    // to say where it lies. The mixer speaks of the project it plays, a drag in flight included.
+    player.onAudioProblem = (problem) => this.thumbs.heard(problem, player.getProject());
     this.setMeta({ player });
     return player;
   }

@@ -332,7 +332,7 @@ const Toolbar = memo(function Toolbar() {
         <ArrowDownUp style={{ transform: 'rotate(90deg)' }} />
       </IconButton>
       <IconButton
-        label="Markers follow ripple edits"
+        label="Comments and markers follow ripple edits"
         tipPlace="top"
         active={markersFollow}
         disabled={!editable}
