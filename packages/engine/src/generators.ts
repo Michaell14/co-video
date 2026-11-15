@@ -119,10 +119,13 @@ const ASCII = /[!-~]/;
  * the upright bar, and the spaces of a set width, which act like them.
  */
 const BREAK_AFTER = /[-|‐‒–  -  -  ]/;
+const DASH = /[-‐‒–]/;
+/** Letters, and the signs that are set like letters. */
+const WORD = /[\p{L}#&*<=>@^_`~]/u;
 /** What ends a phrase or closes a bracket stays with what it follows, and so does a quotation mark. */
-const CLINGS = /[!),./:;?\]}"'‘’“”«»…]/;
+const CLINGS = /[!),./:;?\]}"'‘’“”«»‹›…]/;
 /** What opens a bracket, a quotation or a Spanish question stays with what follows it. */
-const OPENS = /[([{"'‘’“”«»¡¿]/;
+const OPENS = /[([{"'‘-‚“-„«»‹›¡¿]/;
 /** No-break spaces, the no-break hyphen and the invisible characters that join words. */
 const GLUE = /[   ‑⁠﻿]/;
 /** Marks that belong to the character before them. */
@@ -155,8 +158,12 @@ function breaksBetween(before: string, a: string, b: string): boolean {
     return '(<[{'.includes(b) && '!"#%&)*+,.:;=>\\]|}~'.includes(a);
   }
   if (MARK.test(b) || CLINGS.test(b) || BREAK_AFTER.test(b) || OPENS.test(a) || GLUE.test(a)) return false;
-  // A hyphen or a dash lets go of anything else, a no-break space after it included.
-  if (BREAK_AFTER.test(a)) return true;
+  if (BREAK_AFTER.test(a)) {
+    // A hyphen or a dash lets go of anything else, a no-break space included, unless it begins a
+    // word: then it stays with the letters of that word.
+    const begins = DASH.test(a) && (!before || WHITE.test(before));
+    return !(begins && WORD.test(b));
+  }
   if (GLUE.test(b) || (a === EM_DASH && b === EM_DASH)) return false;
   return a === EM_DASH || b === EM_DASH || a === ELLIPSIS || '!?/}'.includes(a);
 }

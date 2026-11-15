@@ -67,8 +67,9 @@ with projects stored in your browser.
   between, and what follows moves later to make room. `Ctrl+Shift+V` pastes the same way. A roll
   (`Ctrl`-drag on a cut) moves the cut of linked picture and sound together, and with linked
   selection switched off the cut of one of them, for a split edit
-- Markers with a note and a colour, and keys to step from one to the next. They move with ripple
-  edits; a switch in the timeline's toolbar keeps them where they are instead
+- Markers with a note and a colour, and keys to step from one to the next. Markers and review
+  comments move with ripple edits, so each stays on the shot it was put on, and return when the
+  edit is undone; one switch in the timeline's toolbar keeps both where they are instead
 - A drag that reaches the edge of the timeline scrolls it, and the timeline's menus act where you
   click: “Add marker here”, “Close gap here”
 - **Keyframes on every numeric property** — transform, opacity, crop, volume, pan and every effect
@@ -80,6 +81,10 @@ with projects stored in your browser.
 - Speed changes from 5 % to 10 000 %, reverse playback and freeze frames
 - Titles with 13 bundled open-source typefaces, outlines, shadows, gradients, backgrounds and
   animated in / out presets; shapes, solids and **adjustment layers**
+- A title is typed into where it stands in the picture: double-click it in the viewer and the
+  caret is in its text at that place, in its own type, turned and scaled as it is drawn. A new
+  title starts out that way, with its placeholder selected. `Esc`, `Ctrl+Enter` or a press
+  anywhere else ends the typing, and all of it is one undo step
 - Subtitles: import `.srt` / `.vtt` as editable captions, export `.srt` (captions only: titles and
   lower thirds are not subtitles)
 - 18 blend modes, rectangular and elliptical masks with feathering, on-canvas transform handles
@@ -90,7 +95,8 @@ with projects stored in your browser.
   position of every file it has shown
 - The media pool has a selection like a file manager's (click, `Shift`, `Ctrl`, `Ctrl+A`, `Space`
   from the keyboard). A drag or the `+` takes the selected files to the timeline end to end, and
-  `Delete` removes them, after asking when there are several or one is in use
+  `Delete` removes them, after asking when there are several or one is in use. “Remove unused
+  media…” clears the pool of every file no clip uses, in one undoable step
 - Replace or relink the file behind any asset; every clip follows, in one undo step. A file dropped
   on a clip with `Alt` held takes the place of that one clip's media and keeps everything that was
   done to the clip, as does “Replace selected clip with this” in the file's menu. “Reveal in media
@@ -101,10 +107,16 @@ with projects stored in your browser.
   `localhost`), **Overlap** when it shares frames with another clip of its track (its menu has
   “Move to a free track”). The viewer says in a line why the picture under the playhead is black,
   the inspector says it of the selected clip, and the media pool marks a file this browser cannot
-  decode
+  decode. A clip whose sound has a decoder that gives nothing is marked **Unsupported** as well
+- Sound is not lost at the first error: a damaged stretch of a file costs that stretch (about
+  70 ms for one bad AAC packet) and the rest of the clip plays, and plain AAC-LC that the
+  browser's WebCodecs decoder will not decode at all is decoded by the browser's other decoder
+  instead, sample for sample in the same place
 - Projects save to a portable `.tandem` file. Opening one makes a new project, from the home screen
   or the editor; replacing the open project with one is a separate command that asks first
-- The home screen renames, duplicates and deletes the projects on your device
+- The home screen renames, duplicates and deletes the projects on your device. The owner of a
+  shared project can also delete it for everyone there: the server then holds nothing of it and
+  every link to it stops working
 - Per-user undo and redo, a command palette, and a complete keyboard workflow
 
 ### Effects
@@ -146,13 +158,15 @@ with projects stored in your browser.
 - Real-time co-editing on a CRDT (Yjs): two people can move, trim and grade the same clip at once
   and every field converges
 - Live cursors, playheads, selections and in-flight drags; follow someone's playhead with one click
-- Time-coded comments with replies and resolve
+- Time-coded comments with replies and resolve. A comment stays on its shot when the cut is
+  rippled: whoever makes the edit moves it, for everyone, and undoing the edit brings it back
 - Share links with **editor**, **commenter** and **viewer** roles, enforced by the server. For
   someone who may not edit, the inspector, the colour page and the mixer say “Read only”, and
   their controls and the timeline's editing buttons are out of reach. What they select is outlined
   in the viewer without the handles to move it by, and the track heights they set are their own,
   kept per project on the device
-- Named versions plus automatic snapshots; restoring one is a single undoable step
+- Named versions plus automatic snapshots; restoring one is a single undoable step, and the owner
+  and editors can delete a version in the version history
 - Offline-first: the editor is an installable web app that opens with no network, projects and
   media live on your device, and changes merge when you reconnect
 - Media syncs itself — originals upload in resumable chunks and collaborators stream them
@@ -192,7 +206,9 @@ with projects stored in your browser.
   file has been named
 - Deterministic, frame-by-frame rendering — a slow machine takes longer but produces the same file
 - Media that is missing or will not decode is listed before the export starts. You can export
-  anyway; the result then names every clip that left a gap
+  anyway; the result then names every clip that left a gap. For sound or picture that would not
+  decode it says how much is missing (a stretch, the rest, all of it), from which timecode, and
+  under the sentence what the decoder said, as text that can be copied
 - Streams straight to disk, so file size is not limited by memory. “Cancel export” works until the
   file is finished: only the last step, saving it where you chose, cannot be stopped. Leaving the
   project cancels a running export
@@ -228,6 +244,7 @@ shortcuts and the command palette (`Ctrl+K`). The ones worth learning first:
 | Tools: select · blade · slip · hand             | `V` · `B` · `Y` · `H`                       |
 | Zoom the timeline · fit it · zoom to selection  | `+` `-` · `Shift+Z` · `Z`                   |
 | Add a title                                     | `T`                                         |
+| Type into the selected title · end the typing   | `Enter` or `F2` · `Esc` or `Ctrl+Enter`     |
 | Edit · Colour · Audio workspace                 | `Shift+1` · `Shift+2` · `Shift+3`           |
 | Comments                                        | `Shift+C`                                   |
 | Import · export · export the frame as a PNG     | `Ctrl+I` · `Ctrl+E` · `Ctrl+Shift+E`        |
@@ -238,6 +255,12 @@ the selected clip or else the picture under the playhead, and leave a music bed 
 the same frame alone; `Shift+G` closes one gap, the picture's, and the other tracks follow it.
 `Space` plays and pauses, except on a button the keyboard itself moved to (with `Tab`), where it
 presses the button.
+
+While a title is typed into, every key is text: `Space` does not play, `Delete` does not remove
+the clip, and `Ctrl+Z` takes back typing, not the edit before it. `Enter` starts the typing only
+where no control has the keyboard (on a button it presses the button, and on a clip the keyboard
+has walked to it selects); `F2` starts it anywhere. A title that is not on show at the playhead is
+typed in the inspector's field instead, and a title left empty says again what it said before.
 
 While the source monitor is open, `Space`, `J` `K` `L`, the arrow keys (with `Shift` for a second),
 `Home`, `End`, `I` and `O` drive it instead of the timeline; `Shift+I` and `Shift+O` go to its
@@ -327,17 +350,18 @@ below. [`apps/server/README.md`](apps/server/README.md) has what each one means,
 layout and the security model. In short: projects are protected by unguessable capability links
 and there are no user accounts.
 
-| Limit                      | Default            | Bounds                                                |
-| -------------------------- | ------------------ | ----------------------------------------------------- |
-| `MAX_UPLOAD_BYTES`         | 20 GiB             | one media file                                        |
-| `UPLOAD_EXPIRY_DAYS`       | 7                  | how long an unfinished upload is kept (`0`: for ever) |
-| `MAX_CONNECTIONS_PER_IP`   | 200                | open sockets from one address                         |
-| `MAX_CONNECTIONS_PER_ROOM` | 100                | open sockets on one document of a project             |
-| `MAX_PROJECT_DOC_BYTES`    | 32 MiB             | a project document                                    |
-| `MAX_REVIEW_DOC_BYTES`     | 2 MiB              | a project's comments                                  |
-| `MAX_OPEN_DOC_BYTES`       | 1 % of the V8 heap | all documents in memory together                      |
-| `MAX_PRESENCE_BYTES`       | 256 KiB            | one presence update, and what one link shows in all   |
-| `MAX_SYNC_BACKLOG_BYTES`   | 128 MiB            | document copies on their way to clients               |
+| Limit                       | Default            | Bounds                                                                                     |
+| --------------------------- | ------------------ | ------------------------------------------------------------------------------------------ |
+| `MAX_UPLOAD_BYTES`          | 20 GiB             | one media file                                                                             |
+| `UPLOAD_EXPIRY_DAYS`        | 7                  | how long an unfinished upload is kept (`0`: for ever)                                      |
+| `UNUSED_MEDIA_EXPIRY_HOURS` | 24                 | how long media is kept once neither the project nor a version refers to it (`0`: for ever) |
+| `MAX_CONNECTIONS_PER_IP`    | 200                | open sockets from one address                                                              |
+| `MAX_CONNECTIONS_PER_ROOM`  | 100                | open sockets on one document of a project                                                  |
+| `MAX_PROJECT_DOC_BYTES`     | 32 MiB             | a project document                                                                         |
+| `MAX_REVIEW_DOC_BYTES`      | 2 MiB              | a project's comments                                                                       |
+| `MAX_OPEN_DOC_BYTES`        | 1 % of the V8 heap | all documents in memory together                                                           |
+| `MAX_PRESENCE_BYTES`        | 256 KiB            | one presence update, and what one link shows in all                                        |
+| `MAX_SYNC_BACKLOG_BYTES`    | 128 MiB            | document copies on their way to clients                                                    |
 
 The editor can also be hosted somewhere else than the server, on a static host or a CDN. Build it
 with `VITE_SERVER_URL` set to the server's address and `TANDEM_BASE` to the path it will be served
@@ -426,12 +450,26 @@ Three ideas carry most of the weight:
 - Whose comment is whose is kept by the editor, not by the server, which knows roles and not
   people: anyone with a comment link and a client of their own can rewrite or delete other people's
   comments.
-- Nothing deletes a project or its media from the server. Deleting a project on the home screen
-  removes it from that device; on the server it stays until someone removes its folder, and so does
-  the file of an asset that was removed from a project. The one thing the server clears away by
-  itself is an upload that was never finished (`UPLOAD_EXPIRY_DAYS`).
-- Review comments stay on their frame when a ripple edit moves what they were about. Markers follow
-  a ripple; comments do not.
+- Deleting is final. The owner of a shared project can delete it for everyone from its card on the
+  home screen (“Delete for everyone…”): the server then holds nothing of it, every link to it
+  stops working, and people who had it open keep what was on their device as a local project that
+  is no longer shared. Versions can be deleted in the version history by the owner and editors.
+  Neither can be undone, and the server keeps no bin. Media taken out of a project leaves the
+  server once no version refers to it either, `UNUSED_MEDIA_EXPIRY_HOURS` later (a day by
+  default); as long as an automatic version from before still holds the file, it stays.
+- Comments follow ripple edits and nothing else: a clip that is moved or trimmed without a ripple,
+  or a version that is restored, leaves them at their frames. Two people who ripple at the same
+  moment each move the comments, and for each comment one of the two frames is kept for everyone;
+  it need not be the one that goes with where the clips ended up. A ripple made offline does not
+  move comments that were added meanwhile.
+- A second decoder stands in for plain AAC-LC above 24 kHz in MP4, MOV or Matroska only. HE-AAC,
+  AAC at 24 kHz and below, AAC in transport streams and other codecs have the one decoder; when it
+  fails the export says so, with the cause. HE-AAC could not be tested at all: nothing here can
+  encode it. In a browser whose own decoder drops the encoder's priming from an AAC stream, the
+  first 2112 samples of a file decoded that way are silent.
+- Typing into a title on the picture is tested in Chromium on Linux only: not on macOS, not in
+  Safari or Firefox, not with a real input method and not by touch. A tab in a title is drawn as a
+  space but typed as a tab stop.
 - Zooming the timeline lays out every clip in view again, which shows on a timeline with thousands
   of clips in view at once.
 - The website draws nothing until its script has arrived: its first screen is animated in by that

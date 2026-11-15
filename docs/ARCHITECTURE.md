@@ -56,6 +56,18 @@ from a half that cannot move. When the half that has to move sits on the track b
 is no way to keep the pair together, and the ripple is refused: `RippleResult.refused` says why, in
 words meant for the person editing ("Unlock A1 to ripple: a linked clip on it has to move too.").
 
+**What stands at a frame follows a ripple.** Markers and review comments are pinned to frames
+without being clips. Every ripple the editor plans also says what it did to time, as spans taken
+out or put in, and `rippleFollower` (`apps/editor/src/state/edits.ts`) makes one rule for both out
+of the project before the ripple, its edits and those spans: a thing on a shot goes where the shot
+goes (the clip under it on the lowest picture track that has one, else on the first sound track),
+and a thing on empty time, or in time the edit removed, moves with the time and lands on the cut.
+`withMarkers` (`state/follow.ts`) adds the marker edits to the ripple's own and marks the list as a
+ripple's; `commitEdits`, which `commit` goes through, commits a marked list and has the comments
+moved. One switch, `markersFollow`, turns both off. A list that is copied or spread loses the mark,
+so a ripple is committed as `commit(withMarkers(p, ripple))`, with anything else for the same step
+passed as its third argument.
+
 ### Frame resolution
 
 `resolveFrame(project, frame)` turns "the project at frame N" into an ordered list of layers with
@@ -184,10 +196,41 @@ Comments live in a second document so that a **commenter** can write there while
 document stays read-only for them. Role enforcement is on the server: document updates from a
 connection that may not write are dropped before they reach the room.
 
-A comment is stored once, as it was posted. Replies and later changes to it (text, resolved, frame)
-get keys of their own in two more maps, `commentReplies` and `commentFields`, instead of rewriting
-the comment. Two people replying at once, or one resolving a thread while the other answers it,
-both keep what they did. What a commenter writes is conformed like the project document.
+A comment is stored once, as it was posted. Replies and later changes to its text or its resolved
+state get keys of their own in two more maps, `commentReplies` and `commentFields`, instead of
+rewriting the comment. Two people replying at once, or one resolving a thread while the other
+answers it, both keep what they did. The frame a comment was moved to, by a ripple, its undo or a
+change of frame rate, is an entry `[commentId, frame]` in a list, `commentFrames`: a move appends
+the entries of all its comments as one struct and deletes the ones they replace, so the document
+does not grow with every edit that moves time, and of several entries for one comment the last
+stands. What a commenter writes is conformed like the project document.
+
+**Comments follow ripple edits.** A comment's frame is a value in the review document, so the
+project document cannot carry it along in the edit's own transaction. `CommentMover`
+(`packages/core/src/follow.ts`) does it for whoever makes the edit: it commits the edit and then
+writes the frames of the comments it moves, in one transaction of the review document
+(`ReviewStore.move`). Nobody else's client moves anything on seeing the edit arrive, so everyone
+ends with the same frames. Only frames are written: author, text, replies and the resolved state
+are untouched, also when someone changes them at the same moment. Two people who ripple at the same
+moment each write a frame for a comment, and one of the two stands for everyone. Which one is
+settled in the review document, apart from which of their clip positions stand in the project
+document, so such a comment can end up beside its shot.
+
+The moves are kept on the undo step of the edit (`tandem.comments` in the step's meta:
+`[before, after]` for each comment, and the frame rate they count at). When the store has taken the
+step back, each comment that still stands where the step left it returns to where the step found
+it, and the redo moves it again. What happened in between is treated as the store treats the values
+of a clip: a comment deleted since stays deleted, one that someone else's edit moved since stays
+where that put it (the clip under it did not go back either), one made since is not touched, a step
+that was dropped moves nothing, and after someone else's change of frame rate the noted frames are
+read at the present rate. A commit that joins the step before it adds to that step's note.
+
+The speed slider under ripple editing commits at every move of the pointer and plans each step from
+where the drag began. Such an edit names its gesture (`FollowOptions.gesture`), and the mover keeps
+with the gesture, not with an undo step, the frame each comment had when the gesture first moved
+it: a gesture is not always recorded as one step. Its first step is written at once and later ones
+when the drag rests for `GESTURE_REST_MS`, or sooner when its undo or another edit needs the
+comments in place.
 
 ### The server (`apps/server`)
 
@@ -212,6 +255,24 @@ stored document over twice the limit is not loaded (`507`). A connection publish
 entry, metered in size and rate, and one copy of the document at a time is on its way to a client.
 Project creation is limited per address and hour (`MAX_CREATES_PER_HOUR`).
 [`apps/server/README.md`](../apps/server/README.md) has the numbers and the security model.
+
+**Deleting.** The owner's link deletes a project for everyone (`DELETE /api/projects/:id`). The
+server first records the id under `deleted/` and from that moment answers every request and
+connection for the project with `410`; then it closes the rooms without saving them (close code
+`4410`), cuts off the transfers under way and removes the directory. The record is what makes this
+hold against everything still in flight: `ProjectStore.dir`, the one place an id becomes a path,
+refuses a deleted project, so a late write has nowhere to land, the id is never given out again,
+and a deletion that a crash cut short is finished at the next start. A version is deleted by the
+owner or an editor (`DELETE /api/projects/:id/versions/:versionId`).
+
+**Unused media.** A media file leaves the server when nothing can need it any more: no asset of the
+project document and no stored version refers to it (`sweep.ts`). For this the server reads one
+thing out of a project document, the keys of its `assets` map (`references.ts`); a version records
+its own when it is made. Taking a file out of a project does not delete it. A file goes only when
+two sweeps a grace period apart (`UNUSED_MEDIA_EXPIRY_HOURS`) both found nothing referring to it,
+and it is deleted in the same turn of the event loop in which the document was looked at, so an
+undo inside the grace period always finds its file. What a sweep noted about a file is forgotten
+the moment the document refers to its asset again.
 
 A heartbeat every 30 seconds ends connections that have gone away without closing
 (`Connection.beat` in `rooms.ts`). What counts as a sign of life depends on whether something is on
@@ -275,6 +336,10 @@ player stops the decoders that fed those textures, draws nothing meanwhile, and 
 restored builds a new compositor and a new source manager and carries on from the same frame. A
 lost context reads back blank frames without raising an error, so the exporter checks for it after
 every frame and fails with a message instead of encoding black.
+
+`Compositor.atRest` names one clip that is drawn without the animation it comes and goes with
+(`layerAtRest`): the editor sets it for the title being typed into, and again on the compositor
+that follows a lost context.
 
 ### Effects and transitions are data
 
@@ -382,7 +447,8 @@ fast render has passed.
 Media that is missing or will not decode does not stop an export, and never passes in silence.
 `checkExportMedia` finds the clips whose media cannot be had before a frame is rendered. During the
 export each problem is reported once per clip as it is met (`onWarning`), and all of them are in
-`ExportResult.warnings`: which clip, which file, what was wrong, from which frame.
+`ExportResult.warnings`: which clip, which file, what was wrong, from which frame; for media that
+would not decode, `lost` and `cause` say how much and why.
 
 What the video encoder is set up with is built in one place, `videoEncoding`, and `encoderAccepts`
 puts the same to the browser ahead of time: the question the export dialog asks before anything
@@ -402,6 +468,20 @@ The mix is rendered in chunks, but each clip's sound is decoded in one pass over
 (`AudioRuns` carries the decoders from chunk to chunk). A decoder does not always place sound after
 a seek exactly where the decode before it placed the same sound, and where two stretches placed
 differently meet there is a click.
+
+Decoded sound reaches the mixer, an export and the waveforms through `Sound` (`audio/sound.ts`),
+which wraps Mediabunny's `AudioBufferSink`. When the WebCodecs decoder fails, decoding starts again
+behind the packet that stopped it, further on each time it fails at once and a bounded number of
+times; what lies between stays silent, and the mixer's `AudioProblem` says how much was lost
+(`lost`), from where (`at`) and what the decoder said (`cause`). Where the decoder gives nothing at
+all, plain AAC-LC is decoded by the browser's other decoder (`audio/adts.ts`): the track's packets,
+128 at a time behind the three that lead up to them, as an ADTS stream through `decodeAudioData`,
+cut into one buffer per packet at the packet's time. That decoder is trusted only after it has
+placed a built-in test stream to the sample, and a stretch that comes back with another number of
+samples than its packets hold is not used. Which decoder a file is on is remembered per asset for
+as long as the page lives and forgotten with `MediaLibrary.invalidate`. A clip that plays backwards
+keeps the sound that did decode when its decoder stops: what could not be given is then a stretch
+at the clip's start, and is reported as one.
 
 The player's master clock is the audio clock, offset by output latency, so picture follows sound.
 If the audio context is not running yet the player uses a monotonic clock and hands over cleanly
@@ -453,6 +533,21 @@ when it starts.
 - **Media** is stored in the Origin Private File System. Thumbnails and waveform peaks are
   generated lazily by priority — what is on screen now is always computed before what you have
   scrolled past.
+- **A title is typed into on the picture, and the picture stays the renderer's.**
+  `features/viewer/TitleEditor.tsx` lays a real `<textarea>` over the title. Its text is not
+  painted, only its caret and selection are, and every input is written to the project at once,
+  merged into one undo step, so the letters under the caret are the compositor's own and nothing
+  changes when the typing ends. The field is laid out by the numbers the title is drawn by:
+  `layoutText` (`packages/engine/src/generators.ts`) is the one function that measures a title
+  (`rasterizeText` draws by it, `measureClip` sizes the layer by it), and `titleField` turns its
+  measures and the layer's box into the field's size, padding, type size and CSS matrix. Type is
+  laid out at the size it has on screen and only turned by the matrix, so the browser's caret
+  stays a pixel wide in a 4K frame shown small. Canvas and field both set type with
+  `geometricPrecision`, by the font's own measures at every size. The field starts from
+  `all: initial`, because anything inherited (the page's font features) moves letters. Undo inside
+  the field is its own (`TypingHistory`): Chromium keeps one undo history for all fields of a page
+  and would go on to another field at the end of this one's. `cmd.editText` decides where a title
+  is typed: on the picture when it is on show at the playhead, in the inspector's field otherwise.
 
 **Offline.** The production build ships a small generated service worker (see
 `apps/editor/serviceWorker.ts`): the page is network-first with a cached fallback, hashed code and
@@ -480,6 +575,14 @@ when the person asks (Share → Try again), when another link to the same projec
 or when nothing of the project is on the device. A refusal is only what one server said at one
 moment, and a link is not something its holder can get again by themselves.
 
+A project its owner deleted is a third answer, and a final one: the server says `410` to a link
+that was good, or closes the open connections with `4410`. `Session.projectDeleted` keeps what the
+device holds as a local project, drops the link (it is not kept aside, there is nothing to try
+again) and, on a guest's device, marks the entry (`ProjectEntry.deletedByOwner`), which its card
+shows as “No longer shared”. The session also follows the project list: when the copy on the
+device has gone as well, deleted in another tab, it stops writing and shows the project as not
+available, and never lists it again.
+
 **Not saving.** A connection can be open and the work still not reach the server: the document has
 reached the size the server allows, the server has no memory for more, or one change is more than
 it takes in a message. The server ends such a connection with close code `1009` and says why first.
@@ -504,7 +607,11 @@ with it) and files the whole thing as one undo step.
 and the document can be behind the server: a version from before an upload finished brings the
 asset back unflagged, and so does undoing its removal, while the person who has the file may not be
 around. A session that may edit therefore asks the server once (`HEAD …?probe`) about each file
-that is neither on its device nor flagged, and sets the flag when the server holds it.
+that is neither on its device nor flagged, and sets the flag when the server holds it. The flag can
+also be ahead of the server: media that nothing referred to for long enough is cleared away there,
+and an asset can come back later than that. A session that may edit takes the flag back when the
+server answers `404` for the file (`Session.serverLacks`); whoever still has the file then uploads
+it again. `Session.publish` clears every flag in the copy it publishes.
 
 **Media transfers.** An import joins the media pool, and the document, as soon as the file has been
 probed: the file serves the asset from memory while its copy is written to the device behind it.
@@ -517,14 +624,14 @@ bundle; the editor chunk is warmed in the background while you choose a project.
 
 ## 5. Testing strategy
 
-| Layer   | What is checked                                                                                                                               | Where                                                                    |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Model   | timecode, keyframes, every edit operation, CRDT convergence, per-user undo, hostile input                                                     | `packages/core/test`                                                     |
-| Server  | auth, roles, sync, persistence across restart and torn logs, resumable media, versions, connection limits                                     | `apps/server/test`                                                       |
-| Engine  | all shaders compile and draw, geometry and colour, frame accuracy, HDR code values, memory held, context loss, exports inspected with ffprobe | `e2e/engine*.spec.ts`, `packages/engine/test`                            |
-| Editor  | the parts that are plain functions: panel layout, layers and focus, access, the transfer queue, timing, shortcuts, the service worker         | `apps/editor/test`                                                       |
-| Product | mouse-driven editing, reload persistence, panels and dialogs from the keyboard, export, multi-user sessions with roles                        | `e2e/editor.spec.ts`, `e2e/collab.spec.ts` and the other specs in `e2e/` |
-| Build   | the production build in a browser: the site, its menu and notices, the editor under `/app/`, security headers, service worker, no network     | `e2e/smoke` (`pnpm test:smoke`)                                          |
+| Layer   | What is checked                                                                                                                                                                           | Where                                                                                                                   |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Model   | timecode, keyframes, every edit operation, CRDT convergence, per-user undo, hostile input                                                                                                 | `packages/core/test`                                                                                                    |
+| Server  | auth, roles, sync, persistence across restart and torn logs, resumable media, versions, connection limits, deleting projects and versions, the sweep of unused media                      | `apps/server/test`                                                                                                      |
+| Engine  | all shaders compile and draw, geometry and colour, frame accuracy, HDR code values, memory held, context loss, title wrapping, sound that will not decode, exports inspected with ffprobe | `e2e/engine*.spec.ts`, `packages/engine/test`                                                                           |
+| Editor  | the parts that are plain functions: panel layout, layers and focus, access, the transfer queue, timing, shortcuts, the service worker, the title field's geometry, the typing history     | `apps/editor/test`                                                                                                      |
+| Product | mouse-driven editing, reload persistence, panels and dialogs from the keyboard, export, multi-user sessions with roles, typing into titles, deleting                                      | `e2e/editor.spec.ts`, `e2e/collab.spec.ts`, `e2e/text-edit.spec.ts`, `e2e/delete.spec.ts` and the other specs in `e2e/` |
+| Build   | the production build in a browser: the site, its menu and notices, the editor under `/app/`, security headers, service worker, no network                                                 | `e2e/smoke` (`pnpm test:smoke`)                                                                                         |
 
 The engine tests run through a bare "lab" page (`apps/editor/lab.html`) that exposes the engine
 without the editor around it. WebGL runs on SwiftShader, so the suite needs no GPU.

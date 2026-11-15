@@ -50,6 +50,12 @@ busy for many times as long, and the next reload in a test waits for all of it. 
 nothing that turns in a busy button for that reason, and a dialog that has to show progress takes
 the flat backdrop (`solid`).
 
+A test that stands in for `AudioDecoder` must leave alone the decoders it is not about: an export
+sets one up to measure the delay of its own audio encoder (Mediabunny does), and fails outright
+with “Export failed. Decoding error.” when that one fails. The stand-ins in
+`e2e/engine-media.spec.ts` (`openSoundLab`) and `e2e/panels.spec.ts` (`failingSoundDecoders`) go by
+codec and sample rate.
+
 A test that fails leaves a folder in `test-results/` with a screenshot, the page's accessibility
 tree and a trace of everything the test did: `pnpm exec playwright show-trace` followed by the
 path of the `trace.zip` opens it. CI keeps the same folder as an artifact of the failed job.
