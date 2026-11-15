@@ -103,6 +103,11 @@ export interface UIState {
   scopes: { waveform: boolean; parade: boolean; vectorscope: boolean; histogram: boolean };
   /** A voiceover is being recorded: where on the timeline it began, and when. */
   recording: { startFrame: number; startedAt: number } | null;
+  /**
+   * The title that is being typed into on the picture. `at` is where in the window the caret was
+   * asked for; without it all of the text starts out selected, to be typed over.
+   */
+  typing: { clip: ID; at: { x: number; y: number } | null } | null;
 
   select: (ids: ID[], additive?: boolean) => void;
   toggleSelect: (id: ID) => void;
@@ -279,6 +284,7 @@ export const useUI = create<UIState>((set, get) => ({
   revealEffects: [],
   poolSelection: [],
   recording: null,
+  typing: null,
   scopes: persisted.scopes,
 
   select: (ids, additive) =>

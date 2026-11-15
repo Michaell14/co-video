@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import {
   applyEdits,
@@ -6,6 +6,7 @@ import {
   clipEnd,
   emptyProject,
   freezeFrame,
+  GESTURE_REST_MS,
   makeClip,
   makeTrack,
   ProjectStore,
@@ -27,7 +28,7 @@ import {
   trimEdge,
   type RippleSpan,
 } from '../src/state/edits';
-import { commitEdits, following, withMarkers } from '../src/state/follow';
+import { asRipple, commitEdits, withMarkers } from '../src/state/follow';
 import {
   durationEdits,
   makeRoomEdits,
@@ -346,7 +347,7 @@ describe('a ripple that is committed', () => {
     note(s, 250, 'on the third shot');
     const p = s.store.get();
     const r = rippleDeleteClips(p, [c.dusk.id]);
-    commitEdits(s, [...following(r.edits, rippleFollower(p, r.edits, r.spans))]);
+    commitEdits(s, [...asRipple(r.edits, rippleFollower(p, r.edits, r.spans))]);
     expect(layout(s.store.get(), c.v1)).toEqual(['0-120', '120-240']);
     expect(notes(s)).toEqual([['on the third shot', 250]]);
   });
@@ -365,6 +366,12 @@ function scrubber(s: Seat, ids: string[], options: SpeedGestureOptions) {
 }
 
 describe('a speed gesture under ripple editing', () => {
+  beforeEach(() => void vi.useFakeTimers());
+  afterEach(() => void vi.useRealTimers());
+
+  /** The pointer holds still for a moment: the gesture writes the comments where it has them. */
+  const rest = (): void => void vi.advanceTimersByTime(GESTURE_REST_MS);
+
   it('takes the comments to where each step leaves the shots, and back when it ends where it began', () => {
     const s = seat();
     const c = cut();
@@ -381,6 +388,7 @@ describe('a speed gesture under ripple editing', () => {
       [2, 180],
     ]) {
       to(speed);
+      rest();
       expect(s.store.get().clips[c.aurora.id].start).toBe(third);
       expect(markers(s)).toEqual([third]);
       expect(notes(s)).toEqual([
@@ -397,6 +405,27 @@ describe('a speed gesture under ripple editing', () => {
     expect(notes(s).map(([, frame]) => frame)).toEqual([30, 190]);
   });
 
+  it('writes the comments with the first step of a drag and once it rests, however many steps it takes', () => {
+    const s = seat();
+    const c = cut();
+    s.store.replaceAll(c.p);
+    note(s, 250, 'on the third shot');
+    let written = 0;
+    s.review.doc.on('update', () => written++);
+    const to = scrubber(s, [c.fractal.id], { ripple: true, markers: true });
+    for (let percent = 101; percent <= 200; percent++) to(percent / 100);
+    expect(s.store.get().clips[c.aurora.id].start).toBe(180);
+    expect([written, notes(s)[0][1]]).toEqual([1, 249]);
+    rest();
+    expect([written, notes(s)[0][1]]).toEqual([2, 190]);
+    // Taken back at once after more steps, the drag still returns the comment to where it found it.
+    to(4);
+    s.store.undo();
+    expect(notes(s)).toEqual([['on the third shot', 250]]);
+    rest();
+    expect(notes(s)).toEqual([['on the third shot', 250]]);
+  });
+
   it('leaves the comments alone when comments and markers do not follow', () => {
     const s = seat();
     const c = cut();
@@ -404,6 +433,7 @@ describe('a speed gesture under ripple editing', () => {
     note(s, 250, 'on the third shot');
     const to = scrubber(s, [c.fractal.id], { ripple: true, markers: false });
     to(2);
+    rest();
     expect(s.store.get().clips[c.aurora.id].start).toBe(180);
     expect(markers(s)).toEqual([240]);
     expect(notes(s)).toEqual([['on the third shot', 250]]);

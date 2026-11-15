@@ -1,7 +1,16 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { clips, FIXTURES, ffprobe, hasFfprobe, importFixtures, newProject, trackErrors } from './helpers';
+import {
+  clips,
+  FIXTURES,
+  ffprobe,
+  hasFfprobe,
+  importFixtures,
+  newProject,
+  noReloads,
+  trackErrors,
+} from './helpers';
 
 async function buildEdit(page: import('@playwright/test').Page) {
   await importFixtures(page, ['testsrc.mp4', 'testsrc.webm', 'tone.ogg', 'warm.cube']);
@@ -19,6 +28,9 @@ async function buildEdit(page: import('@playwright/test').Page) {
 }
 
 test.describe('editor', () => {
+  // A page that reloads because someone saved a file has lost what the test had set up in it.
+  test.beforeEach(({ page }) => noReloads(page));
+
   test('imports media, builds a timeline, and survives a reload', async ({ page }) => {
     const errors = trackErrors(page);
     await newProject(page);
@@ -653,6 +665,8 @@ async function fromPalette(page: Page, text: string): Promise<void> {
 const SAMPLE = { A1: ['0-360'], V1: ['0-120', '120-240', '240-360'], V2: ['18-108'] };
 
 test.describe('editing from the keyboard', () => {
+  test.beforeEach(({ page }) => noReloads(page));
+
   test('Q and W with nothing selected trim the shot under the playhead, not the music or the title', async ({
     page,
   }) => {
@@ -849,15 +863,15 @@ test.describe('editing from the keyboard', () => {
     };
 
     // 100% lies three sevenths along the slider. Faster, then slower than it began, in one drag:
-    // every step moves the third shot, and the note is ten frames into it after each.
+    // every step moves the third shot, and wherever the pointer rests the note comes to stand
+    // ten frames into it again.
     await page.mouse.move(track.x + (track.width * 3) / 7, y);
     await page.mouse.down();
     const starts: number[] = [];
     for (const step of [2, 4, 6, 3, -2, -4]) {
       await page.mouse.move(track.x + track.width * (3 / 7 + step * 0.02), y);
-      const now = await onThird();
-      expect(now.into).toBe(10);
-      starts.push(now.start);
+      await expect.poll(async () => (await onThird()).into).toBe(10);
+      starts.push((await onThird()).start);
     }
     await page.mouse.up();
     expect(Math.min(...starts)).toBeLessThan(240);

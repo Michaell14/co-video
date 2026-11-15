@@ -22,7 +22,7 @@ import {
   type Project,
 } from '@tandem/core';
 import { markerEdits, rippleFollower, trimSpans, type Rippled, type RippleSpan } from './edits';
-import { following } from './follow';
+import { asRipple } from './follow';
 
 /** What a change of speed can alter on a clip. */
 type Timing = Pick<Clip, 'speed' | 'duration' | 'sourceIn' | 'fadeIn' | 'fadeOut' | 'keyframes'>;
@@ -331,7 +331,8 @@ export function speedGesture(
  * step changed and this one does not (a fade it shortened, a source range it moved). A gesture
  * that ripples plans the step on the timeline as it found it, and the edits are what takes the
  * project from where the last step left it to that plan. Committed with `commit`, they take the
- * review comments from where the gesture found them to where the plan puts them.
+ * review comments from where the gesture found them to where the plan puts them, once the gesture
+ * rests.
  */
 export function speedEdits(g: SpeedGesture, p: Project, speed: number): Edit[] {
   const clips = { ...p.clips };
@@ -361,7 +362,7 @@ export function speedEdits(g: SpeedGesture, p: Project, speed: number): Edit[] {
   for (const m of Object.values(planned.markers)) {
     if (p.markers[m.id].frame !== m.frame) edits.push({ op: 'setMarker', marker: m });
   }
-  return from.markers ? following(edits, rippleFollower(found, plan.edits, plan.spans), true) : edits;
+  return from.markers ? asRipple(edits, rippleFollower(found, plan.edits, plan.spans), true) : edits;
 }
 
 /** `g` after its step has been committed and `p` is what came of it. */

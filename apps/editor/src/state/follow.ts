@@ -3,7 +3,7 @@
  * frames of the sequence without being clips. Both go by one rule (`rippleFollower`) and one
  * switch. The markers are in the project and follow as edits of their own. The comments are in a
  * document of their own: the edits of a ripple are marked with where it takes whatever stands at
- * a frame (`following`), and committing them moves the comments by that, as part of the same undo
+ * a frame (`asRipple`), and committing them moves the comments by that, as part of the same undo
  * step (`commitEdits`).
  */
 import {
@@ -31,7 +31,7 @@ const ripples = new WeakMap<readonly Edit[], Ripple>();
  * other edits and takes no comment along. `fromStepStart` is for a gesture that plans each of its
  * steps from where it began (see `FollowOptions`).
  */
-export function following(edits: Edit[], follow: Follow, fromStepStart = false): Edit[] {
+export function asRipple(edits: Edit[], follow: Follow, fromStepStart = false): Edit[] {
   ripples.set(edits, { follow, fromStepStart });
   return edits;
 }
@@ -51,7 +51,7 @@ export function withMarkers(
   if (!useUI.getState().markersFollow || !r.spans.length) {
     return then.length ? [...r.edits, ...then] : r.edits;
   }
-  return following(
+  return asRipple(
     [...r.edits, ...markerEdits(p, r.edits, r.spans), ...then],
     rippleFollower(p, r.edits, r.spans),
   );
@@ -60,7 +60,7 @@ export function withMarkers(
 const movers = new WeakMap<ProjectStore, CommentMover>();
 
 /**
- * Commit `edits` to the project. Those of a ripple (see `following`) take the review comments
+ * Commit `edits` to the project. Those of a ripple (see `asRipple`) take the review comments
  * along: whoever makes the edit moves them, for everyone, and their undo brings them back.
  */
 export function commitEdits(

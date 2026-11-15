@@ -161,6 +161,41 @@
   pointer-events: none;
 }
 
+/* The field a title is typed into lies over the title in the picture and shows none of its text:
+   the picture goes on drawing the letters, the field adds the caret and the selection. Nothing it
+   would inherit or bring along as a text area may move a letter, so it starts from nothing; size,
+   font and place are set on the element from the measures the title was drawn by. Type is set by
+   the font's own measures, as the title's is, and a line breaks where the title breaks it: at
+   white space, and inside a word only when the word alone is wider than the box. */
+textarea.title-edit {
+  all: initial;
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  display: block;
+  overflow: hidden;
+  resize: none;
+  transform-origin: 0 0;
+  direction: ltr;
+  cursor: text;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+  text-rendering: geometricPrecision;
+  -webkit-text-fill-color: transparent;
+}
+textarea.title-edit[wrap='off'] {
+  white-space: pre;
+}
+textarea.title-edit:focus-visible {
+  box-shadow: none;
+}
+textarea.title-edit::selection {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  -webkit-text-fill-color: transparent;
+}
+
 .peer-cursor {
   position: absolute;
   z-index: 4;

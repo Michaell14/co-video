@@ -45,6 +45,7 @@ import {
 } from '@tandem/core';
 import {
   fontEpoch,
+  layerAtRest,
   layerCorners,
   layoutLayer,
   measureClip,
@@ -86,6 +87,7 @@ import {
   withOut,
 } from './sourceMarks';
 import { SourceTransport } from './sourceTransport';
+import { TitleEditor } from './TitleEditor';
 import './viewer.css';
 
 /** How far the rotation handle stands off the edge of the box, in CSS pixels. */
@@ -186,6 +188,7 @@ export function Viewer() {
           )}
           <MediaNotice />
           <Gizmo scale={size.scale} />
+          <TitleEditor scale={size.scale} />
           <PeerCursors />
         </div>
         {showStats && <Stats />}
@@ -223,6 +226,8 @@ function Gizmo({ scale }: { scale: number }) {
   const selection = useUI((s) => s.selection);
   const tool = useUI((s) => s.tool);
   const workspace = useUI((s) => s.workspace);
+  // The title that is being typed into (see `TitleEditor`) is drawn at rest, and outlined so.
+  const typing = useUI((s) => s.typing?.clip ?? null);
   const frame = useThrottledFrame(12);
   // A title is measured with the fonts that have arrived so far: measure again when one lands.
   const fonts = useSyncExternalStore(onFontsLoaded, fontEpoch);
@@ -250,12 +255,13 @@ function Gizmo({ scale }: { scale: number }) {
   const { width: W, height: H } = project.settings;
 
   const target = useMemo<Target | null>(() => {
-    for (const layer of selectedLayers(project, frame, selection)) {
+    for (const shown of selectedLayers(project, frame, selection)) {
+      const layer = shown.clip.id === typing ? layerAtRest(shown) : shown;
       const box = boxFor(project, layer);
       if (box) return { clip: layer.clip, layer, box };
     }
     return null;
-  }, [project, selection, frame, fonts]);
+  }, [project, selection, frame, fonts, typing]);
 
   const toFrame = useCallback(
     (e: { clientX: number; clientY: number }): [number, number] => {
@@ -397,19 +403,25 @@ function Gizmo({ scale }: { scale: number }) {
     else useUI.getState().select([hit.clip.id]);
   };
 
-  /** Double-clicking a title goes to its text. */
+  /**
+   * Double-clicking a title puts the caret into its text, where the pointer is. Like the handles,
+   * that belongs to laying the picture out: where it is graded or mixed nothing is offered.
+   */
   const editText = (e: React.MouseEvent) => {
-    const hit = tool === 'select' ? layerAt(e) : null;
-    if (hit?.clip.type === 'text') cmd.editText(hit.clip.id);
+    const hit = tool === 'select' && workspace === 'edit' ? layerAt(e) : null;
+    if (hit?.clip.type === 'text') cmd.editText(hit.clip.id, { x: e.clientX, y: e.clientY });
   };
 
   // The handles belong to laying a picture out. Where it is graded or mixed they would sit on
   // the very image being judged, so only the Edit workspace draws them.
   const outlined = !!target && !playing && workspace === 'edit';
+  // A title that is being typed into keeps its outline and gives up its handles: a press on it is
+  // for the caret, and the text field that lies over it takes it.
+  const handled = editable && target?.clip.id !== typing;
   // A drag is held by what is drawn for it. When that goes while the pointer is still down (the
   // access to edit is taken away, playback starts), the release never arrives here: the drag is
   // over then, and is not picked up again by a pointer that merely passes once the handles are back.
-  const held = outlined && editable;
+  const held = outlined && handled;
   useEffect(() => {
     if (held || !drag.current) return;
     drag.current = null;
@@ -456,18 +468,18 @@ function Gizmo({ scale }: { scale: number }) {
     shape = (
       <g>
         <polygon className="gizmo__halo" points={outline} strokeWidth={sw * 3} />
-        {editable && (
+        {handled && (
           <line className="gizmo__halo" x1={top[0]} y1={top[1]} x2={rh[0]} y2={rh[1]} strokeWidth={sw * 3} />
         )}
         <polygon
           className="gizmo__body"
           points={outline}
           strokeWidth={sw}
-          onPointerDown={editable ? pressBody : undefined}
-          onPointerMove={editable ? move : undefined}
-          onPointerUp={editable ? end : undefined}
+          onPointerDown={handled ? pressBody : undefined}
+          onPointerMove={handled ? move : undefined}
+          onPointerUp={handled ? end : undefined}
         />
-        {editable && (
+        {handled && (
           <>
             <line className="gizmo__stem" x1={top[0]} y1={top[1]} x2={rh[0]} y2={rh[1]} strokeWidth={sw} />
             <circle

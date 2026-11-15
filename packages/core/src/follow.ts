@@ -26,6 +26,10 @@
  *
  * The frames are noted at the frame rate of the step. A change of rate re-times the comments, and
  * after one by somebody else the frames of the note are read at the present rate.
+ *
+ * Every frame written for a comment stays in the review document for good, as every value written
+ * to a Yjs map does. An edit writes one for each comment it moves; a gesture that commits at every
+ * move of the pointer writes them when it rests (see `FollowOptions.fromStepStart`).
  */
 import type * as Y from 'yjs';
 import type { ReviewStore } from './review';
@@ -45,9 +49,19 @@ export interface FollowOptions extends CommitOptions {
    * `follow` starts from the frames of the project as the undo step under way found it, not as
    * this commit finds it. For a gesture that plans every one of its steps anew from where it
    * began: a comment that an earlier step of the gesture moved goes by the frame it had before.
+   * One that somebody made or moved while the gesture was under way has no such frame, and goes
+   * by the frame it stands at.
+   *
+   * Such a gesture commits many times a second, and every frame written for a comment stays in
+   * the review document for good. So after its first step its comments are written when it rests
+   * (`GESTURE_REST_MS`), or sooner when something else needs them in place: another edit, or its
+   * own undo.
    */
   fromStepStart?: boolean;
 }
+
+/** How long a gesture has made no step before the comments are written where it has them. */
+export const GESTURE_REST_MS = 120;
 
 type UndoStep = Y.UndoManager['undoStack'][number];
 
@@ -63,13 +77,22 @@ interface Note {
 /** Where an undo step keeps the comments it moved. */
 const STEP_COMMENTS = 'tandem.comments';
 
+/** Frames a gesture has for the comments of its step and has not written yet. */
+interface Waiting {
+  step: UndoStep;
+  /** By comment: the frame the step found it at, and the frame it is to stand at. */
+  want: Moved;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class CommentMover {
   private readonly store: ProjectStore;
   private readonly review: ReviewStore;
-  /** The undo step the commit under way was recorded in, once it has been. */
-  private recorded: UndoStep | null = null;
+  /** The undo step the commit under way was recorded in, once it has been, and whether it began it. */
+  private recorded: { step: UndoStep; began: boolean } | null = null;
   /** The step the undo or redo under way was filed as, once it has changed something. */
   private filed: UndoStep | null = null;
+  private waiting: Waiting | null = null;
 
   /** Listens to the history of `store` from here on, and is done with when the store is. */
   constructor(store: ProjectStore, review: ReviewStore) {
@@ -83,23 +106,54 @@ export class CommentMover {
 
   /**
    * Commit `edits` to the project and take the comments where `follow` says, as part of the same
-   * undo step. An edit that changes nothing in the project moves no comment either.
+   * undo step. An edit that changes nothing in the project moves no comment either. The two
+   * documents are written one after the other: the project first, then the review.
    */
   commit(edits: Edit[], { follow, fromStepStart = false, ...opts }: FollowOptions): void {
     this.recorded = null;
     this.store.commit(edits, opts);
-    const step = this.take('recorded');
-    if (!step) return;
+    const recorded = this.taken();
+    if (!recorded) return;
+    const { step, began } = recorded;
+    // Only the next step of the same gesture goes on from what is waiting. Anything else counts
+    // from where the comments are, so the gesture before it has to have put them there.
+    if (!fromStepStart || this.waiting?.step !== step) this.settle();
     // A commit that joins the step before it adds to what that step has moved already.
-    const moved: Moved = new Map((step.meta.get(STEP_COMMENTS) as Note | undefined)?.moved);
-    const to = new Map<ID, number>();
+    const moved = (step.meta.get(STEP_COMMENTS) as Note | undefined)?.moved;
+    const want: Moved = new Map();
     for (const c of this.review.get()) {
-      const earlier = moved.get(c.id);
+      const earlier = moved?.get(c.id);
       const found = earlier && earlier[1] === c.frame ? earlier[0] : c.frame;
       const frame = follow(fromStepStart ? found : c.frame);
-      if (frame !== c.frame) to.set(c.id, frame);
-      if (frame === found) moved.delete(c.id);
-      else moved.set(c.id, [found, frame]);
+      if (earlier || frame !== c.frame) want.set(c.id, [found, frame]);
+    }
+    // The first step of a gesture is written like any edit: a gesture of one step, a key that
+    // was pressed, has nothing to wait for.
+    if (!fromStepStart || began) {
+      this.write(step, want);
+      return;
+    }
+    clearTimeout(this.waiting?.timer);
+    this.waiting = { step, want, timer: setTimeout(this.settle, GESTURE_REST_MS) };
+  }
+
+  /** Write the comments where the gesture that is waiting has them. */
+  private settle = (): void => {
+    const waiting = this.waiting;
+    if (!waiting) return;
+    this.waiting = null;
+    clearTimeout(waiting.timer);
+    this.write(waiting.step, waiting.want);
+  };
+
+  /** Put the comments at the frames `want` has for them, and note on `step` what that moved. */
+  private write(step: UndoStep, want: Moved): void {
+    const moved: Moved = new Map((step.meta.get(STEP_COMMENTS) as Note | undefined)?.moved);
+    const to = new Map<ID, number>();
+    for (const [id, [found, frame]] of want) {
+      to.set(id, frame);
+      if (frame === found) moved.delete(id);
+      else moved.set(id, [found, frame]);
     }
     this.review.move(to);
     if (moved.size) {
@@ -107,20 +161,20 @@ export class CommentMover {
     } else step.meta.delete(STEP_COMMENTS);
   }
 
-  /** What one of the two notes holds, which is then cleared: each is good for one commit or one step. */
-  private take(note: 'recorded' | 'filed'): UndoStep | null {
-    const step = this[note];
-    this[note] = null;
-    return step;
+  /** Where the commit that was just made was recorded: the history has said so meanwhile, or not. */
+  private taken(): { step: UndoStep; began: boolean } | null {
+    const recorded = this.recorded;
+    this.recorded = null;
+    return recorded;
   }
 
   private onAdded = ({ stackItem, origin }: { stackItem: UndoStep; origin: unknown }): void => {
     if (origin === this.store.undoManager) this.filed = stackItem;
-    else this.recorded = stackItem;
+    else this.recorded = { step: stackItem, began: true };
   };
 
   private onUpdated = ({ stackItem }: { stackItem: UndoStep }): void => {
-    this.recorded = stackItem;
+    this.recorded = { step: stackItem, began: false };
   };
 
   /**
@@ -128,7 +182,10 @@ export class CommentMover {
    * became of them is kept with the step it was filed as, for the opposite step to go by.
    */
   private onPopped = ({ stackItem, type }: { stackItem: UndoStep; type: 'undo' | 'redo' }): void => {
-    const filed = this.take('filed');
+    // The step of a gesture that was still waiting is taken back from where it had the comments.
+    this.settle();
+    const filed = this.filed;
+    this.filed = null;
     const note = stackItem.meta.get(STEP_COMMENTS) as Note | undefined;
     if (!note || !filed) return;
     const fps = fpsOf(this.store.get().settings);

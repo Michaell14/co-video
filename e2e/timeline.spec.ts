@@ -1367,6 +1367,8 @@ test.describe('timeline', () => {
 
   test('asking for a title goes straight to typing it', async ({ page }) => {
     await sample(page);
+    // A title that shows at the playhead is typed into on the picture, any other in the inspector.
+    const onPicture = page.getByLabel('Title text');
     const field = page.getByLabel('Text content');
     const texts = () =>
       page.evaluate(() =>
@@ -1377,7 +1379,7 @@ test.describe('timeline', () => {
       );
     await page.evaluate(() => (window as any).tandem.cmd.seek(200));
     await page.keyboard.press('t');
-    await expect(field).toBeFocused();
+    await expect(onPicture).toBeFocused();
     await page.keyboard.type('hold shot');
     // Typed over the placeholder, and none of those letters ran a shortcut (h, l, o, s, d, t all have one).
     await expect.poll(texts).toEqual(['Edit in tandem', 'hold shot']);
@@ -1385,9 +1387,10 @@ test.describe('timeline', () => {
     expect(await page.evaluate(() => (window as any).tandem.session.player.getState().range)).toBeNull();
     expect(await layout(page)).toHaveLength(6);
     await page.keyboard.press('Escape');
-    await expect(field).not.toBeFocused();
+    await expect(onPicture).toHaveCount(0);
 
-    // Double-clicking a title on the timeline does the same, also when its section was folded away.
+    // Double-clicking a title on the timeline that is not on show at the playhead puts the
+    // keyboard in the inspector's field, also when its section was folded away.
     await page.locator('.section__head', { hasText: /^Text$/ }).click();
     await expect(field).toHaveCount(0);
     const first = await clipBox(page, 'title');
@@ -1399,7 +1402,7 @@ test.describe('timeline', () => {
     ]);
     await page.keyboard.press('Escape');
 
-    // And so does double-clicking it in the viewer, without moving it.
+    // Double-clicking it in the viewer types into it where it stands, without moving it.
     await page.evaluate(() => {
       const { ui, cmd } = (window as any).tandem;
       ui.getState().clearSelection();
@@ -1407,8 +1410,8 @@ test.describe('timeline', () => {
     });
     const frame = await box(page, '.viewer__frame');
     await page.mouse.dblclick(frame.x + frame.width / 2, frame.y + frame.height / 2);
-    await expect(field).toBeFocused();
-    await expect(field).toHaveValue('Edit in tandem');
+    await expect(onPicture).toBeFocused();
+    await expect(onPicture).toHaveValue('Edit in tandem');
     const title = await clip(page, 'title');
     expect([title.x, title.y]).toEqual([0, 0]);
   });

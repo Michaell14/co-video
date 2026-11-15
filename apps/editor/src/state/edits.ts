@@ -75,7 +75,10 @@ export interface RippleSpan {
   by: number;
 }
 
-/** A ripple that also says what it did to time, for the things that are not clips: markers. */
+/**
+ * A ripple that also says what it did to time, for the things that stand at a frame without being
+ * clips: markers and review comments.
+ */
 export interface Rippled extends RippleResult {
   spans: RippleSpan[];
 }

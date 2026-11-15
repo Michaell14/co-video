@@ -62,6 +62,7 @@ import { navigate } from '../App';
 import { fitPanels, windowSize } from '../features/editor/layout';
 import { placeAssets } from '../features/library/pool';
 import { keyframeTimes } from '../features/timeline/keyframes';
+import { selectedLayers } from '../features/viewer/selectedLayers';
 import { clipMarks, markedRange, rememberSource } from '../features/viewer/sourceMarks';
 import { currentSession } from '../session/hooks';
 import { copyProjectMedia } from '../session/mediaStore';
@@ -989,18 +990,31 @@ export const cmd = {
     });
   },
   /**
-   * Select a title and put the keyboard in its text field, with the text selected so that typing
-   * replaces it.
+   * Select a title and put the keyboard into its text. A title that is on show at the playhead is
+   * typed into where it stands in the picture, which holds still for it: the caret goes to `at`
+   * (a point of the window), and without one all of the text is selected, so that typing replaces
+   * it. A title that is not on show is typed into in the inspector's field, selected likewise.
    */
-  editText(clipId: ID): void {
-    editing((_s, p) => {
+  editText(clipId: ID, at: { x: number; y: number } | null = null): void {
+    editing((s, p) => {
       const clip = p.clips[clipId];
       if (!clip || clip.type !== 'text') return;
       if (p.tracks[clip.trackId]?.locked) {
         toast(LOCKED_TRACK, 'info');
         return;
       }
+      // Behind the source monitor the picture is not to be seen.
+      const onShow = () => !ui().sourceAsset && selectedLayers(p, frame(), [clip.id]).length > 0;
+      let shown = onShow();
+      if (shown && s.player?.getState().playing) {
+        s.player.pause();
+        shown = onShow();
+      }
       ui().set({ selection: [clip.id], selectedTransition: null, workspace: 'edit' });
+      if (shown) {
+        ui().set({ typing: { clip: clip.id, at } });
+        return;
+      }
       uncover('right');
       focusTextField(clip.id);
     });

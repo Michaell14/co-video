@@ -50,8 +50,13 @@ export function onFontsLoaded(fn: () => void): () => void {
   return () => fontListeners.delete(fn);
 }
 
+/** The families a title's text is set in, as CSS lists them: its own, then what stands in for it. */
+export function fontStack(t: TextProps): string {
+  return `"${t.font}", "Inter Variable", Inter, system-ui, sans-serif`;
+}
+
 export function fontSpec(t: TextProps, px: number): string {
-  return `${t.italic ? 'italic ' : ''}${t.weight} ${px}px "${t.font}", "Inter Variable", Inter, system-ui, sans-serif`;
+  return `${t.italic ? 'italic ' : ''}${t.weight} ${px}px ${fontStack(t)}`;
 }
 
 function hexA(hex: string, alpha: number): string {
@@ -105,10 +110,15 @@ function graphemes(s: string): string[] {
  * an editable element laid over a title breaks its lines where the title does.
  *
  * - White space never takes a line of its own. Where a line is broken, the white space there
- *   belongs to neither line; at the end of a paragraph as much of it stays as fits.
+ *   belongs to neither line. At the end of a paragraph it stays, and may reach over the edge of
+ *   the box (see `layoutText` for how wide such a line counts).
  * - A word wider than the box is broken between characters, never inside one.
  */
-export function wrapLines(text: string, maxWidth: number | null, measure: (line: string) => number): string[] {
+export function wrapLines(
+  text: string,
+  maxWidth: number | null,
+  measure: (line: string) => number,
+): string[] {
   const out: string[] = [];
   for (const para of text.split('\n')) {
     if (!maxWidth || measure(para) <= maxWidth) {
@@ -136,8 +146,6 @@ export function wrapLines(text: string, maxWidth: number | null, measure: (line:
         } else line += unit;
       }
     }
-    const said = line.trimEnd().length;
-    while (line.length > said && measure(line) > maxWidth) line = line.slice(0, -1);
     out.push(line);
   }
   return out;
@@ -192,7 +200,12 @@ export function layoutText(t: TextProps, frameW: number, frameH: number): TextLa
   const content = t.uppercase ? t.content.toUpperCase() : t.content;
   const maxWidth = t.boxWidth ? t.boxWidth * frameW : null;
   const lines = wrapLines(content, maxWidth, measure);
-  const widths = lines.map(measure);
+  // In a box, white space that ends a line counts as far as the box goes and no further: typing a
+  // space at the edge neither widens the box nor moves a centred line by more than is left of it.
+  const widths = lines.map((line) => {
+    const width = measure(line);
+    return maxWidth && width > maxWidth ? Math.max(maxWidth, measure(line.trimEnd())) : width;
+  });
   const textW = Math.max(1, maxWidth ?? 0, ...widths);
   const lineH = px * t.lineHeight;
   const textH = Math.max(lineH, lines.length * lineH);
