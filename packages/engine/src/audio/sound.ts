@@ -4,9 +4,9 @@
  * The buffers come from the browser's WebCodecs decoder. When that fails, the stretch that would
  * not decode is left out and decoding starts again behind it: packets of sound are each decodable
  * on their own, and one that is damaged costs the packets around it, not the rest of the file.
- * Where the decoder gives nothing at all, or will not start again, the browser's other decoder is
- * asked for the same buffers (see `adts.ts`), and once that has worked for a file it is what the
- * file is decoded with for as long as the page lives.
+ * Where the decoder gives nothing of the file's sound, or will not give the rest of what was asked
+ * for, the browser's other decoder is asked for the same buffers (see `adts.ts`), and once that has
+ * worked for a file it is what the file is decoded with for as long as the page lives.
  */
 import { AudioBufferSink, type InputAudioTrack, type WrappedAudioBuffer } from 'mediabunny';
 import { describeCause } from '../media/cause';
@@ -17,7 +17,8 @@ export interface SoundTrouble {
   /**
    * `stretch`: a part could not be decoded, and what follows it could, where anything was asked
    * for behind it. `rest`: decoding stopped and would not start again. `all`: nothing of what was
-   * asked for could be decoded.
+   * asked for could be decoded, where what a decoder gives in front of the file's sound (its
+   * priming) is nothing.
    */
   lost: 'stretch' | 'rest' | 'all';
   /** Where the silence begins, in the timestamps of the track (seconds). */
@@ -69,6 +70,7 @@ export class Sound {
   private other: Promise<AacByBrowser | null> | null = null;
   /** The browser's own decoder was tried on this file and gave nothing either. */
   private otherFailed = false;
+  private begins: Promise<number> | null = null;
 
   constructor(
     readonly assetId: string,
@@ -83,6 +85,20 @@ export class Sound {
   private byBrowser(): Promise<AacByBrowser | null> {
     this.other ??= aacByBrowser(this.track).catch(() => null);
     return this.other;
+  }
+
+  /**
+   * Where the file's sound begins (track time, seconds): one pre-roll into what the file plays.
+   * Before that lie the encoder's priming, which a file leaves out of what it plays, and the
+   * packet a decoder needs to get going on. A decoder that gives nothing behind that has given
+   * nothing of the file: some give the first few packets and fail on the first that is sound.
+   */
+  private soundFrom(): Promise<number> {
+    this.begins ??= Promise.all([
+      this.track.getFirstTimestamp().catch(() => 0),
+      this.track.getPreRollDuration().catch(() => null),
+    ]).then(([first, lead]) => Math.max(0, first) + (lead ?? 0));
+    return this.begins;
   }
 
   /**
@@ -102,15 +118,26 @@ export class Sound {
     const k = knownOf(assetId);
     let way: 'webcodecs' | 'browser' =
       k.byBrowser != null && (await this.byBrowser()) ? 'browser' : 'webcodecs';
+    const begins = await this.soundFrom();
     // Where the next start asks from, the end of what was given last, and where a hole began.
     let pos = from;
     let end: number | null = null;
     let hole: number | null = null;
     let cause = '';
-    let any = false;
+    // Sound of the file has been given: see `soundFrom`.
+    let sounded = false;
     let packet = PACKET_GUESS;
     let fruitless = 0;
     let starts = 0;
+    // Where the WebCodecs decoder was when the other took over, for it to go on from there.
+    let handed: [number, number] = [0, 0];
+    /** Whether the browser's own decoder takes over here: once for a read, unless it is on it already. */
+    const handOver = async (): Promise<boolean> => {
+      if (way !== 'webcodecs' || this.otherFailed) return false;
+      if (await this.byBrowser()) return true;
+      this.otherFailed = true;
+      return false;
+    };
     for (;;) {
       let moved = false;
       try {
@@ -136,7 +163,8 @@ export class Sound {
             );
           }
           k.rate = wb.buffer.sampleRate;
-          moved = any = true;
+          moved = true;
+          if (wb.timestamp >= begins - NO_GAP) sounded = true;
           packet = wb.duration;
           end = wb.timestamp + wb.duration;
           yield wb;
@@ -154,35 +182,43 @@ export class Sound {
         }
         hole ??= end ?? pos ?? (await this.track.getFirstTimestamp().catch(() => 0));
         const base: number = end ?? hole;
-        fruitless = moved ? 0 : fruitless + 1;
-        const spent = fruitless > FRUITLESS_STARTS || starts >= MOST_STARTS;
         if (way === 'browser' && k.byBrowser === null) {
-          // No better than the decoder it was to stand in for: that one goes on, further along.
+          // No better than the decoder it was to stand in for: that one goes on as it would have.
           this.otherFailed = true;
           way = 'webcodecs';
-        } else if (way === 'webcodecs' && !this.otherFailed && (spent || (!any && starts === 0))) {
-          // Nothing at all, or nothing any more: the browser's own decoder takes it from here.
-          if (await this.byBrowser()) {
-            way = 'browser';
-            pos = base;
-            starts++;
-            continue;
-          }
-          this.otherFailed = true;
+          [fruitless, starts] = handed;
+        } else fruitless = moved ? 0 : fruitless + 1;
+        const spent = fruitless > FRUITLESS_STARTS || starts >= MOST_STARTS;
+        if ((spent || !sounded) && (await handOver())) {
+          // Nothing of the file, or nothing any more: the browser's own decoder takes it from here.
+          handed = [fruitless, starts];
+          way = 'browser';
+          pos = base;
+          continue;
         }
         if (spent) {
-          report({ lost: any ? 'rest' : 'all', from: hole, cause });
+          report({ lost: sounded ? 'rest' : 'all', from: hole, cause });
           return;
         }
-        starts++;
         // Behind the packets the decoder needs to get going, so that it does not begin on the
         // one that stopped it; and half a packet in, so that it is not rounding that decides
         // which packet a start falls on.
         const lead = (await this.track.getPreRollDuration().catch(() => null)) ?? 0;
-        pos = base + (fruitless ? (lead + 2 * packet) * 2 ** (fruitless - 1) + packet / 2 : 0);
-        if (to !== undefined && pos >= to) break;
+        const next = base + (fruitless ? (lead + 2 * packet) * 2 ** (fruitless - 1) + packet / 2 : 0);
+        if (to !== undefined && next >= to) {
+          // This decoder gives nothing more of what was asked for: the other is asked for the rest.
+          if (await handOver()) {
+            handed = [fruitless, starts];
+            way = 'browser';
+            pos = base;
+            continue;
+          }
+          break;
+        }
+        starts++;
+        pos = next;
       }
     }
-    if (hole !== null) report({ lost: any ? 'stretch' : 'all', from: hole, cause });
+    if (hole !== null) report({ lost: sounded ? 'stretch' : 'all', from: hole, cause });
   }
 }

@@ -8,6 +8,8 @@ const PACKET = BLOCK / RATE;
 /** What stands in for a track: its packets by number, which of them a decoder trips over, and what was started. */
 interface Fake {
   packets: number;
+  /** Packets in front of the track's time 0: the encoder's priming, which the file leaves out. */
+  origin: number;
   /** Packets the WebCodecs decoder fails on. */
   bad: Set<number>;
   /** How far ahead of what it has given a decoder is when it fails: those buffers are lost with it. */
@@ -19,33 +21,38 @@ interface Fake {
   otherStarts: number[];
 }
 
-const buffer = (packet: number): WrappedAudioBuffer => ({
+const buffer = (packet: number, origin = 0): WrappedAudioBuffer => ({
   buffer: { length: BLOCK, sampleRate: RATE, duration: PACKET } as AudioBuffer,
-  timestamp: packet * PACKET,
+  timestamp: (packet - origin) * PACKET,
   duration: PACKET,
 });
 
+/** The packet that holds `time`, by number. */
+const packetAt = (fake: Fake, time: number | undefined) =>
+  Math.floor((time ?? -fake.origin * PACKET) / PACKET + fake.origin + 1e-9);
+
 /** As a sink answers: from the packet that holds `from` (after one to get going) up to `to`, failing on a bad one. */
-async function* decode(fake: Fake, bad: Set<number>, from = 0, to = Infinity, lead = 1) {
-  const first = Math.max(0, Math.min(fake.packets - 1, Math.floor(from / PACKET + 1e-9)));
+async function* decode(fake: Fake, bad: Set<number>, from?: number, to = Infinity, lead = 1) {
+  const first = Math.max(0, Math.min(fake.packets - 1, packetAt(fake, from)));
   const pending: number[] = [];
-  for (let p = Math.max(0, first - lead); p < fake.packets && p * PACKET < to; p++) {
+  for (let p = Math.max(0, first - lead); p < fake.packets && (p - fake.origin) * PACKET < to; p++) {
     if (bad.has(p)) {
       // What the decoder had not handed over yet goes with it.
-      for (const kept of pending.splice(0, Math.max(0, pending.length - fake.ahead))) yield buffer(kept);
+      for (const kept of pending.splice(0, Math.max(0, pending.length - fake.ahead)))
+        yield buffer(kept, fake.origin);
       throw new DOMException(`Packet ${p} is damaged.`, 'EncodingError');
     }
     if (p >= first) pending.push(p);
-    while (pending.length > fake.ahead) yield buffer(pending.shift()!);
+    while (pending.length > fake.ahead) yield buffer(pending.shift()!, fake.origin);
   }
-  for (const kept of pending) yield buffer(kept);
+  for (const kept of pending) yield buffer(kept, fake.origin);
 }
 
 vi.mock('mediabunny', () => ({
   AudioBufferSink: class {
     constructor(private readonly fake: Fake) {}
     buffers(from?: number, to?: number) {
-      this.fake.starts.push(Math.floor((from ?? 0) / PACKET + 1e-9));
+      this.fake.starts.push(packetAt(this.fake, from));
       return decode(this.fake, this.fake.bad, from, to);
     }
   },
@@ -55,7 +62,7 @@ vi.mock('../src/audio/adts', () => ({
   aacByBrowser: async (fake: Fake) =>
     fake.other && {
       buffers(from?: number, to?: number) {
-        fake.otherStarts.push(Math.floor((from ?? 0) / PACKET + 1e-9));
+        fake.otherStarts.push(packetAt(fake, from));
         return decode(fake, fake.other!, from, to, 3);
       },
     },
@@ -66,6 +73,7 @@ const { Sound, forgetSound } = await import('../src/audio/sound');
 function track(init: Partial<Fake> = {}) {
   const fake: Fake = {
     packets: 400,
+    origin: 0,
     bad: new Set(),
     ahead: 0,
     starts: [],
@@ -76,18 +84,19 @@ function track(init: Partial<Fake> = {}) {
   // The mocks read the fake through the track they are handed.
   return Object.assign(fake, {
     getPreRollDuration: async () => PACKET,
-    getFirstTimestamp: async () => 0,
+    getFirstTimestamp: async () => -fake.origin * PACKET,
   }) as Fake & { getPreRollDuration(): Promise<number>; getFirstTimestamp(): Promise<number> };
 }
 
+/** A read of `fake` from `from` to `to` (seconds): the packets given and what was told, by number. */
 async function read(fake: Fake, from?: number, to?: number, assetId = 'file') {
   const sound = new Sound(assetId, fake as unknown as InputAudioTrack);
   const given: number[] = [];
   const told: string[] = [];
   for await (const wb of sound.buffers(from, to, (t) =>
-    told.push(`${t.lost} from ${Math.round(t.from / PACKET)}: ${t.cause}`),
+    told.push(`${t.lost} from ${Math.round(t.from / PACKET + fake.origin)}: ${t.cause}`),
   ))
-    given.push(Math.round(wb.timestamp / PACKET));
+    given.push(Math.round(wb.timestamp / PACKET + fake.origin));
   return { given, told, sound };
 }
 
@@ -249,9 +258,12 @@ describe('Sound', () => {
     const fake = track({ bad: new Set([0, 1]), other: new Set(range(0, 400)) });
     const { given, told } = await read(fake);
     expect(fake.otherStarts).toEqual([0]);
-    expect(given).toEqual(range(6, 400));
+    // From where it would have gone on without the other: three packets on, as for one bad packet.
+    expect(fake.starts).toEqual([0, 3]);
+    expect(given).toEqual(range(3, 400));
     expect(told).toEqual(['stretch from 0: EncodingError: Packet 0 is damaged.']);
-    // And when neither gives anything, the sound is missing, after no more starts than without it.
+    // And when neither gives anything, the sound is missing, after as many starts of the WebCodecs
+    // decoder as without the other.
     const dead = track({
       packets: 100_000,
       bad: new Set(range(0, 100_000)),
@@ -259,7 +271,8 @@ describe('Sound', () => {
     });
     const none = await read(dead);
     expect(none.told).toEqual(['all from 0: EncodingError: Packet 0 is damaged.']);
-    expect(dead.starts.length + dead.otherStarts.length).toBe(11);
+    expect(dead.starts).toHaveLength(11);
+    expect(dead.otherStarts).toHaveLength(1);
   });
 
   it('asks the browser’s own decoder before giving up on one that stopped for good part-way through', async () => {
@@ -280,6 +293,51 @@ describe('Sound', () => {
     expect(given).not.toContain(150);
     expect(told).toHaveLength(1);
     expect(told[0]).toMatch(/^stretch from 150: /);
+  });
+
+  it('has given nothing of a file when its decoder gives what lies in front of the sound and fails on the sound itself', async () => {
+    // Two packets of priming, then the sound, of which the WebCodecs decoder decodes nothing.
+    const fake = track({ origin: 2, bad: new Set(range(2, 400)), other: new Set() });
+    const { given, told } = await read(fake);
+    // The browser's own decoder is asked at once, and takes over where the other stopped.
+    expect(given).toEqual(range(0, 400));
+    expect(told).toEqual([]);
+    expect(fake.starts).toEqual([0]);
+    expect(fake.otherStarts).toEqual([2]);
+    // With no other decoder: nothing of the file, after as many starts as for a decoder that
+    // gives nothing at all; the priming it gave is all there is.
+    forgetSound('file');
+    const dead = track({ origin: 2, bad: new Set(range(2, 400)) });
+    const none = await read(dead);
+    expect(none.given).toEqual([0, 1]);
+    expect(none.told).toEqual(['all from 2: EncodingError: Packet 2 is damaged.']);
+    expect(dead.starts).toHaveLength(12);
+    // So is the packet that begins the sound, which a decoder needs to get going on.
+    forgetSound('file');
+    const first = await read(track({ origin: 2, bad: new Set(range(3, 400)) }));
+    expect(first.given).toEqual([0, 1, 2]);
+    expect(first.told).toEqual(['all from 3: EncodingError: Packet 3 is damaged.']);
+    // One packet behind it is sound, which then stops.
+    forgetSound('file');
+    const second = await read(track({ origin: 2, bad: new Set(range(4, 400)) }));
+    expect(second.given).toEqual([0, 1, 2, 3]);
+    expect(second.told).toEqual(['rest from 4: EncodingError: Packet 4 is damaged.']);
+  });
+
+  it('asks the browser’s own decoder for the rest of what was asked for once the other will give no more of it', async () => {
+    // A short read, over before the WebCodecs decoder has used up its starts.
+    const fake = track({ bad: new Set(range(200, 400)), other: new Set() });
+    const { given, told } = await read(fake, 0, 260 * PACKET);
+    expect(given).toEqual(range(0, 260));
+    expect(told).toEqual([]);
+    expect(fake.starts).toEqual([0, 200, 203, 206, 212, 224, 248]);
+    expect(fake.otherStarts).toEqual([200]);
+    // Without one, the rest of what was asked for is a stretch the read is without.
+    forgetSound('file');
+    const alone = track({ bad: new Set(range(200, 400)) });
+    const without = await read(alone, 0, 260 * PACKET);
+    expect(without.given).toEqual(range(0, 200));
+    expect(without.told).toEqual(['stretch from 200: EncodingError: Packet 200 is damaged.']);
   });
 
   it('lets the end of the file itself through', async () => {

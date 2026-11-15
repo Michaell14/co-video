@@ -282,6 +282,17 @@ describe('AudioRuns', () => {
         [9.5, 10],
       ]),
     ).toEqual(['rest']);
+    // A decode that hands out what lies in front of the file's sound and gives none of the sound
+    // itself has lost all of it, as `Sound` says: what it handed out was not sound of the clip.
+    const priming = {
+      buffers(_from: number, _to: number, report: (trouble: SoundTrouble) => void) {
+        return (async function* () {
+          yield* decoded(-2 * BLOCK, 2);
+          report({ lost: 'all', from: 0, cause: 'bad packet' });
+        })();
+      },
+    } as unknown as Sound;
+    expect(await lost(priming, false, 10, [[-0.1, 4]])).toEqual(['all']);
     // Backwards, only the end of the file decodes, which is played first: a stretch is without.
     const end = soundWhere((from) => from >= 305);
     expect(await lost(end, true, 10, [[5, 10]])).toEqual(['all']);

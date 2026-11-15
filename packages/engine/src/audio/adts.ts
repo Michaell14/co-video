@@ -2,33 +2,39 @@
  * AAC by the browser's other decoder.
  *
  * A browser decodes sound in two places: in its WebCodecs `AudioDecoder`, which the engine uses,
- * and behind `decodeAudioData`, which takes a whole file. Where the first trips over a file the
- * second often does not. It cannot be given a file of an hour (decoded, that is over a gigabyte),
- * so it is given the track's packets a few seconds at a time, each stretch wrapped as an ADTS
- * stream, and what comes back is cut into the buffers the WebCodecs decoder would have given: one
- * per packet, each at the time of its packet.
+ * and behind `decodeAudioData`, which takes a whole file and is what plays a file in a `<video>`.
+ * Where the first trips over a file the second often does not. It cannot be given a file of an
+ * hour (decoded, that is over a gigabyte), so it is given the track's packets a few seconds at a
+ * time, each stretch as a stream of its own, and what comes back is cut into the buffers the
+ * WebCodecs decoder would have given: one per packet, each at the time of its packet.
  *
- * That is only of use if it is the same sound in the same place, to the sample, and three things
- * stand in the way.
+ * That is only of use if it is the same sound in the same place, and three things stand in the way.
  *
  * A decoder joins each packet to the one before it, so the first packet of a stretch decodes to
  * something else than it does in the middle of the stream. Every stretch therefore starts with the
  * packets that precede it in the file, and what those decode to is thrown away.
  *
- * `decodeAudioData` says nothing about where its samples belong, and browsers differ in what they
- * drop from the front of an AAC stream as the encoder's priming: nothing, one packet's worth, or
- * the 2112 samples of Apple's encoder. So before it is trusted with a file it is given a stream
+ * `decodeAudioData` says nothing about where its samples belong. So what comes back is used only
+ * when its length says where its first sample is: a stretch that comes back shorter or longer than
+ * that has lost or gained something somewhere inside (a browser skips a packet it cannot decode),
+ * cannot be placed, and counts as not decoded.
+ *
+ * And it resamples to the rate of its context, which is asked for at the rate the stream decodes
+ * to, so that every packet is a whole number of samples.
+ *
+ * Plain AAC-LC above 24 kHz goes as an ADTS stream, a header in front of each packet. Browsers
+ * differ in what they drop from the front of one as the encoder's priming: nothing, one packet's
+ * worth, or the 2112 samples of Apple's encoder. So before such a stream is trusted it is given one
  * made for the purpose (`CLICKS`), silence with two clicks at known samples, and is used only if
  * the clicks come back where a cut at the front alone would put them. That cut is then expected of
- * every stretch, to the sample: a stretch that comes back shorter or longer has lost or gained
- * something somewhere inside (a browser skips a packet it cannot decode), cannot be placed, and
- * counts as not decoded.
+ * every stretch, to the sample, and the buffers are exactly those of the WebCodecs decoder.
  *
- * And it resamples to the rate of its context. The context is made at the rate the track
- * declares; what cannot be seen from outside is a stream that decodes to twice that (spectral band
- * replication that is not announced, which is only found at 24 kHz and below). So this is for
- * plain AAC-LC above 24 kHz and nothing else: the one case that could be measured against the
- * WebCodecs decoder, sample for sample.
+ * Everything else that is AAC (HE-AAC, which an ADTS header cannot describe, and AAC-LC at 24 kHz
+ * and below, which may decode to twice its rate) goes, and plain AAC-LC goes where the clicks do not
+ * come back in place, as an MP4 file of its own (`mp4.ts`), whose edit leaves out the packets in
+ * front, as a file of its own leaves out an encoder's priming. A browser that follows the edit gives
+ * the samples of the packets after them, one that does not gives those of all of them; either way
+ * the length says which, and anything else is not used.
  */
 import {
   EncodedPacketSink,
@@ -36,15 +42,16 @@ import {
   type InputAudioTrack,
   type WrappedAudioBuffer,
 } from 'mediabunny';
+import { aacMp4, aacStream } from './mp4';
 
 /** Samples in a packet of AAC-LC. */
 const FRAME = 1024;
 /**
  * Packets decoded in front of a stretch and thrown away: one for the decoder to join on to, and
- * enough for the most a browser is known to cut from the front (2112 samples).
+ * enough for the most a browser is known to cut from the front of an ADTS stream (2112 samples).
  */
 const LEAD = 3;
-/** Packets in a stretch: about three seconds, a megabyte of stereo sound once decoded. */
+/** Packets in a stretch: three to six seconds, one or two megabytes of stereo sound once decoded. */
 const STRETCH = 128;
 /** Declared rates at or below this can hide a stream that decodes to twice the rate. */
 const PLAIN_ABOVE = 24000;
@@ -146,6 +153,57 @@ export function cutFromFront(decoded: Float32Array): number {
   return cut;
 }
 
+/**
+ * How the packets of a stretch go to the browser's own decoder, and where what comes back is
+ * theirs. `rate` is the rate it is asked for, `frame` the samples each packet comes to there.
+ */
+export interface Wrapping {
+  rate: number;
+  frame: number;
+  /** The stream for `packets`, of which the first `lead` are there for the decoder to get going on. */
+  wrap(packets: readonly Uint8Array[], lead: number): Uint8Array;
+  /**
+   * Where the first packet after the lead begins in `length` samples decoded from `count`
+   * packets; before 0, its first samples were cut. Throws when the length does not say.
+   */
+  start(length: number, count: number, lead: number): number;
+}
+
+const unplaced = (length: number, count: number, expected: number[]): Error =>
+  new Error(
+    `The browser’s own decoder gave ${length} samples for ${count} packets, not ${[...new Set(expected)].join(' or ')}.`,
+  );
+
+/** Plain AAC-LC as ADTS, from a decoder that cuts `cut` samples from the front of every stream. */
+export const asAdts = (settings: AacSettings, rate: number, cut: number): Wrapping => ({
+  rate,
+  frame: FRAME,
+  wrap: (packets) => adts(settings, packets),
+  start(length, count, lead) {
+    const expected = count * FRAME - cut;
+    if (length !== expected) throw unplaced(length, count, [expected]);
+    // Before the first sample lies only what the browser cut from the very start of the stream.
+    return lead * FRAME - cut;
+  },
+});
+
+/** AAC as an MP4 file, with the config of its track as it is. */
+export function inMp4(description: Uint8Array): Wrapping | null {
+  const stream = aacStream(description);
+  if (!stream) return null;
+  const { rate, frame } = stream;
+  return {
+    rate,
+    frame,
+    wrap: (packets, lead) => aacMp4(description, stream, packets, lead),
+    start(length, count, lead) {
+      if (length === (count - lead) * frame) return 0;
+      if (length === count * frame) return lead * frame;
+      throw unplaced(length, count, [(count - lead) * frame, count * frame]);
+    },
+  };
+}
+
 const contexts = new Map<number, OfflineAudioContext>();
 
 /** Decode a whole stream with the browser's own decoder, at `rate`. The bytes are given away. */
@@ -158,14 +216,17 @@ function decode(stream: Uint8Array, rate: number): Promise<AudioBuffer> {
 let measured: Promise<number | null> | null = null;
 
 /**
- * The samples this browser's own decoder cuts from the front of an AAC stream, or null when it
+ * The samples this browser's own decoder cuts from the front of an ADTS stream, or null when it
  * cannot be relied on to do only that. Asked once for as long as the page lives.
  */
 function cutByBrowser(): Promise<number | null> {
   measured ??= decode(clicksStream(), CLICKS.rate)
     .then((buffer) => cutFromFront(buffer.getChannelData(0)))
     .catch((err: unknown) => {
-      console.warn('[audio] the browser’s own decoder cannot stand in for the WebCodecs one', err);
+      console.warn(
+        '[audio] the browser’s own decoder does not place AAC-LC exactly as ADTS; it is given MP4 instead',
+        err,
+      );
       return null;
     });
   return measured;
@@ -180,10 +241,7 @@ const bytesOf = (source: AllowSharedBufferSource): Uint8Array =>
 export class AacByBrowser {
   constructor(
     private readonly track: InputAudioTrack,
-    private readonly settings: AacSettings,
-    private readonly rate: number,
-    /** Samples the browser cuts from the front of every stream it decodes. */
-    private readonly cut: number,
+    private readonly way: Wrapping,
   ) {}
 
   /**
@@ -192,8 +250,9 @@ export class AacByBrowser {
    * or later. Throws when a stretch does not decode, or not to what its packets hold.
    */
   async *buffers(from?: number, to = Infinity): AsyncGenerator<WrappedAudioBuffer, void, unknown> {
+    const { rate, frame } = this.way;
     const sink = new EncodedPacketSink(this.track);
-    const span = FRAME / this.rate;
+    const span = frame / rate;
     const first = (from === undefined ? null : await sink.getPacket(from)) ?? (await sink.getFirstPacket());
     if (!first) return;
     const start =
@@ -209,7 +268,7 @@ export class AacByBrowser {
       const apart = Math.abs(packet.timestamp - (anchor + counted * span)) >= span;
       if (apart) [anchor, counted] = [packet.timestamp, 0];
       // Rounded to a whole sample, as the times of the WebCodecs decoder's buffers are.
-      const time = Math.round((anchor + counted++ * span) * this.rate) / this.rate;
+      const time = Math.round((anchor + counted++ * span) * rate) / rate;
       if (time >= to) break;
       if (packet.timestamp < first.timestamp - span / 2) {
         lead = [...lead, packet].slice(-LEAD);
@@ -230,49 +289,46 @@ export class AacByBrowser {
     lead: readonly EncodedPacket[],
     wanted: readonly { packet: EncodedPacket; time: number }[],
   ): AsyncGenerator<WrappedAudioBuffer, void, unknown> {
+    const { rate, frame } = this.way;
     const packets = [...lead, ...wanted.map((w) => w.packet)];
     const out = await decode(
-      adts(
-        this.settings,
+      this.way.wrap(
         packets.map((p) => p.data),
+        lead.length,
       ),
-      this.rate,
+      rate,
     );
-    const expected = packets.length * FRAME - this.cut;
-    if (out.length !== expected)
-      throw new Error(
-        `The browser’s own decoder gave ${out.length} samples for ${packets.length} packets, not ${expected}.`,
-      );
+    const first = this.way.start(out.length, packets.length, lead.length);
     const channels = Array.from({ length: out.numberOfChannels }, (_, c) => out.getChannelData(c));
     for (let i = 0; i < wanted.length; i++) {
       // Where the packet's samples begin in what came back. Before its first sample lies only
       // what the browser cut from the very start of the file: that stays silent.
-      const at = (lead.length + i) * FRAME - this.cut;
-      const buffer = new AudioBuffer({
-        numberOfChannels: channels.length,
-        length: FRAME,
-        sampleRate: this.rate,
-      });
-      if (at + FRAME > 0)
+      const at = first + i * frame;
+      const buffer = new AudioBuffer({ numberOfChannels: channels.length, length: frame, sampleRate: rate });
+      if (at + frame > 0)
         for (let c = 0; c < channels.length; c++)
-          buffer.copyToChannel(channels[c].subarray(Math.max(0, at), at + FRAME), c, Math.max(0, -at));
-      yield { buffer, timestamp: wanted[i].time, duration: FRAME / this.rate };
+          buffer.copyToChannel(channels[c].subarray(Math.max(0, at), at + frame), c, Math.max(0, -at));
+      yield { buffer, timestamp: wanted[i].time, duration: frame / rate };
     }
   }
 }
 
 /**
- * The browser's own decoder for a track's sound, where it can be shown to give what the WebCodecs
- * decoder would: for plain AAC-LC, in a browser whose decoder places a known stream exactly.
- * Null for every other track and browser.
+ * The browser's own decoder for a track's sound, where what it gives can be placed: for AAC of
+ * the kinds `aacStream` reads, and for plain AAC-LC above 24 kHz in a browser whose decoder places
+ * the test clicks of `CLICKS` exactly. Null for every other track.
  */
 export async function aacByBrowser(track: InputAudioTrack): Promise<AacByBrowser | null> {
   if ((await track.getCodec()) !== 'aac') return null;
-  const description = (await track.getDecoderConfig())?.description;
-  const settings = description ? plainAac(bytesOf(description)) : null;
-  if (!settings) return null;
-  const rate = RATES[settings.frequencyIndex];
-  if (rate <= PLAIN_ABOVE || rate !== (await track.getSampleRate())) return null;
-  const cut = await cutByBrowser();
-  return cut === null ? null : new AacByBrowser(track, settings, rate, cut);
+  const config = await track.getDecoderConfig();
+  const description = config?.description ? bytesOf(config.description) : null;
+  if (!description) return null;
+  const plain = plainAac(description);
+  const rate = plain ? RATES[plain.frequencyIndex] : 0;
+  if (plain && rate > PLAIN_ABOVE && rate === (await track.getSampleRate())) {
+    const cut = await cutByBrowser();
+    if (cut !== null) return new AacByBrowser(track, asAdts(plain, rate, cut));
+  }
+  const way = inMp4(description);
+  return way && new AacByBrowser(track, way);
 }

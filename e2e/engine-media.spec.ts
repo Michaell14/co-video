@@ -2690,10 +2690,13 @@ test.describe('media engine', () => {
  * one (`stereo`), as the decoder of a stream that does not declare what it decodes to. The bytes
  * of the chunk whose time is `keep` are kept in `kept`.
  *
- * `decodeAudioData`, given an ADTS stream: `own: 'refuses'` rejects it; `'cuts'` drops the 2112
- * samples from the front that a browser may take for the priming of Apple's encoder; `'loses'`
- * leaves a packet's worth out of the middle of every stream longer than the engine's test stream,
- * as a browser does with a packet it cannot decode.
+ * `decodeAudioData`, given what the engine makes of a file for the browser's own decoder (an ADTS
+ * stream, or an MP4 file of sound alone): `own: 'refuses'` rejects it; `'adts'` rejects only ADTS,
+ * so that AAC goes as MP4; `'unedited'` does that too, and plays an MP4 file without its edit, as
+ * a browser does that does not follow edits; `'cuts'` drops the 2112 samples from the front that a
+ * browser may take for the priming of Apple's encoder; `'loses'` leaves a packet's worth out of
+ * the middle of every stream longer than the engine's test stream, as a browser does with a packet
+ * it cannot decode.
  *
  * `window.sound` reads and measures: see the functions.
  */
@@ -2709,7 +2712,7 @@ async function openSoundLab(page: Page): Promise<void> {
       double: false,
       stereo: false,
       after: 0,
-      own: '' as '' | 'refuses' | 'cuts' | 'loses',
+      own: '' as '' | 'refuses' | 'adts' | 'unedited' | 'cuts' | 'loses',
       /** Decoders set up for the file under test. */
       made: 0,
       /** The time of a chunk of the file under test to keep the bytes of, and the bytes. */
@@ -2811,12 +2814,32 @@ async function openSoundLab(page: Page): Promise<void> {
     }
     (window as any).AudioDecoder = StandIn;
 
+    /** What the engine makes of a file for the browser's own decoder, if `bytes` are that. */
+    const madeFor = (bytes: Uint8Array): 'adts' | 'mp4' | null => {
+      if (bytes[0] === 0xff && bytes[1] === 0xf1) return 'adts';
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const type = (at: number) => String.fromCharCode(...bytes.subarray(at + 4, at + 8));
+      if (bytes.length < 16 || type(0) !== 'ftyp') return null;
+      const moov = view.getUint32(0);
+      if (type(moov) !== 'moov') return null;
+      const header = new TextDecoder('latin1').decode(bytes.subarray(moov, moov + view.getUint32(moov)));
+      return header.includes('soun') && !header.includes('vide') ? 'mp4' : null;
+    };
     const decode = OfflineAudioContext.prototype.decodeAudioData;
     OfflineAudioContext.prototype.decodeAudioData = function (this: OfflineAudioContext, bytes: ArrayBuffer) {
-      const head = new Uint8Array(bytes, 0, 2);
-      if (!decoders.own || head[0] !== 0xff || head[1] !== 0xf1) return decode.call(this, bytes);
-      if (decoders.own === 'refuses')
-        return Promise.reject(new DOMException('Unable to decode audio data', 'EncodingError'));
+      const made = decoders.own ? madeFor(new Uint8Array(bytes)) : null;
+      if (!made) return decode.call(this, bytes);
+      const refused =
+        decoders.own === 'refuses' || (made === 'adts' && ['adts', 'unedited'].includes(decoders.own));
+      if (refused) return Promise.reject(new DOMException('Unable to decode audio data', 'EncodingError'));
+      if (decoders.own === 'adts') return decode.call(this, bytes);
+      if (decoders.own === 'unedited') {
+        // The edit's box made into one that every reader passes over.
+        const all = new Uint8Array(bytes);
+        const at = all.findIndex((_, i) => String.fromCharCode(...all.subarray(i, i + 4)) === 'edts');
+        all.set([0x66, 0x72, 0x65, 0x65], at);
+        return decode.call(this, bytes);
+      }
       const long = bytes.byteLength > 1000;
       return decode.call(this, bytes).then((whole) => {
         const [from, to] = decoders.own === 'cuts' ? [0, 2112] : long ? [4096, 5120] : [0, 0];
@@ -2961,6 +2984,15 @@ async function openSoundLab(page: Page): Promise<void> {
  * Without noise substitution (`-aac_pns 0`), as the encoders of phones write it: every decoder
  * then gives the same samples for a packet wherever it began. `testsrc.mp4` (mono, 48 kHz) has
  * bands of noise that a decoder fills with random numbers of its own.
+ *
+ * `mono-2205.mp4` is AAC-LC at 22.05 kHz in mono, which an ADTS header can describe but which may
+ * hide a stream that decodes to twice its rate: the engine gives it to the browser's own decoder
+ * as MP4. Six seconds of the same picture; a sweep that rises from 300 Hz by 200 Hz a second,
+ * silent from 2.5 s to 2.6 s. Made with
+ *   ffmpeg -f lavfi -i "testsrc=size=160x90:rate=30:duration=6" -f lavfi -i
+ *     "aevalsrc=0.4*sin(2*PI*(300*t+100*t*t))*(1-between(t\,2.5\,2.6)):s=22050:d=6"
+ *     -c:v libx264 -profile:v high -pix_fmt yuv420p -preset veryslow -crf 34 -g 60
+ *     -c:a aac -aac_pns 0 -b:a 48k -ar 22050 -ac 1 -movflags +faststart mono-2205.mp4
  */
 test.describe('sound that does not decode as it should', () => {
   test('a stream that decodes to another rate and other channels than it declares is heard in its place, at its pitch', async ({
@@ -3207,12 +3239,16 @@ test.describe('sound that does not decode as it should', () => {
     expect(r.dead.seconds).toBeLessThan(5);
     expect(r.preview).toEqual([{ assetId: 'a', reason: 'decode-error', lost: 'all', at: 0, cause }]);
     expect(r.level).toBe(0);
-    // The console is told what failed once for a file, however often it does, and why the
-    // browser's own decoder is of no help.
-    expect(warned.filter((line) => line.startsWith('[audio] a: decoding failed'))).toEqual(
-      Array(6).fill('[audio] a: decoding failed (webcodecs) EncodingError: Decoding error.'),
-    );
-    expect(warned.filter((line) => line.includes('cannot stand in'))).toHaveLength(1);
+    // The console is told what failed once for a file, however often it does. The browser's own
+    // decoder is asked where nothing of the sound decodes (from the very first packet, dead, and
+    // the preview), and says what it says, once each time; that it places ADTS badly, once.
+    const webcodecs = '[audio] a: decoding failed (webcodecs) EncodingError: Decoding error.';
+    const browser = '[audio] a: decoding failed (browser) EncodingError: Unable to decode audio data';
+    expect(warned.filter((line) => line.startsWith('[audio] a: decoding failed'))).toEqual([
+      ...Array(3).fill(webcodecs),
+      ...Array(3).fill([webcodecs, browser]).flat(),
+    ]);
+    expect(warned.filter((line) => line.includes('it is given MP4 instead'))).toHaveLength(1);
     expect(errors).toEqual([]);
   });
 
@@ -3485,6 +3521,184 @@ test.describe('sound that does not decode as it should', () => {
           `[audio] ${id}: the WebCodecs decoder failed (EncodingError: Decoding error.); its sound is decoded by the browser’s own decoder instead`,
       ),
     );
+    expect(errors).toEqual([]);
+  });
+
+  test('AAC the browser’s own decoder is given as MP4 comes back the same to the sample: at 22.05 kHz, and plain AAC-LC where ADTS will not do, whether or not the browser follows the edit', async ({
+    page,
+  }) => {
+    await openSoundLab(page);
+    const errors = trackErrors(page);
+    const warned: string[] = [];
+    page.on('console', (m) => {
+      if (m.type() === 'warning' && m.text().startsWith('[audio]')) warned.push(m.text().split('\n')[0]);
+    });
+    const r = await page.evaluate(async () => {
+      const { lab, decoders, sound } = window as any;
+      lab.init(160, 90);
+      const mono = await lab.addFile('mono', '/fixtures/mono-2205.mp4', 'mono-2205.mp4');
+      const stereo = await lab.addFile('stereo', '/fixtures/stereo-441.mp4', 'stereo-441.mp4');
+      // The whole file; across the place where two stretches join; a short read (a seek); from a
+      // seek to the end.
+      const ranges: [number | undefined, number | undefined][] = [
+        [undefined, undefined],
+        [0.5, 3.5],
+        [1.2345, 1.3],
+        [3.3, undefined],
+      ];
+      /** The file read, mixed (at its in-point too) and exported, with the decoders as they are set. */
+      const heard = async (asset: any) => {
+        const frames = Math.floor(asset.duration * 30);
+        sound.anew(asset.id);
+        decoders.made = 0;
+        const reads = [];
+        for (const [from, to] of ranges) reads.push(await sound.read(asset.id, from, to));
+        const renders = [
+          await sound.render(sound.project(asset, 48000, frames), frames / 30),
+          await sound.render(sound.project(asset, 44100, 60, { start: 10, sourceIn: 1 }), 2.4),
+        ];
+        const exported = await sound.exported(sound.project(asset, 48000, frames));
+        return { reads, renders, exported, made: decoders.made };
+      };
+      const compared = async (asset: any, own: string) => {
+        Object.assign(decoders, { rate: asset.audioSampleRate, dead: false, own: '' });
+        const direct = await heard(asset);
+        Object.assign(decoders, { dead: true, own });
+        const other = await heard(asset);
+        return {
+          buffers: other.reads.map((read: any) => read.times.length),
+          times: other.reads.every(
+            (read: any, i: number) => JSON.stringify(read.times) === JSON.stringify(direct.reads[i].times),
+          ),
+          rates: [...new Set(other.reads.flatMap((read: any) => read.rates))],
+          apart: Math.max(
+            ...other.reads.map((read: any, i: number) =>
+              sound.apart(read.channels, direct.reads[i].channels),
+            ),
+            ...other.renders.map((render: any, i: number) =>
+              sound.apart(render.channels, direct.renders[i].channels),
+            ),
+          ),
+          exported: sound.apart(other.exported.channels, direct.exported.channels),
+          said: [
+            ...other.reads.flatMap((read: any) => read.troubles),
+            ...other.renders.flatMap((render: any) => render.problems),
+            ...other.exported.warnings,
+          ],
+          made: [direct.made, other.made],
+        };
+      };
+      const files = {
+        mono: await compared(mono, ''),
+        'mono, the edit not followed': await compared(mono, 'unedited'),
+        'stereo, without ADTS': await compared(stereo, 'adts'),
+        'stereo, without ADTS, the edit not followed': await compared(stereo, 'unedited'),
+      };
+
+      // A browser that leaves a packet out of the middle of what it is given, or cuts the front
+      // of it: what comes back cannot be placed, and is not used.
+      const lossy: Record<string, unknown> = {};
+      for (const own of ['loses', 'cuts']) {
+        Object.assign(decoders, { rate: 22050, dead: true, own });
+        sound.anew('mono');
+        const render = await sound.render(sound.project(mono, 48000, 120), 4);
+        lossy[own] = {
+          problems: render.problems.map((p: any) => `${p.lost}: ${p.cause}`),
+          loudest: Math.max(
+            ...render.channels.map((x: Float32Array) => x.reduce((m, v) => Math.max(m, Math.abs(v)), 0)),
+          ),
+        };
+      }
+      return { files, lossy };
+    });
+    for (const [name, file] of Object.entries(r.files)) {
+      const packets = name.startsWith('mono') ? 131 : 260;
+      expect(file.buffers[0], name).toBe(packets);
+      expect(file.times, name).toBe(true);
+      // At the rate the file decodes to: the 22.05 kHz file says it carries nothing that doubles it.
+      expect(file.rates, name).toEqual([name.startsWith('mono') ? 22050 : 44100]);
+      expect(file.apart, name).toBeLessThan(1e-6);
+      expect(file.exported, name).toBeLessThan(1 / 32768 + 1e-9);
+      expect(file.said, name).toEqual([]);
+      // Seven reads and renders and an export each start a decoder; the WebCodecs one, dead, once.
+      expect(file.made, name).toEqual([7, 1]);
+    }
+    for (const own of ['loses', 'cuts'])
+      expect(r.lossy[own], own).toEqual({ problems: ['all: EncodingError: Decoding error.'], loudest: 0 });
+    expect(warned.filter((line) => line.includes('own decoder instead'))).toEqual(
+      ['mono', 'mono', 'stereo', 'stereo'].map(
+        (id) =>
+          `[audio] ${id}: the WebCodecs decoder failed (EncodingError: Decoding error.); its sound is decoded by the browser’s own decoder instead`,
+      ),
+    );
+    expect(errors).toEqual([]);
+  });
+
+  test('a decoder that gives what lies in front of a file’s sound and fails on the sound itself has decoded none of it', async ({
+    page,
+  }) => {
+    await openSoundLab(page);
+    const errors = trackErrors(page);
+    const r = await page.evaluate(async () => {
+      const { lab, decoders, sound } = window as any;
+      const { engine } = lab;
+      lab.init(160, 90);
+      const asset = await lab.addFile('a', '/fixtures/stereo-441.mp4', 'stereo-441.mp4');
+      const rate = 44100;
+      const packet = 1024 / rate;
+      // The file's first packet, its priming, lies before 0 and decodes; from the next on nothing
+      // does, and no other decoder stands in.
+      const first = await (await lab.library.get('a')).audio.getFirstTimestamp();
+      const times = Array.from({ length: 259 }, (_, i) => Math.trunc((first + (i + 1) * packet) * 1e6));
+      Object.assign(decoders, { rate, bad: times, own: 'refuses' });
+      sound.anew('a');
+      const read = await sound.read('a');
+      const exported = await sound.exported(sound.project(asset, 48000, 180));
+
+      // The preview's mixer says the same of the clip.
+      const ctx = new AudioContext();
+      await ctx.resume();
+      const graph = new engine.AudioGraph(ctx, lab.library, true);
+      const problems: any[] = [];
+      graph.onProblem = (p: any) => problems.push(p);
+      graph.start(sound.project(asset, rate, 180), {
+        startSec: 0,
+        t0: ctx.currentTime + 0.05,
+        rate: 1,
+        endSec: 6,
+      });
+      void graph.pump();
+      const until = performance.now() + 5000;
+      while (!problems.length && performance.now() < until) await new Promise((res) => setTimeout(res, 20));
+      graph.dispose();
+      await ctx.close();
+      return {
+        first,
+        given: read.times,
+        troubles: read.troubles.map((t: any) => t.lost),
+        warnings: exported.warnings.map(({ clipId: _, assetId: __, ...w }: any) => w),
+        loudest: Math.max(
+          ...exported.channels.map((x: Float32Array) => x.reduce((m, v) => Math.max(m, Math.abs(v)), 0)),
+        ),
+        preview: problems.map((p) => p.lost),
+      };
+    });
+    // The priming came out, and is all that did.
+    expect(r.first).toBeLessThan(0);
+    expect(r.given).toEqual([r.first]);
+    expect(r.troubles).toEqual(['all']);
+    expect(r.warnings).toEqual([
+      {
+        part: 'audio',
+        reason: 'decode-error',
+        lost: 'all',
+        frame: 0,
+        message: 'The audio in “stereo-441.mp4” could not be decoded, so it is missing from the export.',
+        cause: 'EncodingError: Decoding error.',
+      },
+    ]);
+    expect(r.loudest).toBe(0);
+    expect(r.preview).toEqual(['all']);
     expect(errors).toEqual([]);
   });
 

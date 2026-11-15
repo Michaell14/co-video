@@ -117,7 +117,10 @@ class Run {
    * then has been told. No other is started; what it gave before is still handed out.
    */
   private over = false;
-  /** Sound of the clip has been handed out: what a later decode cannot give is not all of it. */
+  /**
+   * Sound of the clip has been handed out: what a later decode cannot give is not all of it. Of
+   * the decode that gave it, `Sound` says itself whether what it gave is any of the file's sound.
+   */
   private given = false;
 
   /**
@@ -153,8 +156,9 @@ class Run {
         // fare better: whatever it cannot give is a stretch of the clip. So is what a decode that
         // gives nothing leaves out, once sound of the clip has been handed out.
         const apart = to - low > HELD_BACKWARDS;
+        const before = this.given;
         const tell: Report = (trouble) =>
-          report(apart || (this.given && trouble.lost === 'all') ? { ...trouble, lost: 'stretch' } : trouble);
+          report(apart || (before && trouble.lost === 'all') ? { ...trouble, lost: 'stretch' } : trouble);
         if (apart) {
           for await (const wb of inSequence(sound.buffers(from, to, tell))) {
             this.given = true;
@@ -187,12 +191,13 @@ class Run {
       this.held = this.held.filter((wb) => wb.timestamp + wb.duration > from);
     } else if (!this.source || first < 0) {
       await this.end();
+      const before = this.given;
       this.source = inSequence(
         sound.buffers(from, high, (trouble) => {
           // This decode is of all that is left to play: once it has lost sound for good, nothing
           // follows. That is the rest of the clip, not all of it, if sound was handed out before.
           if (trouble.lost !== 'stretch') this.over = true;
-          this.report?.(this.given && trouble.lost === 'all' ? { ...trouble, lost: 'rest' } : trouble);
+          this.report?.(before && trouble.lost === 'all' ? { ...trouble, lost: 'rest' } : trouble);
         }),
       );
     } else this.held.splice(0, first);

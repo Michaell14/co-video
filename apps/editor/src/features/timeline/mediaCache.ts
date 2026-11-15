@@ -236,8 +236,15 @@ export class WaveformCache extends Emitter {
      * decoder said.
      */
     private readonly silent: (assetId: string, media: OpenMedia, cause: string) => void = () => {},
+    /** Called once a file's waveform is all there is of it: read to its end, or found to have none. */
+    private readonly finished: (assetId: string) => void = () => {},
   ) {
     super();
+  }
+
+  /** Whether the waveform of the file has been read as far as it goes. */
+  done(assetId: string): boolean {
+    return this.waves.get(assetId)?.done ?? false;
   }
 
   get(assetId: string, duration: number): Waveform | null {
@@ -268,6 +275,7 @@ export class WaveformCache extends Emitter {
           if (media) this.opened(assetId, media);
           if (!media || !media.audio || !media.audioDecodable) {
             w.done = true;
+            this.finished(assetId);
             continue;
           }
           // What will not decode stays flat, as it stays silent when played.
@@ -317,6 +325,7 @@ export class WaveformCache extends Emitter {
           console.warn('[waveform]', err);
         }
         w.done = true;
+        this.finished(assetId);
         this.emit();
       }
     } finally {
@@ -358,6 +367,11 @@ export class TimelineMedia {
   private readonly soundless = new Map<string, string>();
   /** Sound the preview played clips without: a part of it, where the rest of the file decodes. */
   private readonly lost = new SoundLosses();
+  /**
+   * By file, clips the preview played none of whose sound decoded, and the project it played:
+   * kept until the file's waveform has found out whether any of the file's sound decodes.
+   */
+  private readonly unsettled = new Map<string, Map<string, { problem: AudioProblem; project: Project }>>();
   private readonly faultListeners = new Set<Listener>();
   private faultsVersion = 0;
 
@@ -365,12 +379,17 @@ export class TimelineMedia {
     this.library = new MediaLibrary(resolver);
     const opened: Opened = (assetId, media) => this.noteFault(assetId, media);
     this.film = new FilmstripCache(this.library, opened);
-    this.wave = new WaveformCache(this.library, opened, (assetId, media, cause) => {
-      this.soundless.set(assetId, cause);
-      // Said of the file from here on, and not of its clips as well.
-      if (this.lost.forgetAsset(assetId)) this.faultsChanged();
-      this.noteFault(assetId, media);
-    });
+    this.wave = new WaveformCache(
+      this.library,
+      opened,
+      (assetId, media, cause) => {
+        this.soundless.set(assetId, cause);
+        // Said of the file from here on, and not of its clips as well.
+        if (this.lost.forgetAsset(assetId)) this.faultsChanged();
+        this.noteFault(assetId, media);
+      },
+      (assetId) => this.settle(assetId),
+    );
   }
 
   private faultsChanged(): void {
@@ -411,11 +430,33 @@ export class TimelineMedia {
   /**
    * What the preview's mixer said of a clip of `project`, the project it plays. Sound that would
    * not decode is kept by clip (see `SoundLosses`), for whatever shows the clip to say. Of a file
-   * none of whose sound decodes it has been said already: of the file, as a fault of its sound.
+   * none of whose sound decodes it is said of the file instead, as a fault of its sound. So a clip
+   * of which nothing decoded waits for the file's waveform, which reads all of it, to find out
+   * which it is: before that is known, it is neither.
    */
   heard(problem: AudioProblem, project: Project): void {
-    if (this.soundless.has(problem.assetId)) return;
+    const { assetId } = problem;
+    if (this.soundless.has(assetId)) return;
+    const asset = project.assets[assetId];
+    if (problem.reason === 'decode-error' && problem.lost === 'all' && asset && !this.wave.done(assetId)) {
+      let clips = this.unsettled.get(assetId);
+      if (!clips) this.unsettled.set(assetId, (clips = new Map()));
+      if (!clips.has(problem.clipId)) clips.set(problem.clipId, { problem, project });
+      this.wave.get(assetId, asset.duration);
+      return;
+    }
     if (this.lost.note(problem, project)) this.faultsChanged();
+  }
+
+  /** The waveform of a file is read: what waited for it is said of the clips, or of the file. */
+  private settle(assetId: string): void {
+    const clips = this.unsettled.get(assetId);
+    if (!clips) return;
+    this.unsettled.delete(assetId);
+    if (this.soundless.has(assetId)) return;
+    let changed = false;
+    for (const { problem, project } of clips.values()) changed = this.lost.note(problem, project) || changed;
+    if (changed) this.faultsChanged();
   }
 
   /**
@@ -455,6 +496,7 @@ export class TimelineMedia {
   refresh(assetId: string): void {
     this.library.invalidate(assetId);
     this.soundless.delete(assetId);
+    this.unsettled.delete(assetId);
     if (this.lost.forgetAsset(assetId)) this.faultsChanged();
     this.film.forget(assetId);
     this.wave.forget(assetId);

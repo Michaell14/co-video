@@ -1501,10 +1501,12 @@ test.describe('mixer', () => {
 });
 
 /**
- * Make the page's decoders fail for the sound of `stereo-441.mp4` (AAC at 44.1 kHz): the
- * WebCodecs one on its first chunk, and with `both` the one behind `decodeAudioData` as well when
- * it is given an AAC stream. The decoder an export sets up to measure its own encoder is another
- * one, and works.
+ * Make the page's decoders fail for the sound of a file with AAC at `rate` (`stereo-441.mp4` by
+ * default): the WebCodecs one on its first chunk, and with `both` the one behind
+ * `decodeAudioData` as well, when it is given what the engine makes of the file for it (an ADTS
+ * stream, or an MP4 file of sound alone). With `both: 'adts'` only an ADTS stream is turned down,
+ * so that the browser's own decoder is given AAC as MP4. The decoder an export sets up to measure
+ * its own encoder is another one, and works.
  *
  * With `only`, the WebCodecs decoder fails on nothing but the chunks whose times lie between
  * `from` and `to` (microseconds), and as a decoder does: after what it was given before them has
@@ -1512,11 +1514,12 @@ test.describe('mixer', () => {
  */
 async function failingSoundDecoders(
   page: Page,
-  both: boolean,
+  both: boolean | 'adts',
   only: { from: number; to?: number } | null = null,
+  rate = 44100,
 ): Promise<void> {
   await page.addInitScript(
-    ({ both, only }) => {
+    ({ both, only, rate }) => {
       class Failing extends AudioDecoder {
         private ours = false;
         private failing = false;
@@ -1526,7 +1529,7 @@ async function failingSoundDecoders(
           this.failed = init.error;
         }
         override configure(config: AudioDecoderConfig): void {
-          this.ours = config.codec.startsWith('mp4a') && config.sampleRate === 44100;
+          this.ours = config.codec.startsWith('mp4a') && config.sampleRate === rate;
           super.configure(config);
         }
         override decode(chunk: EncodedAudioChunk): void {
@@ -1550,25 +1553,39 @@ async function failingSoundDecoders(
       }
       window.AudioDecoder = Failing;
       if (!both) return;
+      /** Whether `bytes` are what the engine makes of a file for the browser's own decoder, and which. */
+      const madeFor = (bytes: Uint8Array): 'adts' | 'mp4' | null => {
+        if (bytes[0] === 0xff && bytes[1] === 0xf1) return 'adts';
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const type = (at: number) => String.fromCharCode(...bytes.subarray(at + 4, at + 8));
+        if (bytes.length < 16 || type(0) !== 'ftyp') return null;
+        const moov = view.getUint32(0);
+        if (type(moov) !== 'moov') return null;
+        const header = new TextDecoder('latin1').decode(bytes.subarray(moov, moov + view.getUint32(moov)));
+        return header.includes('soun') && !header.includes('vide') ? 'mp4' : null;
+      };
       const decode = OfflineAudioContext.prototype.decodeAudioData;
       OfflineAudioContext.prototype.decodeAudioData = function (
         this: OfflineAudioContext,
         bytes: ArrayBuffer,
       ) {
-        const head = new Uint8Array(bytes, 0, 2);
-        return head[0] === 0xff && head[1] === 0xf1
+        const made = madeFor(new Uint8Array(bytes));
+        return made && (both === true || made === both)
           ? Promise.reject(new DOMException('Unable to decode audio data', 'EncodingError'))
           : decode.call(this, bytes);
       } as typeof decode;
     },
-    { both, only },
+    { both, only, rate },
   );
 }
 
-/** A project of 320×180 with `stereo-441.mp4` on its timeline: six seconds of picture and of sound. */
-async function recording(page: Page): Promise<{ assetId: string; sound: Locator }> {
+/**
+ * A project of 320×180 with `stereo-441.mp4` (or another recording of six seconds) on its
+ * timeline: six seconds of picture and of sound.
+ */
+async function recording(page: Page, file = 'stereo-441.mp4'): Promise<{ assetId: string; sound: Locator }> {
   await newLocal(page);
-  await importFixtures(page, ['stereo-441.mp4']);
+  await importFixtures(page, [file]);
   const assetId = await page.evaluate(() => {
     const { session, cmd } = (window as any).tandem;
     session.store.commit([{ op: 'settings', patch: { width: 320, height: 180 } }]);
@@ -2316,12 +2333,8 @@ test.describe('export', () => {
     expect(await started()).toBe(0);
   });
 
-  /**
-   * Export through the dialog as it opens, and measure the sound of the file that comes of it: on
-   * the right the pitch of the tone and where it falls silent, on the left the pitch of the sweep
-   * a second and four seconds in, which says where on the timeline it is.
-   */
-  async function exported(page: Page) {
+  /** Export through the dialog as it opens: the file that comes of it, in base 64. */
+  async function downloaded(page: Page): Promise<string> {
     await set(page, { dialog: 'export' });
     await expect(page.locator('.exp')).toBeVisible();
     await probed(page);
@@ -2332,6 +2345,46 @@ test.describe('export', () => {
     await expect(page.locator('.dialog')).toContainText(/Export complete|Exported with gaps/, {
       timeout: 100_000,
     });
+    return file;
+  }
+
+  /**
+   * How far the sound of the export `other` lies from that of `one`, both in base 64: the offset
+   * (in samples at 48 kHz) at which they match best, within a tenth of a second, and the largest
+   * difference there; and the loudest sample of `one`.
+   */
+  const apart = (page: Page, one: string, other: string) =>
+    page.evaluate(
+      async ([one, other]) => {
+        const rate = 48000;
+        const sound = async (file: string) => {
+          const bytes = Uint8Array.from(atob(file), (c) => c.charCodeAt(0));
+          return (await new OfflineAudioContext(2, 1, rate).decodeAudioData(bytes.buffer)).getChannelData(0);
+        };
+        const [a, b] = [await sound(one), await sound(other)];
+        const n = Math.min(a.length, b.length);
+        const reach = rate / 10;
+        let offset = 0;
+        let best = -Infinity;
+        for (let lag = -reach; lag <= reach; lag++) {
+          let sum = 0;
+          for (let i = reach; i < n - reach; i += 7) sum += a[i] * b[i + lag];
+          if (sum > best) [best, offset] = [sum, lag];
+        }
+        let most = 0;
+        for (let i = reach; i < n - reach; i++) most = Math.max(most, Math.abs(a[i] - b[i + offset]));
+        return { offset, most, loudest: a.reduce((m, v) => Math.max(m, Math.abs(v)), 0) };
+      },
+      [one, other],
+    );
+
+  /**
+   * Export through the dialog as it opens, and measure the sound of the file that comes of it: on
+   * the right the pitch of the tone and where it falls silent, on the left the pitch of the sweep
+   * a second and four seconds in, which says where on the timeline it is.
+   */
+  async function exported(page: Page) {
+    const file = await downloaded(page);
     return page.evaluate(async (file) => {
       const rate = 48000;
       const bytes = Uint8Array.from(atob(file), (c) => c.charCodeAt(0));
@@ -2415,6 +2468,44 @@ test.describe('export', () => {
     ]);
   });
 
+  // `mono-2205.mp4`: see where `e2e/engine-media.spec.ts` describes how it was made.
+  for (const [what, file, rate, both] of [
+    ['AAC-LC at 22.05 kHz in mono', 'mono-2205.mp4', 22050, false],
+    ['AAC-LC at 44.1 kHz in stereo, as MP4', 'stereo-441.mp4', 44100, 'adts'],
+  ] as const)
+    test(`sound the WebCodecs decoder fails on, ${what}, is drawn, heard and exported by the browser’s own decoder as by the WebCodecs one`, async ({
+      page,
+    }) => {
+      // What the export is with the decoders as they are, in a page of its own.
+      const plain = await page.context().newPage();
+      const ordinary = await recording(plain, file);
+      expect(await waveform(plain, ordinary.assetId)).toBeGreaterThan(0.3);
+      const expected = await downloaded(plain);
+      await plain.close();
+
+      const warned: string[] = [];
+      page.on('console', (m) => {
+        if (m.type() === 'warning' && m.text().startsWith('[audio]')) warned.push(m.text().split('\n')[0]);
+      });
+      await failingSoundDecoders(page, both, null, rate);
+      const { assetId, sound } = await recording(page, file);
+      expect(await waveform(page, assetId)).toBeGreaterThan(0.3);
+      await expect(sound.locator('.clip__chip')).toHaveCount(0);
+      await expect(sound).toHaveAttribute('aria-label', `${file}, A1, 0:00.00 to 0:06.00`);
+      expect(await played(page)).toBeGreaterThan(0.05);
+      const got = await downloaded(page);
+      await expect(page.locator('.dialog')).toContainText('Export complete');
+      await expect(page.locator('.exp__problems')).toHaveCount(0);
+      // The same sound in the same place: what one decoder gives the other gives, to the sample.
+      const { offset, most, loudest } = await apart(page, expected, got);
+      expect(loudest).toBeGreaterThan(0.3);
+      expect(offset).toBe(0);
+      expect(most).toBeLessThan(1e-4);
+      expect(warned.filter((line) => line.includes('own decoder instead'))).toEqual([
+        `[audio] ${assetId}: the WebCodecs decoder failed (EncodingError: Decoding error.); its sound is decoded by the browser’s own decoder instead`,
+      ]);
+    });
+
   test('Normalise loudness measures a file the WebCodecs decoder fails on by the decoder it plays through', async ({
     page,
   }) => {
@@ -2492,6 +2583,41 @@ test.describe('export', () => {
       }),
     ).toEqual({ select: 'text', smaller: true, below: true });
     await expect(done.locator('.exp__place')).toHaveText(['00:00:00:00']);
+  });
+
+  test('a file whose decoder gives what lies in front of its sound and none of the sound is one this browser cannot decode the sound of', async ({
+    page,
+  }) => {
+    // From 0 on every chunk fails, after the packet of priming in front of it has come out, and
+    // no other decoder stands in.
+    await failingSoundDecoders(page, true, { from: 0 });
+    const { assetId, sound } = await recording(page);
+    const said = inspector(page).locator('.insp__trouble');
+    /** What the clip, the inspector and the media pool say of the file. */
+    const unsupported = async () => {
+      await expect(sound.locator('.clip__chip')).toHaveText(['Unsupported']);
+      await expect(sound).toHaveAttribute('aria-label', /, cannot be decoded in this browser$/);
+      await sound.click();
+      await expect(said).toHaveCount(1);
+      await expect(said).toContainText('This browser cannot decode the sound of this file (mp4a.40.2)');
+      await expect(said.locator('.insp__cause')).toHaveText('Cause: EncodingError: Decoding error.');
+      await expect(page.locator('[data-sound-lost]')).toHaveCount(0);
+    };
+    expect(await waveform(page, assetId)).toBe(0);
+    await unsupported();
+    // Played from the start: not a stretch of the clip at 00:00:00:00, nor its sound stopping.
+    expect(await played(page)).toBe(0);
+    await unsupported();
+    await expect(page.locator('.clip__chip', { hasText: /Sound gap|Sound stops/ })).toHaveCount(0);
+
+    const done = page.locator('.dialog');
+    expect((await exported(page)).loudest).toBeLessThan(1e-4);
+    await expect(done).toContainText('Exported with gaps');
+    await expect(done.locator('.exp__problems li')).toHaveCount(1);
+    await expect(done.locator('.exp__problems li > span').first()).toHaveText(
+      'The audio in “stereo-441.mp4” could not be decoded, so it is missing from the export.',
+    );
+    await expect(done.locator('.exp__cause')).toHaveText('Cause: EncodingError: Decoding error.');
   });
 });
 
