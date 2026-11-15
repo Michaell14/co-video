@@ -46,6 +46,21 @@ function sinkOver(all: WrappedAudioBuffer[]) {
 /** Nothing fails in a sink over buffers. */
 const unheard = () => {};
 
+/**
+ * A file's sound of which a decode gives three buffers where `decodes(from)`, and otherwise
+ * nothing and the word `Sound` has for that.
+ */
+function soundWhere(decodes: (from: number) => boolean): Sound {
+  return {
+    buffers(from: number, _to: number, report: (trouble: SoundTrouble) => void) {
+      return (async function* () {
+        if (decodes(from)) yield* decoded(Math.round(from * RATE), 3);
+        else report({ lost: 'all', from, cause: 'bad packet' });
+      })();
+    },
+  } as unknown as Sound;
+}
+
 async function collect(buffers: AsyncGenerator<WrappedAudioBuffer, void, unknown>): Promise<number[]> {
   const starts: number[] = [];
   for await (const wb of buffers) starts.push(Math.round(wb.timestamp * RATE));
@@ -176,22 +191,105 @@ describe('AudioRuns', () => {
     const runs = new AudioRuns();
     const heard: string[] = [];
     const high = seconds(400 * BLOCK);
-    const read = (chunk: string, from: number, to: number) =>
+    const read = (chunk: string, from: number, to: number, again = to) =>
       collect(
         runs
           .of(clip)
-          .read(sound, seconds(from), seconds(to), seconds(to), 0, high, false, (t) =>
+          .read(sound, seconds(from), seconds(to), seconds(again), 0, high, false, (t) =>
             heard.push(`${chunk}: ${t.lost} at ${Math.round(t.from * RATE)}`),
           ),
       );
     expect(await read('first', 0, 50 * BLOCK)).toHaveLength(50);
     // The hole is met, and then the end, by the chunk that reads there: not by the one that began the decode.
-    const second = await read('second', 50 * BLOCK, 200 * BLOCK);
+    const second = await read('second', 50 * BLOCK, 200 * BLOCK, 140 * BLOCK);
     expect(second).toHaveLength(99);
     expect(second).not.toContain(101 * BLOCK);
-    expect(await read('third', 200 * BLOCK, 300 * BLOCK)).toEqual([]);
+    // The chunk after it begins before that one ended, and gets what was decoded of its beginning.
+    const third = await read('third', 140 * BLOCK, 300 * BLOCK);
+    expect(third).toEqual(second.slice(-10));
     expect(await read('fourth', 300 * BLOCK, 400 * BLOCK)).toEqual([]);
     expect(heard).toEqual([`second: stretch at ${101 * BLOCK}`, `second: rest at ${150 * BLOCK}`]);
     expect(started).toBe(1);
+  });
+
+  it('hands out what was decoded of a clip that plays backwards before its decoder stopped for good', async () => {
+    // Only the first 150 buffers decode: the end of the file, which is played first, does not.
+    const good = decoded(0, 150);
+    let started = 0;
+    const sound = {
+      buffers(from: number, to: number, report: (trouble: SoundTrouble) => void) {
+        started++;
+        return (async function* () {
+          yield* sinkOver(good).sink.buffers(from, to, unheard);
+          report({ lost: 'rest', from: seconds(150 * BLOCK), cause: 'bad packet' });
+        })();
+      },
+    } as unknown as Sound;
+    const runs = new AudioRuns();
+    const heard: string[] = [];
+    const read = (chunk: string, from: number, to: number) =>
+      collect(
+        runs
+          .of(clip)
+          .read(sound, seconds(from), seconds(to), 0, 0, seconds(400 * BLOCK), true, (t) =>
+            heard.push(`${chunk}: ${t.lost}`),
+          ),
+      );
+    const direct = async (from: number, to: number) =>
+      collect(sinkOver(good).sink.buffers(seconds(from), seconds(to), unheard));
+    expect(await read('first', 300 * BLOCK, 400 * BLOCK)).toEqual(await direct(300 * BLOCK, 400 * BLOCK));
+    // Every later read gets what a decode of its own stretch would give: all of the 150 between them.
+    const second = await read('second', 100 * BLOCK, 310 * BLOCK);
+    expect(second).toEqual(await direct(100 * BLOCK, 310 * BLOCK));
+    expect(second).toHaveLength(50);
+    const third = await read('third', 0, 110 * BLOCK);
+    expect(third).toEqual(await direct(0, 110 * BLOCK));
+    expect(third).toHaveLength(110);
+    expect(heard).toEqual(['first: rest']);
+    expect(started).toBe(1);
+  });
+
+  it('lets each read of a clip that plays backwards and is too long to keep decode for itself, whatever the one before could not', async () => {
+    // Five minutes and twenty seconds, of which the last ten do not decode.
+    const sound = soundWhere((from) => from < 310);
+    const runs = new AudioRuns();
+    const heard: string[] = [];
+    const read = (chunk: string, from: number, to: number) =>
+      collect(runs.of(clip).read(sound, from, to, 0, 0, 320, true, (t) => heard.push(`${chunk}: ${t.lost}`)));
+    expect(await read('first', 316, 320)).toEqual([]);
+    expect(await read('second', 312, 316.5)).toEqual([]);
+    expect(await read('third', 308, 312.5)).toHaveLength(3);
+    expect(await read('fourth', 304, 308.5)).toHaveLength(3);
+    // Of its own few seconds a read gave nothing, which is a stretch of the clip and not all of it.
+    expect(heard).toEqual(['first: stretch', 'second: stretch']);
+  });
+
+  it('calls sound that a decode does not give all of the clip’s only while none of it has been handed out', async () => {
+    const lost = async (sound: Sound, backwards: boolean, high: number, reads: [number, number][]) => {
+      const runs = new AudioRuns();
+      const heard: string[] = [];
+      for (const [from, to] of reads)
+        await collect(runs.of(clip).read(sound, from, to, to, 0, high, backwards, (t) => heard.push(t.lost)));
+      return heard;
+    };
+    // Forwards, the end of the clip does not decode. The chunk that follows the clip’s last has
+    // that end in its pre-roll and decodes it for itself: the rest of the clip is without sound.
+    const start = soundWhere((from) => from < 9);
+    expect(await lost(start, false, 10, [[9.5, 10]])).toEqual(['all']);
+    expect(
+      await lost(start, false, 10, [
+        [0, 10],
+        [9.5, 10],
+      ]),
+    ).toEqual(['rest']);
+    // Backwards, only the end of the file decodes, which is played first: a stretch is without.
+    const end = soundWhere((from) => from >= 305);
+    expect(await lost(end, true, 10, [[5, 10]])).toEqual(['all']);
+    expect(
+      await lost(end, true, 320, [
+        [316, 320],
+        [292, 296.5],
+      ]),
+    ).toEqual(['stretch']);
   });
 });

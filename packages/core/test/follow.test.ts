@@ -136,10 +136,8 @@ describe('comments under an edit that moves time', () => {
     sync();
     for (const r of [a.review, b.review]) {
       expect(r.get()).toEqual([{ ...before, frame: 150 }]);
-      expect(Array.from(r.doc.getMap('commentFields').keys()).sort()).toEqual([
-        `${id}/frame`,
-        `${id}/resolved`,
-      ]);
+      expect(r.doc.getArray('commentFrames').toArray()).toEqual([[id, 150]]);
+      expect(Array.from(r.doc.getMap('commentFields').keys())).toEqual([`${id}/resolved`]);
     }
     a.store.undo();
     sync();
@@ -202,7 +200,10 @@ describe('comments under a gesture that plans every step from where it began', (
     (f) =>
       f >= 400 ? f + by : f;
 
-  /** One person, a cut, three comments, and a drag that moves the fifth shot to `400 + by`. */
+  /**
+   * One person, a cut, three comments, and a drag that moves the fifth shot to `400 + by`. `begin`
+   * starts another drag, in an undo step of its own.
+   */
   function dragging() {
     vi.useFakeTimers();
     const a = person();
@@ -213,11 +214,16 @@ describe('comments under a gesture that plans every step from where it began', (
     note(a.review, 450, 'on the fifth');
     let written = 0;
     a.review.doc.on('update', () => written++);
-    a.store.beginGesture();
+    let gesture = {};
+    const begin = (): void => {
+      a.store.beginGesture();
+      gesture = {};
+    };
+    begin();
     const drag = (by: number): void =>
-      a.mover.commit([move(clips[4].id, 400 + by)], { merge: true, follow: put(by), fromStepStart: true });
+      a.mover.commit([move(clips[4].id, 400 + by)], { merge: true, follow: put(by), gesture });
     const rest = (): void => void vi.advanceTimersByTime(GESTURE_REST_MS);
-    return { a, clips, drag, rest, written: () => written };
+    return { a, clips, begin, drag, rest, written: () => written };
   }
 
   it('go by the frame they had when it began, at every rest of the drag, and are one step to undo', () => {
@@ -271,7 +277,7 @@ describe('comments under a gesture that plans every step from where it began', (
       a.mover.commit([move(clips[4].id, start)], {
         merge: true,
         follow: (f) => (f >= start - 10 ? f + 10 : f),
-        fromStepStart: true,
+        gesture: {},
       });
       expect(frames(a.review)['on the fifth']).toBe(at);
     }
@@ -300,7 +306,7 @@ describe('comments under a gesture that plans every step from where it began', (
   });
 
   it('are in place before the next edit counts from them, and before a drag in another step begins', () => {
-    const { a, clips, drag, rest } = dragging();
+    const { a, clips, begin, drag, rest } = dragging();
     drag(20);
     drag(40);
     expect(frames(a.review)['on the fifth']).toBe(470);
@@ -315,7 +321,7 @@ describe('comments under a gesture that plans every step from where it began', (
     expect(frames(a.review)['on the fifth']).toBe(450);
 
     // The same when the edit joins the step of the drag: it is one step, and takes back both.
-    a.store.beginGesture();
+    begin();
     drag(20);
     drag(40);
     a.mover.commit(rippleDelete(a.store.get(), [clips[0].id]).edits, { merge: true, follow: out(0, 100) });
@@ -327,7 +333,7 @@ describe('comments under a gesture that plans every step from where it began', (
     expect(frames(a.review)).toEqual({ before: 30, 'on the second': 150, 'on the fifth': 450 });
 
     // And when another drag begins, in a step of its own, before the first has rested.
-    a.store.beginGesture();
+    begin();
     drag(10);
     drag(30);
     expect(frames(a.review)['on the fifth']).toBe(460);
@@ -335,13 +341,86 @@ describe('comments under a gesture that plans every step from where it began', (
     a.mover.commit([move(clips[4].id, 440)], {
       merge: true,
       follow: (f) => (f >= 430 ? f + 10 : f),
-      fromStepStart: true,
+      gesture: {},
     });
     expect(frames(a.review)['on the fifth']).toBe(490);
     a.store.undo();
     expect(frames(a.review)['on the fifth']).toBe(480);
     a.store.undo();
     expect(frames(a.review)['on the fifth']).toBe(450);
+  });
+
+  it('go by where the drag began also when an edit of another kind lands between two of its steps', () => {
+    const { a, clips, drag, rest } = dragging();
+    drag(20);
+    drag(40);
+    rest();
+    expect(frames(a.review)['on the fifth']).toBe(490);
+    // Media that has finished importing, say: a step of its own, and the rest of the drag joins it.
+    const steps = a.store.undoManager.undoStack.length;
+    a.store.commit([{ op: 'updateClip', id: clips[0].id, patch: { name: 'Opening' } }]);
+    drag(60);
+    expect(a.store.undoManager.undoStack.length).toBe(steps + 1);
+    drag(90);
+    drag(70);
+    rest();
+    expect(starts(a.store, clips)).toEqual([0, 100, 200, 300, 470]);
+    expect(frames(a.review)).toEqual({ before: 30, 'on the second': 150, 'on the fifth': 520 });
+    // Each of the two steps takes back the part of the drag that was recorded in it.
+    a.store.undo();
+    expect(a.store.get().clips[clips[0].id].name).toBe('C1');
+    expect(starts(a.store, clips)).toEqual([0, 100, 200, 300, 440]);
+    expect(frames(a.review)['on the fifth']).toBe(490);
+    a.store.undo();
+    expect(starts(a.store, clips)).toEqual([0, 100, 200, 300, 400]);
+    expect(frames(a.review)['on the fifth']).toBe(450);
+    a.store.redo();
+    a.store.redo();
+    expect(starts(a.store, clips)).toEqual([0, 100, 200, 300, 470]);
+    expect(frames(a.review)['on the fifth']).toBe(520);
+  });
+
+  it('go by where the drag began also after an undo and its redo between two of its steps', () => {
+    const { a, clips, drag, rest } = dragging();
+    drag(20);
+    drag(40);
+    // Not rested yet: the undo finds the comments where the drag has them all the same.
+    a.store.undo();
+    expect(frames(a.review)['on the fifth']).toBe(450);
+    a.store.redo();
+    expect(frames(a.review)['on the fifth']).toBe(490);
+    // What follows a redo is recorded as a step of its own.
+    const steps = a.store.undoManager.undoStack.length;
+    drag(60);
+    expect(a.store.undoManager.undoStack.length).toBe(steps + 1);
+    drag(100);
+    rest();
+    expect(starts(a.store, clips)).toEqual([0, 100, 200, 300, 500]);
+    expect(frames(a.review)).toEqual({ before: 30, 'on the second': 150, 'on the fifth': 550 });
+    a.store.undo();
+    expect(starts(a.store, clips)).toEqual([0, 100, 200, 300, 440]);
+    expect(frames(a.review)['on the fifth']).toBe(490);
+    a.store.undo();
+    expect(frames(a.review)['on the fifth']).toBe(450);
+  });
+
+  it('take a comment that was moved from under the drag by the frame it stands at', () => {
+    const { a, drag, rest } = dragging();
+    drag(20);
+    rest();
+    expect(frames(a.review)['on the fifth']).toBe(470);
+    // Somebody else's edit has put it elsewhere meanwhile: where the drag found it says nothing
+    // about it any more.
+    const moved = a.review.get().find((c) => c.text === 'on the fifth')!;
+    a.review.move(new Map([[moved.id, 430]]));
+    drag(50);
+    rest();
+    expect(frames(a.review)['on the fifth']).toBe(480);
+    drag(10);
+    rest();
+    expect(frames(a.review)['on the fifth']).toBe(440);
+    a.store.undo();
+    expect(frames(a.review)['on the fifth']).toBe(430);
   });
 });
 
@@ -360,9 +439,8 @@ describe('undo of an edit that moved comments, after someone else has been at th
     a.store.undo();
     sync();
     for (const r of [a.review, b.review]) expect(frames(r)).toEqual({ 'on the fourth': 350 });
-    expect(Array.from(a.review.doc.getMap('commentFields').keys())).toEqual([
-      `${a.review.get()[0].id}/frame`,
-    ]);
+    // Nothing of the deleted comment is written again.
+    expect(a.review.doc.getArray('commentFrames').toArray()).toEqual([[a.review.get()[0].id, 350]]);
     // Nor does the redo know it any more.
     a.store.redo();
     sync();

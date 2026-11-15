@@ -1,7 +1,7 @@
 /** What the server deletes: projects, versions, and media that nothing refers to any more. */
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import type { ClientRequest } from 'node:http';
 import { createRequire } from 'node:module';
@@ -360,6 +360,31 @@ describe('deleting a project', () => {
     expect((await api.fetch(`/api/projects/${kept.id}`, { token: kept.token })).status).toBe(200);
     expect(logged).toEqual([]);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'is no failure of the write that was bringing the time of the project’s last change to disk',
+    async () => {
+      const { ProjectStore } = await import('../src/projects');
+      const dataDir = await tempDir();
+      await mkdir(join(dataDir, 'projects'));
+      const projects = new ProjectStore(dataDir);
+      await projects.open();
+      const { id, meta } = await projects.create('Going');
+      // That write reads the project's `meta.json` first. A pipe in the file's place holds the
+      // read until something is written into it, which is after the project was deleted.
+      const metaPath = join(dataDir, 'projects', id, 'meta.json');
+      await rm(metaPath);
+      expect(spawnSync('mkfifo', [metaPath]).status).toBe(0);
+      projects.touch(id);
+      const flushed = projects.flush();
+      await projects.markDeleted(id);
+      await writeFile(metaPath, JSON.stringify({ ...meta, updatedAt: meta.updatedAt - 1000 }));
+      await flushed;
+      await projects.remove(id);
+      expect(await readdir(join(dataDir, 'projects'))).toEqual([]);
+      expect(logged).toEqual([]);
+    },
+  );
 
   it('rate limits deletions per address', async () => {
     const { api } = await start();

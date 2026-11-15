@@ -426,6 +426,56 @@ describe('a speed gesture under ripple editing', () => {
     expect(notes(s)).toEqual([['on the third shot', 250]]);
   });
 
+  it('keeps the comments with the markers when media lands, or a step is undone and redone, mid-drag', () => {
+    const landed = (s: Seat): void =>
+      s.store.commit([
+        {
+          op: 'addAsset',
+          asset: { ...ASSET_DEFAULTS, id: 'asset2', name: 'b-roll.mp4', kind: 'video', duration: 5 },
+        },
+      ]);
+    const redone = (s: Seat): void => {
+      s.store.undo();
+      s.store.redo();
+    };
+    for (const between of [landed, redone]) {
+      const s = seat();
+      const c = cut();
+      s.store.replaceAll(applyEdits(c.p, [marker('third', 250), marker('late', 400)]));
+      note(s, 250, 'on the third shot');
+      note(s, 400, 'after the cut');
+      const steps = s.store.undoManager.undoStack.length;
+      const to = scrubber(s, [c.fractal.id], { ripple: true, markers: true });
+      to(1.25);
+      to(1.5);
+      rest();
+      expect(markers(s)).toEqual([210, 360]);
+      expect(notes(s).map(([, frame]) => frame)).toEqual([210, 360]);
+      // Neither moves a clip or a marker, so the drag goes on as the same gesture. What follows is
+      // recorded in another undo step than what came before.
+      between(s);
+      to(1.75);
+      to(2.5);
+      to(2);
+      rest();
+      expect(s.store.undoManager.undoStack.length).toBe(steps + 2);
+      expect(s.store.get().clips[c.aurora.id].start).toBe(180);
+      expect(markers(s)).toEqual([190, 340]);
+      expect(notes(s).map(([, frame]) => frame)).toEqual([190, 340]);
+      // Each of the two steps takes back its part of the drag, comments included.
+      s.store.undo();
+      expect(markers(s)).toEqual([210, 360]);
+      expect(notes(s).map(([, frame]) => frame)).toEqual([210, 360]);
+      s.store.undo();
+      expect(markers(s)).toEqual([250, 400]);
+      expect(notes(s).map(([, frame]) => frame)).toEqual([250, 400]);
+      s.store.redo();
+      s.store.redo();
+      expect(markers(s)).toEqual([190, 340]);
+      expect(notes(s).map(([, frame]) => frame)).toEqual([190, 340]);
+    }
+  });
+
   it('leaves the comments alone when comments and markers do not follow', () => {
     const s = seat();
     const c = cut();

@@ -118,6 +118,12 @@ describe('ReviewStore merging', () => {
     a.reply(id, { ...ana, text: 'one' });
     a.reply(other, { ...ana, text: 'kept' });
     a.update(id, { resolved: true });
+    a.move(
+      new Map([
+        [id, 15],
+        [other, 25],
+      ]),
+    );
     sync();
     a.remove(id);
     b.reply(id, { ...ben, text: 'too late' });
@@ -125,8 +131,9 @@ describe('ReviewStore merging', () => {
     for (const s of [a, b]) {
       expect(s.get().map((c) => c.text)).toEqual(['Keep me']);
       expect(s.get()[0].replies.map((r) => r.text)).toEqual(['kept']);
+      expect(Array.from(s.doc.getMap('commentFields').keys())).toEqual([]);
+      expect(s.doc.getArray('commentFrames').toArray()).toEqual([[other, 25]]);
     }
-    expect(Array.from(a.doc.getMap('commentFields').keys())).toEqual([]);
   });
 
   it('notifies once per change and ignores edits to comments that do not exist', () => {
@@ -179,9 +186,12 @@ describe('ReviewStore merging', () => {
       ['Third', 30],
       ['First', 40],
     ]);
-    expect(Array.from(a.doc.getMap('commentFields').keys()).sort()).toEqual(
-      [`${first}/frame`, `${second}/frame`].sort(),
-    );
+    // Where they went is in the list of moves. Nothing of a comment was given a key.
+    expect(a.doc.getArray('commentFrames').toArray()).toEqual([
+      [first, 40],
+      [second, 5],
+    ]);
+    expect(Array.from(a.doc.getMap('commentFields').keys())).toEqual([]);
     a.move(new Map());
     a.move(new Map([[first, 40]]));
     expect([calls, updates]).toEqual([1, 1]);
@@ -193,6 +203,147 @@ describe('ReviewStore merging', () => {
       expect(s.get()[0]).toMatchObject({ id: second, frame: 5, resolved: true, authorName: 'Ben', x: 0.5 });
       expect(s.get()[0].replies.map((r) => r.text)).toEqual(['Done']);
     }
+  });
+});
+
+/** How many structs a document holds: what a server counts a document's size in. */
+const structs = (doc: Y.Doc): number => Y.decodeUpdate(Y.encodeStateAsUpdate(doc)).structs.length;
+
+describe('ReviewStore frames', () => {
+  const frames = (s: ReviewStore): Record<string, number> =>
+    Object.fromEntries(s.get().map((c) => [c.text, c.frame]));
+
+  it('moves comments any number of times without the document growing with each move', () => {
+    const a = new ReviewStore();
+    // What everyone else holds, the server among them: the document as its updates make it.
+    const held = new Y.Doc();
+    a.doc.on('update', (update: Uint8Array) => Y.applyUpdate(held, update));
+    const ids = Array.from({ length: 100 }, (_, i) =>
+      a.add({ ...ana, frame: 100 + i * 10, text: `Note ${i}`, x: null, y: null }),
+    );
+    const posted = structs(held);
+    expect(posted).toBe(100);
+    // Edits that move time, one after the other: each moves the comments from some frame on.
+    const move = (round: number): void => {
+      const from = (round * 37) % 100;
+      a.move(new Map(a.get().flatMap((c, i) => (i >= from ? [[c.id, c.frame + (round % 2 ? 3 : -2)]] : []))));
+    };
+    for (let round = 0; round < 400; round++) move(round);
+    // The entries that stand are in a few stretches of the list, far fewer than there are comments.
+    const settled = { structs: structs(held), bytes: Y.encodeStateAsUpdate(held).byteLength };
+    expect(settled.structs).toBeLessThan(posted + 20);
+    // A key for each frame would leave a struct behind for every comment a move moves: some
+    // 20,000 for these. The list holds no more after them than before.
+    for (let round = 400; round < 800; round++) move(round);
+    expect(structs(held)).toBeLessThanOrEqual(settled.structs);
+    expect(Y.encodeStateAsUpdate(held).byteLength).toBeLessThan(settled.bytes + 100);
+    // And what is held reads as what was written.
+    expect(new ReviewStore(held).get()).toEqual(a.get());
+    expect(a.get()).toHaveLength(ids.length);
+  });
+
+  it('settles on one frame for a comment that two people move at the same moment', () => {
+    for (const first of ['a', 'b'] as const) {
+      const { a, b } = reviewers();
+      const both = a.add({ ...ana, frame: 10, text: 'Both', x: null, y: null });
+      const one = a.add({ ...ana, frame: 20, text: 'One', x: null, y: null });
+      const other = a.add({ ...ana, frame: 30, text: 'Other', x: null, y: null });
+      const sync = () => {
+        const [from, to] = first === 'a' ? [a, b] : [b, a];
+        Y.applyUpdate(to.doc, Y.encodeStateAsUpdate(from.doc, Y.encodeStateVector(to.doc)));
+        Y.applyUpdate(from.doc, Y.encodeStateAsUpdate(to.doc, Y.encodeStateVector(from.doc)));
+      };
+      sync();
+      a.move(
+        new Map([
+          [both, 110],
+          [one, 120],
+        ]),
+      );
+      a.move(new Map([[both, 115]]));
+      b.move(
+        new Map([
+          [both, 210],
+          [other, 230],
+        ]),
+      );
+      sync();
+      expect(frames(a)).toEqual(frames(b));
+      // What only one of them moved is where that one put it.
+      expect(frames(a)).toMatchObject({ One: 120, Other: 230 });
+      expect([115, 210]).toContain(frames(a).Both);
+      // The next move of it leaves a single entry, for everyone.
+      b.move(new Map([[both, 300]]));
+      sync();
+      for (const s of [a, b]) {
+        expect(frames(s)).toEqual({ Both: 300, One: 120, Other: 230 });
+        const entries = s.doc.getArray<[string, number]>('commentFrames').toArray();
+        expect(entries.filter(([id]) => id === both)).toEqual([[both, 300]]);
+        expect(entries).toHaveLength(3);
+      }
+    }
+  });
+
+  it('writes the frames of many updates in one transaction as a single move', () => {
+    const { a, b, sync } = reviewers();
+    const ids = Array.from({ length: 40 }, (_, i) =>
+      a.add({ ...ana, frame: i * 10, text: `Note ${i}`, x: null, y: null }),
+    );
+    a.move(new Map(ids.slice(20).map((id, i) => [id, 205 + i * 10])));
+    sync();
+    const before = structs(a.doc);
+    let calls = 0;
+    a.subscribe(() => calls++);
+    let updates = 0;
+    a.doc.on('update', () => updates++);
+    // The way a change of frame rate re-times them: each by itself, all in one transaction.
+    a.doc.transact(() => {
+      for (const c of a.get()) a.update(c.id, { frame: c.frame * 2 });
+      a.update(ids[1], { text: 'Reworded', frame: 21 });
+    });
+    expect([calls, updates]).toEqual([1, 2]);
+    expect(a.get().map((c) => c.frame)).toEqual([
+      0,
+      21,
+      ...ids.slice(2, 20).map((_, i) => (i + 2) * 20),
+      ...ids.slice(20).map((_, i) => 410 + i * 20),
+    ]);
+    expect(a.get()[1].text).toBe('Reworded');
+    // One struct for what was appended and one for the key of the text: the entries that were
+    // replaced are deleted, and take up no more than they did.
+    expect(structs(a.doc)).toBeLessThanOrEqual(before + 2);
+    expect(a.doc.getArray('commentFrames')).toHaveLength(39);
+    sync();
+    expect(b.get()).toEqual(a.get());
+    // A move after an update, in the same transaction, has the last word.
+    a.doc.transact(() => {
+      a.update(ids[0], { frame: 5 });
+      a.move(new Map([[ids[0], 7]]));
+    });
+    expect(a.get()[0]).toMatchObject({ id: ids[0], frame: 7 });
+  });
+
+  it('reads a frame that has a key from before the list, until the comment is moved', () => {
+    const { a, b, sync } = reviewers();
+    const id = a.add({ ...ana, frame: 10, text: 'Re-timed last year', x: null, y: null });
+    const other = a.add({ ...ben, frame: 20, text: 'Never moved', x: null, y: null });
+    a.doc.getMap('commentFields').set(`${id}/frame`, 24);
+    sync();
+    for (const s of [a, b]) expect(frames(s)).toEqual({ 'Re-timed last year': 24, 'Never moved': 20 });
+    // Nothing is written to put it where it is already.
+    let updates = 0;
+    b.doc.on('update', () => updates++);
+    b.update(id, { frame: 24 });
+    b.move(new Map([[other, 20]]));
+    expect(updates).toBe(0);
+    b.update(id, { frame: 48 });
+    expect(updates).toBe(1);
+    sync();
+    for (const s of [a, b]) expect(frames(s)).toEqual({ 'Re-timed last year': 48, 'Never moved': 20 });
+    a.remove(id);
+    sync();
+    expect(Array.from(b.doc.getMap('commentFields').keys())).toEqual([]);
+    expect(b.doc.getArray('commentFrames')).toHaveLength(0);
   });
 });
 
@@ -231,10 +382,20 @@ describe('ReviewStore with hostile data', () => {
       s.doc.getMap('commentReplies').set('bad/r2', null);
       s.doc.getMap('commentReplies').set('bad/r3', { text: 'later', authorId: 3 });
       s.doc.getMap('commentReplies').set('noslash', { text: 'lost' });
+      s.doc
+        .getArray('commentFrames')
+        .push(['bad', ['bad'], ['bad', 'soon'], [7, 3], null, { bad: 4 }, ['short', 12], ['short', NaN]]);
     });
     // A colour is a colour: nothing that could make the panel fetch something.
     const colours = Object.fromEntries(s.get().map((c) => [c.id, c.authorColor]));
     expect(colours).toEqual({ bad: '#64748b', remote: '#64748b', short: '#ff00aa', odd: '#64748b' });
+    // A frame is a number, wherever it is written.
+    expect(s.get().map((c) => [c.id, c.frame])).toEqual([
+      ['bad', 0],
+      ['remote', 5],
+      ['odd', 9],
+      ['short', 12],
+    ]);
     expect(s.get().slice(0, 1)).toEqual([
       {
         id: 'bad',

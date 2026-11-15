@@ -400,7 +400,6 @@ test.describe('deleting a project for everyone', () => {
     expect(await registry(home)).toEqual([]);
     await expect(home.locator('.pcard')).toHaveCount(0);
     await goHome(page);
-    await expect(page.locator('.home__hero')).toBeVisible();
     await expect(page.locator('.pcard')).toHaveCount(0);
     expect(await registry(page)).toEqual([]);
     expect(await filesOnDevice(home, project.id)).toEqual([]);

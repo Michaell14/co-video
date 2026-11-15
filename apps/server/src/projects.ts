@@ -196,9 +196,10 @@ export class ProjectStore {
         this.writes
           .run(id, async () => {
             const meta = await this.readMeta(id);
-            if (meta && meta.updatedAt < updatedAt) {
-              await atomicWrite(this.metaPath(id), JSON.stringify({ ...meta, updatedAt }));
-            }
+            // Deleted while its `meta.json` was being read, the project has no time of a last
+            // change left to keep, and the path of the file is no longer handed out.
+            if (!meta || meta.updatedAt >= updatedAt || this.deleted.has(id)) return;
+            await atomicWrite(this.metaPath(id), JSON.stringify({ ...meta, updatedAt }));
           })
           .catch((err: unknown) =>
             console.error(`[tandem] could not update meta.json of project ${id}:`, err),

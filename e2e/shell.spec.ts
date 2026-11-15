@@ -214,11 +214,24 @@ test.describe('panel layout', () => {
     expect(await viewer()).toBeGreaterThanOrEqual(560);
     expect((await box(comments)).x).toBeGreaterThan((await box(panel(page, 'Inspector'))).x);
 
-    // Adding a title needs the inspector's text field: the comments give the column back.
+    // A new title is typed where it stands in the picture, which takes nobody's column: the
+    // comments stay, with what was being written in them.
     await page.setViewportSize({ width: 1440, height: 900 });
     await expect(panel(page, 'Inspector')).toHaveCount(0);
     await page.locator('.tl__hint, .tl__body').first().click();
     await page.keyboard.press('t');
+    await expect(page.getByLabel('Title text')).toBeFocused();
+    await expect(comments).toBeVisible();
+    await expect(draft).toHaveValue('Tighten the intro');
+
+    // Where the playhead is not on the title, its text is typed in the inspector's field, and
+    // that needs the inspector: the comments give the column back.
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => {
+      const { cmd, session } = (window as any).tandem;
+      cmd.seek(700);
+      cmd.editText(Object.keys(session.store.get().clips)[0]);
+    });
     await expect(page.locator('textarea[aria-label="Text content"]')).toBeFocused();
     await expect(comments).toHaveCount(0);
   });
@@ -795,7 +808,8 @@ test.describe('library', () => {
     await localProject(page);
     await page.getByRole('tab', { name: 'Titles' }).click();
     await page.locator('.preset', { hasText: 'Name here' }).click();
-    const field = page.locator('textarea[aria-label="Text content"]');
+    // The text of a title that is on show is typed where it stands in the picture.
+    const field = page.getByLabel('Title text');
     await expect(field).toBeFocused();
     await expect(field).toHaveValue('Name Surname');
     await page.keyboard.type('Ada Lovelace');

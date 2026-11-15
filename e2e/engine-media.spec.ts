@@ -3216,6 +3216,98 @@ test.describe('sound that does not decode as it should', () => {
     expect(errors).toEqual([]);
   });
 
+  test('a decoder that stops for good costs what it did not give: not what a clip played backwards still has to play, nor a word behind a clip’s end', async ({
+    page,
+  }) => {
+    await openSoundLab(page);
+    const errors = trackErrors(page);
+    const r = await page.evaluate(async () => {
+      const { lab, kit, decoders, sound } = window as any;
+      lab.init(160, 90);
+      const asset = await lab.addFile('a', '/fixtures/stereo-441.mp4', 'stereo-441.mp4');
+      const rate = 44100;
+      const packet = 1024 / rate;
+      const first = await (await lab.library.get('a')).audio.getFirstTimestamp();
+      const at = (n: number) => Math.max(0, Math.trunc((first + n * packet) * 1e6));
+      // No other decoder to turn to, and this one gives nothing from packet `n` on: the file has 260.
+      Object.assign(decoders, { rate, own: 'refuses' });
+      const stopAt = (n: number) => {
+        decoders.bad = Array.from({ length: 262 - n }, (_, i) => at(n + i));
+        sound.anew('a');
+      };
+      const told = (list: any[]) => list.map(({ clipId: _, assetId: __, ...rest }) => rest);
+
+      // Backwards, the end of the file is played first, and the first third of the clip is what
+      // the decoder did not give. The export is made in two chunks, and one decode serves both.
+      const backwards = sound.project(asset, rate, 180, { reverse: true });
+      stopAt(262);
+      const whole = await sound.exported(backwards);
+      stopAt(172);
+      const part = await sound.exported(backwards);
+      sound.anew('a');
+      const inOneGo = await sound.render(backwards, 6);
+      let same = part.channels[0].length;
+      while (same > 0 && [0, 1].every((c) => part.channels[c][same - 1] === whole.channels[c][same - 1]))
+        same--;
+
+      // Forwards, under a clip that ends where a chunk of the export does, with more of the
+      // timeline behind it: the chunk that follows plays the end of the clip before its own
+      // start, to settle its filters, and none of that is in the export.
+      const two = kit.project(
+        160,
+        90,
+        [asset],
+        [
+          { type: 'audio', assetId: 'a', start: 0, duration: 120 },
+          { type: 'audio', assetId: 'a', start: 150, duration: 30 },
+        ],
+        { sampleRate: rate },
+      );
+      stopAt(100);
+      const tail = await sound.exported(two);
+      return {
+        backwards: {
+          samples: part.channels[0].length,
+          same,
+          silent: sound.quiet(part.channels[0], rate, 1e-4),
+          inOneGo: sound.apart(inOneGo.channels, part.channels),
+          warnings: told(part.warnings),
+          problems: told(inOneGo.problems),
+        },
+        tail: { silent: sound.quiet(tail.channels[0], rate, 1e-4), warnings: told(tail.warnings) },
+      };
+    });
+    const rate = 44100;
+    const cause = 'EncodingError: Decoding error.';
+    const stretch = {
+      part: 'audio',
+      reason: 'decode-error',
+      lost: 'stretch',
+      message:
+        'A stretch of the audio in “stereo-441.mp4” could not be decoded, so the export is silent there.',
+      cause,
+    };
+    // Packet 171 is the last that decoded, and ends 171 packets into the file's sound: from where
+    // that is played on, the export is the one of the whole file, sample for sample.
+    expect(r.backwards.samples).toBe(6 * rate);
+    expect(r.backwards.same).toBe(6 * rate - 171 * 1024);
+    expect(r.backwards.silent).toHaveLength(1);
+    expect(r.backwards.silent[0][0]).toBe(0);
+    expect(Math.abs(r.backwards.silent[0][1] * rate - r.backwards.same)).toBeLessThan(16);
+    // It is what a render in one go gives, to the 16 bits of the export: as a preview hears it.
+    expect(r.backwards.inOneGo).toBeLessThan(1 / 32768);
+    // The clip is without a stretch, the one it plays first, and what follows that is in its place.
+    expect(r.backwards.warnings).toEqual([{ ...stretch, frame: 0 }]);
+    expect(r.backwards.problems).toEqual([{ reason: 'decode-error', lost: 'stretch', cause }]);
+    // Silent from packet 100 to where the second clip begins, and said once, of where it begins:
+    // the chunk behind the clip's end, which got nothing of it either, has nothing to add.
+    expect(r.tail.silent).toHaveLength(1);
+    expect(Math.abs(r.tail.silent[0][0] * rate - 99 * 1024)).toBeLessThan(16);
+    expect(Math.abs(r.tail.silent[0][1] - 5)).toBeLessThan(0.001);
+    expect(r.tail.warnings).toEqual([{ ...stretch, frame: 68 }]);
+    expect(errors).toEqual([]);
+  });
+
   test('sound the WebCodecs decoder fails on comes from the browser’s own decoder, the same to the sample', async ({
     page,
   }) => {

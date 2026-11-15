@@ -283,8 +283,9 @@ export interface SpeedGesture {
   /**
    * Set when the gesture ripples: every step moves what follows the clips, so the gesture also
    * keeps where every clip (and marker) was when it began and after its last step, and each step
-   * is planned on the timeline as it was found. Where the review comments were is kept with the
-   * undo step the gesture is recorded as (see `CommentMover`).
+   * is planned on the timeline as it was found. `from` is one object through all the steps of a
+   * gesture, and is what the gesture is known by where its steps are committed: where the review
+   * comments were when it began is kept there (see `CommentMover`).
    */
   ripple: { from: Placed; left: Placed } | null;
 }
@@ -362,7 +363,7 @@ export function speedEdits(g: SpeedGesture, p: Project, speed: number): Edit[] {
   for (const m of Object.values(planned.markers)) {
     if (p.markers[m.id].frame !== m.frame) edits.push({ op: 'setMarker', marker: m });
   }
-  return from.markers ? asRipple(edits, rippleFollower(found, plan.edits, plan.spans), true) : edits;
+  return from.markers ? asRipple(edits, rippleFollower(found, plan.edits, plan.spans), from) : edits;
 }
 
 /** `g` after its step has been committed and `p` is what came of it. */

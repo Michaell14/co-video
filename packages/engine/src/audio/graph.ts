@@ -112,18 +112,13 @@ class Run {
   private top = -Infinity;
   /** Whoever is reading now: a decode outlives the chunk that began it. */
   private report: Report | null = null;
-  /** The decoder stopped for good, and whoever was reading then has been told. */
+  /**
+   * The one decode of a clip that plays forwards has stopped for good, and whoever was reading
+   * then has been told. No other is started; what it gave before is still handed out.
+   */
   private over = false;
-
-  /** A decode of the clip's sound that reports to whoever reads from it at the time. */
-  private decode(sound: Sound, from: number, to: number): AsyncGenerator<WrappedAudioBuffer, void, unknown> {
-    return inSequence(
-      sound.buffers(from, to, (trouble) => {
-        if (trouble.lost !== 'stretch') this.over = true;
-        this.report?.(trouble);
-      }),
-    );
-  }
+  /** Sound of the clip has been handed out: what a later decode cannot give is not all of it. */
+  private given = false;
 
   /**
    * The buffers `sound.buffers(from, to)` would give, out of one decode of `[low, high)`, the
@@ -134,8 +129,11 @@ class Run {
    * the first read decodes everything from `low` up to its own end, beyond which no later one
    * asks, and that is handed out from its end and let go once a read has reached `low`. More than
    * `HELD_BACKWARDS` is too much to keep: reads seek for themselves until what is left to play is
-   * no longer than that. A decoder that has stopped for good is not started for every chunk that
-   * follows: `report` hears of it once, and of each stretch that would not decode.
+   * no longer than that.
+   *
+   * `report` hears of sound that would not decode as it is lost to the clip, which is not always
+   * what the decode that met it says of itself. A decoder that has stopped for good on a clip that
+   * plays forwards is not started for every chunk that follows: that is heard of once.
    */
   async *read(
     sound: Sound,
@@ -148,16 +146,25 @@ class Run {
     report: Report,
   ): AsyncGenerator<WrappedAudioBuffer, void, unknown> {
     this.report = report;
-    if (this.over) return;
     if (backwards) {
       if (to > this.top) {
         await this.end();
-        if (to - low > HELD_BACKWARDS) {
-          yield* this.decode(sound, from, to);
+        // A read that decodes for itself knows of its own few seconds, and the read after it may
+        // fare better: whatever it cannot give is a stretch of the clip. So is what a decode that
+        // gives nothing leaves out, once sound of the clip has been handed out.
+        const apart = to - low > HELD_BACKWARDS;
+        const tell: Report = (trouble) =>
+          report(apart || (this.given && trouble.lost === 'all') ? { ...trouble, lost: 'stretch' } : trouble);
+        if (apart) {
+          for await (const wb of inSequence(sound.buffers(from, to, tell))) {
+            this.given = true;
+            yield wb;
+          }
           return;
         }
+        // Where this decode stops for good, what it gave up to there is still to be played.
         const all: WrappedAudioBuffer[] = [];
-        for await (const wb of this.decode(sound, low, to)) all.push(wb);
+        for await (const wb of inSequence(sound.buffers(low, to, tell))) all.push(wb);
         this.held = all;
       }
       // The reads come in descending order: what lies after this one is not asked for again.
@@ -166,18 +173,32 @@ class Run {
         0,
         this.held.findLastIndex((wb) => wb.timestamp <= from),
       );
-      for (; i < this.held.length && this.held[i].timestamp < to; i++) yield this.held[i];
+      for (; i < this.held.length && this.held[i].timestamp < to; i++) {
+        this.given = true;
+        yield this.held[i];
+      }
       this.held.length = i;
       if (from <= low) await this.end();
       return;
     }
     const first = this.held.findLastIndex((wb) => wb.timestamp <= from);
-    if (!this.source || first < 0) {
+    if (this.over) {
+      // Nothing more is decoded: of what was, this read gets what reaches into it.
+      this.held = this.held.filter((wb) => wb.timestamp + wb.duration > from);
+    } else if (!this.source || first < 0) {
       await this.end();
-      this.source = this.decode(sound, from, high);
+      this.source = inSequence(
+        sound.buffers(from, high, (trouble) => {
+          // This decode is of all that is left to play: once it has lost sound for good, nothing
+          // follows. That is the rest of the clip, not all of it, if sound was handed out before.
+          if (trouble.lost !== 'stretch') this.over = true;
+          this.report?.(this.given && trouble.lost === 'all' ? { ...trouble, lost: 'rest' } : trouble);
+        }),
+      );
     } else this.held.splice(0, first);
     for (let i = 0; ; i++) {
       if (i === this.held.length) {
+        if (!this.source) break;
         let next: IteratorResult<WrappedAudioBuffer, void>;
         try {
           next = await this.source.next();
@@ -192,6 +213,7 @@ class Run {
       }
       // A buffer that starts where this read ends stays for the read that follows.
       if (this.held[i].timestamp >= to) break;
+      this.given = true;
       yield this.held[i];
       // Behind this buffer, only what the read that follows can ask for is of any use.
       while (i > 0 && this.held[1].timestamp <= again) {
@@ -858,12 +880,15 @@ export class AudioGraph {
       const played = (lastTl - clipStartSec) * per;
       const low = (clip.reverse ? srcB - played : clip.sourceIn) - around + opened.start;
       const high = (clip.reverse ? srcB : clip.sourceIn + played) + around + opened.start;
-      const report: Report = ({ lost, from: source, cause }) => {
+      const report: Report = ({ lost: said, from: source, cause }) => {
         if (v.cancelled || !assetId) return;
         // Where a clip that plays forwards falls silent. Backwards, what is lost is heard up to
         // that place, not from it, and where it begins is not known here.
         const heard = clipStartSec + (source - opened.start - clip.sourceIn) / per;
         const at = clip.reverse ? undefined : Math.min(Math.max(heard, fromTl), toTl);
+        // Backwards, what a decoder that stopped could not give is played first, and what it had
+        // given by then follows in its place: a stretch of the clip is silent, not the rest of it.
+        const lost = clip.reverse && said === 'rest' ? 'stretch' : said;
         this.onProblem?.({ clipId: clip.id, assetId, reason: 'decode-error', lost, at, cause });
       };
       const buffers = this.runs
@@ -1071,7 +1096,12 @@ export async function renderAudioChunk(
   const ctx = new OfflineAudioContext(2, skip + length, sampleRate);
   if (runs) runs.lookBack = preRollSec;
   const graph = new AudioGraph(ctx, library, false, runs);
-  graph.onProblem = onProblem ?? null;
+  // A clip that ends where the result begins is in the pre-roll only, played for what it leaves
+  // in filters and compressors. Not a sample of it is in the result, so none is missing from it.
+  graph.onProblem = (problem) => {
+    const end = framesToSeconds(clipEnd(project.clips[problem.clipId]), project.settings);
+    if ((end - startSec) * sampleRate >= 0.5) onProblem?.(problem);
+  };
   graph.start(project, { startSec: startSec - pre, t0: 0, rate: 1, endSec: startSec + durationSec });
   await graph.pump();
   const rendered = await ctx.startRendering();
