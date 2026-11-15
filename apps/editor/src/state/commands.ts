@@ -70,6 +70,7 @@ import { createProject } from '../session/projects';
 import type { Session } from '../session/session';
 import { confirm } from '../ui/confirm';
 import { toast } from '../ui/core';
+import { spendKeys } from '../ui/layers';
 import { refuseEdit } from './access';
 import {
   attributePatch,
@@ -1016,6 +1017,9 @@ export const cmd = {
         return;
       }
       uncover('right');
+      // The key that asked for the title is still down when the field takes the keyboard, and has
+      // done its work: held, it types nothing over the text that is selected there.
+      spendKeys();
       focusTextField(clip.id);
     });
   },

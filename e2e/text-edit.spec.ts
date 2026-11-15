@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { newProject, noReloads, trackErrors } from './helpers';
+import { FIXTURES, newProject, noReloads, openLab, trackErrors } from './helpers';
 
 /** Typing into a title where it stands in the picture. */
 
@@ -60,18 +62,23 @@ const fontsFor = (page: Page, font: string, sample: string) =>
     sample,
   });
 
-/**
- * A picture of the frame as far as the viewer shows it. The caret is left out by the screenshot
- * itself; `hideOutline` takes the outline of what is selected out as well.
- */
-async function picture(page: Page): Promise<Buffer> {
+/** The part of the frame that the viewer shows, in the window. */
+async function shownFrame(page: Page) {
   const frame = await frameBox(page);
   const stage = (await page.locator('.viewer__stage').boundingBox())!;
   const x = Math.max(frame.x, stage.x);
   const y = Math.max(frame.y, stage.y);
   const width = Math.min(frame.x + frame.width, stage.x + stage.width) - x;
   const height = Math.min(frame.y + frame.height, stage.y + stage.height) - y;
-  return page.screenshot({ clip: { x, y, width, height } });
+  return { x, y, width, height };
+}
+
+/**
+ * A picture of the frame as far as the viewer shows it. The caret is left out by the screenshot
+ * itself; `hideOutline` takes the outline of what is selected out as well.
+ */
+async function picture(page: Page): Promise<Buffer> {
+  return page.screenshot({ clip: await shownFrame(page) });
 }
 
 interface Difference {
@@ -499,6 +506,82 @@ test.describe('typing into a title on the picture', () => {
     }
   });
 
+  test('a title in a box is broken after a hyphen, where the field over it breaks its line', async ({
+    page,
+  }) => {
+    await newProject(page);
+    await hideOutline(page);
+    // Characters of one width in a box ten and a half of them wide: "HHHH HHH-" fills the first
+    // line, and the word goes on in the second.
+    const mono = '700 48px "JetBrains Mono Variable"';
+    await fontsFor(page, mono, 'H-');
+    const advance = await page.evaluate((mono) => {
+      const ctx = new OffscreenCanvas(1, 1).getContext('2d')!;
+      ctx.font = mono;
+      return ctx.measureText('H').width / 48;
+    }, mono);
+    const { width, height } = await page.evaluate(() => (window as any).tandem.session.store.get().settings);
+    const id = await addTitle(page, {
+      content: 'HHHH HHH-HHH H',
+      font: 'JetBrains Mono Variable',
+      weight: 700,
+      size: 0.09,
+      align: 'left',
+      boxWidth: (10.5 * advance * 0.09 * height) / width,
+    });
+    await page.evaluate(() => (window as any).tandem.ui.getState().clearSelection());
+    let before = await picture(page);
+    await expect
+      .poll(async () => {
+        const again = await picture(page);
+        const settled =
+          (await difference(page, before, again)).pixels === 0 &&
+          (await ink(page, again, 'x', 0, 4000)).length > 0;
+        before = again;
+        return settled;
+      })
+      .toBe(true);
+
+    // The picture: seven letters and the hyphen in the first line, four letters in the second.
+    const lines = await ink(page, before, 'y', 0, 4000);
+    expect(lines).toHaveLength(2);
+    expect(await ink(page, before, 'x', ...lines[0])).toHaveLength(8);
+    const second = await ink(page, before, 'x', ...lines[1]);
+    expect(second).toHaveLength(4);
+    const last = second[3];
+
+    // The field: its last letter, selected, is marked where the last letter is drawn.
+    await page.evaluate((id) => (window as any).tandem.cmd.editText(id), id);
+    await expect(field(page)).toBeFocused();
+    await field(page).evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(13, 14));
+    await expect
+      .poll(async () => {
+        const { box } = await difference(page, before, await picture(page));
+        return (
+          !!box &&
+          box.top >= lines[0][1] &&
+          box.bottom >= lines[1][1] - 1 &&
+          box.left >= second[2][1] &&
+          box.left <= last[0] + 1 &&
+          box.right >= last[1] - 1
+        );
+      })
+      .toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(field(page)).toHaveCount(0);
+
+    // And a double-click on the left half of that letter puts the caret in front of it.
+    const shown = await shownFrame(page);
+    await page.mouse.dblclick(
+      shown.x + last[0] + (last[1] - last[0]) / 4,
+      shown.y + (lines[1][0] + lines[1][1]) / 2,
+    );
+    await expect(field(page)).toBeFocused();
+    expect(await caret(page)).toEqual([13, 13]);
+    await page.keyboard.type('X');
+    await expect.poll(() => content(page, id)).toBe('HHHH HHH-HHH XH');
+  });
+
   test('an input method composes into the title, and what it composed is one step', async ({ page }) => {
     await newProject(page);
     const id = await addTitle(page, { content: 'ab' });
@@ -680,6 +763,87 @@ test.describe('typing into a title on the picture', () => {
       await inspectorField(page).evaluate((el: HTMLTextAreaElement) => [el.selectionStart, el.selectionEnd]),
     ).toEqual([0, 8]);
     await page.keyboard.press('Escape');
+  });
+});
+
+test.describe('the lines of a title in a box', () => {
+  test('are broken where a browser breaks the lines of the field over the title', async ({ page }) => {
+    test.setTimeout(300_000);
+    await openLab(page);
+    // The field's own style, on a block whose lines can be read.
+    const sheet = readFileSync(join(FIXTURES, '../../apps/editor/src/features/viewer/viewer.css'), 'utf8');
+    const style = /textarea\.title-edit \{([^}]*)\}/.exec(sheet)![1];
+    await page.addStyleTag({ content: `.title-lines {${style}}` });
+    const differing = await page.evaluate(async () => {
+      const { core, engine } = (window as any).lab;
+      const text = { ...core.DEFAULT_TEXT, font: 'Inter', weight: 700, size: 0.05, align: 'left' };
+      await document.fonts.load(engine.fontSpec(text, 32), 'mx1');
+      const trimmed = (line: string) => line.replace(/[ \t]+$/, '');
+      /** The lines a block as wide as the title's box, styled as the field is, breaks `t` into. */
+      const blockLines = (t: typeof text, layout: any): string[] => {
+        const block = document.createElement('div');
+        block.className = 'title-lines';
+        Object.assign(block.style, {
+          width: `${layout.width}px`,
+          padding: `0 ${layout.width - layout.x - layout.textWidth}px 0 ${layout.x}px`,
+          fontFamily: engine.fontStack(t),
+          fontSize: `${layout.size}px`,
+          fontWeight: String(t.weight),
+          lineHeight: `${layout.lineHeight}px`,
+          letterSpacing: `${layout.spacing}px`,
+        });
+        block.textContent = t.content;
+        document.body.append(block);
+        const lines: string[] = [];
+        let top: number | null = null;
+        for (let i = 0; i < t.content.length; i++) {
+          const range = document.createRange();
+          range.setStart(block.firstChild!, i);
+          range.setEnd(block.firstChild!, i + 1);
+          const rect = range.getClientRects()[0];
+          if (rect && (top === null || Math.abs(rect.top - top) > 2)) {
+            lines.push('');
+            top = rect.top;
+          }
+          lines[lines.length - 1] += t.content[i];
+        }
+        block.remove();
+        return lines.map(trimmed);
+      };
+      const widthOf = (content: string): number =>
+        engine.layoutText({ ...text, content, boxWidth: null }, 1920, 1080).widths[0];
+
+      // Every character of ASCII that can be seen; and beyond it an accented and a Cyrillic letter,
+      // the hyphens and dashes, the ellipsis, quotation marks, and the no-break, em and thin space.
+      const ascii = Array.from({ length: 94 }, (_, i) => String.fromCharCode(0x21 + i));
+      const beyond = [
+        0xe9, 0x44f, 0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2026, 0x201c, 0x201d, 0x2018, 0x2019, 0xab,
+        0xbb, 0xa0, 0x2003, 0x2009,
+      ].map((code) => String.fromCharCode(code));
+      const all = [...ascii, ...beyond];
+      const differing: string[] = [];
+      let count = 0;
+      // Each pair after a letter, a number, a space and a full stop, in a box that ends between
+      // the two: whether the line is broken there is the rule for the pair.
+      for (const a of all) {
+        for (const b of all) {
+          for (const lead of ['xx', '11', 'x ', '.']) {
+            const head = `mmmm ${lead}${a}`;
+            const content = `${head}${b}xx`;
+            const t = { ...text, content, boxWidth: (widthOf(head) + 1) / 1920 };
+            const layout = engine.layoutText(t, 1920, 1080);
+            const drawn = JSON.stringify(layout.lines.map(trimmed));
+            const field = JSON.stringify(blockLines(t, layout));
+            if (drawn === field) continue;
+            count++;
+            if (differing.length < 12)
+              differing.push(`${JSON.stringify(content)}: drawn ${drawn}, field ${field}`);
+          }
+        }
+      }
+      return { count, differing };
+    });
+    expect(differing.count, differing.differing.join('\n')).toBe(0);
   });
 });
 
@@ -995,6 +1159,23 @@ test.describe('a new title, and the keyboard', () => {
     await page.keyboard.press('F2');
     await expect(field(page)).toBeFocused();
     await page.keyboard.press('Escape');
+
+    // A title the playhead is not on is typed into in the inspector's field. The Enter that asked
+    // for it, held down, breaks no line there either: the text stays, selected.
+    await page.evaluate(() => (window as any).tandem.cmd.seek(400));
+    await select([id]);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.down('Enter');
+    await expect(inspectorField(page)).toBeFocused();
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+    await expect(inspectorField(page)).toHaveValue('Cold open');
+    expect(await content(page, id)).toBe('Cold open');
+    expect(
+      await inspectorField(page).evaluate((el: HTMLTextAreaElement) => [el.selectionStart, el.selectionEnd]),
+    ).toEqual([0, 9]);
+    expect(await typing(page)).toBeNull();
 
     // With more than one clip selected, or none, there is no one title to type into.
     const other = await addTitle(page, { content: 'Second' });

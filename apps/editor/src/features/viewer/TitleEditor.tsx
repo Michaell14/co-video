@@ -37,10 +37,11 @@ import { TypingHistory, type TextState } from './typingHistory';
  * `titleField`). So the letters under the caret are the rendered ones, with their stroke, shadow
  * and background, and nothing moves when the typing ends.
  *
- * The field breaks its lines as a browser does and the title as `wrapLines` does. The two agree
- * except where a word with a hyphen or a dash in it lies across the edge of a title's box: there
- * the caret is drawn a line off until the text has changed. The text and the picture are right
- * all the same.
+ * The field's lines are broken by the browser and the title's by `wrapLines`, which follows the
+ * browser's rules for what titles are written in: words, numbers, punctuation, hyphens and
+ * dashes. Where the two still part at the edge of a title's box (an emoji set against a word, a
+ * script written without spaces), the caret is drawn a line off from there on. The text and the
+ * picture are right all the same.
  */
 export function TitleEditor({ scale }: { scale: number }) {
   const session = useSession();

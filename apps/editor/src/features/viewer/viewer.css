@@ -165,9 +165,10 @@
    the picture goes on drawing the letters, the field adds the caret and the selection. Nothing it
    would inherit or bring along as a text area may move a letter, so it starts from nothing; size,
    font and place are set on the element from the measures the title was drawn by. Type is set by
-   the font's own measures, as the title's is, and a line breaks where the title breaks it: at
-   white space, and inside a word only when the word alone is wider than the box. (After a hyphen
-   a browser breaks a word all the same, which no property turns off.) */
+   the font's own measures, as the title's is. The lines are the browser's to break, and the title
+   breaks its own by the browser's rules (`wrapLines` in the engine): what cannot be broken is cut
+   only when it is wider than the box by itself, and East Asian text holds together like a word,
+   which is all the title does for it. */
 textarea.title-edit {
   all: initial;
   position: absolute;

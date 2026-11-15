@@ -146,7 +146,8 @@ const ELLIPSIS = '\u2026';
  *   and before an opening bracket that follows punctuation (`a.|(b)`).
  * - With a character beyond ASCII on either side: after a hyphen, a dash, an ellipsis and a space
  *   of a set width; on both sides of an em dash; after `!`, `?`, `/` and `}`. Never before what
- *   clings to the character in front of it, nor after what opens, nor next to a no-break space.
+ *   clings to the character in front of it, nor after what opens something or glues two words
+ *   together. A hyphen that begins a word stays with the word.
  *
  * Everything else counts as a letter. That leaves out what a browser does for emoji, for scripts
  * written without spaces between the words, and for the signs of currencies and units.
@@ -159,8 +160,8 @@ function breaksBetween(before: string, a: string, b: string): boolean {
   }
   if (MARK.test(b) || CLINGS.test(b) || BREAK_AFTER.test(b) || OPENS.test(a) || GLUE.test(a)) return false;
   if (BREAK_AFTER.test(a)) {
-    // A hyphen or a dash lets go of anything else, a no-break space included, unless it begins a
-    // word: then it stays with the letters of that word.
+    // A hyphen or a dash lets go of whatever follows, a no-break space included, unless it begins
+    // a word: then it stays with the letters of that word.
     const begins = DASH.test(a) && (!before || WHITE.test(before));
     return !(begins && WORD.test(b));
   }
@@ -169,24 +170,15 @@ function breaksBetween(before: string, a: string, b: string): boolean {
 }
 
 /**
- * A paragraph as the pieces its lines are made of: runs of white space, and between them the
- * stretches no line is broken inside.
+ * Whether a line of `para` that begins at `from` may be broken in front of the character at `at`:
+ * after a run of white space, or between two characters that let go of each other. What stands
+ * before the line does not count, as it does not for a browser: a hyphen the line begins with
+ * begins a word.
  */
-function pieces(para: string): string[] {
-  const out: string[] = [];
-  let from = 0;
-  for (let i = 1; i < para.length; i++) {
-    const white = WHITE.test(para[i]);
-    if (
-      white !== WHITE.test(para[i - 1]) ||
-      (!white && breaksBetween(para[i - 2] ?? '', para[i - 1], para[i]))
-    ) {
-      out.push(para.slice(from, i));
-      from = i;
-    }
-  }
-  out.push(para.slice(from));
-  return out;
+function breaksAt(para: string, from: number, at: number): boolean {
+  if (WHITE.test(para[at])) return false;
+  if (WHITE.test(para[at - 1])) return true;
+  return breaksBetween(at - 2 >= from ? para[at - 2] : '', para[at - 1], para[at]);
 }
 
 /**
@@ -197,7 +189,8 @@ function pieces(para: string): string[] {
  *   belongs to neither line. At the end of a paragraph it stays, and may reach over the edge of
  *   the box (see `layoutText` for how wide such a line counts).
  * - A hyphen or a dash a line is broken after stays on that line.
- * - A piece wider than the box is broken between characters, never inside one.
+ * - What cannot be broken and is wider than the box is broken between characters, never inside
+ *   one.
  */
 export function wrapLines(
   text: string,
@@ -206,32 +199,43 @@ export function wrapLines(
 ): string[] {
   const out: string[] = [];
   for (const para of text.split('\n')) {
-    if (!maxWidth || measure(para) <= maxWidth) {
+    if (!maxWidth) {
       out.push(para);
       continue;
     }
-    let line = '';
-    for (const piece of pieces(para)) {
-      if (WHITE.test(piece[0])) {
-        line += piece;
+    const fits = (line: string): boolean => measure(withoutTrail(line)) <= maxWidth;
+    let from = 0;
+    while (!fits(para.slice(from))) {
+      // The last place the line can be broken at with all that stands before it inside the box,
+      // and the first place it can be broken at.
+      let last = 0;
+      let first = para.length;
+      for (let at = from + 1; at < para.length; at++) {
+        if (!breaksAt(para, from, at)) continue;
+        if (first === para.length) first = at;
+        if (!fits(para.slice(from, at))) break;
+        last = at;
+      }
+      if (last) {
+        out.push(withoutTrail(para.slice(from, last)));
+        from = last;
         continue;
       }
-      if (line && measure(line + piece) > maxWidth) {
-        out.push(withoutTrail(line));
-        line = piece;
-      } else line += piece;
-      if (measure(line) <= maxWidth) continue;
-      // A single piece wider than the box.
-      const units = graphemes(line);
-      line = '';
-      for (const unit of units) {
-        if (line && measure(line + unit) > maxWidth) {
-          out.push(line);
-          line = unit;
-        } else line += unit;
+      // Not even the first piece of the line fits: as many of its characters as do, one at least.
+      const piece = withoutTrail(para.slice(from, first));
+      let line = '';
+      for (const unit of graphemes(piece)) {
+        if (line && measure(line + unit) > maxWidth) break;
+        line += unit;
       }
+      // A character wider than the box is all of its piece: the white space after it stays on
+      // its line as well.
+      const next = line === piece ? first : from + line.length;
+      if (next === para.length) break;
+      out.push(line);
+      from = next;
     }
-    out.push(line);
+    out.push(para.slice(from));
   }
   return out;
 }

@@ -60,8 +60,83 @@ describe('wrapLines', () => {
     expect(wrap('a😀b', 1)).toEqual(['a', '😀', 'b']);
   });
 
+  it("keeps the white space after a character wider than the box on that character's line", () => {
+    expect(wrap('😀', 1)).toEqual(['😀']);
+    expect(wrap('a 😀  ', 1)).toEqual(['a', '😀  ']);
+    expect(wrap('😀 a', 1)).toEqual(['😀', 'a']);
+  });
+
   it('wraps every paragraph by itself', () => {
     expect(wrap('one two three\nfour five six', 9)).toEqual(['one two', 'three', 'four five', 'six']);
     expect(wrap('\n\none two three', 7)).toEqual(['', '', 'one two', 'three']);
+  });
+
+  it('breaks a line after a hyphen, which stays on it', () => {
+    expect(wrap('Our award-winning studio', 14)).toEqual(['Our award-', 'winning studio']);
+    expect(wrap('state-of-the-art', 10)).toEqual(['state-of-', 'the-art']);
+    expect(wrap('peut-être', 6)).toEqual(['peut-', 'être']);
+    // The hyphen has no room on the first line: the second begins with it.
+    expect(wrap('well-known', 4)).toEqual(['well', '-', 'know', 'n']);
+  });
+
+  it('keeps a minus sign with its number, and a hyphen with what closes the phrase', () => {
+    expect(wrap('x -5', 3)).toEqual(['x', '-5']);
+    expect(wrap('x à-5', 4)).toEqual(['x', 'à-5']);
+    expect(wrap('on route-66', 9)).toEqual(['on route-', '66']);
+    expect(wrap('ab cd-.', 6)).toEqual(['ab', 'cd-.']);
+    expect(wrap('ab (c-)', 6)).toEqual(['ab', '(c-)']);
+  });
+
+  it('keeps a hyphen that begins a word with a word that is not ASCII, as a browser does', () => {
+    expect(wrap('ab -cd', 4)).toEqual(['ab -', 'cd']);
+    expect(wrap('ab -çd', 4)).toEqual(['ab', '-çd']);
+    // Forced apart in front of the hyphen, what is left is a line that begins with one.
+    expect(wrap('abcd-çççç', 4)).toEqual(['abcd', '-ççç', 'ç']);
+    expect(wrap('abcd-1234', 4)).toEqual(['abcd', '-123', '4']);
+    expect(wrap('abc-1234', 4)).toEqual(['abc-', '1234']);
+  });
+
+  it('breaks after a question mark and before a bracket where a browser does', () => {
+    expect(wrap('to watch?v=1', 9)).toEqual(['to watch?', 'v=1']);
+    expect(wrap('ab so?!', 6)).toEqual(['ab', 'so?!']);
+    expect(wrap('ab c.(de)', 5)).toEqual(['ab c.', '(de)']);
+    expect(wrap('ab c(d)', 4)).toEqual(['ab', 'c(d)']);
+    expect(wrap('ab and/or', 7)).toEqual(['ab', 'and/or']);
+    expect(wrap('ab да/нет', 6)).toEqual(['ab да/', 'нет']);
+  });
+
+  it('breaks after a dash and an ellipsis, and on both sides of an em dash', () => {
+    expect(wrap('in 2020–2024', 8)).toEqual(['in 2020–', '2024']);
+    expect(wrap('so wait…what', 8)).toEqual(['so wait…', 'what']);
+    expect(wrap('a Wait—what', 7)).toEqual(['a Wait—', 'what']);
+    expect(wrap('a Wait—what', 6)).toEqual(['a Wait', '—what']);
+    expect(wrap('a——b', 2)).toEqual(['a', '——', 'b']);
+  });
+
+  it('breaks nowhere that one character clings to the other', () => {
+    expect(wrap('ab “—', 4)).toEqual(['ab', '“—']);
+    expect(wrap('ab c–”', 4)).toEqual(['ab', 'c–”']);
+    expect(wrap('ab x—!', 4)).toEqual(['ab x', '—!']);
+    expect(wrap('ab c…–', 4)).toEqual(['ab', 'c…–']);
+    // A mark stays on the character it belongs to, a hyphen as well.
+    expect(wrap('abc-\u0301d', 4)).toEqual(['abc-\u0301', 'd']);
+  });
+
+  it('breaks at no no-break space, and keeps a no-break hyphen whole', () => {
+    expect(wrap('go 10\u00a0km', 5)).toEqual(['go', '10\u00a0km']);
+    expect(wrap('ab co\u2011op', 5)).toEqual(['ab', 'co\u2011op']);
+    expect(wrap('ab c—\u00a0d', 5)).toEqual(['ab c', '—\u00a0d']);
+    // A hyphen lets go of it all the same.
+    expect(wrap('ab c-\u00a0d', 5)).toEqual(['ab c-', '\u00a0d']);
+  });
+
+  it('breaks after a space of a set width, which takes room on its line', () => {
+    expect(wrap('ab\u2003cd', 3)).toEqual(['ab\u2003', 'cd']);
+    expect(wrap('ab\u2003cd', 2)).toEqual(['ab', '\u2003', 'cd']);
+  });
+
+  it('lets the wide space of East Asian text reach over the edge like any white space', () => {
+    expect(wrap('日本\u3000東京', 3)).toEqual(['日本', '東京']);
+    expect(wrap('日本\u3000', 2)).toEqual(['日本\u3000']);
   });
 });
