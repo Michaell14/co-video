@@ -108,30 +108,30 @@ function graphemes(s: string): string[] {
  * White space that takes no room where a line ends: a space, a tab, the wide space of East Asian
  * text. A no-break space is not among it, nor are the spaces of a set width (see `breaksBetween`).
  */
-const WHITE = /[ \t　]/;
+const WHITE = /[ \t\u3000]/;
 
 /** `line` without the white space it ends with. */
-const withoutTrail = (line: string): string => line.replace(/[ \t　]+$/, '');
+const withoutTrail = (line: string): string => line.replace(/[ \t\u3000]+$/, '');
 
 const ASCII = /[!-~]/;
 /**
  * What a line is broken after when a character beyond ASCII is next to it: hyphens, dashes and
  * the upright bar, and the spaces of a set width, which act like them.
  */
-const BREAK_AFTER = /[-|‐‒–  -  -  ]/;
-const DASH = /[-‐‒–]/;
+const BREAK_AFTER = /[-|\u2010\u2012\u2013\u1680\u2000-\u2006\u2008-\u200a\u205f]/;
+const DASH = /[-\u2010\u2012\u2013]/;
 /** Letters, and the signs that are set like letters. */
 const WORD = /[\p{L}#&*<=>@^_`~]/u;
 /** What ends a phrase or closes a bracket stays with what it follows, and so does a quotation mark. */
-const CLINGS = /[!),./:;?\]}"'‘’“”«»‹›…]/;
+const CLINGS = /[!),./:;?\]}"'\u2018\u2019\u201c\u201d\u00ab\u00bb\u2039\u203a\u2026]/;
 /** What opens a bracket, a quotation or a Spanish question stays with what follows it. */
-const OPENS = /[([{"'‘-‚“-„«»‹›¡¿]/;
+const OPENS = /[([{"'\u2018-\u201a\u201c-\u201e\u00ab\u00bb\u2039\u203a\u00a1\u00bf]/;
 /** No-break spaces, the no-break hyphen and the invisible characters that join words. */
-const GLUE = /[   ‑⁠﻿]/;
+const GLUE = /[\u00a0\u2007\u202f\u2011\u2060\ufeff]/;
 /** Marks that belong to the character before them. */
-const MARK = /[\p{M}‍]/u;
-const EM_DASH = '—';
-const ELLIPSIS = '…';
+const MARK = /[\p{M}\u200d]/u;
+const EM_DASH = '\u2014';
+const ELLIPSIS = '\u2026';
 
 /**
  * Whether a line may be broken between `a` and `b`, two characters side by side that are not
