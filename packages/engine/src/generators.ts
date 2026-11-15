@@ -105,16 +105,92 @@ function graphemes(s: string): string[] {
 }
 
 /**
+ * White space that takes no room where a line ends: a space, a tab, the wide space of East Asian
+ * text. A no-break space is not among it, nor are the spaces of a set width (see `breaksBetween`).
+ */
+const WHITE = /[ \t　]/;
+
+/** `line` without the white space it ends with. */
+const withoutTrail = (line: string): string => line.replace(/[ \t　]+$/, '');
+
+const ASCII = /[!-~]/;
+/**
+ * What a line is broken after when a character beyond ASCII is next to it: hyphens, dashes and
+ * the upright bar, and the spaces of a set width, which act like them.
+ */
+const BREAK_AFTER = /[-|‐‒–  -  -  ]/;
+/** What ends a phrase or closes a bracket stays with what it follows, and so does a quotation mark. */
+const CLINGS = /[!),./:;?\]}"'‘’“”«»…]/;
+/** What opens a bracket, a quotation or a Spanish question stays with what follows it. */
+const OPENS = /[([{"'‘’“”«»¡¿]/;
+/** No-break spaces, the no-break hyphen and the invisible characters that join words. */
+const GLUE = /[   ‑⁠﻿]/;
+/** Marks that belong to the character before them. */
+const MARK = /[\p{M}‍]/u;
+const EM_DASH = '—';
+const ELLIPSIS = '…';
+
+/**
+ * Whether a line may be broken between `a` and `b`, two characters side by side that are not
+ * white space. `before` is the character in front of `a`, if there is one.
+ *
+ * These are the rules Chromium wraps text by, as far as a title needs them: the field a title is
+ * typed into lies over the title and is wrapped by the browser, and the two have to break alike.
+ *
+ * - Between two ASCII characters, all of the browser's rules: a line breaks after a hyphen and
+ *   after a question mark unless what follows closes a phrase (`well-|known`, `watch?|v=1`, but
+ *   `(-)` and `?!` stay whole), not between a minus sign and its number (`-5`, but `route-|66`),
+ *   and before an opening bracket that follows punctuation (`a.|(b)`).
+ * - With a character beyond ASCII on either side: after a hyphen, a dash, an ellipsis and a space
+ *   of a set width; on both sides of an em dash; after `!`, `?`, `/` and `}`. Never before what
+ *   clings to the character in front of it, nor after what opens, nor next to a no-break space.
+ *
+ * Everything else counts as a letter. That leaves out what a browser does for emoji, for scripts
+ * written without spaces between the words, and for the signs of currencies and units.
+ */
+function breaksBetween(before: string, a: string, b: string): boolean {
+  if (ASCII.test(a) && ASCII.test(b)) {
+    if (a === '-') return /[0-9]/.test(b) ? /[0-9A-Za-z]/.test(before) : !'!$),./:;?]}'.includes(b);
+    if (a === '?') return !'!"\'),./:;?]}'.includes(b);
+    return '(<[{'.includes(b) && '!"#%&)*+,.:;=>\\]|}~'.includes(a);
+  }
+  if (MARK.test(b) || CLINGS.test(b) || BREAK_AFTER.test(b) || OPENS.test(a) || GLUE.test(a)) return false;
+  // A hyphen or a dash lets go of anything else, a no-break space after it included.
+  if (BREAK_AFTER.test(a)) return true;
+  if (GLUE.test(b) || (a === EM_DASH && b === EM_DASH)) return false;
+  return a === EM_DASH || b === EM_DASH || a === ELLIPSIS || '!?/}'.includes(a);
+}
+
+/**
+ * A paragraph as the pieces its lines are made of: runs of white space, and between them the
+ * stretches no line is broken inside.
+ */
+function pieces(para: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  for (let i = 1; i < para.length; i++) {
+    const white = WHITE.test(para[i]);
+    if (
+      white !== WHITE.test(para[i - 1]) ||
+      (!white && breaksBetween(para[i - 2] ?? '', para[i - 1], para[i]))
+    ) {
+      out.push(para.slice(from, i));
+      from = i;
+    }
+  }
+  out.push(para.slice(from));
+  return out;
+}
+
+/**
  * The lines `text` is set in when a line may be no wider than `maxWidth`: broken where it says so,
- * and where it has to be, at white space. A browser wraps preformatted text by these rules too, so
- * the field a title is typed into (which lies over the title) breaks its lines where the title
- * does. One thing a browser does besides is not done here: it also breaks a word after a hyphen
- * or a dash.
+ * and where it has to be, at the places a browser breaks preformatted text (see `breaksBetween`).
  *
  * - White space never takes a line of its own. Where a line is broken, the white space there
  *   belongs to neither line. At the end of a paragraph it stays, and may reach over the edge of
  *   the box (see `layoutText` for how wide such a line counts).
- * - A word wider than the box is broken between characters, never inside one.
+ * - A hyphen or a dash a line is broken after stays on that line.
+ * - A piece wider than the box is broken between characters, never inside one.
  */
 export function wrapLines(
   text: string,
@@ -128,17 +204,17 @@ export function wrapLines(
       continue;
     }
     let line = '';
-    for (const word of para.split(/(\s+)/)) {
-      if (!word.trim()) {
-        line += word;
+    for (const piece of pieces(para)) {
+      if (WHITE.test(piece[0])) {
+        line += piece;
         continue;
       }
-      if (line && measure(line + word) > maxWidth) {
-        out.push(line.trimEnd());
-        line = word;
-      } else line += word;
+      if (line && measure(line + piece) > maxWidth) {
+        out.push(withoutTrail(line));
+        line = piece;
+      } else line += piece;
       if (measure(line) <= maxWidth) continue;
-      // A single word wider than the box.
+      // A single piece wider than the box.
       const units = graphemes(line);
       line = '';
       for (const unit of units) {
@@ -206,7 +282,7 @@ export function layoutText(t: TextProps, frameW: number, frameH: number): TextLa
   // space at the edge neither widens the box nor moves a centred line by more than is left of it.
   const widths = lines.map((line) => {
     const width = measure(line);
-    return maxWidth && width > maxWidth ? Math.max(maxWidth, measure(line.trimEnd())) : width;
+    return maxWidth && width > maxWidth ? Math.max(maxWidth, measure(withoutTrail(line))) : width;
   });
   const textW = Math.max(1, maxWidth ?? 0, ...widths);
   const lineH = px * t.lineHeight;

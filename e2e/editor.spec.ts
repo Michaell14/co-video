@@ -886,6 +886,71 @@ test.describe('editing from the keyboard', () => {
     expect(await onThird()).toEqual({ start: starts[starts.length - 1], into: 10 });
   });
 
+  test('media that lands in the middle of a drag of the speed slider leaves the comment on its shot', async ({
+    page,
+  }) => {
+    await sampleProject(page);
+    await pinNote(page, 250, 'Hold this a beat longer');
+    await page.getByRole('button', { name: 'Close comments' }).click();
+    const [, second, third] = await idsOf(page, 'video');
+    await page.locator(`[data-clip="${second}"]`).click();
+    await page.keyboard.press('r');
+    const inspector = page.locator('[aria-label="Inspector"]');
+    await inspector.locator('.section__head', { hasText: 'Speed' }).click();
+    const track = (await inspector
+      .locator('.section', { hasText: 'Presets' })
+      .locator('.slider')
+      .first()
+      .boundingBox())!;
+    const y = track.y + track.height / 2;
+    /** Where the third shot begins, how far into it the note stands, and how many steps there are to undo. */
+    const state = () =>
+      page.evaluate((third) => {
+        const { session } = (window as any).tandem;
+        const start: number = session.store.get().clips[third].start;
+        return {
+          start,
+          into: session.review.get()[0].frame - start,
+          steps: session.store.undoManager.undoStack.length as number,
+          assets: Object.keys(session.store.get().assets).length,
+        };
+      }, third);
+    const dragTo = async (step: number): Promise<void> => {
+      await page.mouse.move(track.x + track.width * (3 / 7 + step * 0.02), y);
+      await expect.poll(async () => (await state()).into).toBe(10);
+    };
+
+    const before = await state();
+    await page.mouse.move(track.x + (track.width * 3) / 7, y);
+    await page.mouse.down();
+    await dragTo(2);
+    await dragTo(4);
+    const halfway = await state();
+    expect(halfway.start).toBeLessThan(before.start);
+    expect(halfway.steps).toBe(before.steps + 1);
+
+    // A file that was on its way in arrives while the button is still down. It is a step of its
+    // own to undo, and the rest of the drag is recorded with it.
+    await importFixtures(page, ['green.png']);
+    await expect.poll(async () => (await state()).assets).toBe(before.assets + 1);
+    await dragTo(5);
+    await dragTo(7);
+    await page.mouse.up();
+    const after = await state();
+    expect(after).toMatchObject({ into: 10, steps: before.steps + 2, assets: before.assets + 1 });
+    expect(after.start).toBeLessThan(halfway.start);
+
+    // Each of the two steps takes back its part of the drag, and the note goes with the shot.
+    await page.evaluate(() => (window as any).tandem.cmd.undo());
+    expect(await state()).toEqual(halfway);
+    await page.evaluate(() => (window as any).tandem.cmd.undo());
+    expect(await state()).toEqual(before);
+    expect(await notes(page)).toEqual({ 'Hold this a beat longer': 250 });
+    await page.evaluate(() => (window as any).tandem.cmd.redo());
+    await page.evaluate(() => (window as any).tandem.cmd.redo());
+    expect(await state()).toEqual(after);
+  });
+
   test('Alt+Up and Alt+Down move the picture of a sync clip and leave its sound on its track', async ({
     page,
   }) => {

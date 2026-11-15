@@ -15,8 +15,9 @@ import { aacByBrowser, type AacByBrowser } from './adts';
 /** Sound that was asked for and could not be given. */
 export interface SoundTrouble {
   /**
-   * `stretch`: a part could not be decoded, and what follows it could. `rest`: decoding stopped
-   * and would not start again. `all`: nothing of what was asked for could be decoded.
+   * `stretch`: a part could not be decoded, and what follows it could, where anything was asked
+   * for behind it. `rest`: decoding stopped and would not start again. `all`: nothing of what was
+   * asked for could be decoded.
    */
   lost: 'stretch' | 'rest' | 'all';
   /** Where the silence begins, in the timestamps of the track (seconds). */
