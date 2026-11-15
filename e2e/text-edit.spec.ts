@@ -216,6 +216,12 @@ test.describe('typing into a title on the picture', () => {
     await page.keyboard.press('Enter');
     await page.keyboard.type('two words');
     await expect.poll(() => content(page, id)).toBe('0ab3X456789\ntwo words');
+    // Three presses select a line: the upper one stands half a line above the middle of the frame.
+    await page.mouse.click(place(5.4, 11), middle - 0.5 * 1.15 * 0.09 * frame.height, { clickCount: 3 });
+    const line = await caret(page);
+    expect(line[0]).toBe(0);
+    expect([11, 12]).toContain(line[1]);
+    await page.keyboard.press('Control+End');
     await page.keyboard.press('Control+Shift+ArrowLeft');
     expect(await caret(page)).toEqual([16, 21]);
     await page.keyboard.press('Shift+Home');

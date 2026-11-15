@@ -166,7 +166,8 @@
    would inherit or bring along as a text area may move a letter, so it starts from nothing; size,
    font and place are set on the element from the measures the title was drawn by. Type is set by
    the font's own measures, as the title's is, and a line breaks where the title breaks it: at
-   white space, and inside a word only when the word alone is wider than the box. */
+   white space, and inside a word only when the word alone is wider than the box. (After a hyphen
+   a browser breaks a word all the same, which no property turns off.) */
 textarea.title-edit {
   all: initial;
   position: absolute;

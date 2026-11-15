@@ -106,8 +106,10 @@ function graphemes(s: string): string[] {
 
 /**
  * The lines `text` is set in when a line may be no wider than `maxWidth`: broken where it says so,
- * and where it has to be, at white space. A browser wraps preformatted text by the same rules, so
- * an editable element laid over a title breaks its lines where the title does.
+ * and where it has to be, at white space. A browser wraps preformatted text by these rules too, so
+ * the field a title is typed into (which lies over the title) breaks its lines where the title
+ * does. One thing a browser does besides is not done here: it also breaks a word after a hyphen
+ * or a dash.
  *
  * - White space never takes a line of its own. Where a line is broken, the white space there
  *   belongs to neither line. At the end of a paragraph it stays, and may reach over the edge of
