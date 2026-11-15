@@ -476,6 +476,74 @@ describe('a speed gesture under ripple editing', () => {
     }
   });
 
+  it('takes a comment the other person makes or moves meanwhile on from the shot they put it on, for both', () => {
+    const owner = seat();
+    const guest = seat();
+    const c = cut();
+    owner.store.replaceAll(c.p);
+    connect(owner.store.doc, guest.store.doc);
+    connect(owner.review.doc, guest.review.doc);
+    note(guest, 60, 'on the first shot');
+    note(guest, 250, 'on the third shot');
+    const steps = owner.store.undoManager.undoStack.length;
+    const to = scrubber(owner, [c.fractal.id], { ripple: true, markers: true });
+    const id = (text: string): string => guest.review.get().find((n) => n.text === text)!.id;
+    const both = (expected: Record<string, number>): void => {
+      for (const s of [owner, guest]) expect(Object.fromEntries(notes(s))).toEqual(expected);
+    };
+
+    to(0.5);
+    rest();
+    // Slower still, and before the drag has rested: the second shot runs from 120 to 320 and the
+    // third begins at 320. The guest pins notes on the picture as it is now, on the third shot, on
+    // the second, and on the part of the second that only the slower speed gives it, puts the
+    // note from the first shot on the third, and deletes one.
+    to(0.6);
+    expect(owner.store.get().clips[c.aurora.id].start).toBe(320);
+    note(guest, 330, 'new on the third');
+    note(guest, 150, 'new on the second');
+    note(guest, 300, 'new late in the second');
+    guest.review.move(new Map([[id('on the first shot'), 340]]));
+    guest.review.remove(id('on the third shot'));
+
+    for (const [speed, second, third, late] of [
+      // The second shot is 300 frames long, then 150: the late note's time is taken out, and it
+      // goes to the cut. At 240 frames that time is put back, and the note with it.
+      [0.4, 420, 420, 300],
+      [0.8, 270, 270, 270],
+      [0.5, 360, 360, 300],
+    ]) {
+      to(speed);
+      rest();
+      expect(clipEnd(owner.store.get().clips[c.fractal.id])).toBe(second);
+      expect(guest.store.get().clips[c.aurora.id].start).toBe(third);
+      both({
+        'new on the second': 150,
+        'new late in the second': late,
+        'new on the third': third + 10,
+        'on the first shot': third + 20,
+      });
+    }
+
+    // Still one step, which takes each note back to where it was found or put.
+    expect(owner.store.undoManager.undoStack.length).toBe(steps + 1);
+    owner.store.undo();
+    expect(layout(guest.store.get(), c.v1)).toEqual(['0-120', '120-240', '240-360']);
+    both({
+      'new on the second': 150,
+      'new late in the second': 300,
+      'new on the third': 330,
+      'on the first shot': 340,
+    });
+    owner.store.redo();
+    both({
+      'new on the second': 150,
+      'new late in the second': 300,
+      'new on the third': 370,
+      'on the first shot': 380,
+    });
+  });
+
   it('leaves the comments alone when comments and markers do not follow', () => {
     const s = seat();
     const c = cut();

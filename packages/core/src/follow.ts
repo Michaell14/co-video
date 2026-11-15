@@ -46,12 +46,9 @@ export type Follow = (frame: number) => number;
 export interface FollowOptions extends CommitOptions {
   follow: Follow;
   /**
-   * For a gesture that plans every one of its steps anew from where it began: something that is
-   * the same at each step of one gesture, and that no other gesture has. `follow` then starts from
-   * the frames of the project as the gesture found it, not as this commit finds it: a comment that
-   * an earlier step of the gesture moved goes by the frame it had before the gesture. One that
-   * somebody made or moved while the gesture was under way has no such frame, and goes by the
-   * frame it stands at.
+   * For a gesture that plans every one of its steps anew from where it began. `follow` then starts
+   * from the frames of the project as the gesture found it, not as this commit finds it: a comment
+   * that an earlier step of the gesture moved goes by the frame it had before the gesture.
    *
    * Where the gesture found the comments is kept with the gesture, not with an undo step, because
    * a gesture is not always recorded as one. An edit of another kind that lands between two of
@@ -64,7 +61,21 @@ export interface FollowOptions extends CommitOptions {
    * (`GESTURE_REST_MS`), or sooner when something else needs them in place: another edit, or an
    * undo.
    */
-  gesture?: object;
+  gesture?: GestureStep;
+}
+
+/**
+ * One step of a gesture that plans every one of its steps from where it began. A comment that
+ * somebody made or moved while the gesture was under way has no frame from where the gesture
+ * began. It was put on the picture as an earlier step left it, and goes from there.
+ */
+export interface GestureStep<Step = unknown> {
+  /** The same object at every step of one gesture, and no other gesture's. */
+  of: object;
+  /** The step before this one, as the gesture tells its steps apart. */
+  last: Step;
+  /** Where this step takes a thing that stands at `frame` of the project as `step` left it. */
+  since(step: Step, frame: number): number;
 }
 
 /** How long a gesture has made no step before the comments are written where it has them. */
@@ -72,7 +83,7 @@ export const GESTURE_REST_MS = 120;
 
 type UndoStep = Y.UndoManager['undoStack'][number];
 
-/** Frames of comments that an undo step, or a gesture, moved: by comment, as `[before, after]`. */
+/** Frames of comments that an undo step moved: by comment, as `[before, after]`. */
 type Moved = Map<ID, [number, number]>;
 
 interface Note {
@@ -84,13 +95,33 @@ interface Note {
 /** Where an undo step keeps the comments it moved. */
 const STEP_COMMENTS = 'tandem.comments';
 
+/** What every step of a gesture takes a comment from. */
+interface Basis {
+  /** The frame the comment had when the gesture began, or when it came. */
+  found: number;
+  /** For a comment that came while the gesture was under way: the step it came after. */
+  came?: { after: unknown };
+}
+
+/** Where an edit, or a step of a gesture, takes a comment. */
+interface Going extends Basis {
+  /** The frame the comment stood at when the edit was made. It is moved only while it stands there. */
+  at: number;
+  frame: number;
+}
+
+/** Where a gesture has a comment, once it has written it. */
+interface Held extends Basis {
+  /** The frame the gesture last wrote, or found, it at: where it stands until somebody moves it. */
+  stands: number;
+}
+
 /** Frames a gesture has for the comments and has not written yet. */
 interface Waiting {
   gesture: object;
   /** The undo step the gesture's last step was recorded in. */
   step: UndoStep;
-  /** By comment: the frame the gesture found it at, and the frame it is to stand at. */
-  want: Moved;
+  want: Map<ID, Going>;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -101,8 +132,8 @@ export class CommentMover {
   private recorded: UndoStep | null = null;
   /** The step the undo or redo under way was filed as, once it has changed something. */
   private filed: UndoStep | null = null;
-  /** What each gesture has moved so far, from where it found it to where it last wrote it. */
-  private readonly gestures = new WeakMap<object, Moved>();
+  /** Where each gesture has every comment of the project, as far as it has written them. */
+  private readonly gestures = new WeakMap<object, Map<ID, Held>>();
   private waiting: Waiting | null = null;
 
   /** Listens to the history of `store` from here on, and is done with when the store is. */
@@ -128,32 +159,44 @@ export class CommentMover {
     // Only the next step of the same gesture, in the same undo step, goes on from what is waiting.
     // Anything else counts from where the comments are, so the gesture before it has to have put
     // them there.
-    const waiting = this.waiting;
-    if (waiting && (waiting.gesture !== gesture || waiting.step !== step)) this.settle();
-    const begun = gesture && this.gestures.get(gesture);
-    const want: Moved = new Map();
-    for (const c of this.review.get()) {
-      // What the gesture has moved goes by where the gesture found it, for as long as it stands
-      // where the gesture put it.
-      const earlier = begun?.get(c.id);
-      const found = earlier && earlier[1] === c.frame ? earlier[0] : c.frame;
-      const frame = follow(found);
-      if (earlier || frame !== c.frame) want.set(c.id, [found, frame]);
-    }
+    if (this.waiting && (this.waiting.gesture !== gesture?.of || this.waiting.step !== step)) this.settle();
+    const want = new Map<ID, Going>();
     if (!gesture) {
+      for (const c of this.review.get()) {
+        const frame = follow(c.frame);
+        if (frame !== c.frame) want.set(c.id, { at: c.frame, frame, found: c.frame });
+      }
       this.write(step, want);
       return;
     }
+    const held = this.gestures.get(gesture.of);
+    const waiting = this.waiting?.want;
+    for (const c of this.review.get()) {
+      const before = waiting?.get(c.id);
+      const had = held?.get(c.id);
+      // The step before this one has it still to write, the gesture has it where it last put it
+      // (or the gesture begins now), or it came since.
+      const { found, came }: Basis =
+        before && before.at === c.frame
+          ? before
+          : !held
+            ? { found: c.frame }
+            : had && had.stands === c.frame
+              ? had
+              : { found: c.frame, came: { after: gesture.last } };
+      const frame = came ? gesture.since(came.after, found) : follow(found);
+      want.set(c.id, { at: c.frame, frame, found, came });
+    }
     // The first step of a gesture is written like any edit: a gesture of one step, a key that
     // was pressed, has nothing to wait for.
-    if (!begun) {
-      const moved: Moved = new Map();
-      this.gestures.set(gesture, moved);
-      this.write(step, want, moved);
+    if (!held) {
+      const comments = new Map<ID, Held>();
+      this.gestures.set(gesture.of, comments);
+      this.write(step, want, comments);
       return;
     }
     clearTimeout(this.waiting?.timer);
-    this.waiting = { gesture, step, want, timer: setTimeout(this.settle, GESTURE_REST_MS) };
+    this.waiting = { gesture: gesture.of, step, want, timer: setTimeout(this.settle, GESTURE_REST_MS) };
   }
 
   /** Write the comments where the gesture that is waiting has them. */
@@ -167,17 +210,18 @@ export class CommentMover {
 
   /**
    * Put the comments at the frames `want` has for them. What that moved is noted on `step`, for
-   * its undo, and in `gesture` for the gesture these frames are of, for its next step.
+   * its undo, and in `gesture` for the gesture these frames are of, for its next step. A comment
+   * that was deleted, or that somebody moved after its frame was worked out, stays as they left it.
    */
-  private write(step: UndoStep, want: Moved, gesture?: Moved): void {
+  private write(step: UndoStep, want: Map<ID, Going>, gesture?: Map<ID, Held>): void {
     const moved: Moved = new Map((step.meta.get(STEP_COMMENTS) as Note | undefined)?.moved);
     const stands = new Map(this.review.get().map((c) => [c.id, c.frame]));
     const to = new Map<ID, number>();
-    for (const [id, [found, frame]] of want) {
-      const at = stands.get(id);
-      if (at === undefined) continue;
+    for (const [id, { at, frame, found, came }] of want) {
+      if (stands.get(id) !== at) continue;
+      gesture?.set(id, { found, came, stands: frame });
+      if (frame === at) continue;
       to.set(id, frame);
-      gesture?.set(id, [found, frame]);
       // The step takes the comment from where the step found it. That is where the gesture found
       // it only while all of the gesture is in this step.
       const earlier = moved.get(id);

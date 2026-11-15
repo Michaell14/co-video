@@ -17,6 +17,8 @@ import {
   type Clip,
   type Comment,
   type Edit,
+  type Follow,
+  type GestureStep,
   type ID,
   type Marker,
   type Project,
@@ -146,8 +148,28 @@ function rippleAfter(p: Project, group: ID[], length: (id: ID) => number): Rippl
  * stayed where it is.
  */
 export function speedRippleEdits(p: Project, ids: ID[], speed: number, reverse?: boolean): Rippled {
+  const { edits, refused, spans } = speedRipple(p, ids, speed, reverse);
+  return { edits, refused, spans };
+}
+
+/** What a change of speed did to time after one group of linked clips. */
+interface GroupRipple {
+  /** The clips of the group that decide (see `deciding`). */
+  lead: ID[];
+  /** The frames it put in after them, or took out where less than 0: none where it was refused. */
+  by: number;
+}
+
+/** `speedRippleEdits`, and what it did after each group, in the order of `speedGroups`. */
+function speedRipple(
+  p: Project,
+  ids: ID[],
+  speed: number,
+  reverse?: boolean,
+): Rippled & { groups: GroupRipple[] } {
   const updates = clipUpdates();
   const spans: RippleSpan[] = [];
+  const groups: GroupRipple[] = [];
   let refused: string | null = null;
   let working = p;
   for (const group of speedGroups(p, ids)) {
@@ -159,9 +181,10 @@ export function speedRippleEdits(p: Project, ids: ID[], speed: number, reverse?:
     updates.add(ripple.edits);
     updates.add(set);
     spans.push(...ripple.spans);
+    groups.push({ lead: deciding(working, group), by: ripple.spans[0]?.by ?? 0 });
     working = applyEdits(moved, set);
   }
-  return { edits: updates.edits(), refused, spans };
+  return { edits: updates.edits(), refused, spans, groups };
 }
 
 /** A clip that a change of speed left shorter than it plays at that speed: the next clip is in its way. */
@@ -333,7 +356,8 @@ export function speedGesture(
  * that ripples plans the step on the timeline as it found it, and the edits are what takes the
  * project from where the last step left it to that plan. Committed with `commit`, they take the
  * review comments from where the gesture found them to where the plan puts them, once the gesture
- * rests.
+ * rests. A comment that somebody makes or moves meanwhile is taken from where it was put, on the
+ * shot it was put on, by each step that follows.
  */
 export function speedEdits(g: SpeedGesture, p: Project, speed: number): Edit[] {
   const clips = { ...p.clips };
@@ -350,7 +374,7 @@ export function speedEdits(g: SpeedGesture, p: Project, speed: number): Edit[] {
     if (markers[id]) markers[id] = { ...markers[id], frame };
   }
   const found: Project = { ...p, clips, markers };
-  const plan = speedRippleEdits(found, g.ids, speed);
+  const plan = speedRipple(found, g.ids, speed);
   const follow = from.markers ? markerEdits(found, plan.edits, plan.spans) : [];
   const planned = applyEdits(found, [...plan.edits, ...follow]);
   const edits: Edit[] = [];
@@ -363,7 +387,50 @@ export function speedEdits(g: SpeedGesture, p: Project, speed: number): Edit[] {
   for (const m of Object.values(planned.markers)) {
     if (p.markers[m.id].frame !== m.frame) edits.push({ op: 'setMarker', marker: m });
   }
-  return from.markers ? asRipple(edits, rippleFollower(found, plan.edits, plan.spans), from) : edits;
+  if (!from.markers) return edits;
+  // A step is told apart by the speed it set: each is planned on the same timeline. Asked for only
+  // for a comment that came while the gesture was under way.
+  const since = new Map<number, Follow>();
+  const step: GestureStep<number> = {
+    of: from,
+    last: Object.values(g.left)[0]?.speed ?? speed,
+    since(at, frame) {
+      let follow = since.get(at);
+      if (!follow) since.set(at, (follow = stepFollower(found, g.ids, at, planned, plan.groups)));
+      return follow(frame);
+    },
+  };
+  return asRipple(edits, rippleFollower(found, plan.edits, plan.spans), step);
+}
+
+/**
+ * Where a step of a gesture that ripples, which left the clips at `planned` by `groups`, takes
+ * what stands at a frame of the timeline as an earlier step left it, one that set the speed `at`
+ * on the clips `ids` of `found`. By the rule of `rippleFollower`: along with the clip it stands
+ * on, and where that clip has another length now, or there is none, with the time put in or taken
+ * out after each group of clips since.
+ */
+function stepFollower(
+  found: Project,
+  ids: ID[],
+  at: number,
+  planned: Project,
+  groups: GroupRipple[],
+): Follow {
+  const earlier = speedRipple(found, ids, at);
+  const then = applyEdits(found, earlier.edits);
+  const edits: Edit[] = [];
+  for (const c of Object.values(planned.clips)) {
+    const was = then.clips[c.id];
+    if (was && (was.start !== c.start || was.duration !== c.duration))
+      edits.push({ op: 'updateClip', id: c.id, patch: { start: c.start, duration: c.duration } });
+  }
+  const end = (s: RippleSpan): number => (s.by < 0 ? s.from - s.by : s.from);
+  const spans = groups
+    .flatMap((group, i) => trimSpans(then, group.lead, 'end', group.by - (earlier.groups[i]?.by ?? 0)))
+    // Latest first: then each begins at a frame of `then` that none before it has moved.
+    .sort((a, b) => end(b) - end(a));
+  return rippleFollower(then, edits, spans);
 }
 
 /** `g` after its step has been committed and `p` is what came of it. */

@@ -28,7 +28,8 @@ const fps = () => {
 /**
  * Put the keyboard into the title that is selected, as Enter and F2 do. Those keys do nothing
  * where there is no one title to type into; a command that was asked for by name says why it
- * did nothing. A locked track is said by `cmd.editText`, in the words of every edit it refuses.
+ * did nothing. A title on a locked track does not stay selected, and should one be asked for all
+ * the same, `cmd.editText` refuses it in the words of every edit on a locked track.
  */
 function typeIntoTitle(): void {
   const session = currentSession();

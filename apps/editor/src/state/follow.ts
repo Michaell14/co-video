@@ -11,6 +11,7 @@ import {
   type CommitOptions,
   type Edit,
   type Follow,
+  type GestureStep,
   type Project,
   type ProjectStore,
   type ReviewStore,
@@ -20,7 +21,7 @@ import { useUI } from './ui';
 
 interface Ripple {
   follow: Follow;
-  gesture?: object;
+  gesture?: GestureStep;
 }
 
 const ripples = new WeakMap<readonly Edit[], Ripple>();
@@ -28,10 +29,10 @@ const ripples = new WeakMap<readonly Edit[], Ripple>();
 /**
  * Mark `edits` as those of a ripple that takes what stands at a frame to where `follow` says. The
  * mark is on this very list. A copy of it, or a list it was spread into, is committed like any
- * other edits and takes no comment along. `gesture` is for a gesture that plans each of its steps
- * from where it began, and is what tells it from any other (see `FollowOptions`).
+ * other edits and takes no comment along. `gesture` is for a step of a gesture that plans each of
+ * its steps from where it began (see `FollowOptions`).
  */
-export function asRipple(edits: Edit[], follow: Follow, gesture?: object): Edit[] {
+export function asRipple(edits: Edit[], follow: Follow, gesture?: GestureStep): Edit[] {
   ripples.set(edits, { follow, gesture });
   return edits;
 }

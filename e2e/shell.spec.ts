@@ -643,6 +643,21 @@ test.describe('top bar', () => {
     await expect(field).toHaveCount(0);
     expect(await content()).toBe('Typed by name');
     expect(await toastsWith(page, 'Select one title to type into it.')).toBe(3);
+
+    // A title on a locked track does not stay selected, so there is no title to type into.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.evaluate((id) => {
+      const { session } = (window as any).tandem;
+      const { trackId } = session.store.get().clips[id];
+      session.store.commit([{ op: 'updateTrack', id: trackId, patch: { locked: true } }]);
+      (window as any).tandem.cmd.seek(session.store.get().clips[id].start + 30);
+    }, title.id);
+    await select([title.id]);
+    await byName();
+    await expect.poll(() => toastsWith(page, 'Select one title to type into it.')).toBe(4);
+    await expect(field).toHaveCount(0);
+    expect(await page.evaluate(() => document.activeElement?.tagName)).not.toBe('TEXTAREA');
+    expect(await content()).toBe('Typed by name');
   });
 });
 
