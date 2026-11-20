@@ -177,7 +177,6 @@ export class Stretcher {
   private readonly around: Float64Array;
   private readonly beforeCoarse: Float64Array;
   private readonly aroundCoarse: Float64Array;
-  private readonly level: Float64Array;
   private readonly one: Float32Array;
   private readonly other: Float32Array;
 
@@ -209,7 +208,6 @@ export class Stretcher {
     this.around = new Float64Array(2 * search + 2 * hop);
     this.beforeCoarse = new Float64Array(coarse);
     this.aroundCoarse = new Float64Array(Math.floor((2 * search) / this.dec) + 2 + coarse);
-    this.level = new Float64Array(hop);
     this.one = new Float32Array(2 * hop + 2 * search);
     this.other = new Float32Array(hop);
   }
@@ -387,7 +385,7 @@ export class Stretcher {
 
   /** The stream samples of the block whose grains have all been chained. */
   private render(k0: number): Resampled {
-    const { hop, chained, likeness, energy, ease, offset, window, level, one, other } = this;
+    const { hop, chained, likeness, energy, ease, offset, window, one, other } = this;
     // The chain arrives at the next anchor off by `rest`, and the anchor lies on the map. Each
     // grain gives up a share of that, and the shares are largest where the grains are quiet or
     // unlike each other anyway: there a slip of a few samples between two grains is not heard.
@@ -411,33 +409,25 @@ export class Stretcher {
     const end = Math.min(this.last, (k0 + GRAINS) * hop);
     const data = Array.from({ length: this.channels }, () => new Float32Array(end - begin));
     for (let h = Math.floor(begin / hop) - k0; h < GRAINS && (k0 + h) * hop < end; h++) {
-      // Between the centres of two grains the stream is the one fading out and the next fading in.
+      // Between the centres of two grains the stream is the one fading out and the next fading
+      // in, and the two shares add up to one. Two grains that follow one another in the file
+      // therefore give the file, and no sample of the stream is larger than the larger of the two
+      // it is made of. Two grains that are unlike each other, as in noise, add up in power: half-
+      // way between their centres that is up to 3 dB less than either, so steady noise comes out
+      // up to a decibel low, with a ripple at the rate of the grains. It is left so: a gain that
+      // made up for it would be one gain for all that sounds there, and would ripple a tone under
+      // the noise and lift samples above the highest of the file.
       const n0 = (k0 + h) * hop;
       const i0 = Math.max(0, begin - n0);
       const i1 = Math.min(hop, end - n0);
       const leaving = this.centre(k0 + h) + offset[h];
       const coming = this.centre(k0 + h + 1) + offset[h + 1] - hop;
-      // Two grains that follow one another in the file add up to the file. Two that are unlike
-      // each other add up in power, not in level, and half-way between their centres, where each
-      // is at half, that is 3 dB less than either: noise would flutter at the rate of the grains.
-      // So their sum is brought to the level that two sounds as alike as these two give.
-      const alike = coming === leaving ? 1 : Math.min(1, Math.max(0, likeness[h + 1]));
-      if (alike < 1)
-        for (let i = i0; i < i1; i++) {
-          const falling = window[hop + i];
-          const rising = window[i];
-          level[i] = Math.sqrt(falling * falling + rising * rising + 2 * alike * falling * rising);
-        }
       for (let c = 0; c < this.channels; c++) {
         this.kept.read(c, leaving + i0, i1 - i0, one);
         this.kept.read(c, coming + i0, i1 - i0, other);
         const out = data[c];
-        if (alike < 1)
-          for (let i = i0; i < i1; i++)
-            out[n0 + i - begin] = (window[hop + i] * one[i - i0] + window[i] * other[i - i0]) / level[i];
-        else
-          for (let i = i0; i < i1; i++)
-            out[n0 + i - begin] = window[hop + i] * one[i - i0] + window[i] * other[i - i0];
+        for (let i = i0; i < i1; i++)
+          out[n0 + i - begin] = window[hop + i] * one[i - i0] + window[i] * other[i - i0];
       }
     }
     return { first: begin, data };

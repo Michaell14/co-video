@@ -325,9 +325,9 @@ export class Retimed implements Sounding {
             const starts = this.map.stream((at - reach.source) / sampleRate) * sampleRate;
             if (Number.isFinite(starts)) begin = Math.max(first, Math.floor((starts - reach.stream) / BLOCK));
           }
-          // Sound that is first heard after the last buffer wanted has none to give, and what the
-          // file holds further on plays later still. A read decodes beyond the sound it gives
-          // (with pitch kept, to the anchor after it), so the file can change out there.
+          // A read decodes on past the sound it gives (with pitch kept, to the anchor after it),
+          // and the file's sound can change out there. Sound first heard after the last buffer
+          // wanted has no buffer to give, and what follows it in the file plays later still.
           if (begin > last) return;
           run = {
             rate: sampleRate,

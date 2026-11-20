@@ -757,7 +757,7 @@ describe('Stretcher', () => {
     }
   });
 
-  it('ripples a tone that sounds under noise as loud as itself by 28 dB under the tone at most', () => {
+  it('holds the ripple on a tone that sounds under noise as loud as itself 28 dB under the tone', () => {
     // What keeps the level of noise is one gain for the junction of two grains, found from how
     // alike the two are as a whole. Where a tone and noise sound together it cannot tell them
     // apart: the tone, which added up already, is raised a little half-way between the grains
