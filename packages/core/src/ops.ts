@@ -1312,7 +1312,7 @@ function retimeGroup(
   };
   /** Nothing comes of the group: the clips of it that were placed stand as they stood again. */
   const undone = (): null => {
-    for (const [was, now] of placed.reverse()) lanes.place(now, was);
+    for (const [was, now] of placed) lanes.place(now, was);
     return null;
   };
 

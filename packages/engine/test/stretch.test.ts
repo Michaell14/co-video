@@ -730,7 +730,11 @@ describe('Stretcher', () => {
     }
   });
 
-  it('keeps the level of noise, without a flutter at the rate of the grains', () => {
+  it('keeps the level of noise to within 1.2 dB, and its flutter at the rate of the grains under 2.5 dB', () => {
+    // Two grains that do not carry on from one another add up in power, not in level: half-way
+    // between their centres that is up to 3 dB less than either. Nothing makes up for it, so
+    // steady noise comes out 0.3 to 0.9 dB low and 0.5 to 1.9 dB quieter between two grains than
+    // at their centres. A stated limit of the method; the two tests below say what it buys.
     const { hop } = grainMeasures(RATE);
     for (const [lo, hi] of [
       [3000, 9000],
@@ -751,18 +755,18 @@ describe('Stretcher', () => {
         }
         after /= out.length - 2 * RATE;
         const what = `${lo} to ${hi} Hz at ${speed}x`;
-        expect(Math.abs(10 * Math.log10(after / before)), what).toBeLessThan(0.3);
-        expect(10 * Math.log10(Math.max(...tenths) / Math.min(...tenths)), what).toBeLessThan(1);
+        expect(Math.abs(10 * Math.log10(after / before)), what).toBeLessThan(1.2);
+        expect(10 * Math.log10(Math.max(...tenths) / Math.min(...tenths)), what).toBeLessThan(2.5);
       }
     }
   });
 
-  it('holds the ripple on a tone that sounds under noise as loud as itself 28 dB under the tone', () => {
-    // What keeps the level of noise is one gain for the junction of two grains, found from how
-    // alike the two are as a whole. Where a tone and noise sound together it cannot tell them
-    // apart: the tone, which added up already, is raised a little half-way between the grains
-    // and carries components at their rate, 100 Hz either side of it. A stated limit of the
-    // method: 30 dB under the tone at twice the speed, lower at the others and under less noise.
+  it('puts nothing at the rate of the grains on a tone that sounds under noise as loud as itself', () => {
+    // Why the sum of two unlike grains is not brought up to the level of either: that would be
+    // one gain for all that sounds in them. Where a tone and noise sound together it cannot tell
+    // them apart, and the tone, which added up already, would be raised half-way between the
+    // grains: components at their rate, 100 Hz either side of it, 30 dB under the tone at twice
+    // the speed. As it is they lie 44 dB under it or lower.
     for (const speed of [0.5, 0.8, 1.25, 2]) {
       const seconds = 14;
       const hiss = noise(seconds * speed + 3, 3000, 9000, 5);
@@ -772,24 +776,39 @@ describe('Stretcher', () => {
       const carrier = powerAround(out, 440);
       expect(Math.abs(10 * Math.log10(carrier / powerAround(source, 440))), `${speed}x`).toBeLessThan(0.5);
       for (const hz of [340, 540])
-        expect(10 * Math.log10(powerAround(out, hz) / carrier), `${hz} Hz at ${speed}x`).toBeLessThan(-28);
+        expect(10 * Math.log10(powerAround(out, hz) / carrier), `${hz} Hz at ${speed}x`).toBeLessThan(-40);
     }
   });
 
-  it('goes no more than 3 dB above the highest sample of the file', () => {
-    // The same gain raises the sum of two grains that are not alike by up to the square root of
-    // two half-way between them. Sound that fills its file to full scale can therefore come out
-    // above full scale, and nothing after the stretcher holds it back. A stated limit.
+  it('never goes above the highest sample of the file', () => {
+    // A sample of the stream is two samples of the file, one of each grain, in shares that add up
+    // to one: it is no larger than the larger of the two. Sound that fills its file to full
+    // scale stays within full scale, and nothing after the stretcher would hold it back.
     const rnd = random(9);
-    const top = 0.5;
-    for (const speed of [0.5, 0.8, 1.25, 2]) {
-      const source = Float32Array.from({ length: (10 * speed + 3) * RATE }, () => (2 * rnd() - 1) * top);
-      const out = stretch([source], steady(speed), 0, 10 * RATE)[0];
-      let peak = 0;
-      for (const v of out) peak = Math.max(peak, Math.abs(v));
-      expect(peak, `${speed}x`).toBeLessThanOrEqual(Math.SQRT2 * top);
-      // White noise comes close to it: the limit is not one on paper only.
-      expect(peak, `${speed}x`).toBeGreaterThan(1.25 * top);
+    const white = Float32Array.from({ length: 24 * RATE }, () => 2 * rnd() - 1);
+    // Loud and dense, as a finished mix is: the music and noise, pressed against full scale.
+    const { music } = signals();
+    const largest = (samples: Float32Array) => samples.reduce((most, v) => Math.max(most, Math.abs(v)), 0);
+    const top = largest(music);
+    const pressed = white.map((v, i) => Math.tanh(3 * (music[i] / top + 0.3 * v)));
+    const full = largest(pressed);
+    const mix = pressed.map((v) => v / full);
+    const maps = [
+      ...[0.5, 0.8, 1.25, 2].map((speed) => ({ how: `${speed}x`, media: steady(speed), end: 10 * RATE })),
+      { how: 'the ramp', media: sixPoints.media, end: Math.floor(sixPoints.stream(11.5) * RATE) },
+    ];
+    for (const [name, source] of [
+      ['white noise', white],
+      ['a loud mix', mix],
+    ] as const) {
+      const highest = largest(source);
+      expect(highest, name).toBeGreaterThan(0.9999);
+      for (const { how, media, end } of maps) {
+        const peak = largest(stretch([source], media, 0, end)[0]);
+        expect(peak, `${name} at ${how}`).toBeLessThanOrEqual(highest);
+        // And it comes that high: the stream is not merely quieter than the file.
+        expect(peak, `${name} at ${how}`).toBeGreaterThan(0.99 * highest);
+      }
     }
   });
 

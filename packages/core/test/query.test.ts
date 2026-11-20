@@ -260,6 +260,9 @@ describe('a clip on a ramp', () => {
     expect(sourceSpan(still, p)).toEqual({ in: clip.sourceIn, out: clip.sourceIn });
     expect(handles(still, p.assets.asset1, p)).toEqual({ head: Infinity, tail: Infinity });
     expect(timeMap(still).speed(0)).toBe(1);
+    // Its stream is that of its one speed, as its clock is.
+    expect(streamIn({ ...still, speed: 2 })).toBe(clip.sourceIn / 2);
+    expect(streamIn(still)).toBe(timeMap(still).stream(still.sourceIn));
   });
 
   it('has as many frames of handle as its ramp reaches the ends of the file in', () => {

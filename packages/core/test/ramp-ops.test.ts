@@ -8,6 +8,7 @@ import {
   clipAt,
   clipAtRate,
   clipEnd,
+  clipsOnTrack,
   deleteRange,
   evalKeyframes,
   frameOfMedia,
@@ -902,6 +903,32 @@ function splitEdit(
   return { v, a, p: put(f.p, v, a) };
 }
 
+/**
+ * Two takes at 100%. Of the first, a picture on V1 and ten frames of its sound, three seconds in. Of
+ * the second, a picture on V2 from frame `second` and its sound from a second before that. And a
+ * change that puts the first at 20%, where the ten frames come at frame 550, and the second at 50%,
+ * where its sound would begin sixty frames before its picture.
+ */
+function twoTakes(f: Fixture, second: number) {
+  const one = picture(f, { start: 100, duration: 300, sourceIn: 5, linkId: 'one' });
+  const piece = sound(f, { start: 190, duration: 10, sourceIn: 8, linkId: 'one' });
+  const two = makeClip('video', f.v2.id, {
+    assetId: 'asset1',
+    start: second,
+    duration: 300,
+    sourceIn: 20,
+    linkId: 'two',
+  });
+  const early = sound(f, { start: second - 30, duration: 330, sourceIn: 19, linkId: 'two' });
+  const flat = (from: number, v: number): RampPoint[] | null =>
+    tidyRamp([
+      { m: from, v },
+      { m: from + 10, v },
+    ]);
+  const change = { ramps: { [one.id]: flat(5, 0.2), [two.id]: flat(20, 0.5) } };
+  return { one, piece, two, early, change };
+}
+
 /** Half a frame of the timeline, in media, at the fastest a clip goes within a frame of `u` frames after its in point. */
 const halfFrameAt = (p: Project, c: Clip, u: number): number =>
   0.5 * dtOf(p) * Math.max(speedAt(c, u - 1, p), speedAt(c, u, p), speedAt(c, u + 1, p));
@@ -1035,6 +1062,41 @@ describe('a ramp on linked clips', () => {
     expect(apart(free, free.clips[v.id], free.clips[a.id])).toBeLessThan(1e-9);
   });
 
+  it('leaves one frame of such a sound that plays backwards too, on the word it began on', () => {
+    const f = fixture();
+    // Played from the top down, the ten frames are the third of a second of sound below second 12.
+    const {
+      v,
+      a,
+      p: bare,
+    } = splitEdit(f, {
+      start: 100,
+      duration: 300,
+      sourceIn: 5,
+      lead: 90,
+      tail: -200,
+      reverse: true,
+    });
+    expect(Math.abs(sourceSpan(a, bare).out - 12)).toBeLessThan(1e-9);
+    const p = put(bare, sound(f, { start: 200, duration: 60, sourceIn: 40 }));
+    const slow = {
+      ramps: {
+        [v.id]: tidyRamp([
+          { m: 5, v: 0.2 },
+          { m: 15, v: 0.2 },
+        ]),
+      },
+    };
+    const held = applyEdits(p, setRamp(p, [v.id], slow));
+    const snd = held.clips[a.id];
+    expect([snd.start, snd.duration]).toEqual([199, 1]);
+    // One frame at 20%, from the top of its stretch down: the word the sound began on.
+    const now = sourceSpan(snd, held);
+    expect(Math.abs(now.out - 12)).toBeLessThan(1e-9);
+    expect(Math.abs(now.in - (12 - 0.2 / 30))).toBeLessThan(1e-9);
+    expect(overlaps(held)).toEqual([]);
+  });
+
   it('begins a lead-in on the first frame its file has sound for, and never before the file', () => {
     // Sound from a fifth of a second into its file, a second before its picture.
     const f = fixture();
@@ -1066,6 +1128,41 @@ describe('a ramp on linked clips', () => {
     expect(s.clips[early.a.id].start).toBe(0);
     expect(s.clips[early.a.id].sourceIn).toBeGreaterThan(4);
     expect(apart(s, s.clips[early.v.id], s.clips[early.a.id])).toBeLessThan(1e-9);
+  });
+
+  it('ends a sound that plays backwards on the last frame its file has sound for, and never before the file', () => {
+    let checked = 0;
+    for (const rate of RATES) {
+      const f = atRate(rate);
+      const dt = dtOf(f.p);
+      for (const shape of SHAPES) {
+        for (let tail = 1; tail <= 40; tail++) {
+          // The sound goes on after its picture, down to the very start of its file.
+          const { v, a, p } = splitEdit(f, {
+            start: 300,
+            duration: 120 + tail,
+            sourceIn: tail * dt,
+            lead: 0,
+            tail,
+            reverse: true,
+          });
+          expect(a.sourceIn).toBe(0);
+          const on = applyEdits(p, setRamp(p, [v.id], shaped(p, v, shape)));
+          expect(mediaAt(on.clips[a.id], -1, on)).toBeLessThan(0);
+          // Put on one speed afterwards, it plays what the ramp left of it, by the same rule.
+          const off = applyEdits(on, setSpeed(on, [v.id], 0.7));
+          for (const q of [on, off]) {
+            const [pic, snd] = [q.clips[v.id], q.clips[a.id]];
+            // A length rounded up to a frame the file has nothing for would have its in point held at
+            // 0, and the sound would be a part of a frame out of step.
+            expect(snd.sourceIn).toBeGreaterThanOrEqual(0);
+            expect(apart(q, pic, snd)).toBeLessThan(1e-9);
+            checked++;
+          }
+        }
+      }
+    }
+    expect(checked).toBe(RATES.length * SHAPES.length * 40 * 2);
   });
 
   for (const reverse of [false, true]) {
@@ -1417,6 +1514,215 @@ describe('a ramp on linked clips', () => {
       expect(applyEdits(p, shuffled).clips).toEqual(q.clips);
     }
   });
+
+  it('retimes the groups of one call one after another, each on the timeline the ones before it left', () => {
+    const rnd = random(909);
+    let reordered = 0;
+    let unresolved = 0;
+    for (let r = 0; r < 300; r++) {
+      const f = atRate(RATES[r % RATES.length]);
+      const dt = dtOf(f.p);
+      // Four takes cut together on V1. Of each, a piece of its sound somewhere under it on A1, and
+      // between those pieces other sounds, some of them hard against one.
+      const takes: Clip[][] = [];
+      const others: Clip[] = [];
+      let cut = 60;
+      let end = 0;
+      for (let i = 0; i < 4; i++) {
+        const duration = 80 + Math.floor(rnd() * 200);
+        const sourceIn = 3 + i * 12 + rnd();
+        const lead = Math.max(end - cut, Math.floor(rnd() * (duration - 20)));
+        const linkId = `take${i}`;
+        const v = picture(f, { start: cut, duration, sourceIn, linkId });
+        const a = sound(f, {
+          start: cut + lead,
+          duration: 5 + Math.floor(rnd() * 50),
+          sourceIn: sourceIn + lead * dt,
+          linkId,
+        });
+        takes.push([v, a]);
+        end = clipEnd(a);
+        if (rnd() < 0.7) {
+          const gap = rnd() < 0.5 ? 0 : Math.floor(rnd() * 30);
+          others.push(sound(f, { start: end + gap, duration: 5 + Math.floor(rnd() * 60), sourceIn: 50 }));
+          end = clipEnd(others[others.length - 1]);
+        }
+        cut += duration;
+      }
+      // Now and then a clip of the second take that no clock resolves: nothing comes of that take.
+      const lost =
+        r % 5 === 4
+          ? makeClip('video', f.v2.id, {
+              assetId: 'asset1',
+              start: clipEnd(takes[1][1]),
+              duration: 30,
+              sourceIn: NaN,
+              linkId: 'take1',
+            })
+          : null;
+      const p = put(f.p, ...takes.flat(), ...others, ...(lost ? [lost] : []));
+      expect(overlaps(p)).toEqual([]);
+      const ramps: Record<ID, RampPoint[] | null> = {};
+      takes.forEach(([v], i) => {
+        const { in: from, out: to } = sourceSpan(v, p);
+        const speed = 0.15 + rnd();
+        ramps[v.id] =
+          (r + i) % 3 === 0
+            ? tidyRamp([
+                { m: from, v: speed },
+                { m: to, v: speed },
+              ])
+            : shapeRamp(SHAPES[(r + i) % 7], from, to, false);
+      });
+      const ids = takes.flat().map((c) => c.id);
+      const sounds = (q: Project): string =>
+        clipsOnTrack(q, f.a1.id)
+          .map((c) => c.id)
+          .join();
+      for (const free of [false, true]) {
+        const together = setRamp(p, [...ids].reverse(), { ramps }, free);
+        let q = p;
+        const apiece: Edit[] = [];
+        for (const [v] of takes) {
+          const edits = setRamp(q, [v.id], { ramps }, free);
+          if (!edits.length) unresolved++;
+          apiece.push(...edits);
+          q = applyEdits(q, edits);
+        }
+        expect(together).toEqual(apiece);
+        if (!free) expect(overlaps(q)).toEqual([]);
+        if (sounds(q) !== sounds(p)) reordered++;
+
+        // And off their ramps again, with the sounds between them, which have none: those are set
+        // last, each as the groups leave the timeline.
+        const speed = 0.4 + rnd() * 2;
+        const named = [...others.map((c) => c.id), ...ids];
+        const off = setSpeed(q, named, speed);
+        let s = q;
+        const offApiece: Edit[] = [];
+        for (const [, a] of takes) {
+          if (!q.clips[a.id].ramp) continue;
+          const edits = setSpeed(s, [a.id], speed);
+          offApiece.push(...edits);
+          s = applyEdits(s, edits);
+        }
+        offApiece.push(
+          ...setSpeed(
+            s,
+            named.filter((id) => !q.clips[id].ramp),
+            speed,
+          ),
+        );
+        expect(off).toEqual(offApiece);
+      }
+    }
+    // Sounds that were put past others on their track, and takes that were given up.
+    expect(reordered).toBeGreaterThan(100);
+    expect(unresolved).toBe(120);
+  });
+
+  it('leaves a group it cannot resolve as it found it, for the groups after it as well', () => {
+    for (const sourceIn of [NaN, 1e308]) {
+      const f = fixture();
+      // The second take's sound begins twenty frames after the piece of the first ends.
+      const { one, piece, two, early, change } = twoTakes(f, 250);
+      const whole = put(f.p, one, piece, two, early);
+      // With room to be made, the piece goes to frame 550, past where that sound begins.
+      const moved = applyEdits(whole, setRamp(whole, [one.id], change, true));
+      expect(moved.clips[piece.id]).toMatchObject({ start: 550, duration: 50 });
+      // With a clip that no clock resolves in its group, nothing comes of the take, and the second
+      // take is placed among the clips as they were: its sound is cut where the piece ends.
+      const lost = makeClip('video', f.v2.id, {
+        assetId: 'asset1',
+        start: 200,
+        duration: 40,
+        sourceIn,
+        linkId: 'one',
+      });
+      const p = put(whole, lost);
+      expect(setRamp(p, [one.id], change, true)).toEqual([]);
+      const edits = setRamp(p, [one.id, two.id], change, true);
+      expect(edits).toEqual(setRamp(p, [two.id], change, true));
+      const q = applyEdits(p, edits);
+      expect(q.clips[early.id]).toMatchObject({ start: 200, duration: 650 });
+      expect(apart(q, q.clips[two.id], q.clips[early.id])).toBeLessThan(1e-9);
+      expect(overlaps(q)).toEqual([]);
+    }
+  });
+
+  it('finds the neighbours of a clip among clips that start on one frame as the timeline lists them', () => {
+    for (const id of ['a', 'z']) {
+      const f = fixture();
+      const takes = twoTakes(f, 690);
+      const { one, two, early, change } = takes;
+      const piece = { ...takes.piece, id };
+      const p = put(
+        f.p,
+        one,
+        piece,
+        two,
+        early,
+        sound(f, { id: 'm', start: 550, duration: 90, sourceIn: 40 }),
+      );
+      // With room to be made, the piece lands on frame 550, where the other sound starts.
+      const first = setRamp(p, [one.id], change, true);
+      const q = applyEdits(p, first);
+      expect(q.clips[id]).toMatchObject({ start: 550, duration: 50 });
+      expect(clipsOnTrack(q, f.a1.id).map((c) => c.id)).toEqual(
+        id === 'a' ? [id, 'm', early.id] : ['m', id, early.id],
+      );
+      // The second take's sound is cut where the clip before it ends: the one that is listed last.
+      const edits = setRamp(p, [one.id, two.id], change, true);
+      expect(edits).toEqual([...first, ...setRamp(q, [two.id], change, true)]);
+      expect(applyEdits(p, edits).clips[early.id].start).toBe(id === 'a' ? 640 : 630);
+    }
+  });
+
+  it('puts thousands of linked clips on ramps, and takes them off again, in one pass each', () => {
+    const f = fixture();
+    const adds: Edit[] = [];
+    const pictures: ID[] = [];
+    const count = 4000;
+    for (let i = 0; i < count; i++) {
+      const init = { start: i * 10, duration: 10, sourceIn: (i % 150) / 3, linkId: `take${i}` };
+      const v = picture(f, init);
+      adds.push({ op: 'addClip', clip: v }, { op: 'addClip', clip: sound(f, init) });
+      pictures.push(v.id);
+    }
+    const p = applyEdits(f.p, adds);
+    const ramps: Record<ID, RampPoint[] | null> = {};
+    for (const id of pictures) Object.assign(ramps, shaped(p, p.clips[id], 'rampUp').ramps);
+    let t0 = performance.now();
+    const on = setRamp(p, pictures, { ramps });
+    const onTook = performance.now() - t0;
+    const q = applyEdits(p, on);
+    t0 = performance.now();
+    const off = setSpeed(q, pictures, 0.5);
+    const offTook = performance.now() - t0;
+    const r = applyEdits(q, off);
+
+    expect(on).toHaveLength(count * 2);
+    expect(off).toHaveLength(count * 2);
+    // Each take is what it is by itself: eight frames on the ramp, and at 50% as far as the next.
+    for (const i of [0, 1, 1234, count - 1]) {
+      expect(on.slice(i * 2, i * 2 + 2)).toEqual(setRamp(p, [pictures[i]], { ramps }));
+      expect(off.slice(i * 2, i * 2 + 2)).toEqual(setSpeed(q, [pictures[i]], 0.5));
+    }
+    for (const [timeline, duration] of [
+      [q, 8],
+      [r, 10],
+    ] as const) {
+      for (const track of [f.v1, f.a1]) {
+        const clips = clipsOnTrack(timeline, track.id);
+        expect(clips.map((c) => c.start)).toEqual(pictures.map((_, i) => i * 10));
+        expect(new Set(clips.slice(0, -1).map((c) => c.duration))).toEqual(new Set([duration]));
+      }
+    }
+    expect(r.clips[pictures[count - 1]].duration).toBeGreaterThan(10);
+    // A timeline put in order again for every clip took most of a minute at this size.
+    expect(onTook).toBeLessThan(2000);
+    expect(offTook).toBeLessThan(2000);
+  });
 });
 
 describe('setSpeed on clips that are on a ramp', () => {
@@ -1510,6 +1816,58 @@ describe('setSpeed on clips that are on a ramp', () => {
           expect(apart(none, none.clips[v.id], none.clips[a.id])).toBeLessThan(1e-9);
           if (speed === 1) expect(r.clips).toEqual(none.clips);
         }
+      }
+    }
+  });
+
+  it('parts a split edit that it turns round, and sets each of its clips by itself', () => {
+    for (const reverse of [false, true]) {
+      const f = fixture();
+      const {
+        v,
+        a,
+        p: bare,
+      } = splitEdit(f, {
+        start: 100,
+        duration: 300,
+        sourceIn: 8,
+        lead: -30,
+        tail: 20,
+        reverse,
+      });
+      const keyframes = { x: [10, 150, 290].map((t, i): Keyframe => ({ t, v: i, e: 'linear' })) };
+      const p = applyEdits(bare, [{ op: 'updateClip', id: v.id, patch: { keyframes } }]);
+      const q = applyEdits(p, setRamp(p, [v.id], shaped(p, v, 'rampUp')));
+      const on = q.clips[v.id];
+      expect(apart(q, on, q.clips[a.id])).toBeLessThan(1e-9);
+      for (const speed of [0.5, 1, 2]) {
+        const edits = setSpeed(q, [v.id], speed, !reverse);
+        const r = applyEdits(q, edits);
+        const [pic, snd] = [r.clips[v.id], r.clips[a.id]];
+        expect(pic).toMatchObject({ ramp: null, speed, reverse: !reverse, start: 100 });
+        expect(snd).toMatchObject({ ramp: null, speed, reverse: !reverse, start: q.clips[a.id].start });
+        // Turning a split edit round parts it, as it does at any one speed: neither clip is placed
+        // by the other, and each is set as it is when it is linked to nothing.
+        for (const e of edits) expect('start' in (e as { patch: object }).patch).toBe(false);
+        const loose = applyEdits(
+          q,
+          [v.id, a.id].map((id): Edit => ({ op: 'updateClip', id, patch: { linkId: null } })),
+        );
+        expect(edits).toEqual([
+          ...setSpeed(loose, [v.id], speed, !reverse),
+          ...setSpeed(loose, [a.id], speed, !reverse),
+        ]);
+        // Each keyframe is on the frame that now shows what its frame showed. That is the other way
+        // round, and they are kept in order of time all the same.
+        expect(pic.keyframes.x.map((k) => k.v)).toEqual([2, 1, 0]);
+        pic.keyframes.x.forEach((k, i) => {
+          if (i > 0) expect(k.t).toBeGreaterThan(pic.keyframes.x[i - 1].t);
+          const stoodOn = sourceTimeAt(on, on.keyframes.x[k.v].t, q);
+          expect(Math.abs(sourceTimeAt(pic, k.t, r) - stoodOn)).toBeLessThanOrEqual(
+            (0.5 / 30) * speed + 1e-9,
+          );
+          expect(evalKeyframes(pic.keyframes.x, k.t)).toBe(k.v);
+        });
       }
     }
   });
