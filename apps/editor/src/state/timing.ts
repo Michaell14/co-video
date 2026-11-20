@@ -27,10 +27,24 @@ import { markerEdits, rippleFollower, trimSpans, type Rippled, type RippleSpan }
 import { asRipple } from './follow';
 
 /** What a change of speed can alter on a clip. */
-type Timing = Pick<Clip, 'speed' | 'duration' | 'sourceIn' | 'fadeIn' | 'fadeOut' | 'keyframes'>;
+type Timing = Pick<
+  Clip,
+  'speed' | 'ramp' | 'keepPitch' | 'duration' | 'sourceIn' | 'fadeIn' | 'fadeOut' | 'keyframes'
+>;
 
-const timingOf = ({ speed, duration, sourceIn, fadeIn, fadeOut, keyframes }: Clip): Timing => ({
+const timingOf = ({
   speed,
+  ramp,
+  keepPitch,
+  duration,
+  sourceIn,
+  fadeIn,
+  fadeOut,
+  keyframes,
+}: Clip): Timing => ({
+  speed,
+  ramp,
+  keepPitch,
   duration,
   sourceIn,
   fadeIn,

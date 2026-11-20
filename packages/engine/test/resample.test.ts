@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { FULL_KERNEL_STEP, Resampler, resampleReach } from '../src/audio/resample';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  FULL_KERNEL_STEP,
+  Resampler,
+  kernelNear,
+  reachNear,
+  resampleReach,
+  type Kernel,
+} from '../src/audio/resample';
 
 /** Everything `source` gives when read from `origin` at `step`, pushed in pieces of `piece` samples. */
 function convert(
@@ -181,5 +188,104 @@ describe('Resampler', () => {
     expect(Math.abs(data[0])).toBeLessThan(0.01);
     expect(Math.abs(data[data.length - 1])).toBeLessThan(0.01);
     expect(Math.abs(data[490 - first] - 1)).toBeLessThan(0.01);
+  });
+});
+
+/** `source` read at `i * step` of its samples through `kernel`, wherever all the kernel spans is there. */
+function readThrough(kernel: Kernel, source: Float32Array, step: number): Float32Array {
+  const { half, taps, phases, coef, delta } = kernel;
+  const first = Math.ceil(half / step);
+  const last = Math.floor((source.length - half - 1) / step);
+  return Float32Array.from({ length: last - first }, (_, k) => {
+    const u = (first + k) * step;
+    const whole = Math.floor(u);
+    const phase = (u - whole) * phases;
+    const p = Math.min(phases - 1, Math.floor(phase));
+    const row = p * taps;
+    let acc = 0;
+    for (let t = 0; t < taps; t++)
+      acc += source[whole - half + 1 + t] * (coef[row + t] + (phase - p) * delta[row + t]);
+    return acc;
+  });
+}
+
+/** The number that follows `x`. */
+function after(x: number): number {
+  const bits = new BigUint64Array(new Float64Array([x]).buffer);
+  bits[0] += 1n;
+  return new Float64Array(bits.buffer)[0];
+}
+
+describe('kernelNear', () => {
+  /** The fixed steps: each the fourth root of two times the one before. */
+  const fixed = [1];
+  for (let j = 1; j < 32; j++) fixed.push(fixed[j - 1] * Math.sqrt(Math.sqrt(2)));
+
+  it('reads a step with the kernel of the next fixed step up, and every slower one with the first', () => {
+    const slow = kernelNear(1);
+    for (const step of [0.1, 0.5, 44100 / 48000, 1]) expect(kernelNear(step)).toBe(slow);
+    expect(slow.half).toBe(32);
+    for (let j = 1; j < fixed.length; j++) {
+      const own = kernelNear(fixed[j]);
+      // The fixed step itself and everything down to the one before it share a kernel; the very
+      // next number above a fixed step is read with the next kernel.
+      expect(kernelNear(fixed[j] * (1 - 1e-12)), `just under step ${fixed[j]}`).toBe(own);
+      expect(kernelNear(after(fixed[j - 1])), `just over step ${fixed[j - 1]}`).toBe(own);
+      expect(own).not.toBe(kernelNear(fixed[j - 1]));
+      expect(own.half).toBe(resampleReach(fixed[j]));
+      expect(reachNear(fixed[j])).toBe(own.half);
+      expect(own.taps).toBe(2 * own.half);
+    }
+    // Beyond the last of them there is no wider kernel to be had.
+    expect(kernelNear(1e6)).toBe(kernelNear(fixed[31]));
+    expect(kernelNear(Infinity)).toBe(kernelNear(fixed[31]));
+    expect(reachNear(Infinity)).toBe(1723);
+    expect(kernelNear(NaN)).toBe(slow);
+  });
+
+  it('has the same kernels whatever was asked for first', async () => {
+    const probes = [0.3, 1, 1.1, 1.5, 2, 2.9, 4, 7, 9.9, 10, 11.4];
+    vi.resetModules();
+    const up = await import('../src/audio/resample');
+    for (const step of probes) up.kernelNear(step);
+    vi.resetModules();
+    const down = await import('../src/audio/resample');
+    for (const step of [...probes].reverse()) down.kernelNear(step);
+    expect(down.kernelNear).not.toBe(up.kernelNear);
+    for (const step of probes) {
+      const a = up.kernelNear(step);
+      const b = down.kernelNear(step);
+      expect([b.half, b.taps, b.phases], `step ${step}`).toEqual([a.half, a.taps, a.phases]);
+      expect(b.coef, `step ${step}`).toEqual(a.coef);
+      expect(b.delta, `step ${step}`).toEqual(a.delta);
+      expect(a.half).toBe(kernelNear(step).half);
+    }
+  });
+
+  it('never passes a wider band than the step allows', () => {
+    for (const step of [1.1, 1.5, 2.9, 7, 10]) {
+      const nyquist = 24000 / step;
+      // A tone just above half the rate the source is read at would fold back into what is heard.
+      const above = readThrough(kernelNear(step), tone(1.03 * nyquist, 48000, 96000), step);
+      let peak = 0;
+      for (const v of above) peak = Math.max(peak, Math.abs(v));
+      expect(20 * Math.log10(peak / 0.5 + 1e-30), `step ${step}`).toBeLessThan(-80);
+      // What lies well inside the band is kept.
+      const hz = 0.3 * nyquist;
+      const inside = readThrough(kernelNear(step), tone(hz, 48000, 96000), step);
+      const { gain, rest } = analyse(inside, hz, 48000 / step, 0.5, 0, inside.length);
+      expect(Math.abs(gain), `step ${step}`).toBeLessThan(0.1);
+      expect(rest, `step ${step}`).toBeLessThan(-80);
+    }
+  });
+
+  it('builds no kernel twice, and fifteen serve every step from a tenth to ten', () => {
+    const seen = new Set<Kernel>();
+    for (let i = 100; i <= 10000; i++) seen.add(kernelNear(i / 1000));
+    expect(seen.size).toBe(15);
+    // Asked again in another order, every step gets the very kernel it got.
+    for (let i = 10000; i >= 100; i -= 7) expect(seen.has(kernelNear(i / 1000))).toBe(true);
+    expect(seen.size).toBe(15);
+    expect(Math.max(...[...seen].map((k) => k.half))).toBe(128);
   });
 });

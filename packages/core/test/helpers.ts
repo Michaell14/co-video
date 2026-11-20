@@ -1,6 +1,6 @@
 import * as Y from 'yjs';
 import { ASSET_DEFAULTS, emptyProject, makeClip, makeTrack, applyEdits } from '../src';
-import type { Asset, Clip, Project, Track } from '../src';
+import type { Asset, Clip, Project, RampPoint, Track } from '../src';
 
 /** Wire two docs together like a (perfect) network would. */
 export function connect(a: Y.Doc, b: Y.Doc): void {
@@ -77,4 +77,39 @@ export function overlaps(p: Project): string[] {
     }
   }
   return out;
+}
+
+/** Numbers from 0 up to 1 that are the same on every run. */
+export function random(seed: number): () => number {
+  return () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
+}
+
+/**
+ * A ramp as an operation would write it: two to nine points, speeds from 10% to 1000% spread evenly
+ * over the ratios, the first point in the first five seconds and each next one a millisecond to
+ * four seconds on.
+ */
+export function randomRamp(rnd: () => number): RampPoint[] {
+  const n = 2 + Math.floor(rnd() * 8);
+  const ramp: RampPoint[] = [];
+  let micros = Math.round(rnd() * 5e6);
+  for (let i = 0; i < n; i++) {
+    ramp.push({ m: micros / 1e6, v: Math.round(0.1 * Math.pow(100, rnd()) * 1e3) / 1e3 });
+    micros += 1000 + Math.floor(rnd() * rnd() * 4e6);
+  }
+  return ramp;
+}
+
+/** The frame rates the mapping is checked at, as [fpsNum, fpsDen]: 24, 29.97, 30 and 60. */
+export const FRAME_RATES: readonly (readonly [number, number])[] = [
+  [24, 1],
+  [30000, 1001],
+  [30, 1],
+  [60, 1],
+];
+
+/** `fixture()` at another frame rate. */
+export function atRate([fpsNum, fpsDen]: readonly [number, number]): Fixture {
+  const f = fixture();
+  return { ...f, p: applyEdits(f.p, [{ op: 'settings', patch: { fpsNum, fpsDen } }]) };
 }

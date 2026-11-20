@@ -36,7 +36,7 @@ const TRANSITION = 0.183;
 const PHASES = 512;
 const MIN_PHASES = 32;
 
-interface Kernel {
+export interface Kernel {
   /** Source samples the kernel spans on each side of the position read. */
   half: number;
   taps: number;
@@ -125,6 +125,41 @@ function kernelFor(step: number): Kernel {
   }
   kernels.set(scale, k);
   return k;
+}
+
+/**
+ * The steps a source is read at where its speed changes from one sample to the next (a speed
+ * ramp), for which a kernel per exact step would be a kernel per sample. Each is the fourth root
+ * of two times the one before, from 1 on: four to a doubling, the last at 215 source samples per
+ * output sample. They are made by multiplying, once, so that a step falls between the same two of
+ * them whenever and in whatever order it is asked for.
+ */
+const NEAR_STEPS: number[] = [1];
+for (let j = 1; j < 32; j++) NEAR_STEPS.push(NEAR_STEPS[j - 1] * Math.sqrt(Math.sqrt(2)));
+/** Their kernels, each made when it is first asked for and kept. */
+const near: (Kernel | undefined)[] = [];
+
+/** Which of `NEAR_STEPS` reads at `step`: the smallest that is not below it. */
+function nearest(step: number): number {
+  let j = 0;
+  while (j < NEAR_STEPS.length - 1 && NEAR_STEPS[j] < step) j++;
+  return j;
+}
+
+/**
+ * A kernel for reading a source at about `step` of its samples per output sample: the one all
+ * conversions at normal speed or slower share, and above that the kernel of the next of a few
+ * fixed steps, which passes a little less than `step` itself would allow and never more. A step
+ * beyond the last of them is read with the last.
+ */
+export function kernelNear(step: number): Kernel {
+  const j = nearest(step);
+  return (near[j] ??= buildKernel(1 / NEAR_STEPS[j]));
+}
+
+/** How many source samples before and after a position `kernelNear(step)` reads. */
+export function reachNear(step: number): number {
+  return resampleReach(NEAR_STEPS[nearest(step)]);
 }
 
 /** Output samples `first`, `first + 1`, … of one stream, per channel. */

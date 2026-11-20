@@ -28,12 +28,15 @@ import {
   DEFAULT_TEXT,
   DEFAULT_TRACK_HEIGHT,
   MARKER_COLORS,
+  RAMP_MEDIA,
   SCHEMA_VERSION,
+  hasSourceTime,
   starterTracks,
 } from './defaults';
 import { getEffectDef, type ParamDef } from './effects';
 import { conformEasing } from './keyframes';
 import { overlappingPairs, roundedTogether, separateClips } from './overlaps';
+import { conformRamp } from './ramp';
 import { clipAtRate, fpsOf, sameRate } from './time';
 import { getTransitionDef } from './transitions';
 import type {
@@ -348,6 +351,8 @@ const readCurve: Reader = (v) => {
 
 const CLIP_READERS: Readers<typeof CLIP_DEFAULTS> = {
   assetId: strOrNull,
+  ramp: conformRamp,
+  keepPitch: boolOrNull,
   name: nameText,
   label: nullable(color),
   linkId: strOrNull,
@@ -424,6 +429,11 @@ function readClip(id: ID, json: unknown): Clip | null {
   clip.start = clamp(Math.round(clip.start), 0, MAX_FRAMES);
   clip.duration = clamp(Math.round(clip.duration), 1, MAX_FRAMES);
   clip.speed = clip.speed > 0 ? clip.speed : 1;
+  // Only media that runs has a speed to vary: a still and a title have no ramp.
+  if (clip.ramp && (!hasSourceTime(clip.type) || clip.freeze)) clip.ramp = null;
+  // The clock of a ramp, and of sound that keeps its pitch, is worked out from the in point, and
+  // past this it is no longer a finite number. A clip with neither is read as it always was.
+  if (clip.ramp || clip.keepPitch === true) clip.sourceIn = clamp(clip.sourceIn, -RAMP_MEDIA, RAMP_MEDIA);
   return clip;
 }
 
@@ -651,6 +661,16 @@ function standsFor(now: Y.Item, was: Y.Item): void {
 
 /** The fields that say where a clip is. A change of frame rate writes them whether they change or not. */
 const PLACEMENT: ReadonlySet<string> = new Set(['start', 'duration']);
+
+/**
+ * The fields a new ramp is worked out together with: how long the clip then is, where its media
+ * begins and, for a clip placed by the one it is linked to, where it starts. An edit that changes
+ * the ramp writes those it carries whether they change or not. Two people who set different ramps
+ * on a clip at the same moment then both write all of them, and one of them wins the clip whole:
+ * otherwise the length that one ramp had left as it was would be lost to the other's, and the clip
+ * would play one person's curve over the other's length.
+ */
+const RAMP_EDIT: ReadonlySet<string> = new Set(['ramp', 'duration', 'sourceIn', 'start']);
 
 /** What an undo or redo wrote: the fields of each clip (`true` for a clip put there whole) and the markers. */
 interface StepWrites {
@@ -1667,9 +1687,13 @@ export class ProjectStore {
       case 'addClip':
         this.writeEntity(this.yClips, e.clip as unknown as Record<string, unknown>, CLIP_DEFAULTS);
         break;
-      case 'updateClip':
-        this.patchEntity(this.yClips, e.id, e.patch, CLIP_DEFAULTS, retiming ? PLACEMENT : undefined);
+      case 'updateClip': {
+        const ramps =
+          e.patch.ramp !== undefined && !deepEqual(this.yClips.get(e.id)?.get('ramp') ?? null, e.patch.ramp);
+        const always = retiming ? PLACEMENT : ramps ? RAMP_EDIT : undefined;
+        this.patchEntity(this.yClips, e.id, e.patch, CLIP_DEFAULTS, always);
         break;
+      }
       case 'removeClip':
         this.yClips.delete(e.id);
         break;

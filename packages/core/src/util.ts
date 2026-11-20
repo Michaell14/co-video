@@ -21,6 +21,14 @@ export const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo
 export const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
 /**
+ * `x` to the nearest whole number, a half going up, with room to spare. Lengths that are worked out
+ * along a speed ramp fall exactly on a half frame for ordinary clips, and are worked out once for a
+ * picture and once for its sound: without the room, noise in the last bits would send the two
+ * different ways and leave them a frame apart.
+ */
+export const roundHalfUp = (x: number): number => Math.floor(x + 0.5 + 1e-6);
+
+/**
  * A colour from a shared document as `#rrggbb` or `#rrggbbaa` in lower case, or null when it is not
  * a hex colour (`#rgb` is written out in full). Colours end up in style attributes and canvas fill
  * styles, where any other string, a `url(…)` or a megabyte of text, would be acted on by the

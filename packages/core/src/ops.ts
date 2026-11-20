@@ -14,7 +14,14 @@ import {
   makeTrack,
 } from './defaults';
 import { newId } from './ids';
-import { conformEasing, evalKeyframes, scaleKeyframes, shiftKeyframes, upsertKeyframe } from './keyframes';
+import {
+  conformEasing,
+  evalKeyframes,
+  remapKeyframes,
+  scaleKeyframes,
+  shiftKeyframes,
+  upsertKeyframe,
+} from './keyframes';
 import {
   clipEnd,
   clipsOnTrack,
@@ -22,12 +29,15 @@ import {
   handles,
   isRegionFree,
   linkedIds,
+  mediaAt,
   neighbors,
   sourcePerFrame,
+  sourceSpan,
   sourceTimeAt,
   trackLabel,
   tracksOf,
 } from './query';
+import { mediaToStream, rampTable, shiftRamp, streamToMedia, tidyRamp } from './ramp';
 import { applyEdits } from './store';
 import { clipAtRate, fpsOf, sameRate, secondsToFrame } from './time';
 import type {
@@ -41,13 +51,14 @@ import type {
   Keyframe,
   ParamValue,
   Project,
+  RampPoint,
   ShapeProps,
   TextProps,
   Track,
   TrackKind,
   Transition,
 } from './types';
-import { clamp, deepEqual } from './util';
+import { clamp, deepEqual, roundHalfUp } from './util';
 
 export interface OpResult {
   edits: Edit[];
@@ -65,7 +76,13 @@ export function retime(clip: Clip, newStart: number, newEnd: number, p: Project)
   const tailDelta = clipEnd(clip) - newEnd;
   const duration = Math.max(1, newEnd - newStart);
   const patch: Partial<Clip> = { start: newStart, duration };
-  if (hasSourceTime(clip.type)) {
+  if (clip.ramp && !clip.freeze && hasSourceTime(clip.type)) {
+    // On a ramp an edge moves along the ramp's own clock. The ramp stays where it is on the media
+    // and is not written, so every frame that is kept shows what it showed.
+    const delta = clip.reverse ? tailDelta : headDelta;
+    const sourceIn = mediaAt(clip, delta, p);
+    if (delta !== 0 && Number.isFinite(sourceIn)) patch.sourceIn = Math.max(0, sourceIn);
+  } else if (hasSourceTime(clip.type)) {
     const per = sourcePerFrame(clip, p);
     const delta = clip.reverse ? tailDelta : headDelta;
     if (delta !== 0) patch.sourceIn = Math.max(0, clip.sourceIn + delta * per);
@@ -545,6 +562,21 @@ export function slipClips(p: Project, ids: ID[], delta: number): Edit[] {
     const c = p.clips[id];
     if (!c || !hasSourceTime(c.type)) continue;
     const asset = c.assetId ? p.assets[c.assetId] : undefined;
+    if (c.ramp && !c.freeze) {
+      // On a ramp the clip moves along the stream: every frame shows what the frame `delta` on
+      // from it showed, and the ramp stays on the media. It stops where the clip would begin
+      // before its file or end after it.
+      const t = rampTable(c.ramp);
+      const length = (c.duration * p.settings.fpsDen) / p.settings.fpsNum;
+      const maxIn =
+        asset && asset.duration > 0
+          ? Math.max(0, streamToMedia(t, mediaToStream(t, asset.duration) - length))
+          : Infinity;
+      const sourceIn = clamp(delta === 0 ? c.sourceIn : mediaAt(c, c.reverse ? -delta : delta, p), 0, maxIn);
+      if (sourceIn !== c.sourceIn && Number.isFinite(sourceIn))
+        edits.push({ op: 'updateClip', id, patch: { sourceIn } });
+      continue;
+    }
     const per = sourcePerFrame(c, p);
     const used = c.duration * per;
     const maxIn = asset && asset.duration > 0 ? Math.max(0, asset.duration - used) : Infinity;
@@ -1047,30 +1079,403 @@ export function rippleTrimTo(p: Project, ids: ID[], edge: Edge, frame: number): 
  * Set the speed of clips, and with it their length: twice as fast is half as long. No clip's start
  * moves, so a clip that grows stops at the one after it on its track. That holds just as much when
  * the one after it is among `ids`: it stays where it is whatever its own new speed.
+ *
+ * For a clip on a ramp this means one speed instead, for it and for every clip linked to it, by the
+ * rules of `setRamp`: they play the stretches of media they played and stay in step.
+ *
+ * Sound whose speed changes keeps its pitch from then on, unless that has been decided for it.
  */
 export function setSpeed(p: Project, ids: ID[], speed: number, reverse?: boolean): Edit[] {
   const sp = clamp(speed, 0.05, 100);
-  const edits: Edit[] = [];
-  for (const id of new Set(ids)) {
-    const c = p.clips[id];
-    if (!c || !hasSourceTime(c.type) || c.freeze) continue;
+  const named = new Set(ids);
+  const off = offRamp(p, named, sp, reverse);
+  const edits: Edit[] = off.edits;
+  const q = off.project;
+  for (const id of named) {
+    const c = q.clips[id];
+    if (!c || !hasSourceTime(c.type) || c.freeze || off.ids.has(id)) continue;
     const natural = Math.max(1, Math.round((c.duration * c.speed) / sp));
     let duration = natural;
-    const { next } = neighbors(p, c);
+    const { next } = neighbors(q, c);
     if (next) duration = Math.min(duration, Math.max(1, next.start - c.start));
     const patch: Partial<Clip> = { speed: sp, duration };
     if (reverse !== undefined) patch.reverse = reverse;
     // A reversed clip plays its source range from the top down, so what no longer fits before the
     // next clip comes off the bottom of the range and the first frame stays the one it was.
     if (duration < natural && (reverse ?? c.reverse)) {
-      const per = (sp * p.settings.fpsDen) / p.settings.fpsNum;
+      const per = (sp * q.settings.fpsDen) / q.settings.fpsNum;
       patch.sourceIn = c.sourceIn + (natural - duration) * per;
     }
     // Keyframes follow the picture, so they stretch with the speed even when the clip is cut short.
     if (Object.keys(c.keyframes).length) patch.keyframes = scaleKeyframes(c.keyframes, c.speed / sp);
     if (c.fadeIn > duration) patch.fadeIn = duration;
     if (c.fadeOut > duration) patch.fadeOut = duration;
+    if (c.type === 'audio' && c.keepPitch === null && sp !== c.speed) patch.keepPitch = true;
     edits.push({ op: 'updateClip', id, patch });
+  }
+  return edits;
+}
+
+// ───────────────────────────────────────────────────────────────── ramps ──
+
+const speedable = (c: Clip | undefined): c is Clip => !!c && hasSourceTime(c.type) && !c.freeze;
+
+/**
+ * The clips of a clip's link group that have a speed, in an order that does not depend on who asks
+ * or in what order: by where they start, then by id.
+ */
+function speedGroup(p: Project, c: Clip): Clip[] {
+  return linkedIds(p, c.id)
+    .map((id) => p.clips[id])
+    .filter(speedable)
+    .sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : 1));
+}
+
+/** The link groups of the clips among `ids` that `has` picks, each once, in order of where they start. */
+function speedGroups(p: Project, ids: Iterable<ID>, has: (c: Clip) => boolean): Clip[][] {
+  const groups = new Map<string, Clip[]>();
+  for (const id of ids) {
+    const c = p.clips[id];
+    if (!speedable(c) || !has(c)) continue;
+    const key = c.linkId ? `link:${c.linkId}` : `clip:${c.id}`;
+    if (!groups.has(key)) groups.set(key, speedGroup(p, c));
+  }
+  return [...groups.values()].sort((a, b) => a[0].start - b[0].start || (a[0].id < b[0].id ? -1 : 1));
+}
+
+/** What a clip is put on: a ramp, or, with none, one speed. */
+interface Aim {
+  ramp: RampPoint[] | null;
+  speed: number;
+}
+
+/** The clock of an aim: when the media reaches a second, and where it is at a time. Seconds. */
+interface Clock {
+  stream(m: number): number;
+  media(tau: number): number;
+}
+
+function clockOf(aim: Aim): Clock {
+  if (aim.ramp) {
+    const t = rampTable(aim.ramp);
+    return { stream: (m) => mediaToStream(t, m), media: (tau) => streamToMedia(t, tau) };
+  }
+  const { speed } = aim;
+  return { stream: (m) => m / speed, media: (tau) => tau * speed };
+}
+
+/** Where a retimed clip stands and what it plays. */
+type Place = Pick<Clip, 'start' | 'duration' | 'sourceIn'>;
+
+/**
+ * Seconds of media that count as one place: far less than a sample, and far more than the last
+ * bits that going through a clock and back leaves on a number.
+ */
+const SAME_MEDIA = 1e-9;
+
+interface Retiming {
+  /** Do not stop at the next clip. */
+  free: boolean;
+  /** The direction the clips are given in the same edit, if any. */
+  reverse?: boolean;
+  /** Write the speed on every clip, also where it is the one the clip has. */
+  speed: boolean;
+}
+
+/**
+ * How far apart in their media two linked clips are, when they are in step: playing the same way,
+ * sharing frames of the timeline, and that far apart at both ends of what they share (nothing for
+ * the picture and the sound of one take, the recorded offset for sound from another file). Null
+ * when they are not.
+ */
+function inStep(p: Project, lead: Clip, c: Clip): number | null {
+  if (lead.reverse !== c.reverse) return null;
+  const from = Math.max(lead.start, c.start);
+  const to = Math.min(clipEnd(lead), clipEnd(c));
+  if (to <= from) return null;
+  const apart = (frame: number): number =>
+    sourceTimeAt(c, frame - c.start, p) - sourceTimeAt(lead, frame - lead.start, p);
+  const offset = apart(from);
+  return Math.abs(apart(to) - offset) <= 1e-6 ? offset : null;
+}
+
+/**
+ * Put the clips of one link group on new clocks: `lead` on `aim`, and each other clip either in
+ * step with the lead, when it was in step with it before, or by itself on `aimOf` it.
+ *
+ * Every clip keeps the stretch of media it played, and its length follows from the new clock: that
+ * is what a change of speed is. The lead, and a clip by itself, keeps its start and stops at the
+ * clip after it. A clip that was in step keeps its stretch too, and is placed where the lead's new
+ * stream reaches it, so that the two show the same media on every frame they share: a sound that
+ * began a second before its picture still begins on the same word, however long that second now
+ * takes. It ends where the lead reaches the word it ended on, and with the lead when the two ended
+ * on the same word. Where the clip before it on its track is in the way its head is cut there, and
+ * where its in point would lie before the start of its file it begins on the first frame that has
+ * media: it is never moved out of step to fit. Only a clip that its neighbours leave no room for
+ * where its media now plays gives that up: one frame of it is left, of its own media. Clips that
+ * play backwards are aligned at their first frame, which is the top of their stretch, and all of
+ * this holds for them the other way up.
+ *
+ * Returns the edits and the project with them applied, or null when a length or a place comes out
+ * as no finite number (a document can hold an in point that no clock resolves): then nothing of
+ * the group is changed.
+ */
+function retimeGroup(
+  p: Project,
+  members: Clip[],
+  lead: Clip,
+  aim: Aim,
+  aimOf: (c: Clip) => Aim,
+  how: Retiming,
+): { edits: Edit[]; project: Project } | null {
+  const { fpsNum, fpsDen } = p.settings;
+  const frames = (seconds: number): number => (seconds * fpsNum) / fpsDen;
+  const seconds = (count: number): number => (count * fpsDen) / fpsNum;
+  const turned = (c: Clip): boolean => how.reverse !== undefined && how.reverse !== c.reverse;
+
+  // Who is in step with the lead is a matter of the project as it was found. A clip that is turned
+  // round in the same edit is taken by itself: turning a split edit round parts it at any speed.
+  const offsets = new Map<ID, number>();
+  for (const c of members) {
+    if (c === lead || turned(lead) || turned(c)) continue;
+    const offset = inStep(p, lead, c);
+    // To the microsecond, as the points of a ramp are kept: the clip is then exactly in step on a
+    // ramp that is exactly the lead's, that far along.
+    if (offset !== null) offsets.set(c.id, Math.round(offset * 1e6) / 1e6);
+  }
+
+  const edits: Edit[] = [];
+  let q = p;
+  /** Note the patch of `c`, unless a number of it is not finite. The next clip is placed around it. */
+  const put = (c: Clip, patch: Partial<Clip>): boolean => {
+    const times = Object.values(patch.keyframes ?? {}).flatMap((list) => list.map((k) => k.t));
+    if (![patch.duration, patch.sourceIn ?? 0, patch.start ?? 0, ...times].every(Number.isFinite))
+      return false;
+    const edit: Edit = { op: 'updateClip', id: c.id, patch };
+    edits.push(edit);
+    q = applyEdits(q, [edit]);
+    return true;
+  };
+
+  /** The patch that takes `c` to `place` on the clock of `to`. */
+  const patchOf = (c: Clip, to: Aim, clock: Clock, place: Place, follows: boolean): Partial<Clip> => {
+    const reverse = how.reverse ?? c.reverse;
+    const sameRamp = deepEqual(to.ramp, c.ramp);
+    const retimed = !sameRamp || (to.ramp === null && to.speed !== c.speed);
+    // An in point that comes out as the one the clip has, give or take the last bits, is that one.
+    const sourceIn = Math.abs(place.sourceIn - c.sourceIn) <= SAME_MEDIA ? c.sourceIn : place.sourceIn;
+    const patch: Partial<Clip> = { ramp: sameRamp ? c.ramp : to.ramp, duration: place.duration };
+    if (how.speed || (to.ramp === null && to.speed !== c.speed)) patch.speed = to.speed;
+    if (how.reverse !== undefined) patch.reverse = how.reverse;
+    // A new ramp is written with all it was worked out with, changed or not: see `RAMP_EDIT` in the store.
+    if (!sameRamp || sourceIn !== c.sourceIn) patch.sourceIn = sourceIn;
+    if (follows && (!sameRamp || place.start !== c.start)) patch.start = place.start;
+    const moved =
+      retimed || reverse !== c.reverse || sourceIn !== c.sourceIn || place.duration !== c.duration;
+    if (moved && Object.keys(c.keyframes).length) {
+      // Keyframes follow the picture: each goes to the frame that now shows the media it stood on.
+      const tauIn = clock.stream(sourceIn);
+      const keyframes = remapKeyframes(c.keyframes, (t) => {
+        const u = frames(clock.stream(sourceTimeAt(c, t, p)) - tauIn);
+        return reverse ? place.duration - 1 - u : u;
+      });
+      if (keyframes !== c.keyframes) patch.keyframes = keyframes;
+    }
+    if (moved && c.fadeIn > place.duration) patch.fadeIn = place.duration;
+    if (moved && c.fadeOut > place.duration) patch.fadeOut = place.duration;
+    if (c.type === 'audio' && c.keepPitch === null && retimed) patch.keepPitch = true;
+    return patch;
+  };
+
+  /** A clip by itself: its stretch on the new clock, from where it starts, as far as the next clip. */
+  const alone = (c: Clip, to: Aim): { clock: Clock; place: Place; natural: number } | null => {
+    const clock = clockOf(to);
+    const { in: a, out: b } = sourceSpan(c, p);
+    const natural = Math.max(1, roundHalfUp(frames(clock.stream(b) - clock.stream(a))));
+    if (!Number.isFinite(natural)) return null;
+    let duration = natural;
+    const { next } = neighbors(q, c);
+    if (!how.free && next) duration = Math.min(duration, Math.max(1, next.start - c.start));
+    // A reversed clip plays its stretch from the top down, so what no longer fits before the next
+    // clip comes off the bottom of it and the first frame stays the one it was.
+    const sourceIn =
+      duration < natural && (how.reverse ?? c.reverse)
+        ? clock.media(clock.stream(a) + seconds(natural - duration))
+        : a;
+    return { clock, natural, place: { start: c.start, duration, sourceIn } };
+  };
+
+  const led = alone(lead, aim);
+  if (!led || !put(lead, patchOf(lead, aim, led.clock, led.place, false))) return null;
+  const leadSpan = sourceSpan(lead, p);
+
+  /**
+   * A clip in step with the lead, `offset` seconds of media from it. `leadAt` is the stream time
+   * of the lead at the start of a frame of the timeline: for clips that play backwards, the top of
+   * that frame, with the stream running down.
+   */
+  const following = (c: Clip, offset: number): { to: Aim; clock: Clock; place: Place } | null => {
+    const to: Aim = { ramp: aim.ramp && shiftRamp(aim.ramp, offset), speed: aim.speed };
+    const clock = clockOf(to);
+    const { in: a, out: b } = sourceSpan(c, p);
+    const { prev, next } = neighbors(q, c);
+    const floor = prev ? clipEnd(prev) : 0;
+    const tauLead = led.clock.stream(led.place.sourceIn);
+    const down = c.reverse;
+    // The words it starts and ends on, in the order it plays them.
+    const [first, last] = down ? [b, a] : [a, b];
+    const leadAt = (frame: number): number =>
+      down
+        ? tauLead + seconds(led.place.duration - (frame - lead.start))
+        : tauLead + seconds(frame - lead.start);
+    /** The frame, as a real number, at which the lead's stream reaches a second of this clip's media. */
+    const reaches = (m: number): number => {
+      const tau = led.clock.stream(m - offset);
+      return lead.start + (down ? frames(leadAt(lead.start) - tau) : frames(tau - tauLead));
+    };
+    /** The second of this clip's media that is in step with the lead at the start of a frame. */
+    const mediaIn = (frame: number): number => led.clock.media(leadAt(frame)) + offset;
+
+    // It starts on the frame where the lead reaches the word it started on.
+    const at = reaches(first);
+    const want = roundHalfUp(at);
+    let start = Math.max(want, floor);
+    if (!down && mediaIn(start) < -SAME_MEDIA) {
+      // Its file does not go back that far. It begins on the first frame that has media.
+      start = Math.max(start, Math.ceil(reaches(0)));
+      for (let i = 0; i < 2 && mediaIn(start) < -SAME_MEDIA; i++) start += 1;
+    }
+    if (!Number.isFinite(start)) return null;
+    if (!how.free && next && start >= next.start) {
+      // The clip after it stands where its media now plays. One frame of it is left before that
+      // clip, on the word it started on: it gives up being in step sooner than play other media.
+      const word = down ? Math.max(a, clock.media(clock.stream(b) - seconds(1))) : a;
+      const place = { start: Math.max(floor, next.start - 1), duration: 1, sourceIn: Math.max(0, word) };
+      return { to, clock, place };
+    }
+    // It ends on the frame where the lead reaches the word it ended on: when that is the lead's own
+    // last word, where the lead ends with nothing in its way.
+    const together = Math.abs(last - offset - (down ? leadSpan.in : leadSpan.out)) <= 1e-6;
+    const ends = together ? lead.start + led.natural : roundHalfUp(reaches(last));
+    if (!Number.isFinite(ends)) return null;
+    let natural = ends - start;
+    if (natural < 1 && start === want) {
+      // A stretch shorter than a frame, with both ends rounded to the same one. It has that frame, in
+      // step, or the one before it when that is where it begins or where the lead ends.
+      const before = start > floor && (down || mediaIn(start - 1) >= -SAME_MEDIA);
+      if ((together || at < start) && before) start -= 1;
+      natural = 1;
+    }
+    const room = !how.free && next ? next.start - start : Infinity;
+    if (down) {
+      // Nothing of its stretch is left below where the lead now is: one frame, the last it played.
+      if (natural < 1) return { to, clock, place: { start, duration: 1, sourceIn: Math.max(0, a) } };
+      const top = leadAt(start);
+      let duration = Math.min(natural, room);
+      const low = (): number => led.clock.media(top - seconds(duration)) + offset;
+      // A length that was rounded up must not reach back before the start of the file.
+      if (low() < -SAME_MEDIA) {
+        duration = Math.max(1, Math.min(duration, Math.floor(frames(top - led.clock.stream(-offset)))));
+        for (let i = 0; i < 2 && duration > 1 && low() < -SAME_MEDIA; i++) duration -= 1;
+      }
+      return { to, clock, place: { start, duration, sourceIn: Math.max(0, low()) } };
+    }
+    // Nothing of its stretch is left after where the lead now is: one frame, the last it played.
+    if (natural < 1) {
+      const word = Math.max(0, a, clock.media(clock.stream(b) - seconds(1)));
+      return { to, clock, place: { start, duration: 1, sourceIn: word } };
+    }
+    const place = { start, duration: Math.min(natural, room), sourceIn: Math.max(0, mediaIn(start)) };
+    return { to, clock, place };
+  };
+
+  for (const c of members) {
+    if (c === lead) continue;
+    const offset = offsets.get(c.id);
+    if (offset === undefined) {
+      const to = aimOf(c);
+      const by = alone(c, to);
+      if (!by || !put(c, patchOf(c, to, by.clock, by.place, false))) return null;
+    } else {
+      const by = following(c, offset);
+      if (!by || !put(c, patchOf(c, by.to, by.clock, by.place, true))) return null;
+    }
+  }
+  return { edits, project: q };
+}
+
+/**
+ * `setSpeed` for the clips among `ids` that are on a ramp: each goes to the one speed `sp` with its
+ * whole link group, named or not, and each group is taken once. Returns the edits, the project with
+ * them applied (the clips that are not on a ramp are then set in it) and the clips that are done.
+ */
+function offRamp(
+  p: Project,
+  ids: ReadonlySet<ID>,
+  sp: number,
+  reverse: boolean | undefined,
+): { edits: Edit[]; project: Project; ids: ReadonlySet<ID> } {
+  const edits: Edit[] = [];
+  const done = new Set<ID>();
+  let project = p;
+  const aim: Aim = { ramp: null, speed: sp };
+  for (const members of speedGroups(p, ids, (c) => c.ramp !== null)) {
+    for (const c of members) done.add(c.id);
+    const lead = members.find((c) => c.type !== 'audio') ?? members[0];
+    const group = retimeGroup(project, members, lead, aim, () => aim, { free: false, reverse, speed: true });
+    if (!group) continue;
+    edits.push(...group.edits);
+    project = group.project;
+  }
+  return { edits, project, ids: done };
+}
+
+export interface RampChange {
+  /** The ramp each clip goes to, by clip. Null: back to its one speed. */
+  ramps: Readonly<Record<ID, RampPoint[] | null>>;
+}
+
+/**
+ * Put clips on a speed ramp, or take them off one (`null`: back to the speed they have stored).
+ * The same stretch of media plays, faster here and slower there, so the length changes as it does
+ * with the speed: no start moves, and a clip that grows stops at the one after it on its track
+ * unless `free` (which whoever makes room for it asks for). Keyframes follow the picture.
+ *
+ * A ramp is set on a whole link group, whichever of its clips `ids` names. The group's ramp is
+ * that of the first of its clips that `change` names and that is not sound, else of the first it
+ * names; a group it names none of is left alone. Clips that were in step with that clip stay in
+ * step with it (see `retimeGroup`), which can move where such a clip starts; with `free` too, its
+ * head is cut where the clip before it on its track is in the way. Each other clip of the group
+ * gets the ramp `change` names for it, or else the group's, by itself.
+ *
+ * Every edit carries `ramp` and `duration`; one that changes the ramp carries `sourceIn` and, for a
+ * clip placed by another, `start` as well, changed or not. Setting the ramp a clip has changes
+ * nothing. Sound whose ramp changes keeps its pitch from then on, unless that has been decided.
+ */
+export function setRamp(p: Project, ids: ID[], change: RampChange, free = false): Edit[] {
+  const edits: Edit[] = [];
+  let project = p;
+  const asked = (c: Clip): RampPoint[] | null => {
+    const points = change.ramps[c.id];
+    return points ? tidyRamp(points) : null;
+  };
+  const aimAt = (c: Clip, ramp: RampPoint[] | null): Aim => ({ ramp, speed: c.speed });
+  for (const members of speedGroups(p, new Set(ids), () => true)) {
+    const named = members.filter((c) => Object.hasOwn(change.ramps, c.id));
+    const lead = named.find((c) => c.type !== 'audio') ?? named[0];
+    if (!lead) continue;
+    const ramp = asked(lead);
+    const group = retimeGroup(
+      project,
+      members,
+      lead,
+      aimAt(lead, ramp),
+      (c) => aimAt(c, named.includes(c) ? asked(c) : ramp),
+      { free, speed: false },
+    );
+    if (!group) continue;
+    edits.push(...group.edits);
+    project = group.project;
   }
   return edits;
 }
@@ -1101,6 +1506,9 @@ export function freezeFrame(p: Project, clipId: ID, frame: number, hold: number)
     freeze: true,
     reverse: false,
     speed: 1,
+    // A still has no speed to vary and no sound to keep the pitch of.
+    ramp: null,
+    keepPitch: null,
     linkId: null,
     transIn: null,
     transOut: null,

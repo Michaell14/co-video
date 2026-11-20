@@ -297,6 +297,12 @@ export interface ShapeProps {
   sides: number;
 }
 
+/** A point of a speed ramp: at second `m` of the clip's media (the axis of `sourceIn`) the speed is `v`. */
+export interface RampPoint {
+  m: number;
+  v: number;
+}
+
 export interface Clip {
   id: ID;
   trackId: ID;
@@ -308,7 +314,16 @@ export interface Clip {
   duration: number;
   /** Offset into the source media of the earliest source sample this clip uses, seconds. */
   sourceIn: number;
+  /** The clip's one speed while `ramp` is null. While it is not, the speed the clip returns to. */
   speed: number;
+  /**
+   * Speed that varies over the clip's media, in ascending order of `m`: it eases from point to point
+   * and holds the outermost speed beyond them. Null: one speed (`speed`). Points belong to the media,
+   * not to the clip, so a trim, a split or a slip leaves them alone.
+   */
+  ramp: RampPoint[] | null;
+  /** Sound keeps its pitch at another speed. Null: never set, and plays as off. */
+  keepPitch: boolean | null;
   reverse: boolean;
   /** Hold the frame at `sourceIn` for the whole clip (a freeze frame). Video clips only. */
   freeze: boolean;

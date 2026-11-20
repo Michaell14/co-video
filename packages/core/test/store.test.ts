@@ -12,10 +12,16 @@ import {
   MAX_NAME_LENGTH,
   MAX_THUMB_LENGTH,
   ProjectStore,
+  RAMP_MAX,
+  RAMP_MEDIA,
+  RAMP_MIN,
+  RAMP_POINTS,
   ReviewStore,
   addTrack,
+  applyEdits,
   baseValue,
   changeFrameRate,
+  clipEnd,
   clipGainAt,
   clipsUnderFrame,
   dbToGain,
@@ -29,18 +35,26 @@ import {
   makeTrack,
   makeTransition,
   parseProjectFile,
+  rampTable,
   removeTrack,
   resolveFrame,
+  retime,
   sequenceEnd,
   serializeProject,
+  setRamp,
   setSpeed,
+  shapeRamp,
+  slipClips,
   snapPoints,
+  sourceTimeAt,
   splitClips,
+  streamIn,
+  timeMap,
   toEdl,
   tracksOf,
   trimRange,
 } from '../src';
-import type { Asset, Clip, Edit, Project, ProjectSettings, Track } from '../src';
+import type { Asset, Clip, Edit, Project, ProjectSettings, RampPoint, Track } from '../src';
 import { connect } from './helpers';
 
 describe('ProjectStore', () => {
@@ -204,6 +218,9 @@ describe('ProjectStore', () => {
       trimRange(p, [c.id], 'end', false);
       setSpeed(p, [c.id], 2);
       splitClips(p, [c.id], c.start + 1);
+      slipClips(p, [c.id], 3);
+      setRamp(p, [c.id], { ramps: { [c.id]: shapeRamp('hero', c.sourceIn, c.sourceIn + 4, c.reverse) } });
+      setRamp(p, [c.id], { ramps: { [c.id]: null } });
     }
   };
 
@@ -251,6 +268,27 @@ describe('ProjectStore', () => {
       ],
       transIn: [{ type: 5 }, { type: 'crossDissolve', duration: 'long' }, { type: 'crossDissolve' }],
       transOut: [{ type: 'crossDissolve', duration: -5, params: [null] }],
+      // The first twice over: cases alternate between a video clip and a title.
+      ramp: [0, 1]
+        .map((): unknown => [
+          { m: 9, v: 1e308 },
+          null,
+          { m: 'soon', v: 1 },
+          { m: 2, v: -4 },
+          { m: NaN, v: 1 },
+          [3, 1],
+          { m: 4, v: 2, e: 0 },
+        ])
+        .concat(
+          [[{ m: 1, v: 1 }]],
+          [
+            [
+              { m: 1, v: 1 },
+              { m: 1.0001, v: 9 },
+            ],
+          ],
+        ),
+      keepPitch: ['yes', 1],
     };
     const s = new ProjectStore();
     s.initIfEmpty();
@@ -298,6 +336,23 @@ describe('ProjectStore', () => {
     ]);
     expect(byCase('transIn', 1).transIn).toBeNull();
     expect(byCase('transOut', 0).transOut).toEqual({ type: 'crossDissolve', duration: 1, params: {} });
+    // Whatever is stored, a title has no ramp, and video has one only where two points and more are left.
+    const ramps = cases.flatMap(([key], i) =>
+      key === 'ramp' ? [[i % 2 ? 'text' : 'video', p.clips[`c${i}`].ramp]] : [],
+    );
+    expect(ramps.filter(([, ramp]) => ramp !== null)).toEqual([
+      [
+        'video',
+        [
+          { m: 2, v: RAMP_MIN },
+          { m: 4, v: 2 },
+          { m: 9, v: RAMP_MAX },
+        ],
+      ],
+    ]);
+    expect(cases.filter(([key], i) => key === 'keepPitch' && p.clips[`c${i}`].keepPitch !== null)).toEqual([
+      ['keepPitch', true],
+    ]);
 
     // The same repairs apply to an imported project file.
     const file = JSON.parse(serializeProject(p));
@@ -308,7 +363,10 @@ describe('ProjectStore', () => {
     expect(loaded.clips).toEqual(p.clips);
   });
 
-  /** A clip, a track and an asset in which no field has its default value. */
+  /**
+   * A clip, a track and an asset in which no field has its default value. A still has no ramp, and
+   * neither has a title: `ramped` is the same clip as video that runs, on a ramp.
+   */
   const everyFieldSet = (trackId: string) => {
     const fx = makeEffect('gaussianBlur');
     const clip = makeClip('text', trackId, {
@@ -317,6 +375,7 @@ describe('ProjectStore', () => {
       duration: 90,
       sourceIn: 1.5,
       speed: 2,
+      keepPitch: false,
       reverse: true,
       freeze: true,
       name: 'Title',
@@ -418,19 +477,26 @@ describe('ProjectStore', () => {
       thumb: 'data:image/webp;base64,AAAA',
       uploaded: true,
     };
-    return { clip, track, asset };
+    const ramp: RampPoint[] = [
+      { m: -2.5, v: 0.1 },
+      { m: 1.5, v: 3.125 },
+      { m: 1.501, v: 10 },
+    ];
+    const ramped: Clip = { ...clip, id: 'ramped', type: 'video', freeze: false, keepPitch: true, ramp };
+    return { clip, ramped, track, asset };
   };
 
   it('keeps every well-formed field exactly as written', () => {
     const s = new ProjectStore();
     s.initIfEmpty();
-    const { clip, track, asset } = everyFieldSet(tracksOf(s.get()).video[0].id);
+    const { clip, ramped, track, asset } = everyFieldSet(tracksOf(s.get()).video[0].id);
     // A field added to the model has to be added above too, or this test cannot vouch for it.
     const unset = (entity: object, defaults: object): string[] =>
       Object.entries(defaults)
         .filter(([key, d]) => JSON.stringify((entity as Record<string, unknown>)[key]) === JSON.stringify(d))
         .map(([key]) => key);
-    expect(unset(clip, CLIP_DEFAULTS)).toEqual([]);
+    expect(unset(clip, CLIP_DEFAULTS)).toEqual(['ramp']);
+    expect(unset(ramped, CLIP_DEFAULTS)).toEqual(['freeze']);
     expect(unset(asset, ASSET_DEFAULTS)).toEqual([]);
     expect(unset(track, makeTrack('video', 0))).toEqual([]);
 
@@ -454,6 +520,7 @@ describe('ProjectStore', () => {
       { op: 'addAsset', asset },
       { op: 'addTrack', track },
       { op: 'addClip', clip },
+      { op: 'addClip', clip: ramped },
       { op: 'setMarker', marker },
       { op: 'addFolder', folder },
     ]);
@@ -462,6 +529,7 @@ describe('ProjectStore', () => {
     expect(p.assets[asset.id]).toEqual(asset);
     expect(p.tracks[track.id]).toEqual(track);
     expect(p.clips[clip.id]).toEqual(clip);
+    expect(p.clips.ramped).toEqual(ramped);
     expect(p.markers.m1).toEqual(marker);
     expect(p.folders.folder1).toEqual(folder);
     expect(parseProjectFile(serializeProject(p))).toEqual(p);
@@ -474,19 +542,34 @@ describe('ProjectStore', () => {
     a.initIfEmpty();
     const b = new ProjectStore();
     connect(a.doc, b.doc);
-    const { clip } = everyFieldSet(tracksOf(a.get()).video[0].id);
-    a.commit([{ op: 'addClip', clip }]);
+    const { clip, ramped } = everyFieldSet(tracksOf(a.get()).video[0].id);
+    a.commit([
+      { op: 'addClip', clip },
+      { op: 'addClip', clip: ramped },
+    ]);
     const nested = ['effects', 'grade', 'mask', 'keyframes', 'transIn', 'transOut', 'text', 'shape'] as const;
     for (const s of [a, b]) {
       const before = s.get().clips[clip.id];
-      a.commit([{ op: 'updateClip', id: clip.id, patch: { opacity: 0.4, start: 40 } }]);
+      const rampBefore = s.get().clips.ramped.ramp;
+      const table = rampTable(rampBefore!);
+      a.commit([
+        { op: 'updateClip', id: clip.id, patch: { opacity: 0.4, start: 40 } },
+        { op: 'updateClip', id: 'ramped', patch: { opacity: 0.4, start: 40, sourceIn: 2, duration: 30 } },
+      ]);
       const after = s.get().clips[clip.id];
       expect(after).not.toBe(before);
       expect(after.opacity).toBe(0.4);
       // The renderer keys its curve and text caches on these.
       for (const key of nested) expect(after[key], key).toBe(before[key]);
       expect(after.grade!.curves).toBe(before.grade!.curves);
-      a.commit([{ op: 'updateClip', id: clip.id, patch: { opacity: 0.8, start: 12 } }]);
+      // The clock of a ramp is laid out once for the array, and found again after a trim or a slip.
+      expect(s.get().clips.ramped.sourceIn).toBe(2);
+      expect(s.get().clips.ramped.ramp).toBe(rampBefore);
+      expect(rampTable(s.get().clips.ramped.ramp!)).toBe(table);
+      a.commit([
+        { op: 'updateClip', id: clip.id, patch: { opacity: 0.8, start: 12 } },
+        { op: 'updateClip', id: 'ramped', patch: { opacity: 0.8, start: 12, sourceIn: 1.5, duration: 90 } },
+      ]);
     }
     // Replacing one nested value changes that one only.
     const before = b.get().clips[clip.id];
@@ -847,6 +930,243 @@ describe('ProjectStore', () => {
       for (const font of ['Inter Variable', 'DM Serif Display', 'Noto Sans JP', 'x'.repeat(100)]) {
         expect(reading('clip.text.font', font).read).toBe(font);
       }
+    });
+
+    /**
+     * What is read of a clip of running video, sixty frames of a sixty-second file on V1, that holds
+     * `fields`: by the store that wrote them and by one that opens the document, which agree.
+     */
+    const video = (fields: Record<string, unknown>): Project => {
+      const s = new ProjectStore();
+      s.doc.transact(() => {
+        for (const [map, id, entity] of [
+          ['tracks', 'v', makeTrack('video', 0)],
+          ['assets', 'file', { ...ASSET_DEFAULTS, name: 'take.mp4', kind: 'video', duration: 60 }],
+          [
+            'clips',
+            'c',
+            { ...makeClip('video', 'v', { assetId: 'file', start: 100, duration: 60 }), ...fields },
+          ],
+        ] as const) {
+          const m = new Y.Map<unknown>();
+          for (const [k, v] of Object.entries(entity)) if (k !== 'id') m.set(k, v);
+          s.doc.getMap(map).set(id, m);
+        }
+      });
+      const p = new ProjectStore(s.doc).get();
+      expect(s.get()).toEqual(p);
+      expect(parseProjectFile(serializeProject(p))).toEqual(p);
+      return p;
+    };
+
+    /** Every number of every clip update among `edits` is one. */
+    const finite = (edits: Edit[]): void => {
+      for (const e of edits) {
+        if (e.op !== 'updateClip') continue;
+        const { keyframes, ramp, ...patch } = e.patch;
+        const times = Object.values(keyframes ?? {}).flatMap((list) => list.map((k) => k.t));
+        const points = (ramp ?? []).flatMap((q) => [q.m, q.v]);
+        const numbers = [...Object.values(patch), ...times, ...points].filter((n) => typeof n === 'number');
+        expect(numbers.filter((n) => !Number.isFinite(n))).toEqual([]);
+      }
+    };
+
+    /** The edits that work out a length or an in point from the clock of the clip `c`. */
+    const retimings = (p: Project): Edit[] => {
+      const c = p.clips.c;
+      return [
+        ...setRamp(p, ['c'], { ramps: { c: shapeRamp('bullet', 2, 9, c.reverse) } }),
+        ...setRamp(p, ['c'], { ramps: { c: null } }),
+        ...setSpeed(p, ['c'], 3),
+        ...setSpeed(p, ['c'], 0.05, !c.reverse),
+        ...slipClips(p, ['c'], 40),
+        ...slipClips(p, ['c'], -40),
+        { op: 'updateClip', id: 'c', patch: retime(c, c.start + 7, clipEnd(c) - 5, p) },
+        { op: 'updateClip', id: 'c', patch: retime(c, c.start - 7, clipEnd(c) + 5, p) },
+      ];
+    };
+
+    it('reads a ramp as one that has a clock, or as none', () => {
+      const many = Array.from({ length: 100_000 }, (_, i) => ({ m: i / 100, v: 1 + (i % 7) }));
+      const stored: [unknown, RampPoint[] | null][] = [
+        [
+          [
+            { m: 1e308, v: 1e308 },
+            { m: -1e308, v: 1e308 },
+            { m: 0, v: 1e308 },
+          ],
+          [
+            { m: -RAMP_MEDIA, v: RAMP_MAX },
+            { m: 0, v: RAMP_MAX },
+            { m: RAMP_MEDIA, v: RAMP_MAX },
+          ],
+        ],
+        [
+          [
+            { m: 0, v: 0 },
+            { m: 0, v: 0 },
+            { m: 5, v: 0 },
+          ],
+          [
+            { m: 0, v: RAMP_MIN },
+            { m: 5, v: RAMP_MIN },
+          ],
+        ],
+        [
+          [
+            { m: 1, v: -3 },
+            { m: 2, v: -1e308 },
+          ],
+          [
+            { m: 1, v: RAMP_MIN },
+            { m: 2, v: RAMP_MIN },
+          ],
+        ],
+        [many, many.slice(0, RAMP_POINTS)],
+        [
+          [
+            { m: 9, v: 1 },
+            { m: 5, v: 2 },
+            { m: 1, v: 3 },
+          ],
+          [
+            { m: 1, v: 3 },
+            { m: 5, v: 2 },
+            { m: 9, v: 1 },
+          ],
+        ],
+        [
+          [
+            { m: 3, v: 1 },
+            { m: 3, v: 2 },
+            { m: 3, v: 3 },
+          ],
+          null,
+        ],
+        [[{ m: 3, v: 1 }], null],
+        [[1, 2, 3], null],
+        [[], null],
+        ['ramp', null],
+        [{ m: 3, v: 1 }, null],
+        [7, null],
+      ];
+      for (const [value, read] of stored) {
+        for (const reverse of [false, true]) {
+          const p = video({ ramp: value, reverse, sourceIn: 3 });
+          const c = p.clips.c;
+          expect(c.ramp).toEqual(read);
+          for (let u = -200; u <= c.duration + 200; u += 13) {
+            expect(Number.isFinite(sourceTimeAt(c, u, p))).toBe(true);
+          }
+          expect(sourceTimeAt(c, 1, p)).not.toBe(sourceTimeAt(c, 0, p));
+          expect(() => exercise(p)).not.toThrow();
+          finite(retimings(p));
+          finite(changeFrameRate(p, 24, 1));
+        }
+      }
+    });
+
+    it('keeps the in point of a clip on a ramp, or of sound that keeps its pitch, where a clock resolves it', () => {
+      const ramp = [
+        { m: 1, v: 10 },
+        { m: 4, v: 0.1 },
+      ];
+      for (const sourceIn of [1e308, -1e308, 2e307, -3e7]) {
+        for (const fields of [
+          { ramp },
+          { ramp, reverse: true, keepPitch: false },
+          { keepPitch: true },
+          { keepPitch: true, type: 'audio', speed: 0.05 },
+        ]) {
+          const p = video({ sourceIn, ...fields });
+          const c = p.clips.c;
+          expect(c.sourceIn).toBe(Math.sign(sourceIn) * RAMP_MEDIA);
+          for (let u = -90; u <= c.duration + 90; u++)
+            expect(Number.isFinite(sourceTimeAt(c, u, p))).toBe(true);
+          // Where the mixer starts reading the clip's stream.
+          expect(Number.isFinite(timeMap(c).stream(c.sourceIn))).toBe(true);
+          expect(Number.isFinite(streamIn(c))).toBe(true);
+          const edits = retimings(p);
+          finite(edits);
+          for (const e of edits) finite(retimings(applyEdits(p, [e])));
+          expect(() => exercise(p)).not.toThrow();
+        }
+        // A speed nobody could set is still read as it is, and the clock the mixer plays by is of one it could.
+        const fast = video({ sourceIn, keepPitch: true, type: 'audio', speed: 1e308 }).clips.c;
+        expect(Math.abs(timeMap(fast).stream(fast.sourceIn))).toBe(RAMP_MEDIA / 100);
+        // A clip with neither is read as it always was: there is no clock of it to overflow.
+        for (const fields of [{}, { keepPitch: false }, { keepPitch: 'yes' }, { ramp: [{ m: 1, v: 1 }] }]) {
+          expect(video({ sourceIn, ...fields }).clips.c.sourceIn).toBe(sourceIn);
+        }
+        // Nor has a still or a title a ramp, whatever is stored.
+        expect(video({ sourceIn, ramp, freeze: true }).clips.c).toMatchObject({ ramp: null, sourceIn });
+        expect(video({ sourceIn, ramp, type: 'text' }).clips.c).toMatchObject({ ramp: null, sourceIn });
+      }
+      // Inside the range an in point is the one that was written, before the file or after it.
+      for (const sourceIn of [-RAMP_MEDIA, -12.5, 0, 59.75, 1234.5, RAMP_MEDIA]) {
+        expect(video({ sourceIn, ramp }).clips.c.sourceIn).toBe(sourceIn);
+      }
+    });
+
+    it('reads a ramp only on what has media that runs', () => {
+      const ramp = [
+        { m: 1, v: 0.5 },
+        { m: 4, v: 2 },
+      ];
+      for (const type of ['video', 'audio']) expect(video({ ramp, type }).clips.c.ramp).toEqual(ramp);
+      for (const type of ['image', 'text', 'shape', 'solid', 'adjustment']) {
+        const p = video({ ramp, type, keepPitch: true });
+        expect(p.clips.c).toMatchObject({ type, ramp: null, keepPitch: true });
+        expect(() => exercise(p)).not.toThrow();
+      }
+      const still = video({ ramp, freeze: true });
+      expect(still.clips.c.ramp).toBeNull();
+      expect(sourceTimeAt(still.clips.c, 40, still)).toBe(still.clips.c.sourceIn);
+      // Whether sound keeps its pitch is yes, no, or never said.
+      for (const keepPitch of [true, false, null])
+        expect(video({ keepPitch }).clips.c.keepPitch).toBe(keepPitch);
+      for (const junk of [0, 1, 'true', [], {}])
+        expect(video({ keepPitch: junk }).clips.c.keepPitch).toBeNull();
+    });
+
+    it('reads neither from a document made before there were ramps, and writes neither until one is set', () => {
+      const s = new ProjectStore();
+      s.initIfEmpty();
+      const [v1] = tracksOf(s.get()).video;
+      const [a1] = tracksOf(s.get()).audio;
+      const picture = makeClip('video', v1.id, { start: 0, duration: 90, sourceIn: 2, linkId: 'take' });
+      const sound = makeClip('audio', a1.id, { start: 0, duration: 90, sourceIn: 2, linkId: 'take' });
+      // As an older build wrote them: without the two keys.
+      const { ramp: _ramp, keepPitch: _keepPitch, ...before } = picture;
+      s.commit([
+        { op: 'addClip', clip: before as Clip },
+        { op: 'addClip', clip: sound },
+      ]);
+      const keys = (): string[] =>
+        Object.keys(s.get().clips).flatMap((id) =>
+          Object.keys((s.doc.getMap('clips').get(id) as Y.Map<unknown>).toJSON()).filter(
+            (key) => key === 'ramp' || key === 'keepPitch',
+          ),
+        );
+      expect(keys()).toEqual([]);
+      expect(s.get().clips[picture.id]).toEqual(picture);
+      expect(s.get().clips[sound.id]).toMatchObject({ ramp: null, keepPitch: null });
+      // Edits that do not concern them leave the document without them, pieces of the clips included.
+      s.commit([{ op: 'updateClip', id: picture.id, patch: { opacity: 0.5, ramp: null, keepPitch: null } }]);
+      s.commit(splitClips(s.get(), [picture.id, sound.id], 30).edits);
+      s.commit(slipClips(s.get(), [picture.id, sound.id], 5));
+      s.commit(setSpeed(s.get(), [picture.id], 2));
+      s.commit(setSpeed(s.get(), [sound.id], 1));
+      s.commit(changeFrameRate(s.get(), 24, 1));
+      expect(Object.keys(s.get().clips)).toHaveLength(4);
+      expect(keys()).toEqual([]);
+      // A change of the sound's speed says that it keeps its pitch, and a ramp is stored where it is set.
+      s.commit(setSpeed(s.get(), [sound.id], 2));
+      expect(keys()).toEqual(['keepPitch']);
+      expect(s.get().clips[sound.id].keepPitch).toBe(true);
+      s.commit(setRamp(s.get(), [picture.id], { ramps: { [picture.id]: shapeRamp('rampUp', 2, 3, false) } }));
+      // On the picture and on the sound linked to it.
+      expect(keys().sort()).toEqual(['keepPitch', 'ramp', 'ramp']);
     });
 
     it('reads a project file the same way', () => {

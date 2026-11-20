@@ -13,7 +13,13 @@ import {
   makeClip,
   overlappingClips,
   placeClips,
+  flatRamp,
+  resolveFrame,
   rippleDelete,
+  setRamp,
+  setSpeed,
+  shapeRamp,
+  sourceTimeAt,
   splitClips,
   tracksOf,
   trimClips,
@@ -1175,4 +1181,255 @@ describe('two clips placed on the same frames at the same moment', () => {
     expect(tracksOf(c.get()).video).toHaveLength(3);
     expect(b.resolveOverlaps()).toBe(0);
   });
+});
+
+describe('a speed ramp', () => {
+  /**
+   * A take on V1 that plays seconds 5 to 15 over frames 100 to 400, its sound on A1 from a second
+   * earlier (a J cut), and another clip right after the picture.
+   */
+  function take(s: ProjectStore, init: Partial<Clip> = {}) {
+    const v1 = tracksOf(s.get()).video[0];
+    const a1 = tracksOf(s.get()).audio[0];
+    const picture = makeClip('video', v1.id, {
+      start: 100,
+      duration: 300,
+      sourceIn: 5,
+      linkId: 'take',
+      ...init,
+    });
+    const sound = makeClip('audio', a1.id, { start: 70, duration: 330, sourceIn: 4, linkId: 'take' });
+    const next = makeClip('video', v1.id, { start: 400, duration: 100, sourceIn: 30 });
+    s.commit([picture, sound, next].map((clip): Edit => ({ op: 'addClip', clip })));
+    return { picture, sound, next };
+  }
+
+  const bullet = shapeRamp('bullet', 5, 15, false)!;
+  const flat = flatRamp(5, 15, 1)!;
+
+  /** Every frame of every clip resolves to a second of media, for both people alike. */
+  const renders = (a: ProjectStore, b: ProjectStore): void => {
+    expect(a.get()).toEqual(b.get());
+    const p = a.get();
+    for (const c of Object.values(p.clips)) {
+      for (let u = -5; u < c.duration + 5; u += 7) expect(Number.isFinite(sourceTimeAt(c, u, p))).toBe(true);
+      resolveFrame(p, c.start);
+      resolveFrame(p, c.start + c.duration - 1);
+    }
+    expect(new ProjectStore(a.doc).get()).toEqual(p);
+  };
+
+  for (const winner of ['a', 'b'] as const) {
+    it(`is won whole when two people set different ramps at the same moment (${winner} wins)`, () => {
+      const { a, b, sync } = apart(winner);
+      const { picture, sound } = take(a);
+      sync();
+      // "Bullet" makes the clip 69 frames long and moves its sound. A flat ramp changes neither.
+      a.commit(setRamp(a.get(), [picture.id], { ramps: { [picture.id]: bullet } }));
+      b.commit(setRamp(b.get(), [picture.id], { ramps: { [picture.id]: flat } }));
+      expect(a.get().clips[picture.id]).toMatchObject({ ramp: bullet, duration: 69 });
+      expect(a.get().clips[sound.id]).toMatchObject({ ramp: bullet, start: 94, duration: 75 });
+      expect(b.get().clips[picture.id]).toMatchObject({ ramp: flat, duration: 300 });
+      expect(b.get().clips[sound.id]).toMatchObject({ ramp: flat, start: 70, duration: 330 });
+      const alone = (winner === 'a' ? a : b).get().clips;
+      sync();
+      // Not one person's ramp over the other's length: the whole of one edit, on both clips.
+      for (const id of [picture.id, sound.id]) {
+        const { ramp, duration, sourceIn, start } = a.get().clips[id];
+        const meant = alone[id];
+        expect({ ramp, duration, sourceIn, start }).toEqual({
+          ramp: meant.ramp,
+          duration: meant.duration,
+          sourceIn: meant.sourceIn,
+          start: meant.start,
+        });
+      }
+      renders(a, b);
+      // The one whose edit did not change the length wrote it all the same.
+      expect(b.undo()).toEqual(TAKEN);
+      sync();
+      renders(a, b);
+    });
+
+    it(`keeps a ramp and a trim made at the same moment, each field from one of the two (${winner} wins)`, () => {
+      const { a, b, sync } = apart(winner);
+      const { picture } = take(a);
+      sync();
+      a.commit(setRamp(a.get(), [picture.id], { ramps: { [picture.id]: bullet } }));
+      b.commit(trimClips(b.get(), [picture.id], 'start', 30));
+      expect(b.get().clips[picture.id]).toMatchObject({ start: 130, duration: 270, sourceIn: 6, ramp: null });
+      sync();
+      const merged = a.get().clips[picture.id];
+      // The ramp stands either way, on the media it was set on, and so does where the clip starts.
+      expect(merged).toMatchObject({ ramp: bullet, start: 130 });
+      // A ramp is written with its length and its in point. Where the trim's are the later word,
+      // the trim is whole; where the ramp's are, the clip begins on the frame the trim left it on
+      // and plays from where the ramp found it.
+      expect([merged.duration, merged.sourceIn]).toEqual(winner === 'a' ? [69, 5] : [270, 6]);
+      renders(a, b);
+    });
+
+    it(`keeps a ramp and a change of speed made at the same moment (${winner} wins)`, () => {
+      const { a, b, sync } = apart(winner);
+      const { picture, sound } = take(a);
+      sync();
+      a.commit(setRamp(a.get(), [picture.id], { ramps: { [picture.id]: bullet } }));
+      b.commit(setSpeed(b.get(), [picture.id], 2));
+      sync();
+      // Nobody but the ramp wrote the ramp, and nobody but the speed the speed.
+      expect(a.get().clips[picture.id]).toMatchObject({ ramp: bullet, speed: 2, start: 100, sourceIn: 5 });
+      expect(a.get().clips[picture.id].duration).toBe(winner === 'a' ? 69 : 150);
+      expect(a.get().clips[sound.id]).toMatchObject({ ramp: bullet, start: 94 });
+      renders(a, b);
+
+      // Off the ramp to one speed, against another ramp: the ramp or none, with the length that goes with it.
+      a.commit(setRamp(a.get(), [picture.id], { ramps: { [picture.id]: bullet } }, true));
+      sync();
+      a.commit(
+        setRamp(a.get(), [picture.id], { ramps: { [picture.id]: shapeRamp('rampUp', 5, 15, false) } }),
+      );
+      b.commit(setSpeed(b.get(), [picture.id], 4));
+      const alone = (winner === 'a' ? a : b).get().clips[picture.id];
+      sync();
+      const { ramp, duration, sourceIn } = a.get().clips[picture.id];
+      expect({ ramp, duration, sourceIn }).toEqual({
+        ramp: alone.ramp,
+        duration: alone.duration,
+        sourceIn: alone.sourceIn,
+      });
+      expect(a.get().clips[picture.id].speed).toBe(4);
+      renders(a, b);
+    });
+  }
+
+  it('is not written again, and makes no step of history, when the clip has it already', () => {
+    const { a, b } = together();
+    const { picture, sound } = take(a);
+    a.commit(setRamp(a.get(), [picture.id], { ramps: { [picture.id]: bullet } }));
+    const steps = a.undoManager.undoStack.length;
+    let updates = 0;
+    a.doc.on('update', () => updates++);
+    const before = a.get();
+    const again = setRamp(a.get(), [sound.id], { ramps: { [picture.id]: bullet.map((q) => ({ ...q })) } });
+    expect(again).toHaveLength(2);
+    a.commit(again);
+    expect(updates).toBe(0);
+    expect(a.undoManager.undoStack).toHaveLength(steps);
+    expect(a.get()).toBe(before);
+    expect(a.get().clips[picture.id].ramp).toBe(before.clips[picture.id].ramp);
+    expect(b.get()).toEqual(a.get());
+  });
+
+  it('is one step of history for the whole group, taken back and made again around what someone else did', () => {
+    const { a, b } = together();
+    const { picture, sound } = take(a, {
+      keyframes: { x: [{ t: 150, v: 1, e: 'linear' }] },
+      fadeOut: 200,
+    });
+    const found = a.get().clips;
+    a.commit(setRamp(a.get(), [picture.id], { ramps: { [picture.id]: bullet } }));
+    const made = a.get().clips;
+    expect(made[picture.id]).toMatchObject({ ramp: bullet, duration: 69, fadeOut: 69 });
+    expect(made[picture.id].keyframes.x[0].t).not.toBe(150);
+    expect(made[sound.id]).toMatchObject({ ramp: bullet, start: 94, duration: 75, keepPitch: true });
+    // The other person changes something else on both clips meanwhile.
+    b.commit([
+      { op: 'updateClip', id: picture.id, patch: { opacity: 0.5 } },
+      { op: 'updateClip', id: sound.id, patch: { volume: -6 } },
+    ]);
+    expect(a.undo()).toEqual(TAKEN);
+    expect(a.get().clips[picture.id]).toEqual({ ...found[picture.id], opacity: 0.5 });
+    expect(a.get().clips[sound.id]).toEqual({ ...found[sound.id], volume: -6 });
+    expect(b.get()).toEqual(a.get());
+    expect(a.redo()).toEqual(TAKEN);
+    expect(a.get().clips[picture.id]).toEqual({ ...made[picture.id], opacity: 0.5 });
+    expect(a.get().clips[sound.id]).toEqual({ ...made[sound.id], volume: -6 });
+    expect(b.get()).toEqual(a.get());
+    expect(a.undo()).toEqual(TAKEN);
+    expect(a.canUndo).toBe(true);
+    expect(a.get().clips[sound.id]).toEqual({ ...found[sound.id], volume: -6 });
+  });
+
+  it('is one step for a drag of a point, however many times it was written on the way', () => {
+    const { a, b } = together();
+    const { picture, sound } = take(a);
+    const found = a.get().clips;
+    a.beginGesture();
+    for (const v of [1.2, 1.9, 2.7, 3.4]) {
+      const ramp = [
+        { m: 5, v: 1 },
+        { m: 10, v },
+        { m: 15, v: 1 },
+      ];
+      // Each step from where the drag found the clips, as the planner works a gesture out.
+      const from: Edit[] = [picture.id, sound.id].map((id) => {
+        const { start, duration, sourceIn, ramp: was, keepPitch } = found[id];
+        return { op: 'updateClip', id, patch: { start, duration, sourceIn, ramp: was, keepPitch } };
+      });
+      const p = applyEdits(a.get(), from);
+      a.commit([...from, ...setRamp(p, [picture.id], { ramps: { [picture.id]: ramp } })], { merge: true });
+    }
+    expect(a.get().clips[picture.id].ramp![1].v).toBe(3.4);
+    expect(b.get()).toEqual(a.get());
+    expect(a.undo()).toEqual(TAKEN);
+    expect(a.get().clips).toEqual(found);
+    expect(b.get().clips).toEqual(found);
+    expect(a.redo()).toEqual(TAKEN);
+    expect(a.get().clips[picture.id].ramp![1].v).toBe(3.4);
+  });
+
+  it('goes through a change of frame rate untouched, and both come back exactly', () => {
+    const { a, b } = together();
+    const { picture, sound } = take(a);
+    const found = a.get();
+    a.commit(setRamp(a.get(), [picture.id], { ramps: { [picture.id]: bullet } }));
+    const ramped = a.get();
+    a.commit(changeFrameRate(a.get(), 24, 1));
+    const slower = a.get();
+    for (const id of [picture.id, sound.id]) {
+      expect(slower.clips[id].ramp).toBe(ramped.clips[id].ramp);
+      expect(slower.clips[id].sourceIn).toBe(ramped.clips[id].sourceIn);
+    }
+    expect([slower.clips[picture.id].start, slower.clips[picture.id].duration]).toEqual([80, 55]);
+    expect(a.undo()).toEqual(TAKEN);
+    expect(a.get()).toEqual(ramped);
+    expect(a.undo()).toEqual(TAKEN);
+    expect(a.get()).toEqual(found);
+    expect(a.redo()).toEqual(TAKEN);
+    expect(a.redo()).toEqual(TAKEN);
+    expect(a.get()).toEqual(slower);
+    expect(b.get()).toEqual(a.get());
+  });
+
+  for (const ramp of [bullet, flat]) {
+    it(`is taken back after someone else changed the frame rate (${ramp === flat ? 'no change of length' : 'a change of length'})`, () => {
+      const { a, b } = together();
+      const { picture, sound } = take(a);
+      a.commit(setRamp(a.get(), [picture.id], { ramps: { [picture.id]: ramp } }));
+      b.commit(changeFrameRate(b.get(), 24, 1));
+      expect(a.get().clips[picture.id].ramp).toEqual(ramp);
+      expect(a.undo()).toEqual(TAKEN);
+      // As the change of rate alone would have left the two clips.
+      const alone = new ProjectStore();
+      alone.initIfEmpty({ name: 'Spring campaign' });
+      const plain = take(alone);
+      alone.commit(changeFrameRate(alone.get(), 24, 1));
+      for (const [id, same] of [
+        [picture.id, plain.picture.id],
+        [sound.id, plain.sound.id],
+      ]) {
+        const { start, duration, sourceIn, ramp: now, speed } = a.get().clips[id];
+        const meant = alone.get().clips[same];
+        expect({ start, duration, sourceIn, ramp: now, speed }).toEqual({
+          start: meant.start,
+          duration: meant.duration,
+          sourceIn: meant.sourceIn,
+          ramp: null,
+          speed: 1,
+        });
+      }
+      expect(b.get()).toEqual(a.get());
+      expect(overlaps(a.get())).toEqual([]);
+    });
+  }
 });

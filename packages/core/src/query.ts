@@ -1,7 +1,8 @@
 /** Read-only selectors over a Project snapshot. Heavy ones are memoised on object identity. */
 import { hasSourceTime } from './defaults';
+import { mediaToStream, rampTable, streamSpeed, streamToMedia } from './ramp';
 import type { Asset, Clip, ID, Project, Track } from './types';
-import { memoByRef } from './util';
+import { clamp, memoByRef } from './util';
 
 export const clipEnd = (c: Clip): number => c.start + c.duration;
 
@@ -118,15 +119,119 @@ export function withLinked(p: Project, ids: Iterable<ID>): ID[] {
   return Array.from(out);
 }
 
-/** Seconds of source media consumed per timeline frame (zero for a freeze frame). */
+const streamInOf = memoByRef((clip: Clip): number =>
+  mediaToStream(rampTable(clip.ramp as NonNullable<Clip['ramp']>), clip.sourceIn),
+);
+
+/**
+ * The stream time at which a clip's media reaches its in point (see `timeMap`). On a ramp it takes
+ * an iteration to find, and is kept for each clip object: a clip changes by being replaced.
+ */
+export const streamIn = (clip: Clip): number =>
+  clip.ramp && !clip.freeze ? streamInOf(clip) : clip.sourceIn / clamp(clip.speed, 0.05, 100);
+
+/**
+ * Seconds of source media consumed per timeline frame (zero for a freeze frame). On a ramp there
+ * is no such number: this is its mean over the clip, for callers that want one rate all the same.
+ */
 export const sourcePerFrame = (clip: Clip, p: Project): number =>
-  clip.freeze ? 0 : (clip.speed * p.settings.fpsDen) / p.settings.fpsNum;
+  clip.ramp && !clip.freeze
+    ? (mediaAt(clip, clip.duration, p) - clip.sourceIn) / clip.duration
+    : clip.freeze
+      ? 0
+      : (clip.speed * p.settings.fpsDen) / p.settings.fpsNum;
+
+/**
+ * The second of media a clip is at, `u` frames after its in point, going forwards through the
+ * media whichever way the clip plays. `u` is any real number: beyond the clip the speed carries on
+ * (along the ramp, then at its outermost speed), which is what a trim outwards or a transition
+ * handle shows.
+ */
+export function mediaAt(clip: Clip, u: number, p: Project): number {
+  if (clip.freeze) return clip.sourceIn;
+  if (clip.ramp)
+    return streamToMedia(rampTable(clip.ramp), streamIn(clip) + (u * p.settings.fpsDen) / p.settings.fpsNum);
+  return clip.sourceIn + u * sourcePerFrame(clip, p);
+}
+
+/** How many frames after its in point (as a real number) a clip reaches second `m` of its media, going forwards. */
+export function frameOfMedia(clip: Clip, m: number, p: Project): number {
+  if (clip.ramp && !clip.freeze)
+    return (
+      ((mediaToStream(rampTable(clip.ramp), m) - streamIn(clip)) * p.settings.fpsNum) / p.settings.fpsDen
+    );
+  return (m - clip.sourceIn) / sourcePerFrame(clip, p);
+}
+
+/** The stretch of media a clip covers, in seconds: from its in point to the end of its last frame. */
+export function sourceSpan(clip: Clip, p: Project): { in: number; out: number } {
+  return { in: clip.sourceIn, out: mediaAt(clip, clip.duration, p) };
+}
+
+/** The speed of a clip `u` frames after its in point, counted as `mediaAt` counts. Zero for a freeze. */
+export function speedAt(clip: Clip, u: number, p: Project): number {
+  if (clip.freeze) return 0;
+  if (clip.ramp)
+    return streamSpeed(rampTable(clip.ramp), streamIn(clip) + (u * p.settings.fpsDen) / p.settings.fpsNum);
+  return clip.speed;
+}
+
+/** Seconds of media a clip covers for each second it lasts. */
+export function meanSpeed(clip: Clip, p: Project): number {
+  if (clip.freeze) return 0;
+  if (clip.ramp) return (sourcePerFrame(clip, p) * p.settings.fpsNum) / p.settings.fpsDen;
+  return clip.speed;
+}
+
+/** The slowest and the fastest a clip plays over the stretch of media it covers. */
+export function speedRange(clip: Clip, p: Project): { lo: number; hi: number } {
+  if (clip.freeze) return { lo: 0, hi: 0 };
+  if (!clip.ramp) return { lo: clip.speed, hi: clip.speed };
+  // The speed moves one way between two points, so it is at its extremes on a point or at an end.
+  const t = rampTable(clip.ramp);
+  const { in: from, out: to } = sourceSpan(clip, p);
+  const ends = [speedAt(clip, 0, p), speedAt(clip, clip.duration, p)];
+  let lo = Math.min(...ends);
+  let hi = Math.max(...ends);
+  for (let i = 0; i < t.n; i++) {
+    if (t.m[i] <= from || t.m[i] >= to) continue;
+    lo = Math.min(lo, t.v[i]);
+    hi = Math.max(hi, t.v[i]);
+  }
+  return { lo, hi };
+}
+
+/**
+ * The clock of a clip's media, in seconds, for whoever plays it: where the media is at a stream
+ * time, when it reaches a second, and how fast it runs there. A clip is the stretch of that stream
+ * that starts at `streamIn` and lasts as long as the clip does.
+ */
+export interface TimeMap {
+  media(tau: number): number;
+  stream(m: number): number;
+  speed(tau: number): number;
+}
+
+export function timeMap(clip: Clip): TimeMap {
+  if (clip.ramp && !clip.freeze) {
+    const t = rampTable(clip.ramp);
+    return {
+      media: (tau) => streamToMedia(t, tau),
+      stream: (m) => mediaToStream(t, m),
+      speed: (tau) => streamSpeed(t, tau),
+    };
+  }
+  const s = clamp(clip.speed, 0.05, 100);
+  return { media: (tau) => tau * s, stream: (m) => m / s, speed: () => s };
+}
 
 /**
  * Source media time (seconds) shown at a clip-local frame. Local frames outside 0…duration are
  * valid (used for transition handles) and are clamped to the asset bounds by the caller.
  */
 export function sourceTimeAt(clip: Clip, localFrame: number, p: Project): number {
+  if (clip.ramp && !clip.freeze)
+    return mediaAt(clip, clip.reverse ? clip.duration - 1 - localFrame : localFrame, p);
   const per = sourcePerFrame(clip, p);
   if (per === 0) return clip.sourceIn;
   if (clip.reverse) return clip.sourceIn + (clip.duration - 1 - localFrame) * per;
@@ -137,6 +242,22 @@ export function sourceTimeAt(clip: Clip, localFrame: number, p: Project): number
 export function handles(clip: Clip, asset: Asset | undefined, p: Project): { head: number; tail: number } {
   if (!hasSourceTime(clip.type) || clip.freeze || !asset || asset.duration <= 0)
     return { head: Infinity, tail: Infinity };
+  if (clip.ramp) {
+    // Counted on the ramp's own clock, as `retime` moves an edge, so that a trim the handles allow
+    // never asks for media the file does not have.
+    const t = rampTable(clip.ramp);
+    const { fpsNum, fpsDen } = p.settings;
+    const eps = 1e-6;
+    const tauIn = streamIn(clip);
+    const tauOut = tauIn + (clip.duration * fpsDen) / fpsNum;
+    const before =
+      clip.sourceIn > 0 ? Math.floor(((tauIn - mediaToStream(t, 0)) * fpsNum) / fpsDen + eps) : 0;
+    const after = Math.max(
+      0,
+      Math.floor(((mediaToStream(t, asset.duration) - tauOut) * fpsNum) / fpsDen + eps),
+    );
+    return clip.reverse ? { head: after, tail: before } : { head: before, tail: after };
+  }
   const per = sourcePerFrame(clip, p);
   const used = clip.duration * per;
   const before = Math.max(0, clip.sourceIn);

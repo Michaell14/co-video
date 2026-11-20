@@ -1,5 +1,5 @@
 import type { Clip, Easing, Keyframe } from './types';
-import { clamp } from './util';
+import { clamp, roundHalfUp } from './util';
 
 /** Solve a CSS-style cubic bezier (P0 = 0,0  P3 = 1,1) for y at x. */
 export function cubicBezier(x1: number, y1: number, x2: number, y2: number, x: number): number {
@@ -170,6 +170,32 @@ export function scaleKeyframes(
     out[path] = kfs.map((k) => ({ ...k, t: Math.round(k.t * factor) }));
   }
   return out;
+}
+
+/**
+ * Move keyframes after a change of speed that no one factor describes: `to` takes the time of each
+ * to the frame, as a real number, that now shows what its frame showed, and the keyframe goes to
+ * the nearest whole one. Keyframes that land on one frame stay, as after `scaleKeyframes`. The same
+ * object when none moves.
+ */
+export function remapKeyframes(
+  keyframes: Record<string, Keyframe[]>,
+  to: (t: number) => number,
+): Record<string, Keyframe[]> {
+  let moved = false;
+  const out: Record<string, Keyframe[]> = {};
+  for (const [path, kfs] of Object.entries(keyframes)) {
+    const list = kfs.map((k) => {
+      const t = roundHalfUp(to(k.t));
+      if (t === k.t) return k;
+      moved = true;
+      return { ...k, t };
+    });
+    // Evaluation binary-searches the list. A map that runs one way keeps it in order by itself.
+    const ordered = list.every((k, i) => i === 0 || k.t >= list[i - 1].t);
+    out[path] = ordered ? list : list.sort((a, b) => a.t - b.t);
+  }
+  return moved ? out : keyframes;
 }
 
 export function nearestKeyframe(

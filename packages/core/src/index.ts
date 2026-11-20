@@ -4,6 +4,7 @@ export * from './time';
 export * from './util';
 export * from './defaults';
 export * from './keyframes';
+export * from './ramp';
 export * from './glsl';
 export * from './effects';
 export * from './transitions';

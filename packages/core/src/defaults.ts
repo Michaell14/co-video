@@ -153,6 +153,19 @@ export const DEFAULT_SHAPE: ShapeProps = {
   sides: 5,
 };
 
+/** Slowest and fastest speed of a point of a speed ramp. One constant speed has a wider range. */
+export const RAMP_MIN = 0.1;
+export const RAMP_MAX = 10;
+/** Most points a ramp holds. */
+export const RAMP_POINTS = 32;
+/** Least seconds of media between two points of a ramp: no ease takes less than a ten-thousandth of a second. */
+export const RAMP_GAP = 1e-3;
+/**
+ * Furthest second of media, either way, that a point of a ramp or the in point of a clip on a ramp
+ * can stand on. Inside it the ramp's clock is finite and resolves a sample; nothing is that long.
+ */
+export const RAMP_MEDIA = 1e6;
+
 /** Every field of a clip, with neutral values. Clips read from the doc are layered on top of this. */
 export const CLIP_DEFAULTS: Omit<Clip, 'id' | 'trackId' | 'type'> = {
   assetId: null,
@@ -160,6 +173,8 @@ export const CLIP_DEFAULTS: Omit<Clip, 'id' | 'trackId' | 'type'> = {
   duration: 1,
   sourceIn: 0,
   speed: 1,
+  ramp: null,
+  keepPitch: null,
   reverse: false,
   freeze: false,
   name: '',

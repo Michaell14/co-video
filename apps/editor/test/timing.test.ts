@@ -251,7 +251,9 @@ describe('a change of speed under ripple editing', () => {
     p = applyEdits(p, speedRippleEdits(p, c.pairs[1], 4).edits);
     for (const t of [c.v1, c.a1]) expect(layout(p, t)).toEqual(['0+120', '120+30', '150+120']);
     p = applyEdits(p, speedRippleEdits(p, c.pairs[1], 1).edits);
-    expect(p.clips).toEqual(c.p.clips);
+    // Three changes of speed, not one gesture that returns: the sound keeps its pitch from the first on.
+    const sound = c.pairs[1][1];
+    expect(p.clips).toEqual({ ...c.p.clips, [sound]: { ...c.p.clips[sound], keepPitch: true } });
   });
 
   it('keeps a reversed clip on its source range, and ripples by the same frames', () => {
