@@ -1090,7 +1090,7 @@ export function setSpeed(p: Project, ids: ID[], speed: number, reverse?: boolean
   const named = new Set(ids);
   const off = offRamp(p, named, sp, reverse);
   const edits: Edit[] = off.edits;
-  const q = off.project;
+  const q = applyEdits(p, edits);
   for (const id of named) {
     const c = q.clips[id];
     if (!c || !hasSourceTime(c.type) || c.freeze || off.ids.has(id)) continue;
@@ -1120,15 +1120,18 @@ export function setSpeed(p: Project, ids: ID[], speed: number, reverse?: boolean
 
 const speedable = (c: Clip | undefined): c is Clip => !!c && hasSourceTime(c.type) && !c.freeze;
 
+/** The order `clipsOnTrack` lists the clips of a track in: by where they start, then by id. */
+const byStart = (a: Clip, b: Clip): number => a.start - b.start || (a.id < b.id ? -1 : 1);
+
 /**
  * The clips of a clip's link group that have a speed, in an order that does not depend on who asks
- * or in what order: by where they start, then by id.
+ * or in what order.
  */
 function speedGroup(p: Project, c: Clip): Clip[] {
   return linkedIds(p, c.id)
     .map((id) => p.clips[id])
     .filter(speedable)
-    .sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : 1));
+    .sort(byStart);
 }
 
 /** The link groups of the clips among `ids` that `has` picks, each once, in order of where they start. */
@@ -1140,7 +1143,55 @@ function speedGroups(p: Project, ids: Iterable<ID>, has: (c: Clip) => boolean): 
     const key = c.linkId ? `link:${c.linkId}` : `clip:${c.id}`;
     if (!groups.has(key)) groups.set(key, speedGroup(p, c));
   }
-  return [...groups.values()].sort((a, b) => a[0].start - b[0].start || (a[0].id < b[0].id ? -1 : 1));
+  return [...groups.values()].sort((a, b) => byStart(a[0], b[0]));
+}
+
+/**
+ * The tracks as they stand while one operation places clip after clip: what `clipsOnTrack` lists,
+ * with every clip that has been placed where it was put. A project made anew for each clip would
+ * say the same, and would sort the whole timeline again to say it.
+ */
+interface Lanes {
+  /** The clips before and after `c` on its track, as `neighbors` gives them. */
+  around(c: Clip): { prev: Clip | null; next: Clip | null };
+  /** `c` now stands as `as`: the same clip at another start or length. */
+  place(c: Clip, as: Clip): void;
+}
+
+function lanesOf(p: Project): Lanes {
+  const lanes = new Map<ID, Clip[]>();
+  /** Where each clip of those tracks is in its lane. */
+  const seats = new Map<ID, number>();
+  const laneOf = (trackId: ID): Clip[] => {
+    let lane = lanes.get(trackId);
+    if (!lane) {
+      lanes.set(trackId, (lane = clipsOnTrack(p, trackId).slice()));
+      lane.forEach((c, i) => seats.set(c.id, i));
+    }
+    return lane;
+  };
+  return {
+    around(c) {
+      const lane = laneOf(c.trackId);
+      const i = seats.get(c.id);
+      if (i === undefined) return { prev: null, next: null };
+      return { prev: lane[i - 1] ?? null, next: lane[i + 1] ?? null };
+    },
+    place(c, as) {
+      const lane = laneOf(c.trackId);
+      let i = seats.get(c.id);
+      if (i === undefined) return;
+      const seat = (clip: Clip, at: number): void => {
+        lane[at] = clip;
+        seats.set(clip.id, at);
+      };
+      // A clip seldom changes places with another, and then with one near it: each clip it now
+      // comes before or after moves over by one.
+      for (; i > 0 && byStart(as, lane[i - 1]) < 0; i--) seat(lane[i - 1], i);
+      for (; i < lane.length - 1 && byStart(as, lane[i + 1]) > 0; i++) seat(lane[i + 1], i);
+      seat(as, i);
+    },
+  };
 }
 
 /** What a clip is put on: a ramp, or, with none, one speed. */
@@ -1216,18 +1267,20 @@ function inStep(p: Project, lead: Clip, c: Clip): number | null {
  * play backwards are aligned at their first frame, which is the top of their stretch, and all of
  * this holds for them the other way up.
  *
- * Returns the edits and the project with them applied, or null when a length or a place comes out
- * as no finite number (a document can hold an in point that no clock resolves): then nothing of
- * the group is changed.
+ * Each clip finds its neighbours on `lanes`, and is placed there for the clips and the groups that
+ * come after it. Returns the edits, or null when a length or a place comes out as no finite number
+ * (a document can hold an in point that no clock resolves): then nothing of the group is changed,
+ * on `lanes` either.
  */
 function retimeGroup(
   p: Project,
+  lanes: Lanes,
   members: Clip[],
   lead: Clip,
   aim: Aim,
   aimOf: (c: Clip) => Aim,
   how: Retiming,
-): { edits: Edit[]; project: Project } | null {
+): Edit[] | null {
   const { fpsNum, fpsDen } = p.settings;
   const frames = (seconds: number): number => (seconds * fpsNum) / fpsDen;
   const seconds = (count: number): number => (count * fpsDen) / fpsNum;
@@ -1245,16 +1298,22 @@ function retimeGroup(
   }
 
   const edits: Edit[] = [];
-  let q = p;
+  const placed: [was: Clip, now: Clip][] = [];
   /** Note the patch of `c`, unless a number of it is not finite. The next clip is placed around it. */
   const put = (c: Clip, patch: Partial<Clip>): boolean => {
     const times = Object.values(patch.keyframes ?? {}).flatMap((list) => list.map((k) => k.t));
     if (![patch.duration, patch.sourceIn ?? 0, patch.start ?? 0, ...times].every(Number.isFinite))
       return false;
-    const edit: Edit = { op: 'updateClip', id: c.id, patch };
-    edits.push(edit);
-    q = applyEdits(q, [edit]);
+    edits.push({ op: 'updateClip', id: c.id, patch });
+    const now = { ...c, ...patch };
+    lanes.place(c, now);
+    placed.push([c, now]);
     return true;
+  };
+  /** Nothing comes of the group: the clips of it that were placed stand as they stood again. */
+  const undone = (): null => {
+    for (const [was, now] of placed.reverse()) lanes.place(now, was);
+    return null;
   };
 
   /** The patch that takes `c` to `place` on the clock of `to`. */
@@ -1295,7 +1354,7 @@ function retimeGroup(
     const natural = Math.max(1, roundHalfUp(frames(clock.stream(b) - clock.stream(a))));
     if (!Number.isFinite(natural)) return null;
     let duration = natural;
-    const { next } = neighbors(q, c);
+    const { next } = lanes.around(c);
     if (!how.free && next) duration = Math.min(duration, Math.max(1, next.start - c.start));
     // A reversed clip plays its stretch from the top down, so what no longer fits before the next
     // clip comes off the bottom of it and the first frame stays the one it was.
@@ -1319,7 +1378,7 @@ function retimeGroup(
     const to: Aim = { ramp: aim.ramp && shiftRamp(aim.ramp, offset), speed: aim.speed };
     const clock = clockOf(to);
     const { in: a, out: b } = sourceSpan(c, p);
-    const { prev, next } = neighbors(q, c);
+    const { prev, next } = lanes.around(c);
     const floor = prev ? clipEnd(prev) : 0;
     const tauLead = led.clock.stream(led.place.sourceIn);
     const down = c.reverse;
@@ -1396,39 +1455,38 @@ function retimeGroup(
     if (offset === undefined) {
       const to = aimOf(c);
       const by = alone(c, to);
-      if (!by || !put(c, patchOf(c, to, by.clock, by.place, false))) return null;
+      if (!by || !put(c, patchOf(c, to, by.clock, by.place, false))) return undone();
     } else {
       const by = following(c, offset);
-      if (!by || !put(c, patchOf(c, by.to, by.clock, by.place, true))) return null;
+      if (!by || !put(c, patchOf(c, by.to, by.clock, by.place, true))) return undone();
     }
   }
-  return { edits, project: q };
+  return edits;
 }
 
 /**
  * `setSpeed` for the clips among `ids` that are on a ramp: each goes to the one speed `sp` with its
- * whole link group, named or not, and each group is taken once. Returns the edits, the project with
- * them applied (the clips that are not on a ramp are then set in it) and the clips that are done.
+ * whole link group, named or not, and each group is taken once. Returns the edits and the clips
+ * that are done.
  */
 function offRamp(
   p: Project,
   ids: ReadonlySet<ID>,
   sp: number,
   reverse: boolean | undefined,
-): { edits: Edit[]; project: Project; ids: ReadonlySet<ID> } {
+): { edits: Edit[]; ids: ReadonlySet<ID> } {
   const edits: Edit[] = [];
   const done = new Set<ID>();
-  let project = p;
+  const lanes = lanesOf(p);
   const aim: Aim = { ramp: null, speed: sp };
+  const how: Retiming = { free: false, reverse, speed: true };
   for (const members of speedGroups(p, ids, (c) => c.ramp !== null)) {
     for (const c of members) done.add(c.id);
     const lead = members.find((c) => c.type !== 'audio') ?? members[0];
-    const group = retimeGroup(project, members, lead, aim, () => aim, { free: false, reverse, speed: true });
-    if (!group) continue;
-    edits.push(...group.edits);
-    project = group.project;
+    const group = retimeGroup(p, lanes, members, lead, aim, () => aim, how);
+    if (group) edits.push(...group);
   }
-  return { edits, project, ids: done };
+  return { edits, ids: done };
 }
 
 export interface RampChange {
@@ -1456,7 +1514,7 @@ export interface RampChange {
  */
 export function setRamp(p: Project, ids: ID[], change: RampChange, free = false): Edit[] {
   const edits: Edit[] = [];
-  let project = p;
+  const lanes = lanesOf(p);
   const asked = (c: Clip): RampPoint[] | null => {
     const points = change.ramps[c.id];
     return points ? tidyRamp(points) : null;
@@ -1468,16 +1526,15 @@ export function setRamp(p: Project, ids: ID[], change: RampChange, free = false)
     if (!lead) continue;
     const ramp = asked(lead);
     const group = retimeGroup(
-      project,
+      p,
+      lanes,
       members,
       lead,
       aimAt(lead, ramp),
       (c) => aimAt(c, named.includes(c) ? asked(c) : ramp),
       { free, speed: false },
     );
-    if (!group) continue;
-    edits.push(...group.edits);
-    project = group.project;
+    if (group) edits.push(...group);
   }
   return edits;
 }

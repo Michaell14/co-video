@@ -391,6 +391,29 @@ function analyseClicks(y: Float32Array, at: number[], energy: number) {
   });
 }
 
+/**
+ * The power of `y` around `hz`, the first and last second aside: taken over a fifth of a second
+ * at a time under a Hann window, which tells apart what lies 100 Hz from a tone and still holds a
+ * tone that sits a fraction of a hertz off.
+ */
+function powerAround(y: Float32Array, hz: number): number {
+  const length = RATE / 5;
+  let power = 0;
+  let count = 0;
+  for (let at = RATE; at + length <= y.length - RATE; at += length / 2, count++) {
+    let re = 0;
+    let im = 0;
+    for (let i = 0; i < length; i++) {
+      const v = y[at + i] * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / length));
+      const p = (2 * Math.PI * hz * i) / RATE;
+      re += v * Math.cos(p);
+      im += v * Math.sin(p);
+    }
+    power += re * re + im * im;
+  }
+  return power / count;
+}
+
 const median = (values: number[]): number => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 const most = (values: number[]): number => Math.max(...values.map(Math.abs));
 
@@ -731,6 +754,42 @@ describe('Stretcher', () => {
         expect(Math.abs(10 * Math.log10(after / before)), what).toBeLessThan(0.3);
         expect(10 * Math.log10(Math.max(...tenths) / Math.min(...tenths)), what).toBeLessThan(1);
       }
+    }
+  });
+
+  it('ripples a tone that sounds under noise as loud as itself by 28 dB under the tone at most', () => {
+    // What keeps the level of noise is one gain for the junction of two grains, found from how
+    // alike the two are as a whole. Where a tone and noise sound together it cannot tell them
+    // apart: the tone, which added up already, is raised a little half-way between the grains
+    // and carries components at their rate, 100 Hz either side of it. A stated limit of the
+    // method: 30 dB under the tone at twice the speed, lower at the others and under less noise.
+    for (const speed of [0.5, 0.8, 1.25, 2]) {
+      const seconds = 14;
+      const hiss = noise(seconds * speed + 3, 3000, 9000, 5);
+      // A tone at 0.3 has a level of 0.212, the noise one of 0.1.
+      const source = tone(440, seconds * speed + 3, 0.3).map((v, i) => v + 2.12 * hiss[i]);
+      const out = stretch([source], steady(speed, 0.5), 0, seconds * RATE)[0];
+      const carrier = powerAround(out, 440);
+      expect(Math.abs(10 * Math.log10(carrier / powerAround(source, 440))), `${speed}x`).toBeLessThan(0.5);
+      for (const hz of [340, 540])
+        expect(10 * Math.log10(powerAround(out, hz) / carrier), `${hz} Hz at ${speed}x`).toBeLessThan(-28);
+    }
+  });
+
+  it('goes no more than 3 dB above the highest sample of the file', () => {
+    // The same gain raises the sum of two grains that are not alike by up to the square root of
+    // two half-way between them. Sound that fills its file to full scale can therefore come out
+    // above full scale, and nothing after the stretcher holds it back. A stated limit.
+    const rnd = random(9);
+    const top = 0.5;
+    for (const speed of [0.5, 0.8, 1.25, 2]) {
+      const source = Float32Array.from({ length: (10 * speed + 3) * RATE }, () => (2 * rnd() - 1) * top);
+      const out = stretch([source], steady(speed), 0, 10 * RATE)[0];
+      let peak = 0;
+      for (const v of out) peak = Math.max(peak, Math.abs(v));
+      expect(peak, `${speed}x`).toBeLessThanOrEqual(Math.SQRT2 * top);
+      // White noise comes close to it: the limit is not one on paper only.
+      expect(peak, `${speed}x`).toBeGreaterThan(1.25 * top);
     }
   });
 
