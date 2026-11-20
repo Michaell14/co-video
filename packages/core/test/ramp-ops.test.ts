@@ -476,25 +476,28 @@ describe('window edits on a clip on a ramp', () => {
   it('freezes a frame of it into a still that has no ramp, and carries on after it', () => {
     for (const reverse of [false, true]) {
       const c = cutOfTwo(reverse);
-      const p = applyEdits(c.p, [{ op: 'updateClip', id: c.a1.id, patch: { keepPitch: true } }]);
-      const picture = { ...p.clips[c.v1.id], keepPitch: true };
-      const q0 = applyEdits(p, [{ op: 'updateClip', id: c.v1.id, patch: { keepPitch: true } }]);
-      const frozen = freezeFrame(q0, c.v1.id, 147, 45);
-      const q = applyEdits(q0, frozen.edits);
+      // Both clips of the take keep their pitch, as far as that is said of a picture.
+      const p = applyEdits(
+        c.p,
+        [c.v1.id, c.a1.id].map((id): Edit => ({ op: 'updateClip', id, patch: { keepPitch: true } })),
+      );
+      const shot = p.clips[c.v1.id];
+      const frozen = freezeFrame(p, shot.id, 147, 45);
+      const q = applyEdits(p, frozen.edits);
       const still = q.clips[frozen.created[0]];
       expect(still).toMatchObject({ freeze: true, ramp: null, keepPitch: null, start: 147, duration: 45 });
-      expect(still.sourceIn).toBe(shows(q0, picture, 147));
-      for (const frame of [147, 170, 191]) expect(shows(q, still, frame)).toBe(shows(q0, picture, 147));
+      expect(still.sourceIn).toBe(shows(p, shot, 147));
+      for (const frame of [147, 170, 191]) expect(shows(q, still, frame)).toBe(shows(p, shot, 147));
       // The halves go on from where they were cut, picture and sound alike, on the ramp they had.
       const pieces = Object.values(q.clips).filter((x) => x.id !== still.id && x.linkId !== 'two');
       expect(pieces).toHaveLength(4);
       for (const piece of pieces) {
-        expect(piece.ramp).toBe(c.v1.ramp);
-        const then = piece.type === 'audio' ? p.clips[c.a1.id] : picture;
+        expect(piece.ramp).toBe(shot.ramp);
         expect(piece.keepPitch).toBe(true);
+        const then = piece.type === 'audio' ? p.clips[c.a1.id] : shot;
         const moved = piece.start >= 192 ? 45 : 0;
         for (let frame = piece.start; frame < clipEnd(piece); frame++) {
-          expect(Math.abs(shows(q, piece, frame) - shows(q0, then, frame - moved))).toBeLessThan(1e-9);
+          expect(Math.abs(shows(q, piece, frame) - shows(p, then, frame - moved))).toBeLessThan(1e-9);
         }
       }
       // A still has no speed to set a ramp on.

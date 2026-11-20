@@ -202,9 +202,9 @@ export function speedRange(clip: Clip, p: Project): { lo: number; hi: number } {
 }
 
 /**
- * The clock of a clip's media, in seconds, for whoever plays it: where the media is at a stream
- * time, when it reaches a second, and how fast it runs there. A clip is the stretch of that stream
- * that starts at `streamIn` and lasts as long as the clip does.
+ * A clock of media, in seconds, for whoever plays it: where the media is at a stream time, when it
+ * reaches a second, and how fast it runs there. A clip is the stretch of its stream that starts at
+ * `streamIn` and lasts as long as the clip does.
  */
 export interface TimeMap {
   media(tau: number): number;
@@ -212,6 +212,10 @@ export interface TimeMap {
   speed(tau: number): number;
 }
 
+/**
+ * The clock a clip plays its media by: that of its ramp, or of its one speed, brought inside the
+ * range a speed can be set to.
+ */
 export function timeMap(clip: Clip): TimeMap {
   if (clip.ramp && !clip.freeze) {
     const t = rampTable(clip.ramp);

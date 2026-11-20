@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WrappedAudioBuffer } from 'mediabunny';
-import { reachNear } from '../src/audio/resample';
+import { Resampler, reachNear } from '../src/audio/resample';
 import { Reader, Retimed, readSpan, type Sounding, type TimeMap } from '../src/audio/retimed';
 import type { SoundTrouble } from '../src/audio/sound';
 
@@ -226,6 +226,26 @@ describe('Reader', () => {
       for (let i = 0; i < out.length; i++) worst = Math.max(worst, Math.abs(out[i] - source[i + RATE / 4]));
       expect(worst, `${hz} Hz`).toBeLessThan(1e-6);
       expect(worst / 0.15, `${hz} Hz`).toBeLessThan(6e-6);
+    }
+  });
+
+  it('gives at one speed what the conversion of a clip at that speed gives', () => {
+    const source = Float32Array.from(
+      tone(1000, RATE),
+      (v, i) => v + 0.5 * Math.sin((2 * Math.PI * 3000 * i) / RATE),
+    );
+    for (const step of [0.25, 44100 / 48000, 1.37, 3]) {
+      const count = Math.floor((RATE - 4000) / step);
+      const resampler = new Resampler(1, 2000, step, 0, count);
+      const converted = new Float32Array(count);
+      for (const out of [resampler.push([source]), resampler.finish()])
+        if (out) converted.set(out.data[0], out.first);
+      const read = along([source], steady(step, 2000 / RATE), 0, count)[0];
+      let worst = 0;
+      for (let i = 0; i < count; i++) worst = Math.max(worst, Math.abs(read[i] - converted[i]));
+      // The same kernel at normal speed and slower: the last bit of a sample at most. Faster, the
+      // reader's kernel is the next wider one, and the two differ by the ripple of their pass bands.
+      expect(worst, `step ${step}`).toBeLessThan(step > 1 ? 1e-5 : 1e-7);
     }
   });
 
@@ -690,6 +710,31 @@ describe('Retimed', () => {
     expect(stretched).toEqual([...before, ...after]);
     expect(Math.abs(peakOf(before) / RATE - 0.5 / 0.8)).toBeLessThan(0.01);
     expect(Math.abs(peakOf(after) / (RATE / 2) - 1.5 / 0.8)).toBeLessThan(0.01);
+  });
+
+  it('ends the read where the sound changes only after all that was asked for', async () => {
+    // With pitch kept a read decodes on to the anchor that follows its grains: seconds 0.2 to 1.1
+    // of the stream end at second 1.65 of this file, and are made from the file up to second 3
+    // and 27.5 ms. The sound changes at second 3.01, in the last buffer the read takes in.
+    const map = steady(1.5, 0);
+    const cut = 3.01 * RATE;
+    const before = decoded([file[0].subarray(0, cut)]);
+    const changes = {
+      'half the rate': decoded([noise(RATE, 6)], { rate: RATE / 2, at: cut / 2 }),
+      'two channels': decoded([noise(RATE, 6), noise(RATE, 8)], { at: cut }),
+    };
+    const alone = await read(new Retimed(soundOver(before).sound, 0, map, true, buffer), 0.2, 1.1);
+    expect(alone.blocks.map((wb) => Math.round((wb.timestamp * RATE) / BLOCK))).toEqual([
+      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    ]);
+    for (const [what, after] of Object.entries(changes)) {
+      const { sound, stats } = soundOver([...before, ...after]);
+      const changed = await read(new Retimed(sound, 0, map, true, buffer), 0.2, 1.1);
+      // The buffer in which it changes was decoded, and nothing of it is in the stream.
+      expect(stats.pulled, what).toBe(before.length + 1);
+      expect(told(changed.blocks), what).toEqual(told(alone.blocks));
+      expect(stats.open, what).toBe(0);
+    }
   });
 
   it('reads silence before the file where the stream begins earlier, and counts stream samples below zero', async () => {
