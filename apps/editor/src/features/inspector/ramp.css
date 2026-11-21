@@ -1,0 +1,176 @@
+/* The speed ramp of a clip in the inspector: the chips that set one, and the graph of its points. */
+
+/* More chips than fit on a line: they stand under the row's label and take the panel's width. */
+.ramp__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+/* A chip that begins with the drawing of its shape. */
+.ramp__chips .chip:has(.ramp__shape) {
+  padding-left: 7px;
+}
+.ramp__shape {
+  flex: none;
+}
+.ramp__shape path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* A row whose controls are shown and cannot be worked: it takes up no box of its own. */
+.ramp__still {
+  display: contents;
+}
+
+/*
+ * The graph and what belongs to it. The pointer works the whole plot, the room around the box
+ * included: a point on the edge of the box is taken hold of from either side of it.
+ */
+.ramp {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ramp__plot {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-rows: 112px 5px;
+  row-gap: 3px;
+  padding: 7px 7px 0 0;
+  touch-action: none;
+  user-select: none;
+}
+.ramp__plot[inert] {
+  opacity: 0.55;
+}
+.ramp__scale {
+  position: relative;
+  grid-area: 1 / 1;
+}
+/* Each label is centred on its line. */
+.ramp__scale span {
+  position: absolute;
+  right: 6px;
+  transform: translateY(50%);
+  color: var(--fg-3);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.ramp__box {
+  position: relative;
+  grid-area: 1 / 2;
+}
+.ramp__graph {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  overflow: visible;
+}
+.ramp__grid line {
+  stroke: rgba(255, 255, 255, 0.07);
+  stroke-width: 1;
+}
+.ramp__grid .ramp__full {
+  stroke: rgba(255, 255, 255, 0.22);
+  stroke-dasharray: 3 3;
+}
+.ramp__curve {
+  fill: none;
+  stroke: var(--fg-1);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+.ramp__pt {
+  cursor: grab;
+}
+.ramp__pt:active {
+  cursor: grabbing;
+}
+.ramp__pt line {
+  stroke-linecap: round;
+}
+.ramp__pt-edge {
+  stroke: var(--fg-1);
+  stroke-width: 11;
+}
+.ramp__pt-fill {
+  stroke: var(--bg-1);
+  stroke-width: 7;
+}
+.ramp__pt:hover .ramp__pt-edge {
+  stroke-width: 13;
+}
+.ramp__pt:hover .ramp__pt-fill {
+  stroke-width: 9;
+}
+.ramp__pt[data-chosen] .ramp__pt-fill {
+  stroke: var(--accent);
+}
+/* The point as the keyboard holds it: nothing to see or to press until it has the focus, then a
+   ring around the dot. A shadow cannot be put on a line, so the ring is a wider line under it. */
+.ramp__pt-key {
+  stroke: transparent;
+  stroke-width: 21;
+  pointer-events: none;
+  outline: none;
+}
+.ramp__pt-key:focus-visible {
+  stroke: var(--accent-line);
+}
+/* The playhead: as wide as the box, with its line on its left edge, so that it is moved by a
+   share of its own width and needs no measuring. It is placed from outside React, and is there
+   only while the playhead is on the clip. */
+.ramp__head {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.ramp__head::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -0.5px;
+  width: 1px;
+  background: var(--accent);
+}
+.ramp__marks {
+  grid-area: 2 / 2;
+  width: 100%;
+  height: 5px;
+  overflow: visible;
+}
+.ramp__marks line {
+  stroke: var(--fg-4);
+  stroke-width: 1;
+}
+.ramp__foot {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 30px;
+}
+.ramp__note {
+  margin: 0;
+  padding-left: 36px;
+  color: var(--fg-3);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+/* What is to be known about a switch, under its row. */
+.ramp__hint {
+  margin: -2px 0 2px;
+  color: var(--fg-3);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}

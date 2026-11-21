@@ -372,6 +372,72 @@ function soundOver(
   return { sound, stats };
 }
 
+/**
+ * A file's sound as `Sound` gives it where the decoder it begins with hands over to the browser's
+ * own: the first decode gives `few` buffers of `before`, from the one that holds what was asked
+ * for, and then `after` from where those end. Once a buffer of `after` has been given every decode
+ * gives `after` alone, unless the decoder is one that begins every decode like that (`always`).
+ * `rate` is that of the buffer given last. Before its first buffer the decode of ask `ask`
+ * reports `lost(ask)` and waits for `wait(ask)`.
+ */
+function handingOver(
+  before: WrappedAudioBuffer[],
+  after: WrappedAudioBuffer[],
+  few: number,
+  {
+    always = false,
+    rate = null as number | null,
+    lost = (_ask: number): SoundTrouble[] => [],
+    wait = async (_ask: number): Promise<void> => {},
+  } = {},
+) {
+  const stats = { asked: [] as [number, number][], open: 0, most: 0, pulled: 0 };
+  let handed = false;
+  const sound: Sounding = {
+    get rate() {
+      return rate;
+    },
+    buffers(from, to, report) {
+      const ask = stats.asked.push([from!, to!]) - 1;
+      stats.most = Math.max(stats.most, ++stats.open);
+      const give = function* (all: WrappedAudioBuffer[], pos: number, count: number, end: number) {
+        const first = Math.max(
+          0,
+          all.findLastIndex((wb) => wb.timestamp <= pos),
+        );
+        for (const wb of all.slice(first, first + count)) {
+          if (wb.timestamp >= to!) return;
+          // What a decoder gives again on its way to where the one before it stopped is left out.
+          if (wb.timestamp >= end - 1e-3) yield wb;
+        }
+      };
+      return (async function* () {
+        try {
+          for (const trouble of lost(ask)) report(trouble);
+          await wait(ask);
+          let end = -Infinity;
+          if (always || !handed)
+            for (const wb of give(before, from!, few, end)) {
+              stats.pulled++;
+              rate = wb.buffer.sampleRate;
+              end = wb.timestamp + wb.duration;
+              yield wb;
+            }
+          for (const wb of give(after, Math.max(from!, end), Infinity, end)) {
+            stats.pulled++;
+            handed = true;
+            rate = wb.buffer.sampleRate;
+            yield wb;
+          }
+        } finally {
+          stats.open--;
+        }
+      })();
+    },
+  };
+  return { sound, stats };
+}
+
 /** The buffers of one read, and the stream samples they hold by their index in the stream. */
 async function read(retimed: Retimed, from: number, to: number) {
   const blocks: WrappedAudioBuffer[] = [];
@@ -734,6 +800,354 @@ describe('Retimed', () => {
       expect(stats.pulled, what).toBe(before.length + 1);
       expect(told(changed.blocks), what).toEqual(told(alone.blocks));
       expect(stats.open, what).toBe(0);
+    }
+  });
+
+  /** Twelve seconds of sound as a decoder gives them at `rate`: noise on a tone. */
+  const soundAt = (rate: number, seed: number): Float32Array =>
+    noise(12 * rate, seed).map((v, i) => 0.2 * v + 0.3 * Math.sin((2 * Math.PI * 220 * i) / rate));
+  /**
+   * What the decoder a file begins with gives, and what the browser's own gives for the same
+   * packets: at another rate, or with another number of channels.
+   */
+  const handOvers: Record<string, [before: WrappedAudioBuffer[], after: WrappedAudioBuffer[]]> = {
+    '22.05 to 44.1 kHz': [
+      decoded([soundAt(22050, 21)], { rate: 22050 }),
+      decoded([soundAt(44100, 22)], { rate: 44100, piece: 2048 }),
+    ],
+    '48 to 24 kHz': [decoded([file[0]]), decoded([soundAt(24000, 23)], { rate: 24000, piece: 512 })],
+    'one channel to two': [decoded([file[1]]), decoded(file)],
+  };
+  /** Whether each buffer is the one after the buffer before it, on the grid of one rate. */
+  const inOrder = (blocks: WrappedAudioBuffer[]) => {
+    const index = (wb: WrappedAudioBuffer) => Math.round((wb.timestamp * wb.buffer.sampleRate) / BLOCK);
+    return blocks.every(
+      (wb, i) =>
+        i === 0 ||
+        (wb.buffer.sampleRate === blocks[0].buffer.sampleRate && index(wb) === index(blocks[i - 1]) + 1),
+    );
+  };
+
+  it('begins anew where the decoder hands over to another format before a buffer is given, and reads as every later read does', async () => {
+    for (const [what, [before, after]] of Object.entries(handOvers)) {
+      for (const keepPitch of [false, true]) {
+        for (const map of [steady(0.5, 0), steady(1.5, 0.25), ramp(sixPoints, 0.5)]) {
+          // From the file's first buffer, which a decoder can give before it fails on the next,
+          // and from part-way in, where it has given the three it had under way.
+          for (const [from, to, few] of [
+            [0, 1.2, 1],
+            [2.3, 3.4, 3],
+          ]) {
+            const note = `${what}, keep pitch ${keepPitch}, from ${from}`;
+            const plain = soundOver(after);
+            const later = await read(new Retimed(plain.sound, 0, map, keepPitch, buffer), from, to);
+            const page = handingOver(before, after, few);
+            const retimed = new Retimed(page.sound, 0, map, keepPitch, buffer);
+            const first = await read(retimed, from, to);
+            // Asked twice, the second time for what the format it has now seen needs, with the
+            // first decode closed before that.
+            expect(page.stats.asked, note).toHaveLength(2);
+            expect(page.stats.asked[1], note).toEqual(plain.stats.asked[0]);
+            expect(page.stats.most, note).toBe(1);
+            expect(page.stats.open, note).toBe(0);
+            // One series in the format of every later read, and the very buffers of one.
+            expect(first.blocks.length, note).toBeGreaterThan(5);
+            expect(inOrder(first.blocks), note).toBe(true);
+            expect(told(first.blocks), note).toEqual(told(later.blocks));
+            const again = await read(retimed, from, to);
+            expect(page.stats.asked, note).toHaveLength(3);
+            expect(told(again.blocks), note).toEqual(told(first.blocks));
+          }
+        }
+      }
+    }
+  });
+
+  it('asks for the rate it sees before it begins anew, when the rate it was told is another', async () => {
+    const [before, after] = handOvers['22.05 to 44.1 kHz'];
+    for (const keepPitch of [false, true]) {
+      const map = steady(1.5, 0.25);
+      const later = await read(new Retimed(soundOver(after).sound, 0, map, keepPitch, buffer), 2.3, 3.4);
+      // Taken for 96 kHz: too little is asked for 22.05 kHz, and then the format changes.
+      const page = handingOver(before, after, 3, { rate: 96000 });
+      const first = await read(new Retimed(page.sound, 0, map, keepPitch, buffer), 2.3, 3.4);
+      expect(page.stats.asked).toHaveLength(3);
+      expect(page.stats.most).toBe(1);
+      expect(page.stats.open).toBe(0);
+      expect(told(first.blocks)).toEqual(told(later.blocks));
+    }
+  });
+
+  it('gives two series where a buffer was given before the decoder handed over', async () => {
+    const [before, after] = handOvers['48 to 24 kHz'];
+    // Half a second of the file from the first decoder: with pitch following speed buffers of the
+    // stream have been given by then, and with pitch kept the first block of grains is complete.
+    const few = 24;
+    const cut = before[few - 1].timestamp + before[few - 1].duration;
+    const joined = [...before.slice(0, few), ...after.filter((wb) => wb.timestamp >= cut - 1e-3)];
+    for (const keepPitch of [false, true]) {
+      const map = steady(keepPitch ? 0.2 : 1.5, 0);
+      const page = handingOver(before, after, few);
+      const { blocks } = await read(new Retimed(page.sound, 0, map, keepPitch, buffer), 0, 4);
+      expect(page.stats.asked).toHaveLength(1);
+      expect(page.stats.open).toBe(0);
+      const fast = blocks.filter((wb) => wb.buffer.sampleRate === RATE);
+      const slow = blocks.filter((wb) => wb.buffer.sampleRate === RATE / 2);
+      expect(fast.length).toBeGreaterThan(0);
+      expect(slow.length).toBeGreaterThan(0);
+      expect(blocks).toEqual([...fast, ...slow]);
+      // The second series begins before the last buffer of the first: no single ascending order.
+      expect(slow[0].timestamp).toBeLessThan(fast.at(-1)!.timestamp);
+      // As the sound of a file that changes there is read, its rate not known beforehand either.
+      const joint = soundOver(joined, null);
+      const same = await read(new Retimed(joint.sound, 0, map, keepPitch, buffer), 0, 4);
+      expect(joint.stats.asked).toEqual(page.stats.asked);
+      expect(told(blocks)).toEqual(told(same.blocks));
+    }
+  });
+
+  it('gives two series, having begun anew once, where the sound changes in the same place however often it is decoded', async () => {
+    for (const [what, [before, after]] of Object.entries(handOvers)) {
+      // The file itself changes format two and a half seconds in.
+      const count = Math.round(2.5 / before[0].duration);
+      const cut = before[count - 1].timestamp + before[count - 1].duration;
+      const joined = [...before.slice(0, count), ...after.filter((wb) => wb.timestamp >= cut - 1e-3)];
+      for (const keepPitch of [false, true]) {
+        for (const map of [steady(0.5, 0), steady(1.5, 0.25), ramp(sixPoints, 0.5)]) {
+          const note = `${what}, keep pitch ${keepPitch}`;
+          // A read that begins just before the change has given nothing when it meets it.
+          const from = map.stream(cut + 0.01);
+          const file = soundOver(joined);
+          const { blocks } = await read(new Retimed(file.sound, 0, map, keepPitch, buffer), from, from + 1.2);
+          // Once anew for the change, and once more where that ask was not sized for the rate
+          // the file begins with: the last ask is then the first again.
+          const asks = file.stats.asked;
+          expect(asks.length, note).toBeGreaterThanOrEqual(2);
+          expect(asks.length, note).toBeLessThanOrEqual(3);
+          if (asks.length === 3) expect(asks[2], note).toEqual(asks[0]);
+          expect(file.stats.open, note).toBe(0);
+          const format = (wb: WrappedAudioBuffer) => `${wb.buffer.sampleRate}/${wb.buffer.numberOfChannels}`;
+          const one = blocks.filter((wb) => format(wb) === format(before[0]));
+          const two = blocks.filter((wb) => format(wb) === format(after[0]));
+          expect(one.length, note).toBeGreaterThan(0);
+          expect(two.length, note).toBeGreaterThan(5);
+          expect(blocks, note).toEqual([...one, ...two]);
+          expect(inOrder(one) && inOrder(two), note).toBe(true);
+          // The buffers of a read that had given some when it came to the change, and so read on.
+          const early = soundOver(joined);
+          const whole = await read(
+            new Retimed(early.sound, 0, map, keepPitch, buffer),
+            from - 2.5,
+            from + 1.2,
+          );
+          expect(early.stats.asked, note).toHaveLength(1);
+          expect(whole.blocks.length, note).toBeGreaterThan(blocks.length + 5);
+          // In every sample that was asked for. Behind those, the last buffer of the second
+          // series holds as much as the ask reached, and an ask sized for its rate reaches further.
+          const wanted = (wb: WrappedAudioBuffer) => {
+            const rate = wb.buffer.sampleRate;
+            const at = Math.round(wb.timestamp * rate);
+            const [lo, hi] = [Math.floor(from * rate) - at, Math.ceil((from + 1.2) * rate) - at];
+            return told([wb]).map((block) => ({
+              ...block,
+              data: block.data.map((samples) => samples.subarray(Math.max(0, lo), Math.min(BLOCK, hi))),
+            }));
+          };
+          for (const wb of blocks) {
+            const same = whole.blocks.find(
+              (other) => format(other) === format(wb) && other.timestamp === wb.timestamp,
+            )!;
+            expect(wanted(wb), note).toEqual(wanted(same));
+          }
+        }
+      }
+    }
+  });
+
+  it('comes to an end with a decoder that changes format a few buffers into every decode', async () => {
+    const [before, after] = handOvers['22.05 to 44.1 kHz'];
+    for (const keepPitch of [false, true]) {
+      const page = handingOver(before, after, 2, { always: true });
+      const retimed = new Retimed(page.sound, 0, steady(1.5, 0.25), keepPitch, buffer);
+      const first = await read(retimed, 2.3, 3.4);
+      // Anew once, and before and after that once more for a rate the ask was not sized for:
+      // four asks at most. This read did not know the rate, and its first ask allowed for any.
+      expect(page.stats.asked).toHaveLength(3);
+      // With pitch following speed the two buffers of the first format reach into the first
+      // buffer of the stream. With pitch kept they lie a block of grains before it.
+      const slow = first.blocks.filter((wb) => wb.buffer.sampleRate === 22050);
+      const fast = first.blocks.filter((wb) => wb.buffer.sampleRate === 44100);
+      expect(slow).toHaveLength(keepPitch ? 0 : 1);
+      expect(fast.length).toBeGreaterThan(10);
+      expect(first.blocks).toEqual([...slow, ...fast]);
+      // A read that knows the rate the file ends on gives the same.
+      const second = await read(retimed, 2.3, 3.4);
+      expect(page.stats.asked).toHaveLength(7);
+      expect(page.stats.asked.slice(5)).toEqual(page.stats.asked.slice(1, 3));
+      expect(told(second.blocks)).toEqual(told(first.blocks));
+      expect(page.stats.most).toBe(1);
+      expect(page.stats.open).toBe(0);
+    }
+  });
+
+  it('tells once of sound that would not decode, by the decode its buffers are made from', async () => {
+    const [before, after] = handOvers['22.05 to 44.1 kHz'];
+    const map = steady(1.5, 0.25);
+    const stretch: SoundTrouble = { lost: 'stretch', from: 4.2, cause: 'bad packet' };
+    const other: SoundTrouble = { lost: 'stretch', from: 4.4, cause: 'another' };
+    const heardOf = async (sound: Sounding, keepPitch: boolean) => {
+      const events: (SoundTrouble | 'buffer')[] = [];
+      const retimed = new Retimed(sound, 0, map, keepPitch, buffer);
+      for await (const wb of retimed.buffers(2.3, 3.4, (trouble) => events.push(trouble))) {
+        void wb;
+        events.push('buffer');
+      }
+      return events;
+    };
+    const there = { ...stretch, from: map.stream(4.2) };
+    for (const keepPitch of [false, true]) {
+      // Both decoders lose the stretch: it is told once, before the first buffer.
+      const both = await heardOf(handingOver(before, after, 3, { lost: () => [stretch] }).sound, keepPitch);
+      expect(both.filter((event) => event !== 'buffer')).toEqual([there]);
+      expect(both[0]).toEqual(there);
+      // The decoder that was given up lost it, and the one the buffers are made from did not.
+      const first = await heardOf(
+        handingOver(before, after, 3, { lost: (ask) => (ask === 0 ? [stretch] : []) }).sound,
+        keepPitch,
+      );
+      expect(first.every((event) => event === 'buffer')).toBe(true);
+      expect(first.length).toBeGreaterThan(5);
+      // Each loses something of its own: what the second lost is told, and only that.
+      const each = await heardOf(
+        handingOver(before, after, 3, { lost: (ask) => [ask === 0 ? stretch : other] }).sound,
+        keepPitch,
+      );
+      expect(each.filter((event) => event !== 'buffer')).toEqual([{ ...other, from: map.stream(4.4) }]);
+      // A read that asks again for the rate it sees tells once as well.
+      const mistaken = soundOver(after, 96000, [stretch]);
+      const resized = await heardOf(mistaken.sound, keepPitch);
+      expect(mistaken.stats.asked).toHaveLength(2);
+      expect(resized.filter((event) => event !== 'buffer')).toEqual([there]);
+    }
+  });
+
+  it('tells of what a decode lost before the decode failed, and of what is lost once buffers are given as it is lost', async () => {
+    const all = decoded(file);
+    const early: SoundTrouble = { lost: 'stretch', from: 0.4, cause: 'bad packet' };
+    const late: SoundTrouble = { lost: 'stretch', from: 1.9, cause: 'worse' };
+    const map = steady(1.5, 0.25);
+    for (const keepPitch of [false, true]) {
+      const failing: Sounding = {
+        rate: RATE,
+        async *buffers(_from, _to, report) {
+          report(early);
+          yield all[0];
+          throw new Error('the file went away');
+        },
+      };
+      const heard: SoundTrouble[] = [];
+      const gone = new Retimed(failing, 0, map, keepPitch, buffer).buffers(0, 1, (trouble) =>
+        heard.push(trouble),
+      );
+      await expect(gone.next()).rejects.toThrow('the file went away');
+      expect(heard).toEqual([{ ...early, from: map.stream(0.4) }]);
+
+      // Sound lost a second and a half into the file: the buffers before it have been given.
+      const events: (SoundTrouble | 'buffer')[] = [];
+      const losing: Sounding = {
+        rate: RATE,
+        async *buffers(from, to, report) {
+          for (const wb of all) {
+            if (wb.timestamp + wb.duration <= from! || wb.timestamp >= to!) continue;
+            if (wb === all[90]) report(late);
+            yield wb;
+          }
+        },
+      };
+      const retimed = new Retimed(losing, 0, steady(keepPitch ? 0.2 : 1.5, 0), keepPitch, buffer);
+      for await (const wb of retimed.buffers(0, 12, (trouble) => events.push(trouble))) {
+        void wb;
+        events.push('buffer');
+      }
+      const at = events.findIndex((event) => event !== 'buffer');
+      expect(at).toBeGreaterThan(0);
+      expect(events.filter((event) => event !== 'buffer')).toHaveLength(1);
+      expect(events.length - at).toBeGreaterThan(1);
+    }
+  });
+
+  it('ends whichever decode is open when the read is ended while it begins anew, or right after', async () => {
+    const [before, after] = handOvers['22.05 to 44.1 kHz'];
+    for (const keepPitch of [false, true]) {
+      // The second decode waits before its first buffer: the read is ended while it does.
+      let waiting = () => {};
+      let letGo = () => {};
+      const asked = new Promise<void>((resolve) => (waiting = resolve));
+      const gate = new Promise<void>((resolve) => (letGo = resolve));
+      const held = handingOver(before, after, 3, {
+        wait: async (ask) => {
+          if (ask === 0) return;
+          waiting();
+          await gate;
+        },
+      });
+      const buffers = new Retimed(held.sound, 0, steady(1.5, 0.25), keepPitch, buffer).buffers(2.3, 3.4);
+      const first = buffers.next();
+      await asked;
+      expect(held.stats.asked).toHaveLength(2);
+      expect(held.stats.open).toBe(1);
+      const ended = buffers.return();
+      letGo();
+      await Promise.all([first, ended]);
+      expect(held.stats.open).toBe(0);
+      expect(held.stats.most).toBe(1);
+      expect((await buffers.next()).done).toBe(true);
+      expect(held.stats.asked).toHaveLength(2);
+
+      // After the first buffer of the read begun anew: the second decode is the one open.
+      const page = handingOver(before, after, 3);
+      const again = new Retimed(page.sound, 0, steady(1.5, 0.25), keepPitch, buffer).buffers(2.3, 6);
+      expect((await again.next()).done).toBe(false);
+      expect(page.stats.asked).toHaveLength(2);
+      expect(page.stats.open).toBe(1);
+      await again.return();
+      expect(page.stats.open).toBe(0);
+    }
+  });
+
+  it('gives the page a turn between the buffers of a decode it gives up and of the one that follows', async () => {
+    const [before, after] = handOvers['48 to 24 kHz'];
+    for (const keepPitch of [false, true]) {
+      const page = handingOver(before, after, 3);
+      let busy = false;
+      let turns = 0;
+      let overlaps = 0;
+      const turn = async () => {
+        busy = true;
+        await new Promise((done) => setTimeout(done, 0));
+        busy = false;
+        turns++;
+      };
+      const inner: Sounding = {
+        get rate() {
+          return page.sound.rate;
+        },
+        async *buffers(from, to, report) {
+          for await (const wb of page.sound.buffers(from, to, report)) {
+            if (busy) overlaps++;
+            yield wb;
+          }
+        },
+      };
+      const retimed = new Retimed(inner, 0, steady(1.5, 0.25), keepPitch, buffer, turn);
+      for await (const wb of retimed.buffers(2.3, 2.6)) {
+        if (busy) overlaps++;
+        void wb;
+      }
+      expect(page.stats.asked).toHaveLength(2);
+      expect(overlaps).toBe(0);
+      // After every decoded buffer of both decodes but the one that completes the read.
+      expect(turns).toBe(page.stats.pulled - 1);
     }
   });
 

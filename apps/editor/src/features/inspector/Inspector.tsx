@@ -11,7 +11,9 @@ import {
   FlipVertical2,
   Italic,
   Link2,
+  Minus,
   Palette,
+  Plus,
   RotateCcw,
   Sparkles,
   Trash2,
@@ -19,7 +21,15 @@ import {
   Unlink2,
   SlidersHorizontal,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import {
   clipEnd,
   DEFAULT_MASK,
@@ -30,17 +40,22 @@ import {
   getEffectDef,
   getTransitionDef,
   maxTransitionDuration,
+  meanSpeed,
   removeEffect,
   setEffectParam,
+  shapeOf,
+  speedRange,
   TEXT_ANIMATIONS,
   TRANSITION_CATEGORIES,
   TRANSITIONS,
   type BlendMode,
   type Clip,
   type FitMode,
+  type ID,
   type Mask,
   type Project,
   type ProjectSettings,
+  type RampPoint,
   type ShapeProps,
   type TextProps,
   type Transition,
@@ -52,11 +67,15 @@ import { cmd, effectiveSelection } from '../../state/commands';
 import { mediaAvailable } from '../../state/media';
 import { beginGesture, commit, patchClips, setClipValues } from '../../state/props';
 import {
+  rampGroups,
+  rampLead,
+  retimeRefusal,
   speedEdits,
   speedGesture,
   speedGestureCutShort,
   speedRippleEdits,
   speedStepped,
+  type Retime,
   type SpeedGesture,
 } from '../../state/timing';
 import { useUI } from '../../state/ui';
@@ -93,6 +112,8 @@ import {
 } from './controls';
 import { useLiveClips, useLiveSelect, usePlayheadTick } from './live';
 import { ProjectSettingsForm } from './ProjectSettings';
+import { RampChips, RampGraph } from './RampGraph';
+import { besideOf, pointAt, rampRange, removePoint, shownPoints, type RampRange } from './rampPoints';
 import './inspector.css';
 
 const BLEND_MODES: { value: BlendMode; label: string; group: string }[] = [
@@ -667,14 +688,33 @@ function MaskSection({ clips }: { clips: Clip[] }) {
 
 function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSettings }) {
   const first = clips[0];
+  // A ramp is one for a clip and everything linked to it, and is named for one of them: the
+  // picture, where there is one. Which clip that is, and whether sound is among what a change
+  // reaches, is not said by the selected clips alone, so the section reads the project as it is
+  // shown, and what linked selection makes of the selection.
+  const project = useLiveSelect((p) => p);
+  useUI((s) => s.linkedSelection);
+  const groups = rampGroups(project, effectiveSelection(project));
+  // A track that has just been locked takes its clips out of the selection, a moment after the
+  // panel is drawn with them: nothing is reached then, and the first clip stands for itself.
+  const group = groups[0] ?? rampGroups(project, [first.id])[0] ?? [first.id];
+  const lead = project.clips[rampLead(project, group)] ?? first;
+  const ramp = lead.ramp;
+  // The points of a ramp are shaped for one clip at a time: a shape, a speed or the direction is
+  // set on all that is selected.
+  const several = groups.length > 1;
+  const sound = groups
+    .flat()
+    .map((id) => project.clips[id])
+    .find((c) => c.type === 'audio');
   // Folded for a clip that plays at normal speed, and opened once it no longer does. It never folds
   // by itself while the clip is shown: a drag that passes through 100% would lose the section from
   // under the pointer.
-  const plain = first.speed === 1 && !first.reverse;
+  const plain = first.speed === 1 && !first.reverse && !ramp;
   const [shown, setShown] = useState({ id: first.id, folded: plain });
   if (shown.id !== first.id) setShown({ id: first.id, folded: plain });
   else if (shown.folded && !plain) setShown({ id: first.id, folded: false });
-  // One interaction with either control is one gesture and one undo step: what counts is where it
+  // One interaction with a control is one gesture and one undo step: what counts is where it
   // ends, not the way there. The slider's double-click reset comes without a start of its own, so
   // it belongs to the press before it.
   const gesture = useRef<SpeedGesture | null>(null);
@@ -688,8 +728,10 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
     clearTimeout(offer.current);
   };
   // With ripple editing on, what follows the clips moves with their ends, as it does for the
-  // speed presets and the clip menu. Without it a clip stops at the next one.
-  const change = (speed: number) => {
+  // speed presets and the clip menu. Without it a clip stops at the next one. A step is one speed
+  // for the selected clips, or the points of a ramp for the clip it is named for: a ramp reaches
+  // everything linked to that clip, and the gesture is told so from its first step.
+  const change = (step: Retime) => {
     const store = currentSession()?.store;
     if (!store) return;
     const { rippleMode, markersFollow } = useUI.getState();
@@ -697,79 +739,195 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
     const g = speedGesture(gesture.current, before, effectiveSelection(before), {
       ripple: rippleMode,
       markers: markersFollow,
+      ramp: 'ramps' in step,
     });
     if (g !== gesture.current) {
       beginGesture();
       found.current = { clips: before.clips, markers: before.markers };
     }
-    commit(speedEdits(g, store.get(), speed), true);
-    gesture.current = speedStepped(g, store.get());
+    commit(speedEdits(g, store.get(), step), true);
+    gesture.current = speedStepped(g, store.get(), step);
   };
   // A gesture that left a clip cut short at the next one says so, and offers to make room. One
   // that ripples moved what follows out of the way instead; where that was refused, the clip
-  // stopped at the next one all the same, and the reason is said once, for where the gesture ended.
+  // stopped at the next one all the same, and the reason is said once, for where the gesture
+  // ended. So is the reason why nothing changed at all: a clip that had to follow is on a locked
+  // track.
   const end = () => {
     const g = gesture.current;
     clearTimeout(offer.current);
-    if (!g) return;
+    if (!g?.last) return;
+    const last = g.last;
     const say = () => {
       const p = currentSession()?.store.get();
       if (!p) return;
+      const locked = retimeRefusal(p, g.ids, last);
+      if (locked) {
+        if (told.current !== g) toast(locked, 'info');
+        told.current = g;
+        return;
+      }
       if (!g.ripple) {
         cmd.offerSpeedRoom(speedGestureCutShort(g, p));
         return;
       }
-      const id = Object.keys(g.from).find((id) => p.clips[id]);
-      if (!found.current || id === undefined || told.current === g) return;
+      if (!found.current || told.current === g) return;
       told.current = g;
       // The plan of the gesture's last step, asked once more for its reason.
-      const { refused } = speedRippleEdits({ ...p, ...found.current }, g.ids, p.clips[id].speed);
+      const { refused } = speedRippleEdits({ ...p, ...found.current }, g.ids, last);
       if (refused) toast(refused);
     };
     // Every arrow key pressed in the number field is a gesture of its own: the offer waits until
-    // the keys have rested, as a run of them on the slider does.
+    // the keys have rested, as a run of them on the slider or on a point of the ramp does.
     if (usingKeyboard()) offer.current = setTimeout(say, KEY_RUN_MS);
     else say();
   };
+  // On a ramp the clip has no one speed to set: the row shows what the ramp comes to over the
+  // clip, and the points are where it is changed.
+  const speed = ramp ? meanSpeed(lead, project) : first.speed;
+  // The chosen point of the ramp, by its place in the media of the clip it was chosen on.
+  const [chosen, setChosen] = useState<{ id: ID; m: number } | null>(null);
+  const [focus, setFocus] = useState<{ m: number; gone?: number } | null>(null);
+  // While a point is dragged or worked with the keys, the graph keeps to the stretch of media the
+  // gesture found: every step rounds the clip to whole frames, and a graph that followed would
+  // breathe under the pointer.
+  const [held, setHeld] = useState<{ id: ID; range: RampRange } | null>(null);
+  if (held && (held.id !== lead.id || !ramp)) setHeld(null);
+  // The stretch a clip plays is a matter of the clip and of the frame rate alone.
+  const plays = useMemo(() => rampRange(lead, project), [lead, project.settings]);
+  const range = held?.id === lead.id ? held.range : plays;
+  const at = ramp && chosen?.id === lead.id ? pointAt(ramp, chosen.m) : -1;
+  const addPoint = () => {
+    const m = cmd.addRampPoint();
+    if (m === null) return;
+    setChosen({ id: lead.id, m });
+    if (usingKeyboard()) setFocus({ m });
+  };
+  const removePointAt = () => {
+    const next = ramp && removePoint(ramp, at);
+    if (!ramp || !next) return;
+    // Someone working by keyboard goes on from the point beside it, once it is gone.
+    const beside = besideOf(shownPoints(ramp, range), at);
+    cmd.setRampPoints(next);
+    if (usingKeyboard() && beside) setFocus({ m: beside.m, gone: ramp[at].m });
+  };
+  // Sound that keeps its pitch is stretched, and the stretch has its limits.
+  let pitchNote: string | null = null;
+  if (sound?.keepPitch === true) {
+    const { lo, hi } = speedRange(sound, project);
+    if (!sound.ramp && (sound.speed > 10 || sound.speed < 0.1))
+      pitchNote = 'Beyond 1000% or under 10% the pitch follows the speed.';
+    else if (hi > 4 || lo < 0.25)
+      pitchNote = 'Beyond 400% or under 25% the sound stays in time but turns rough.';
+  }
   return (
     <Section id="speed" title="Speed" defaultCollapsed={shown.folded}>
-      <Row label="Speed">
-        <Slider
-          value={Math.log2(first.speed)}
-          min={-3}
-          max={4}
-          onStart={begin}
-          onEnd={end}
-          onChange={(v) => change(Math.round(Math.pow(2, v) * 100) / 100)}
-          origin={0}
-          defaultValue={0}
-          valueText={(v) => `${Math.round(2 ** v * 100)}%`}
-        />
-        <NumberField
-          value={first.speed}
-          onStart={begin}
-          onEnd={end}
-          onChange={change}
-          min={0.05}
-          max={100}
-          step={0.01}
-          scale={100}
-          precision={0}
-          suffix="%"
-          defaultValue={1}
-          ariaLabel="Speed"
-        />
-      </Row>
+      <div className="ramp__still" inert={!!ramp}>
+        <Row label="Speed">
+          <Slider
+            value={Math.log2(speed)}
+            min={-3}
+            max={4}
+            onStart={begin}
+            onEnd={end}
+            onChange={(v) => change({ speed: Math.round(Math.pow(2, v) * 100) / 100 })}
+            origin={0}
+            defaultValue={0}
+            disabled={!!ramp}
+            valueText={(v) => `${Math.round(2 ** v * 100)}%${ramp ? ' on average' : ''}`}
+          />
+          <NumberField
+            value={speed}
+            onStart={begin}
+            onEnd={end}
+            onChange={(v) => change({ speed: v })}
+            min={0.05}
+            max={100}
+            step={0.01}
+            scale={100}
+            precision={0}
+            suffix="%"
+            defaultValue={1}
+            disabled={!!ramp}
+            ariaLabel="Speed"
+          />
+        </Row>
+      </div>
       <Row label="Presets">
         {[0.25, 0.5, 1, 2, 4].map((v) => (
-          <button key={v} className="chip" aria-pressed={first.speed === v} onClick={() => cmd.setSpeed(v)}>
+          <button
+            key={v}
+            className="chip"
+            aria-pressed={!ramp && first.speed === v}
+            onClick={() => cmd.setSpeed(v)}
+          >
             {v}×
           </button>
         ))}
       </Row>
+      <Row label="Ramp" stack>
+        <RampChips
+          pressed={ramp ? (shapeOf(ramp, lead.reverse) ?? 'custom') : 'none'}
+          onPick={(choice) => cmd.setRamp(choice)}
+        />
+      </Row>
+      {ramp && (
+        <div className="ramp">
+          <RampGraph
+            clip={lead}
+            project={project}
+            range={range}
+            chosen={at < 0 ? null : ramp[at].m}
+            onChoose={(m) => setChosen(m === null ? null : { id: lead.id, m })}
+            onStart={() => {
+              begin();
+              setHeld({ id: lead.id, range: plays });
+            }}
+            onChange={(points: RampPoint[]) => change({ ramps: { [lead.id]: points } })}
+            onEnd={() => {
+              setHeld(null);
+              end();
+            }}
+            onSet={(points) => cmd.setRampPoints(points)}
+            onSeek={(frame) => cmd.seek(frame)}
+            focus={focus}
+            inert={several}
+          />
+          {several ? (
+            <p className="ramp__note">Select one clip to shape its ramp.</p>
+          ) : (
+            <div className="ramp__foot">
+              <Button size="sm" variant="ghost" icon={<Plus />} onClick={addPoint}>
+                Add point
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<Minus />}
+                disabled={at < 0 || ramp.length <= 2}
+                onClick={removePointAt}
+              >
+                Remove point
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
       <Row label="Reverse">
         <Switch checked={first.reverse} onChange={(r) => cmd.setReverse(r)} label="Reverse" />
       </Row>
+      {sound && (
+        <>
+          <Row label="Keep pitch">
+            <Switch
+              checked={sound.keepPitch === true}
+              onChange={(on) => cmd.setKeepPitch(on)}
+              label="Keep pitch"
+            />
+          </Row>
+          {pitchNote && <p className="ramp__hint">{pitchNote}</p>}
+        </>
+      )}
       <Row label="Duration">
         <span className="mono insp__read">{formatTimecode(first.duration, settings)}</span>
       </Row>

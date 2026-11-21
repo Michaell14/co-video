@@ -2,7 +2,7 @@
  * The keyboard for the panels' own slider-like controls (colour wheels, curve points, faders):
  * the keys and the undo step of the kit's `Slider`, for controls that draw themselves.
  */
-import { useCallback, useEffect, useRef, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, type KeyboardEvent } from 'react';
 import { beginGesture } from '../../state/props';
 import { KEY_RUN_MS } from '../../ui/core';
 import { sliderKey, type SliderRange } from '../../ui/slider';
@@ -49,13 +49,21 @@ export interface KeyRun {
  * them opened. Anything else in between ends the run: another key, a press of the pointer, the
  * control losing the keyboard, or the control coming to stand for another clip (see
  * `FieldSubject`). One undo step is then never about two clips, or about more than the presses.
+ * `onRest` is called when a run has ended, whichever way: a control that has something to say
+ * about the outcome of an interaction says it then, as it does at the end of a drag.
  */
-export function useKeyRun(): KeyRun {
+export function useKeyRun(onRest?: () => void): KeyRun {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rested = useRef(onRest);
+  useLayoutEffect(() => {
+    rested.current = onRest;
+  });
   const rest = useCallback(() => {
-    if (timer.current !== null) clearTimeout(timer.current);
+    if (timer.current === null) return;
+    clearTimeout(timer.current);
     timer.current = null;
     runs.delete(rest);
+    rested.current?.();
   }, []);
   const press = useCallback(() => {
     own = true;

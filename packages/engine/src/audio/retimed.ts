@@ -271,12 +271,20 @@ export class Retimed implements Sounding {
    * samples `4096 q` to `4096 (q + 1)` and begins at second `4096 q / rate`, for every read alike.
    * What the stream reads outside the file, in a gap or where the file would not decode is
    * silence. `report` hears of sound that would not decode, with the second of the stream at
-   * which it would have played. A range that is not finite gives nothing.
+   * which it would have played, before a buffer made without it is given. A range that is not
+   * finite gives nothing.
    *
    * The file is decoded once, forwards, from a little before what the first buffer reads to a
    * little after what the last one does. Where its sound changes sample rate or channel count on
    * the way, the buffers made so far are given out and another series begins at the new rate, on
-   * that rate's own grid.
+   * that rate's own grid: its first buffers lie before the last ones of the series it follows.
+   *
+   * A read that meets such a change before it has given a buffer begins anew instead, once. The
+   * change is then most often the decoder's and not the file's: on the first read of a file the
+   * WebCodecs decoder can give a few buffers in one format and hand over to the browser's own,
+   * which gives another, and every read after that one is decoded by the browser's own from its
+   * first buffer (see `Sound`). Begun anew, the read is such a read: one series, in ascending
+   * order. Sound that changes again in the same place is given as two series.
    */
   async *buffers(
     from: number,
@@ -284,89 +292,132 @@ export class Retimed implements Sounding {
     report?: (trouble: SoundTrouble) => void,
   ): AsyncGenerator<WrappedAudioBuffer, void, unknown> {
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return;
-    const tell = (trouble: SoundTrouble): void =>
-      report?.({ ...trouble, from: this.map.stream(trouble.from - this.start) });
+    // Until it gives its first buffer a read can still close its decode and ask the file again,
+    // and its buffers are then made from the decode that follows. So what a decode could not
+    // decode is kept back until a buffer made from it is given, or the read ends: a decode that
+    // is given up takes what it lost with it, and the one after it tells of what it loses itself.
+    // No loss is then heard of twice, and none that is in the buffers given goes untold.
+    let unsaid: SoundTrouble[] | null = [];
+    const tell = (trouble: SoundTrouble): void => {
+      const lost = { ...trouble, from: this.map.stream(trouble.from - this.start) };
+      if (unsaid) unsaid.push(lost);
+      else report?.(lost);
+    };
+    /** From here on the read is made from the decode it has open. */
+    const commit = (): void => {
+      const kept = unsaid;
+      unsaid = null;
+      kept?.forEach((lost) => report?.(lost));
+    };
     // The rate decides which samples a buffer of the stream holds and so what has to be decoded.
     // It is the one seen in the file's buffers before, where any were. If the first buffer of
-    // this read shows another, and this read did not ask for all that rate needs, it asks again.
+    // this read shows another, and this read did not ask for all that rate needs, it asks again:
+    // once, and once more if it has begun anew since.
     let rate = this.sound.rate;
     let run: Run | null = null;
-    for (let asks = 0; ; asks++) {
-      const asked: [number, number] =
-        rate !== null && rate > 0
-          ? this.needs(rate, ...this.blocks(rate, from, to))
-          : this.needsAtAnyRate(from, to);
-      let again = false;
-      for await (const wb of this.sound.buffers(this.start + asked[0], this.start + asked[1], tell)) {
-        const { sampleRate, numberOfChannels, length } = wb.buffer;
-        if (!run || run.rate !== sampleRate || run.channels !== numberOfChannels) {
-          const [first, last] = this.blocks(sampleRate, from, to);
-          if (!run && asks === 0) {
-            const [low, high] = this.needs(sampleRate, first, last);
-            if (low < asked[0] || high > asked[1]) {
-              rate = sampleRate;
-              again = true;
-              break;
+    let resized = false;
+    // Whether the read has begun anew at a change of format, which it does once: the change of a
+    // file that changes in the same place however often it is decoded would be met every time.
+    let anew = false;
+    try {
+      for (;;) {
+        const asked: [number, number] =
+          rate !== null && rate > 0
+            ? this.needs(rate, ...this.blocks(rate, from, to))
+            : this.needsAtAnyRate(from, to);
+        let again = false;
+        for await (const wb of this.sound.buffers(this.start + asked[0], this.start + asked[1], tell)) {
+          const { sampleRate, numberOfChannels, length } = wb.buffer;
+          if (!run || run.rate !== sampleRate || run.channels !== numberOfChannels) {
+            const [first, last] = this.blocks(sampleRate, from, to);
+            if (!run && !resized) {
+              const [low, high] = this.needs(sampleRate, first, last);
+              if (low < asked[0] || high > asked[1]) {
+                rate = sampleRate;
+                resized = again = true;
+                break;
+              }
             }
+            // A run that another follows ends where its own sound does, and the next begins where
+            // its sound can first be heard. Where the two meet both give buffers, each silent
+            // where it has no sound, and the mixer adds them up.
+            const reach = this.reach(sampleRate);
+            const at = sampleAt((wb.timestamp - this.start) * sampleRate);
+            let begin = first;
+            if (run) {
+              const starts = this.map.stream((at - reach.source) / sampleRate) * sampleRate;
+              if (Number.isFinite(starts))
+                begin = Math.max(first, Math.floor((starts - reach.stream) / BLOCK));
+              // Nothing has been given yet, and the new sound has buffers to give: the read begins
+              // anew as one that knows the new rate, with a first ask of its own to size.
+              if (unsaid && !anew && begin <= last) {
+                run = null;
+                rate = sampleRate;
+                resized = false;
+                anew = again = true;
+                break;
+              }
+              const ends = this.reach(run.rate);
+              const end = this.map.stream((run.placed + run.counted + ends.source) / run.rate) * run.rate;
+              if (Number.isFinite(end))
+                run.lastBlock = Math.min(run.lastBlock, Math.floor((end + ends.stream) / BLOCK));
+              run.retimer.finish();
+              yield* this.give(run, commit);
+            }
+            // A read decodes on past the sound it gives (with pitch kept, to the anchor after it),
+            // and the file's sound can change out there. Sound first heard after the last buffer
+            // wanted has no buffer to give, and what follows it in the file plays later still.
+            if (begin > last) return;
+            run = {
+              rate: sampleRate,
+              channels: numberOfChannels,
+              retimer: this.keepPitch
+                ? new Stretcher(
+                    numberOfChannels,
+                    sampleRate,
+                    this.map.media,
+                    begin * BLOCK,
+                    (last + 1) * BLOCK,
+                  )
+                : new Reader(numberOfChannels, sampleRate, this.map, begin * BLOCK, (last + 1) * BLOCK),
+              block: begin,
+              lastBlock: last,
+              pending: null,
+              filled: 0,
+              origin: 0,
+              placed: 0,
+              counted: 0,
+            };
           }
-          // A run that another follows ends where its own sound does, and the next begins where
-          // its sound can first be heard. Where the two meet both give buffers, each silent
-          // where it has no sound, and the mixer adds them up.
-          const reach = this.reach(sampleRate);
-          const at = sampleAt((wb.timestamp - this.start) * sampleRate);
-          let begin = first;
-          if (run) {
-            const ends = this.reach(run.rate);
-            const end = this.map.stream((run.placed + run.counted + ends.source) / run.rate) * run.rate;
-            if (Number.isFinite(end))
-              run.lastBlock = Math.min(run.lastBlock, Math.floor((end + ends.stream) / BLOCK));
-            run.retimer.finish();
-            yield* this.give(run);
-            const starts = this.map.stream((at - reach.source) / sampleRate) * sampleRate;
-            if (Number.isFinite(starts)) begin = Math.max(first, Math.floor((starts - reach.stream) / BLOCK));
+          // A decoder's buffers follow one another to the sample, but each carries a time of its
+          // own, rounded by itself: taken at its word, one buffer in so many would leave a hole of
+          // a sample or land on the last sample of the one before. So only the first of a series
+          // is placed by its time, and each one after it behind the one before, as long as its
+          // time says so to within a sample and a half. One further off begins after a real gap.
+          const off = (wb.timestamp - run.origin) * sampleRate - run.counted;
+          if (run.counted === 0 || !(Math.abs(off) < 1.5)) {
+            run.origin = wb.timestamp;
+            run.placed = sampleAt((wb.timestamp - this.start) * sampleRate);
+            run.counted = 0;
           }
-          // A read decodes on past the sound it gives (with pitch kept, to the anchor after it),
-          // and the file's sound can change out there. Sound first heard after the last buffer
-          // wanted has no buffer to give, and what follows it in the file plays later still.
-          if (begin > last) return;
-          run = {
-            rate: sampleRate,
-            channels: numberOfChannels,
-            retimer: this.keepPitch
-              ? new Stretcher(numberOfChannels, sampleRate, this.map.media, begin * BLOCK, (last + 1) * BLOCK)
-              : new Reader(numberOfChannels, sampleRate, this.map, begin * BLOCK, (last + 1) * BLOCK),
-            block: begin,
-            lastBlock: last,
-            pending: null,
-            filled: 0,
-            origin: 0,
-            placed: 0,
-            counted: 0,
-          };
+          const channels = Array.from({ length: numberOfChannels }, (_, c) => wb.buffer.getChannelData(c));
+          run.retimer.push(run.placed + run.counted, channels);
+          run.counted += length;
+          yield* this.give(run, commit);
+          if (run.block > run.lastBlock) return;
+          await this.turn?.();
         }
-        // A decoder's buffers follow one another to the sample, but each carries a time of its
-        // own, rounded by itself: taken at its word, one buffer in so many would leave a hole of
-        // a sample or land on the last sample of the one before. So only the first of a series
-        // is placed by its time, and each one after it behind the one before, as long as its
-        // time says so to within a sample and a half. One further off begins after a real gap.
-        const off = (wb.timestamp - run.origin) * sampleRate - run.counted;
-        if (run.counted === 0 || !(Math.abs(off) < 1.5)) {
-          run.origin = wb.timestamp;
-          run.placed = sampleAt((wb.timestamp - this.start) * sampleRate);
-          run.counted = 0;
-        }
-        const channels = Array.from({ length: numberOfChannels }, (_, c) => wb.buffer.getChannelData(c));
-        run.retimer.push(run.placed + run.counted, channels);
-        run.counted += length;
-        yield* this.give(run);
-        if (run.block > run.lastBlock) return;
+        if (!again) break;
+        // The decode that was closed is not what the read is made from.
+        unsaid = [];
         await this.turn?.();
       }
-      if (!again) break;
+      if (!run) return;
+      run.retimer.finish();
+      yield* this.give(run, commit);
+    } finally {
+      commit();
     }
-    if (!run) return;
-    run.retimer.finish();
-    yield* this.give(run);
   }
 
   /**
@@ -380,8 +431,11 @@ export class Retimed implements Sounding {
     return { source: ahead + 1, stream: hop + 1 };
   }
 
-  /** The buffers of `run` that are complete, as far as the retimer has got. */
-  private *give(run: Run): Generator<WrappedAudioBuffer, void, unknown> {
+  /**
+   * The buffers of `run` that are complete, as far as the retimer has got. `commit` is called
+   * before one is given: a read that has given a buffer does not begin anew.
+   */
+  private *give(run: Run, commit: () => void): Generator<WrappedAudioBuffer, void, unknown> {
     for (let out = run.retimer.take(); out; out = run.retimer.take()) {
       const length = out.data[0].length;
       for (let done = 0; done < length;) {
@@ -398,6 +452,7 @@ export class Retimed implements Sounding {
         run.pending = null;
         run.filled = 0;
         run.block++;
+        commit();
         yield { buffer, timestamp, duration: BLOCK / run.rate };
       }
     }

@@ -95,13 +95,9 @@ function recorded(count: number): WrappedAudioBuffer[] {
   }));
 }
 
-/**
- * The stream of a clip over the file `all`, as the mixer makes one for a retimed voice: on a ramp
- * with pitch following speed, and at one speed with pitch kept.
- */
-function streamOver(all: WrappedAudioBuffer[], keepPitch: boolean) {
-  const { sink, stats } = sinkOver(all);
-  const retimed = makeClip(
+/** A clip the mixer retimes: on a ramp with pitch following speed, or at one speed with pitch kept. */
+const retimedClip = (keepPitch: boolean) =>
+  makeClip(
     'audio',
     'a1',
     keepPitch
@@ -115,10 +111,14 @@ function streamOver(all: WrappedAudioBuffer[], keepPitch: boolean) {
           ],
         },
   );
+
+/** The stream of such a clip over the file `all`, as the mixer makes one for a retimed voice. */
+function streamOver(all: WrappedAudioBuffer[], keepPitch: boolean) {
+  const { sink, stats } = sinkOver(all);
   const file = { rate: RATE, buffers: sink.buffers.bind(sink) };
   // What is asked of the stream itself, in seconds of the stream.
   const reads: [number, number][] = [];
-  const stream = new Retimed(file, 0, timeMap(retimed), keepPitch, holding);
+  const stream = new Retimed(file, 0, timeMap(retimedClip(keepPitch)), keepPitch, holding);
   const sound = {
     buffers(from: number, to: number, report: (trouble: SoundTrouble) => void) {
       reads.push([from, to]);
@@ -126,6 +126,75 @@ function streamOver(all: WrappedAudioBuffer[], keepPitch: boolean) {
     },
   };
   return { sound, stream, stats, reads };
+}
+
+/** `recorded` as another decoder gives the same packets: at half the rate, with samples of its own. */
+function recordedLow(count: number): WrappedAudioBuffer[] {
+  const rate = RATE / 2;
+  const size = BLOCK / 2;
+  return Array.from({ length: count }, (_, i) => ({
+    buffer: holding(
+      [
+        Float32Array.from(
+          { length: size },
+          (_, k) => 0.25 * Math.sin((2 * Math.PI * 330 * (i * size + k)) / rate),
+        ),
+      ],
+      rate,
+    ),
+    timestamp: (i * size) / rate,
+    duration: size / rate,
+  }));
+}
+
+/**
+ * A file's sound as `Sound` gives it where the decoder it begins with hands over to the browser's
+ * own: the first decode gives `few` buffers of `before`, from the one that holds what was asked
+ * for, and then `after` from where those end. Every decode after that one gives `after` alone.
+ */
+function handingOver(before: WrappedAudioBuffer[], after: WrappedAudioBuffer[], few: number) {
+  const stats = { decodes: 0, open: 0 };
+  let handed = false;
+  let rate: number | null = null;
+  const file = {
+    get rate() {
+      return rate;
+    },
+    buffers(from: number, to: number) {
+      stats.decodes++;
+      stats.open++;
+      return (async function* () {
+        try {
+          let end = -Infinity;
+          if (!handed) {
+            const first = Math.max(
+              0,
+              before.findLastIndex((wb) => wb.timestamp <= from),
+            );
+            for (const wb of before.slice(first, first + few)) {
+              if (wb.timestamp >= to) return;
+              rate = wb.buffer.sampleRate;
+              end = wb.timestamp + wb.duration;
+              yield wb;
+            }
+          }
+          const next = Math.max(
+            0,
+            after.findLastIndex((wb) => wb.timestamp <= Math.max(from, end)),
+          );
+          for (let i = next; i < after.length && after[i].timestamp < to; i++) {
+            if (after[i].timestamp < end - 1e-3) continue;
+            handed = true;
+            rate = after[i].buffer.sampleRate;
+            yield after[i];
+          }
+        } finally {
+          stats.open--;
+        }
+      })();
+    },
+  };
+  return { file, stats };
 }
 
 /** Where each buffer lies and every sample in it. */
@@ -407,6 +476,77 @@ describe('AudioRuns', () => {
       expect(middle.length).toBeGreaterThan(10);
       for (const block of middle) expect(second.find((b) => b.at === block.at)).toEqual(block);
     }
+  });
+
+  it('gives every chunk the buffers of a retimed clip whose decoder hands over to another format in its first buffers', async () => {
+    // 22.05 kHz from the decoder the file begins with, 44.1 kHz from the browser's own.
+    const before = recordedLow(520);
+    const after = recorded(520);
+    const blocks = async (buffers: AsyncGenerator<WrappedAudioBuffer, void, unknown>) => {
+      const all: { at: number; rate: number; ends: number; samples: Float32Array }[] = [];
+      for await (const wb of buffers)
+        all.push({
+          at: wb.timestamp,
+          rate: wb.buffer.sampleRate,
+          ends: wb.timestamp + wb.duration,
+          samples: wb.buffer.getChannelData(0),
+        });
+      return all;
+    };
+    const preRoll = 0.5;
+    let cases = 0;
+    const lost: string[] = [];
+    for (const keepPitch of [false, true]) {
+      const map = timeMap(retimedClip(keepPitch));
+      // The first decoder gives the one buffer it had under way, or three.
+      for (const few of [1, 3]) {
+        // Seconds of the stream that the render plays: from the file's first buffer, and from part-way in.
+        for (const low of [0, 1.3]) {
+          const high = low + 1.5;
+          // The render in one piece, by a page that reads the file for the first time: one series,
+          // the buffers every later read of the file gives.
+          const fresh = handingOver(before, after, few);
+          const whole = await blocks(new Retimed(fresh.file, 0, map, keepPitch, holding).buffers(low, high));
+          expect(fresh.stats.decodes).toBe(2);
+          const { sink } = sinkOver(after);
+          const handed = { rate: RATE, buffers: sink.buffers.bind(sink) };
+          const later = new Retimed(handed, 0, map, keepPitch, holding).buffers(low, high);
+          expect(whole).toEqual(await blocks(later));
+          expect(whole.every((block, i) => i === 0 || block.at > whole[i - 1].at)).toBe(true);
+          // In two chunks, the seam anywhere in the second after the clip begins to play.
+          for (let seam = low + 0.03; seam < low + 1; seam += 0.0473) {
+            cases++;
+            const page = handingOver(before, after, few);
+            const stream = new Retimed(page.file, 0, map, keepPitch, holding);
+            const runs = new AudioRuns();
+            const chunks = [
+              [low, seam, Math.max(low, seam - preRoll - 0.1)],
+              [Math.max(low, seam - preRoll), high, high],
+            ];
+            let short = 0;
+            for (const [from, to, again] of chunks) {
+              const got = await blocks(
+                runs.of(clip).read(stream, from, to, again, low, high, false, unheard),
+              );
+              // What a read of the same stretch gives: every buffer that reaches into it.
+              const want = whole.filter((block) => block.at < to && block.ends > from);
+              short += want.filter(
+                (block) => !got.some((given) => given.at === block.at && given.rate === block.rate),
+              ).length;
+              if (short === 0) expect(got).toEqual(want);
+            }
+            if (short > 0)
+              lost.push(
+                `${short} buffers: keep pitch ${keepPitch}, ${few} before the hand-over, from ${low}, seam ${seam.toFixed(4)}`,
+              );
+            expect(page.stats.decodes).toBe(2);
+            expect(page.stats.open).toBe(0);
+          }
+        }
+      }
+    }
+    expect(cases).toBe(168);
+    expect(lost).toEqual([]);
   });
 
   it('reads the stream of a retimed clip that plays backwards once, and hands it out from the end', async () => {
