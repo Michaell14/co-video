@@ -83,6 +83,36 @@ describe('command catalogue', () => {
     expect(getTransitionDef(FIRST_TRANSITION)?.name).toBe('Cross Dissolve');
   });
 
+  it('offers the speed ramps, a point for one and the pitch of retimed sound by name, without keys', () => {
+    const wanted: Record<string, string> = {
+      'ramp-none': 'Speed ramp: None',
+      'ramp-up': 'Speed ramp: Ramp up',
+      'ramp-down': 'Speed ramp: Ramp down',
+      'ramp-montage': 'Speed ramp: Montage',
+      'ramp-hero': 'Speed ramp: Hero',
+      'ramp-bullet': 'Speed ramp: Bullet',
+      'ramp-flash-in': 'Speed ramp: Flash in',
+      'ramp-flash-out': 'Speed ramp: Flash out',
+      'ramp-add-point': 'Add ramp point at playhead',
+      'keep-pitch': 'Keep pitch: on or off',
+    };
+    for (const [id, title] of Object.entries(wanted)) {
+      const found = COMMANDS.filter((c) => c.id === id);
+      expect(found.map((c) => [c.title, c.group, c.keys]), id).toEqual([[title, 'Edit', undefined]]);
+    }
+    // Each asks for what its name says.
+    const setRamp = vi.spyOn(cmd, 'setRamp').mockImplementation(() => {});
+    const addRampPoint = vi.spyOn(cmd, 'addRampPoint').mockImplementation(() => null);
+    const setKeepPitch = vi.spyOn(cmd, 'setKeepPitch').mockImplementation(() => {});
+    for (const id of Object.keys(wanted)) COMMANDS.find((c) => c.id === id)!.run();
+    expect(setRamp.mock.calls).toEqual(
+      ['none', 'rampUp', 'rampDown', 'montage', 'hero', 'bullet', 'flashIn', 'flashOut'].map((shape) => [shape]),
+    );
+    expect(addRampPoint.mock.calls).toEqual([[]]);
+    expect(setKeepPitch.mock.calls).toEqual([[]]);
+    for (const spy of [setRamp, addRampPoint, setKeepPitch]) spy.mockRestore();
+  });
+
   it('leaves the keys that start and end the typing of a title to the viewer', () => {
     // Enter in this list would be taken from every button that a click left focused.
     const bound = new Set(COMMANDS.flatMap((c) => c.keys ?? []));

@@ -8,16 +8,18 @@ import {
   deleteClips,
   makeClip,
   makeTrack,
+  mediaAt,
   rippleCloseGap,
   rippleDelete,
   rippleTrim,
   rippleTrimTo,
+  sourceTimeAt,
   trackLabel,
   trimClips,
   trimRange,
 } from '../src';
 import type { Clip, Edit, ID, Project, RippleResult, Track } from '../src';
-import { fixture, overlaps } from './helpers';
+import { fixture, overlaps, randomRamp } from './helpers';
 
 interface Scene {
   p: Project;
@@ -569,6 +571,55 @@ describe('ripple invariants', () => {
     return applyEdits(f.p, edits);
   }
 
+  /**
+   * `p` with some of its clips on speed ramps. A linked pair gets one ramp for both, and the sound
+   * the in point at which it plays what its picture plays, frame for frame. The ramps come from a
+   * generator of their own, so the layout is the one `randomProject` made.
+   */
+  function onRamps(p: Project, rnd: () => number): Project {
+    const edits: Edit[] = [];
+    const linked = new Map<string, Clip[]>();
+    for (const c of Object.values(p.clips)) {
+      if (c.linkId) linked.set(c.linkId, [...(linked.get(c.linkId) ?? []), c]);
+      else if (rnd() < 0.4) edits.push({ op: 'updateClip', id: c.id, patch: { ramp: randomRamp(rnd) } });
+    }
+    for (const pair of linked.values()) {
+      const ramp = randomRamp(rnd);
+      if (pair.length !== 2 || rnd() < 0.4) continue;
+      const [lead, other] = pair[0].type === 'audio' ? [pair[1], pair[0]] : pair;
+      const sourceIn = mediaAt({ ...lead, ramp }, other.start - lead.start, p);
+      // A sound that would begin before its file does is left as it is, with its picture.
+      if (sourceIn < 0) continue;
+      edits.push({ op: 'updateClip', id: lead.id, patch: { ramp } });
+      edits.push({ op: 'updateClip', id: other.id, patch: { ramp, sourceIn } });
+    }
+    return applyEdits(p, edits);
+  }
+
+  /**
+   * How far apart, in seconds of their media, the clips of each linked pair on a ramp are: the
+   * most over every frame of either, each read on past its ends where the other plays alone.
+   */
+  function outOfStep(p: Project): Record<string, number> {
+    const out: Record<string, number> = {};
+    const first = new Map<string, Clip>();
+    for (const c of Object.values(p.clips).sort((a, b) => (a.id < b.id ? -1 : 1))) {
+      if (!c.linkId || !c.ramp) continue;
+      const partner = first.get(c.linkId);
+      if (!partner) {
+        first.set(c.linkId, c);
+        continue;
+      }
+      let most = 0;
+      for (let f = Math.min(c.start, partner.start); f < Math.max(clipEnd(c), clipEnd(partner)); f++) {
+        const gap = sourceTimeAt(c, f - c.start, p) - sourceTimeAt(partner, f - partner.start, p);
+        most = Math.max(most, Math.abs(gap));
+      }
+      out[c.linkId] = most;
+    }
+    return out;
+  }
+
   /** One of the ripple edits on clips picked at random, ready to run on the project or a variant of it. */
   function randomRipple(
     p: Project,
@@ -607,9 +658,13 @@ describe('ripple invariants', () => {
   it('never overlaps clips, never parts a linked pair, and refuses with nothing done', () => {
     let done = 0;
     let refusals = 0;
+    let ramps = 0;
+    let pairs = 0;
     for (let seed = 1; seed <= 600; seed++) {
       const rnd = random(seed);
-      const p = randomProject(rnd);
+      const p = onRamps(randomProject(rnd), random(seed * 7907));
+      const inStep = outOfStep(p);
+      for (const gap of Object.values(inStep)) expect(gap, `seed ${seed}`).toBeLessThan(1e-9);
       const { op, edited, run } = randomRipple(p, rnd);
       const r = run(p);
       const label = `seed ${seed}, op ${op}`;
@@ -622,12 +677,22 @@ describe('ripple invariants', () => {
       const q = applyEdits(p, r.edits);
       expect(overlaps(q), label).toEqual([]);
       const before = syncOffsets(p);
+      // A pair on a ramp is in sync when both play the same media on every frame, which is not a
+      // matter of where their in points are. The pairs that are on none go by their offsets.
       for (const [linkId, offsets] of Object.entries(syncOffsets(q))) {
+        if (linkId in inStep) continue;
         if (offsets.length === before[linkId].length) expect(offsets, label).toEqual(before[linkId]);
       }
+      const after = outOfStep(q);
+      for (const [linkId, gap] of Object.entries(after)) expect(gap, `${label}, ${linkId}`).toBeLessThan(1e-9);
+      if (r.edits.length) pairs += Object.keys(after).length;
       for (const c of Object.values(q.clips)) {
         expect(c.start, label).toBeGreaterThanOrEqual(0);
         if (p.tracks[c.trackId].locked && !edited.has(c.trackId)) expect(c, label).toBe(p.clips[c.id]);
+        // A ripple moves windows on the media. It never writes a ramp.
+        expect(c.ramp, label).toBe(p.clips[c.id].ramp);
+        expect(c.sourceIn, label).toBeGreaterThanOrEqual(0);
+        if (c.ramp && r.edits.length) ramps++;
       }
       for (const t of Object.values(p.tracks)) {
         // Clips on a track keep their order: nothing jumps over a neighbour.
@@ -646,6 +711,9 @@ describe('ripple invariants', () => {
     // The generator has to exercise both outcomes for the checks above to mean anything.
     expect(done).toBeGreaterThan(150);
     expect(refusals).toBeGreaterThan(50);
+    // And ramps: on clips by themselves, and on pairs that an edit went through beside.
+    expect(ramps).toBeGreaterThan(1000);
+    expect(pairs).toBeGreaterThan(150);
   });
 
   it('blames a lock for a refusal only when opening it gets the ripple through', () => {

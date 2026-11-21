@@ -48,6 +48,8 @@ import {
   type Edit,
   type ID,
   type Project,
+  type RampPoint,
+  type RampShape,
   type ShapeProps,
   type StepOutcome,
   type TextProps,
@@ -55,7 +57,12 @@ import {
   normalizationGain,
   type LoudnessResult,
   sourcePerFrame,
+  sourceSpan,
   clamp,
+  deepEqual,
+  RAMP_MAX,
+  RAMP_MIN,
+  RAMP_POINTS,
 } from '@tandem/core';
 import { renderStill, Sound, VoiceRecorder } from '@tandem/engine';
 import { navigate } from '../App';
@@ -102,15 +109,23 @@ import {
   type AttributeMode,
 } from './edits';
 import { commitEdits, withMarkers } from './follow';
+import { patchClips } from './props';
 import {
+  addPointChange,
   durationEdits,
   makeRoomEdits,
   moveEdits,
+  rampGroups,
+  rampLead,
+  retimeEach,
+  retimeRefusal,
   reverseEdits,
+  shapeChange,
   speedCutShort,
-  speedEach,
   speedRippleEdits,
+  TOO_SHORT_TO_RAMP,
   type CutShort,
+  type Retime,
 } from './timing';
 import { FIRST_TRANSITION, useUI, type Tool } from './ui';
 import { fitView, zoomView } from './view';
@@ -266,13 +281,61 @@ function offerRoom(s: Session, short: CutShort[]): void {
         for (const c of short) {
           const now = p.clips[c.id];
           const then = left.clips[c.id];
-          if (now && then && now.speed === then.speed && now.duration === c.duration) wants[c.id] = c.natural;
+          const same = now && then && now.speed === then.speed && deepEqual(now.ramp, then.ramp);
+          if (same && now.duration === c.duration) wants[c.id] = c.natural;
         }
         const r = makeRoomEdits(p, wants);
         if (r.refused) toast(r.refused);
         else if (r.edits.length) commitEdits(s, withMarkers(p, r));
       }),
   });
+}
+
+/**
+ * Make a change of speed or of ramp to `ids` as one step. With ripple editing on, what follows
+ * moves by as much as the clips grow or shrink; without, a clip stops at the next one, and when
+ * that cuts it short the toast offers to make room. A change that would have to reach a clip on a
+ * locked track is not made, and that is said. False when nothing was committed.
+ */
+function retimeClips(s: Session, p: Project, ids: ID[], change: Retime): boolean {
+  const locked = retimeRefusal(p, ids, change);
+  if (locked) {
+    toast(locked, 'info');
+    return false;
+  }
+  if (ui().rippleMode) {
+    const r = speedRippleEdits(p, ids, change);
+    if (r.edits.length) commitEdits(s, withMarkers(p, r));
+    if (r.refused) toast(r.refused);
+    return r.edits.length > 0;
+  }
+  const edits = retimeEach(p, ids, change);
+  if (!edits.length) return false;
+  const short = speedCutShort(p, ids, change);
+  s.store.commit(edits);
+  if (short.length) offerRoom(s, short);
+  return true;
+}
+
+const SELECT_TO_RAMP = 'Select a video or sound clip to ramp its speed.';
+
+const percent = (speed: number): string => `${Math.round(speed * 100)}%`;
+
+/**
+ * Say so when a clip that was put on a ramp from one speed could not keep that speed: a ramp does
+ * not go as slow or as fast as one speed can, and the clip now plays at the nearest it reaches.
+ */
+function sayRampLimit(p: Project, groups: ID[][]): void {
+  for (const group of groups) {
+    const lead = p.clips[rampLead(p, group)];
+    if (!lead || lead.ramp || (lead.speed >= RAMP_MIN && lead.speed <= RAMP_MAX)) continue;
+    const now = percent(clamp(lead.speed, RAMP_MIN, RAMP_MAX));
+    toast(
+      `A ramp runs between ${percent(RAMP_MIN)} and ${percent(RAMP_MAX)}, so the clip now plays at ${now}.`,
+      'info',
+    );
+    return;
+  }
 }
 
 /**
@@ -308,8 +371,14 @@ async function measureClip(s: Session, clip: Clip, p: Project): Promise<Loudness
   if (!clip.assetId) return null;
   const media = await s.thumbs.library.get(clip.assetId);
   if (!media?.audio || !media.audioDecodable) return null;
-  const start = media.audioStart + clip.sourceIn;
-  const end = start + Math.max(clip.duration * sourcePerFrame(clip, p), 0.05);
+  let start = media.audioStart + clip.sourceIn;
+  let end = start + Math.max(clip.duration * sourcePerFrame(clip, p), 0.05);
+  if (clip.ramp) {
+    // On a ramp the stretch is not the length times one speed: it is read off the ramp.
+    const span = sourceSpan(clip, p);
+    start = media.audioStart + Math.max(0, span.in);
+    end = Math.max(media.audioStart + span.out, start + 0.05);
+  }
   // Read as the preview and an export read it: by whichever decoder the file's sound is on, and
   // without the stretches that will not decode, so that what is measured is what plays.
   const sound = new Sound(clip.assetId, media.audio);
@@ -814,19 +883,73 @@ export const cmd = {
    * toast offers to make room.
    */
   setSpeed(speed: number, reverse?: boolean): void {
+    editing((s, p) => void retimeClips(s, p, effectiveSelection(p), { speed, reverse }));
+  },
+  /**
+   * Put the selected clips on a ready-made speed ramp, take them off their ramp (`none`), or make
+   * them ready for points to be dragged (`custom`, see `shapeChange`). A ramp is set on a clip and
+   * everything linked to it, whatever the linked selection, and changes their length the way a
+   * change of speed does (see `setSpeed`).
+   */
+  setRamp(shape: RampShape | 'none' | 'custom'): void {
     editing((s, p) => {
       const ids = effectiveSelection(p);
-      if (ui().rippleMode) {
-        const r = speedRippleEdits(p, ids, speed, reverse);
-        if (r.edits.length) commitEdits(s, withMarkers(p, r));
-        if (r.refused) toast(r.refused);
+      const groups = rampGroups(p, ids);
+      if (!groups.length) {
+        toast(SELECT_TO_RAMP, 'info');
         return;
       }
-      const edits = speedEach(p, ids, speed, reverse);
-      if (!edits.length) return;
-      const short = speedCutShort(p, ids, speed, reverse);
-      s.store.commit(edits);
-      if (short.length) offerRoom(s, short);
+      const change = shapeChange(p, groups, shape);
+      if (!change) toast(TOO_SHORT_TO_RAMP, 'info');
+      else if (retimeClips(s, p, ids, change) && shape === 'custom') sayRampLimit(p, groups);
+    });
+  },
+  /**
+   * Give the first of the selected clips, with everything linked to it, these points for its ramp,
+   * or no ramp (`null`). The points are seconds of the clip's media and the speed there.
+   */
+  setRampPoints(points: RampPoint[] | null): void {
+    editing((s, p) => {
+      const [group] = rampGroups(p, effectiveSelection(p));
+      if (!group) toast(SELECT_TO_RAMP, 'info');
+      else if (points && points.length > RAMP_POINTS) toast(`A ramp holds at most ${RAMP_POINTS} points.`, 'info');
+      else retimeClips(s, p, group, { ramps: { [rampLead(p, group)]: points } });
+    });
+  },
+  /**
+   * Add a point to the ramp of the first of the selected clips: where the playhead shows it, else
+   * in the widest gap between its points (see `addPointChange`). Returns the place of the new
+   * point in seconds of the clip's media, or null when none was added.
+   */
+  addRampPoint(): number | null {
+    let added: number | null = null;
+    editing((s, p) => {
+      const [group] = rampGroups(p, effectiveSelection(p));
+      if (!group) {
+        toast(SELECT_TO_RAMP, 'info');
+        return;
+      }
+      const point = addPointChange(p, group, frame());
+      if ('refused' in point) {
+        toast(point.refused, 'info');
+        return;
+      }
+      if (!retimeClips(s, p, group, point.change)) return;
+      added = point.m;
+      sayRampLimit(p, [group]);
+    });
+    return added;
+  },
+  /**
+   * Let the sound of the selected clips keep its pitch at another speed, or follow the speed as a
+   * tape does. Left out, `on` switches over from what the first of them does now.
+   */
+  setKeepPitch(on?: boolean): void {
+    editing((_, p) => {
+      const groups = rampGroups(p, effectiveSelection(p));
+      const sound = groups.flat().filter((id) => p.clips[id].type === 'audio');
+      if (!sound.length) toast('Select a sound clip to keep its pitch.', 'info');
+      else patchClips(sound, { keepPitch: on ?? p.clips[sound[0]].keepPitch !== true });
     });
   },
   /**
@@ -1609,7 +1732,9 @@ export const cmd = {
       return;
     }
     downloadBlob(new Blob([edl], { type: 'text/plain' }), `${safeName(p.settings.name)}.edl`);
-    toast('EDL exported: cuts, source ranges and speed changes. Effects and titles are not part of an EDL.');
+    toast(
+      'EDL exported: cuts, source ranges and speed changes. A speed ramp is written at its average speed. Effects and titles are not part of an EDL.',
+    );
   },
 
   /**

@@ -7,13 +7,27 @@ import {
   clipEnd,
   clipsOnTrack,
   deepEqual,
+  flatRamp,
   hasSourceTime,
+  linkedIds,
+  mediaToStream,
   neighbors,
   placeClips,
+  RAMP_GAP,
+  RAMP_POINTS,
+  rampTable,
   retime,
   rippleTrim,
+  setRamp,
   setSpeed,
+  shapeRamp,
+  sourceSpan,
+  sourceTimeAt,
+  streamSpeed,
+  tidyRamp,
+  trackLabel,
   trimClips,
+  withLinked,
   type Clip,
   type Comment,
   type Edit,
@@ -22,6 +36,9 @@ import {
   type ID,
   type Marker,
   type Project,
+  type RampChange,
+  type RampPoint,
+  type RampShape,
 } from '@tandem/core';
 import { markerEdits, rippleFollower, trimSpans, type Rippled, type RippleSpan } from './edits';
 import { asRipple } from './follow';
@@ -88,26 +105,241 @@ function clipUpdates() {
 }
 
 /**
+ * A change of timing: one speed, or a speed ramp for each clip it names. Everything the planner
+ * does for a change of speed (the ripple, the clip that is cut short and the room made for it, the
+ * gesture that is one undo step) it does for either.
+ */
+export type Retime = { speed: number; reverse?: boolean } | RampChange;
+
+const isRamp = (change: Retime): change is RampChange => 'ramps' in change;
+
+/** A speed given as a bare number is that one speed. */
+const asRetime = (change: number | Retime, reverse?: boolean): Retime =>
+  typeof change === 'number' ? { speed: change, reverse } : change;
+
+/** The order the clips of a track are listed in: by where they start, then by id. */
+const byStart = (a: Clip, b: Clip): number => a.start - b.start || (a.id < b.id ? -1 : 1);
+
+/** Every clip of the link group of `id` that has a speed, in the order of `byStart`. */
+function linkGroup(p: Project, id: ID): ID[] {
+  return linkedIds(p, id)
+    .map((other) => p.clips[other])
+    .filter(speedable)
+    .sort(byStart)
+    .map((c) => c.id);
+}
+
+/**
+ * The whole link groups of the clips among `ids` that have a speed, whatever the linked-selection
+ * switch says: a ramp is one for a picture and its sound, or the two would no longer play the same
+ * moment together.
+ */
+export function rampGroups(p: Project, ids: ID[]): ID[][] {
+  const timed = ids.filter((id) => speedable(p.clips[id]));
+  return speedGroups(p, withLinked(p, timed)).map((group) => linkGroup(p, group[0]));
+}
+
+/**
+ * The clip of a link group that its ramp is named for, and that the others follow: the first that
+ * is not sound, else the first.
+ */
+export function rampLead(p: Project, group: ID[]): ID {
+  const clips = group
+    .map((id) => p.clips[id])
+    .filter((c): c is Clip => !!c)
+    .sort(byStart);
+  return (clips.find((c) => c.type !== 'audio') ?? clips[0])?.id ?? group[0];
+}
+
+/**
+ * The change that puts each of `groups` on a ready-made shape, laid over the stretch of media its
+ * lead plays; takes it off its ramp (`none`); or makes it ready for points to be dragged
+ * (`custom`): a clip at one speed gets a level ramp at that speed, as near as a ramp can be to it,
+ * and a clip on a ramp keeps the one it has. Null when a clip plays too little media to hold the
+ * points: a shape that lost points would be another shape, or none.
+ */
+export function shapeChange(
+  p: Project,
+  groups: ID[][],
+  shape: RampShape | 'none' | 'custom',
+): RampChange | null {
+  const ramps: Record<ID, RampPoint[] | null> = {};
+  for (const group of groups) {
+    const lead = p.clips[rampLead(p, group)];
+    if (!lead) continue;
+    if (shape === 'none') ramps[lead.id] = null;
+    else if (shape === 'custom' && lead.ramp) ramps[lead.id] = lead.ramp;
+    else {
+      const { in: from, out: to } = sourceSpan(lead, p);
+      const ramp = shape === 'custom' ? flatRamp(from, to, lead.speed) : shapeRamp(shape, from, to, lead.reverse);
+      if (!ramp) return null;
+      ramps[lead.id] = ramp;
+    }
+  }
+  return { ramps };
+}
+
+/** What is said of a clip that plays too little media for the points of a ramp. */
+export const TOO_SHORT_TO_RAMP = 'This clip is too short for a speed ramp.';
+
+/**
+ * The change that adds a point to the ramp of a group of linked clips, and where it puts it, in
+ * seconds of the media: where the playhead (`frame`) shows the group's lead, or, when the playhead
+ * is not on that clip or a point stands there already, in the middle of the widest gap between the
+ * points over the stretch the clip plays. The point is put on the curve as it runs, so the speed
+ * there is the one it was. A clip at one speed starts from a level ramp (see `shapeChange`).
+ * `refused` says why no point can be added.
+ */
+export function addPointChange(
+  p: Project,
+  group: ID[],
+  frame: number,
+): { change: RampChange; m: number } | { refused: string } {
+  const lead = p.clips[rampLead(p, group)];
+  if (!speedable(lead)) return { refused: TOO_SHORT_TO_RAMP };
+  const { in: from, out: to } = sourceSpan(lead, p);
+  const ramp = lead.ramp ?? flatRamp(from, to, lead.speed);
+  if (!ramp) return { refused: TOO_SHORT_TO_RAMP };
+  if (ramp.length >= RAMP_POINTS) return { refused: `A ramp holds at most ${RAMP_POINTS} points.` };
+  // Places are kept to the microsecond, and no two points stand closer than `RAMP_GAP`.
+  const micro = (m: number): number => Math.round(m * 1e6) / 1e6;
+  const free = (m: number): boolean => ramp.every((q) => Math.abs(q.m - m) >= RAMP_GAP);
+  let m: number | null = null;
+  if (frame >= lead.start && frame < clipEnd(lead)) {
+    const shown = micro(sourceTimeAt(lead, frame - lead.start, p));
+    if (free(shown)) m = shown;
+  }
+  if (m === null) {
+    const stops = [from, ...ramp.map((q) => q.m).filter((at) => at > from && at < to), to];
+    let widest = 0;
+    for (let i = 1; i + 1 < stops.length; i++) {
+      if (stops[i + 1] - stops[i] > stops[widest + 1] - stops[widest]) widest = i;
+    }
+    const middle = micro((stops[widest] + stops[widest + 1]) / 2);
+    if (!free(middle)) return { refused: TOO_SHORT_TO_RAMP };
+    m = middle;
+  }
+  const table = rampTable(ramp);
+  const points = tidyRamp([...ramp, { m, v: streamSpeed(table, mediaToStream(table, m)) }]);
+  if (!points || points.length !== ramp.length + 1) return { refused: TOO_SHORT_TO_RAMP };
+  return { change: { ramps: { [lead.id]: points } }, m };
+}
+
+/**
+ * The clips a change is worked out for, grouped the way they are linked. A ramp is set on whole
+ * link groups, and so is one speed on a clip that is on a ramp: the clips linked to it come off
+ * the ramp with it. Any other clip has its speed set by itself.
+ */
+function reached(p: Project, ids: ID[], change: Retime): ID[][] {
+  if (isRamp(change)) return rampGroups(p, ids);
+  return speedGroups(p, ids).map((group) =>
+    group.some((id) => p.clips[id].ramp) ? linkGroup(p, group[0]) : group,
+  );
+}
+
+/**
+ * Why a change cannot be made at all: a clip it reaches is on a locked track. A lock protects a
+ * track from every edit, and a clip linked to one on a ramp cannot stay behind, so nothing is
+ * changed. Null when nothing is in the way.
+ */
+export function retimeRefusal(p: Project, ids: ID[], change: number | Retime): string | null {
+  const to = asRetime(change);
+  for (const id of reached(p, ids, to).flat()) {
+    const track = p.tracks[p.clips[id].trackId];
+    if (!track?.locked) continue;
+    const name = track.name || trackLabel(p, track);
+    return isRamp(to)
+      ? `Unlock ${name} to ramp this clip: what is linked to it has to follow.`
+      : `Unlock ${name} to change this clip's speed: what is linked to it has to follow.`;
+  }
+  return null;
+}
+
+/**
  * `setSpeed` for several clips, each named once. Each stops at the clip after it, also when that
  * clip is having its speed set too: a change of speed moves no clip's start, which is all the clip
  * before it stops at, so no answer depends on another.
  */
 export function speedEach(p: Project, ids: ID[], speed: number, reverse?: boolean): Edit[] {
-  return setSpeed(p, ids, speed, reverse);
+  return retimeEach(p, ids, { speed, reverse });
 }
 
-/** How long each of `ids` is at `speed` when nothing stands in its way. */
-function naturalLengths(p: Project, ids: ID[], speed: number, reverse?: boolean): Map<ID, number> {
-  const lengths = new Map<ID, number>();
-  for (const id of ids) {
-    const clip = p.clips[id];
-    if (!clip) continue;
-    // `setSpeed` stops a clip at the one after it. In a project of its own it has nothing to stop at.
-    for (const e of setSpeed({ ...p, clips: { [id]: clip } }, [id], speed, reverse)) {
-      if (e.op === 'updateClip' && e.patch.duration !== undefined) lengths.set(e.id, e.patch.duration);
+/**
+ * The operation a change is: `setSpeed` or `setRamp`, in the project as it is. No edits when the
+ * change is refused (see `retimeRefusal`).
+ */
+export function retimeEach(p: Project, ids: ID[], change: Retime): Edit[] {
+  if (retimeRefusal(p, ids, change)) return [];
+  return isRamp(change) ? setRamp(p, ids, change) : setSpeed(p, ids, change.speed, change.reverse);
+}
+
+/**
+ * A project that holds the clips of `group` and, for each, the clip before it on its track, and
+ * nothing that comes after them. `setSpeed` stops a clip at the one after it and cannot be told
+ * not to; here it finds none. The clips before them are kept because a clip that follows another
+ * of its group is cut where the clip before it is in its way, on the timeline as well.
+ */
+function unhindered(p: Project, group: ID[]): Project {
+  const clips: Record<ID, Clip> = {};
+  for (const id of group) {
+    const c = p.clips[id];
+    clips[id] = c;
+    const { prev } = neighbors(p, c);
+    if (prev) clips[prev.id] = prev;
+  }
+  return { ...p, clips };
+}
+
+/**
+ * How a change leaves each clip it reaches from `ids` when no clip after it stands in its way:
+ * the edits of the operation without its stop at the next clip. Each group of linked clips is
+ * asked about by itself, as if it alone were changed: one that is let run on must not be found
+ * lying in the way of the next.
+ */
+function unstopped(p: Project, ids: ID[], change: Retime): Edit[] {
+  const edits: Edit[] = [];
+  for (const group of reached(p, ids, change)) {
+    if (isRamp(change)) {
+      // A clip that follows another is placed by it, so a ramp is asked about on the timeline as it is.
+      edits.push(...setRamp(p, group, change, true));
+    } else if (group.some((id) => p.clips[id].ramp)) {
+      edits.push(...setSpeed(unhindered(p, group), group, change.speed, change.reverse));
+    } else {
+      for (const id of group) {
+        // `setSpeed` stops a clip at the one after it. In a project of its own it has nothing to stop at.
+        edits.push(...setSpeed({ ...p, clips: { [id]: p.clips[id] } }, [id], change.speed, change.reverse));
+      }
     }
   }
-  return lengths;
+  return edits;
+}
+
+/**
+ * What each clip is left as by `edits`, by clip. Of `unstopped`: the length it has when nothing is
+ * in its way and, for a clip that is placed by the one it follows, the frame it starts at.
+ */
+function placesIn(edits: Edit[]): Map<ID, Partial<Clip>> {
+  const places = new Map<ID, Partial<Clip>>();
+  for (const e of edits) if (e.op === 'updateClip') places.set(e.id, e.patch);
+  return places;
+}
+
+/**
+ * `p` with each clip that a change of ramp brings forward (`places`, of `unstopped`) beginning
+ * where it will begin and ending where it ends now. The ripple of a change is planned around its
+ * clips as they stand, and a sound that the ramp of its picture brings forward would be found in
+ * the way, at the place it is leaving, of what moves up behind the picture. `p` itself when no
+ * clip is brought forward.
+ */
+function broughtForward(p: Project, places: Map<ID, Partial<Clip>>): Project {
+  let clips: Record<ID, Clip> | null = null;
+  for (const [id, { start }] of places) {
+    const c = p.clips[id];
+    if (!c || start === undefined || start >= c.start) continue;
+    clips ??= { ...p.clips };
+    clips[id] = { ...c, start, duration: clipEnd(c) - start };
+  }
+  return clips ? { ...p, clips } : p;
 }
 
 /**
@@ -154,15 +386,21 @@ function rippleAfter(p: Project, group: ID[], length: (id: ID) => number): Rippl
 }
 
 /**
- * Set the speed of clips with ripple editing on. What follows moves by as many frames as the clips
- * become longer or shorter, on every track that can follow, as after a ripple trim of their ends:
- * a slowed clip plays all it played before instead of stopping at the next clip, and a faster one
- * leaves no hole. Linked clips ripple once (see `deciding`). Where the ripple is refused the speed
- * is set all the same, the way it is without ripple editing, and `refused` says why what follows
- * stayed where it is.
+ * Set the speed of clips, or put them on a ramp, with ripple editing on. What follows moves by as
+ * many frames as the clips become longer or shorter, on every track that can follow, as after a
+ * ripple trim of their ends: a slowed clip plays all it played before instead of stopping at the
+ * next clip, and a faster one leaves no hole. Linked clips ripple once (see `deciding`). Where the
+ * ripple is refused the change is made all the same, the way it is without ripple editing, and
+ * `refused` says why what follows stayed where it is. A change that cannot be made at all (see
+ * `retimeRefusal`) leaves no edits, and `refused` says why.
  */
-export function speedRippleEdits(p: Project, ids: ID[], speed: number, reverse?: boolean): Rippled {
-  const { edits, refused, spans } = speedRipple(p, ids, speed, reverse);
+export function speedRippleEdits(
+  p: Project,
+  ids: ID[],
+  change: number | Retime,
+  reverse?: boolean,
+): Rippled {
+  const { edits, refused, spans } = speedRipple(p, ids, asRetime(change, reverse));
   return { edits, refused, spans };
 }
 
@@ -175,24 +413,32 @@ interface GroupRipple {
 }
 
 /** `speedRippleEdits`, and what it did after each group, in the order of `speedGroups`. */
-function speedRipple(
-  p: Project,
-  ids: ID[],
-  speed: number,
-  reverse?: boolean,
-): Rippled & { groups: GroupRipple[] } {
+function speedRipple(p: Project, ids: ID[], change: Retime): Rippled & { groups: GroupRipple[] } {
+  const locked = retimeRefusal(p, ids, change);
+  if (locked) return { edits: [], refused: locked, spans: [], groups: [] };
   const updates = clipUpdates();
   const spans: RippleSpan[] = [];
   const groups: GroupRipple[] = [];
   let refused: string | null = null;
   let working = p;
-  for (const group of speedGroups(p, ids)) {
-    const natural = naturalLengths(working, group, speed, reverse);
-    const ripple = rippleAfter(working, group, (id) => natural.get(id) ?? working.clips[id].duration);
+  for (const group of reached(p, ids, change)) {
+    const free = unstopped(working, group, change);
+    const places = placesIn(free);
+    const natural = (id: ID): number => places.get(id)?.duration ?? working.clips[id].duration;
+    const ahead = isRamp(change) ? broughtForward(working, places) : working;
+    const ripple = rippleAfter(ahead, group, natural);
     refused ??= ripple.refused;
-    const moved = applyEdits(working, ripple.edits);
-    const set = speedEach(moved, group, speed, reverse);
+    let moved = applyEdits(working, ripple.edits);
     updates.add(ripple.edits);
+    if (ahead !== working && ripple.edits.length) {
+      // What follows has moved up to where a clip of the group is headed, past the place that clip
+      // is leaving. Asked about there, the clip would take what now stands before it for the clip
+      // before it. So the group is first put where the change takes it with nothing in its way,
+      // and then asked again, to be stopped at what has come to stand after it.
+      updates.add(free);
+      moved = applyEdits(moved, free);
+    }
+    const set = retimeEach(moved, group, change);
     updates.add(set);
     spans.push(...ripple.spans);
     groups.push({ lead: deciding(working, group), by: ripple.spans[0]?.by ?? 0 });
@@ -210,36 +456,53 @@ export interface CutShort {
   natural: number;
 }
 
-/** The clips among `ids` that setting `speed` without a ripple cuts short. */
-export function speedCutShort(p: Project, ids: ID[], speed: number, reverse?: boolean): CutShort[] {
-  const natural = naturalLengths(
-    p,
-    ids.filter((id) => speedable(p.clips[id])),
-    speed,
-    reverse,
-  );
+/**
+ * The length a clip that was left at `start` with `duration` frames is short of, or null when it
+ * is not cut short: `free` is what it is with nothing in its way. Room at its end has to be what
+ * it lacks. A clip that follows another and found the next clip standing where its media now plays
+ * is left as one frame of itself in another place; it is offered no room, which would only let it
+ * run on from there, out of step.
+ */
+function shortOf(start: number, duration: number, free: Partial<Clip> | undefined): number | null {
+  const natural = free?.duration;
+  if (natural === undefined || duration >= natural) return null;
+  return free?.start === undefined || free.start === start ? natural : null;
+}
+
+/** The clips that making a change without a ripple cuts short: of `ids`, and of what it reaches with them. */
+export function speedCutShort(
+  p: Project,
+  ids: ID[],
+  change: number | Retime,
+  reverse?: boolean,
+): CutShort[] {
+  const to = asRetime(change, reverse);
+  const free = placesIn(unstopped(p, ids, to));
   const short: CutShort[] = [];
-  for (const e of speedEach(p, ids, speed, reverse)) {
+  for (const e of retimeEach(p, ids, to)) {
     if (e.op !== 'updateClip' || e.patch.duration === undefined) continue;
-    const full = natural.get(e.id) ?? e.patch.duration;
-    if (e.patch.duration < full) short.push({ id: e.id, duration: e.patch.duration, natural: full });
+    const start = e.patch.start ?? p.clips[e.id].start;
+    const natural = shortOf(start, e.patch.duration, free.get(e.id));
+    if (natural !== null) short.push({ id: e.id, duration: e.patch.duration, natural });
   }
   return short;
 }
 
 /**
  * The clips a gesture has left cut short, once it has ended: the same as `speedCutShort` for the
- * speed it ended on, worked out from where the gesture began.
+ * step it ended on, worked out from where the gesture began. A gesture that was not told its last
+ * step (see `speedStepped`) set a speed, and each clip has it.
  */
 export function speedGestureCutShort(g: SpeedGesture, p: Project): CutShort[] {
-  const clips = { ...p.clips };
-  const ids = Object.keys(g.from).filter((id) => clips[id]);
-  for (const id of ids) clips[id] = { ...clips[id], ...g.from[id] };
+  const found: Project = { ...p, clips: foundClips(g, p) };
+  const ids = Object.keys(g.from).filter((id) => found.clips[id]);
+  const places = g.last && placesIn(unstopped(found, ids, g.last));
   const short: CutShort[] = [];
   for (const id of ids) {
     const now = p.clips[id];
-    const natural = naturalLengths({ ...p, clips }, [id], now.speed).get(id) ?? now.duration;
-    if (now.duration < natural) short.push({ id, duration: now.duration, natural });
+    const free = (places ?? placesIn(unstopped(found, [id], { speed: now.speed }))).get(id);
+    const natural = shortOf(now.start, now.duration, free);
+    if (natural !== null) short.push({ id, duration: now.duration, natural });
   }
   return short;
 }
@@ -304,19 +567,31 @@ const placedIn = (p: Project, markers: boolean): Placed => ({
 });
 
 /**
- * A change of speed made in many small steps: a scrub of the number, a drag of the slider. A new
- * speed changes a clip's length, the next clip can cut that short, and going back does not undo
- * the cut. So no step builds on the one before. Each is `setSpeed` for the clips as the gesture
- * found them, in the project as it is at that moment: dragging down to 70% and back up leaves the
- * clips exactly as they were, whatever else is edited meanwhile, by whoever.
+ * A change of speed made in many small steps: a scrub of the number, a drag of the slider, a drag
+ * of a point of a ramp. A new speed or ramp changes a clip's length, the next clip can cut that
+ * short, and going back does not undo the cut. So no step builds on the one before. Each is
+ * `setSpeed` or `setRamp` for the clips as the gesture found them, in the project as it is at that
+ * moment: dragging down to 70% and back up leaves the clips exactly as they were, whatever else is
+ * edited meanwhile, by whoever.
  */
 export interface SpeedGesture {
-  /** The clips the speed is set on. */
+  /** The clips the change is asked for. */
   ids: ID[];
-  /** The timing of those that have a speed, as the gesture found it. */
+  /** The timing of the clips it can reach that have a speed, as the gesture found it. */
   from: Record<ID, Timing>;
   /** The same, as the gesture's last step left it. */
   left: Record<ID, Timing>;
+  /**
+   * The last step, once the gesture has been told it (see `speedStepped`). A clip does not say
+   * what was asked of it: the next clip may have cut it short, and a ramp is one for several clips.
+   */
+  last: Retime | null;
+  /**
+   * Set for a gesture that reaches whole groups of linked clips: where each of its clips started
+   * when it began and after its last step. A change of ramp can move a clip that follows another,
+   * and a gesture that returns puts it back.
+   */
+  starts: { from: Frames; left: Frames } | null;
   /**
    * Set when the gesture ripples: every step moves what follows the clips, so the gesture also
    * keeps where every clip (and marker) was when it began and after its last step, and each step
@@ -332,6 +607,12 @@ export interface SpeedGestureOptions {
   ripple?: boolean;
   /** Comments and markers follow ripple edits. */
   markers?: boolean;
+  /**
+   * The gesture is about to change a ramp. A ramp is set on whole groups of linked clips whatever
+   * is selected, so the gesture is about all of them from the start: a linked clip it did not know
+   * would be worked out anew from wherever the step before left it.
+   */
+  ramp?: boolean;
 }
 
 /**
@@ -345,7 +626,7 @@ export function speedGesture(
   g: SpeedGesture | null,
   p: Project,
   ids: ID[],
-  { ripple = false, markers = false }: SpeedGestureOptions = {},
+  { ripple = false, markers = false, ramp = false }: SpeedGestureOptions = {},
 ): SpeedGesture {
   const asLeft = (id: ID) => !!p.clips[id] && deepEqual(timingOf(p.clips[id]), g?.left[id]);
   const placed = ripple ? placedIn(p, markers) : null;
@@ -353,15 +634,51 @@ export function speedGesture(
     g &&
     deepEqual(g.ids, ids) &&
     Object.keys(g.from).every(asLeft) &&
-    deepEqual(g.ripple?.left ?? null, placed)
+    deepEqual(g.ripple?.left ?? null, placed) &&
+    (g.starts ? Object.keys(g.from).every((id) => p.clips[id].start === g.starts?.left[id]) : !ramp)
   )
     return g;
+  // One speed set on a clip that is on a ramp takes the clips linked to it off the ramp as well.
+  const grouped = ramp || ids.some((id) => !!p.clips[id]?.ramp);
   const from: Record<ID, Timing> = {};
-  for (const id of ids) {
+  const began: Frames = {};
+  for (const id of grouped ? rampGroups(p, ids).flat() : ids) {
     const c = p.clips[id];
-    if (speedable(c)) from[id] = timingOf(c);
+    if (!speedable(c)) continue;
+    from[id] = timingOf(c);
+    began[id] = c.start;
   }
-  return { ids, from, left: from, ripple: placed && { from: placed, left: placed } };
+  return {
+    ids,
+    from,
+    left: from,
+    ripple: placed && { from: placed, left: placed },
+    last: null,
+    starts: grouped ? { from: began, left: began } : null,
+  };
+}
+
+/** The clips of `p`, with those of a gesture as it found them. */
+function foundClips(g: SpeedGesture, p: Project): Record<ID, Clip> {
+  const clips = { ...p.clips };
+  for (const [id, from] of Object.entries(g.from)) if (clips[id]) clips[id] = { ...clips[id], ...from };
+  for (const [id, start] of Object.entries(g.starts?.from ?? {})) {
+    if (clips[id]) clips[id] = { ...clips[id], start };
+  }
+  return clips;
+}
+
+/**
+ * The change that leaves the clips of a gesture on the ramps its last step left them on: what a
+ * gesture that was not told its last step (see `speedStepped`) takes that step to have been.
+ */
+function leftRamps(g: SpeedGesture, found: Project): RampChange {
+  const ramps: Record<ID, RampPoint[] | null> = {};
+  for (const group of rampGroups(found, g.ids)) {
+    const lead = rampLead(found, group);
+    ramps[lead] = g.left[lead]?.ramp ?? null;
+  }
+  return { ramps };
 }
 
 /**
@@ -373,13 +690,20 @@ export function speedGesture(
  * rests. A comment that somebody makes or moves meanwhile is taken from where it was put, on the
  * shot it was put on, by each step that follows.
  */
-export function speedEdits(g: SpeedGesture, p: Project, speed: number): Edit[] {
-  const clips = { ...p.clips };
-  for (const [id, from] of Object.entries(g.from)) if (clips[id]) clips[id] = { ...clips[id], ...from };
+export function speedEdits(g: SpeedGesture, p: Project, step: number | Retime): Edit[] {
+  const change = asRetime(step);
+  const clips = foundClips(g, p);
+  // A change that cannot be made leaves everything as the step before left it.
+  if (retimeRefusal({ ...p, clips }, g.ids, change)) return [];
   if (!g.ripple) {
-    return speedEach({ ...p, clips }, g.ids, speed).map((e) =>
-      e.op === 'updateClip' ? { ...e, patch: { ...g.from[e.id], ...e.patch } } : e,
-    );
+    return retimeEach({ ...p, clips }, g.ids, change).map((e) => {
+      if (e.op !== 'updateClip') return e;
+      const patch: Partial<Clip> = { ...g.from[e.id], ...e.patch };
+      // A clip that an earlier step moved and this one leaves where the gesture found it.
+      const start = g.starts?.from[e.id];
+      if (start !== undefined && patch.start === undefined && p.clips[e.id].start !== start) patch.start = start;
+      return { ...e, patch };
+    });
   }
   const { from } = g.ripple;
   for (const [id, start] of Object.entries(from.clips)) if (clips[id]) clips[id] = { ...clips[id], start };
@@ -388,46 +712,56 @@ export function speedEdits(g: SpeedGesture, p: Project, speed: number): Edit[] {
     if (markers[id]) markers[id] = { ...markers[id], frame };
   }
   const found: Project = { ...p, clips, markers };
-  const plan = speedRipple(found, g.ids, speed);
+  const plan = speedRipple(found, g.ids, change);
   const follow = from.markers ? markerEdits(found, plan.edits, plan.spans) : [];
   const planned = applyEdits(found, [...plan.edits, ...follow]);
+  // A clip that a change of ramp placed is written with its start, moved or not: its ramp, its
+  // length, its in point and its place are one answer, and are written as one.
+  const placed = new Set<ID>();
+  for (const e of plan.edits) {
+    if (e.op === 'updateClip' && e.patch.ramp !== undefined && e.patch.start !== undefined) placed.add(e.id);
+  }
   const edits: Edit[] = [];
   for (const c of Object.values(planned.clips)) {
     const now = p.clips[c.id];
     const patch: Partial<Clip> = g.from[c.id] ? timingOf(c) : {};
-    if (now.start !== c.start) patch.start = c.start;
+    if (now.start !== c.start || placed.has(c.id)) patch.start = c.start;
     if (Object.keys(patch).length) edits.push({ op: 'updateClip', id: c.id, patch });
   }
   for (const m of Object.values(planned.markers)) {
     if (p.markers[m.id].frame !== m.frame) edits.push({ op: 'setMarker', marker: m });
   }
   if (!from.markers) return edits;
-  // A step is told apart by the speed it set: each is planned on the same timeline. Asked for only
-  // for a comment that came while the gesture was under way.
-  const since = new Map<number, Follow>();
-  const step: GestureStep<number> = {
+  // A step is told apart by the change it made: each is planned on the same timeline. Asked for
+  // only for a comment that came while the gesture was under way, with the very object that was
+  // given as `last` then.
+  const since = new Map<Retime, Follow>();
+  const last: Retime =
+    g.last ??
+    (isRamp(change) ? leftRamps(g, found) : { speed: Object.values(g.left)[0]?.speed ?? change.speed });
+  const gesture: GestureStep<Retime> = {
     of: from,
-    last: Object.values(g.left)[0]?.speed ?? speed,
+    last,
     since(at, frame) {
       let follow = since.get(at);
       if (!follow) since.set(at, (follow = stepFollower(found, g.ids, at, planned, plan.groups)));
       return follow(frame);
     },
   };
-  return asRipple(edits, rippleFollower(found, plan.edits, plan.spans), step);
+  return asRipple(edits, rippleFollower(found, plan.edits, plan.spans), gesture);
 }
 
 /**
  * Where a step of a gesture that ripples, which left the clips at `planned` by `groups`, takes
- * what stands at a frame of the timeline as an earlier step left it, one that set the speed `at`
- * on the clips `ids` of `found`. By the rule of `rippleFollower`: along with the clip it stands
+ * what stands at a frame of the timeline as an earlier step left it, one that made the change `at`
+ * to the clips `ids` of `found`. By the rule of `rippleFollower`: along with the clip it stands
  * on, and where that clip has another length now, or there is none, with the time put in or taken
  * out after each group of clips since.
  */
 function stepFollower(
   found: Project,
   ids: ID[],
-  at: number,
+  at: Retime,
   planned: Project,
   groups: GroupRipple[],
 ): Follow {
@@ -447,12 +781,22 @@ function stepFollower(
   return rippleFollower(then, edits, spans);
 }
 
-/** `g` after its step has been committed and `p` is what came of it. */
-export function speedStepped(g: SpeedGesture, p: Project): SpeedGesture {
+/**
+ * `g` after its step has been committed and `p` is what came of it. `step` is what that step
+ * asked for. A gesture that is not told sets a speed, and takes it from the clips afterwards.
+ */
+export function speedStepped(g: SpeedGesture, p: Project, step?: number | Retime): SpeedGesture {
   const left: Record<ID, Timing> = {};
-  for (const id of Object.keys(g.from)) if (p.clips[id]) left[id] = timingOf(p.clips[id]);
+  const stand: Frames = {};
+  for (const id of Object.keys(g.from)) {
+    const c = p.clips[id];
+    if (!c) continue;
+    left[id] = timingOf(c);
+    stand[id] = c.start;
+  }
   const ripple = g.ripple && { from: g.ripple.from, left: placedIn(p, !!g.ripple.from.markers) };
-  return { ...g, left, ripple };
+  const starts = g.starts && { from: g.starts.from, left: stand };
+  return { ...g, left, ripple, last: step === undefined ? null : asRetime(step), starts };
 }
 
 /** Play the given clips backwards or forwards. Nothing but the direction changes. */

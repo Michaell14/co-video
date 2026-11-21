@@ -4,6 +4,7 @@ import {
   applyEdits,
   ASSET_DEFAULTS,
   clipEnd,
+  CommentMover,
   emptyProject,
   freezeFrame,
   GESTURE_REST_MS,
@@ -32,11 +33,13 @@ import { asRipple, commitEdits, withMarkers } from '../src/state/follow';
 import {
   durationEdits,
   makeRoomEdits,
+  shapeChange,
   speedEach,
   speedEdits,
   speedGesture,
   speedRippleEdits,
   speedStepped,
+  type Retime,
   type SpeedGesture,
   type SpeedGestureOptions,
 } from '../src/state/timing';
@@ -556,4 +559,178 @@ describe('a speed gesture under ripple editing', () => {
     expect(markers(s)).toEqual([240]);
     expect(notes(s)).toEqual([['on the third shot', 250]]);
   });
+});
+
+/** One level speed over the four seconds a shot plays: a ramp whose length is that of the speed. */
+const level = (id: string, v: number): Retime => ({
+  ramps: {
+    [id]: [
+      { m: 0, v },
+      { m: 4, v },
+    ],
+  },
+});
+
+/**
+ * A ramp gesture the way a graph of points drives it: every step commits into the gesture's undo
+ * step. With `told`, the gesture is told what each step asked for.
+ */
+function ramper(s: Seat, ids: string[], options: SpeedGestureOptions, told = true) {
+  let gesture: SpeedGesture | null = null;
+  return (step: Retime): void => {
+    const g = speedGesture(gesture, s.store.get(), ids, { ...options, ramp: true });
+    if (g !== gesture) s.store.beginGesture();
+    const edits = speedEdits(g, s.store.get(), step);
+    if (edits.length) commitEdits(s, edits, { merge: true });
+    gesture = told ? speedStepped(g, s.store.get(), step) : speedStepped(g, s.store.get());
+  };
+}
+
+describe('a ramp gesture under ripple editing', () => {
+  beforeEach(() => void vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const rest = (): void => void vi.advanceTimersByTime(GESTURE_REST_MS);
+
+  it('takes the comments to where each step leaves the shots, and back when it ends where it began', () => {
+    const s = seat();
+    const c = cut();
+    s.store.replaceAll(applyEdits(c.p, [marker('third', 240)]));
+    note(s, 30, 'on the first shot');
+    note(s, 250, 'on the third shot');
+    const steps = s.store.undoManager.undoStack.length;
+    const to = ramper(s, [c.fractal.id], { ripple: true, markers: true });
+    const bullet = shapeChange(c.p, [[c.fractal.id]], 'bullet');
+    for (const [step, third] of [
+      [level(c.fractal.id, 2), 180],
+      [bullet!, 147],
+      [level(c.fractal.id, 0.5), 360],
+      [{ ramps: { [c.fractal.id]: null } }, 240],
+      [level(c.fractal.id, 2), 180],
+    ] as const) {
+      to(step);
+      rest();
+      expect(s.store.get().clips[c.aurora.id].start).toBe(third);
+      expect(markers(s)).toEqual([third]);
+      expect(notes(s)).toEqual([
+        ['on the first shot', 30],
+        ['on the third shot', third + 10],
+      ]);
+    }
+    // The whole drag is one step, comments included.
+    expect(s.store.undoManager.undoStack.length).toBe(steps + 1);
+    s.store.undo();
+    expect(s.store.get().clips[c.fractal.id]).toEqual(c.fractal);
+    expect(s.store.get().clips[c.aurora.id].start).toBe(240);
+    expect(notes(s).map(([, frame]) => frame)).toEqual([30, 250]);
+    s.store.redo();
+    expect(notes(s).map(([, frame]) => frame)).toEqual([30, 190]);
+  });
+
+  it('writes the comments with the first step of a drag and once it rests, however many steps it takes', () => {
+    const s = seat();
+    const c = cut();
+    s.store.replaceAll(c.p);
+    note(s, 250, 'on the third shot');
+    let written = 0;
+    s.review.doc.on('update', () => written++);
+    const to = ramper(s, [c.fractal.id], { ripple: true, markers: true });
+    for (let percent = 101; percent <= 200; percent++) to(level(c.fractal.id, percent / 100));
+    expect(s.store.get().clips[c.aurora.id].start).toBe(180);
+    expect([written, notes(s)[0][1]]).toEqual([1, 249]);
+    rest();
+    expect([written, notes(s)[0][1]]).toEqual([2, 190]);
+    to(level(c.fractal.id, 4));
+    s.store.undo();
+    expect(notes(s)).toEqual([['on the third shot', 250]]);
+    rest();
+    expect(notes(s)).toEqual([['on the third shot', 250]]);
+  });
+
+  it('names each step by the very change the step before it asked for', () => {
+    const s = seat();
+    const c = cut();
+    s.store.replaceAll(c.p);
+    note(s, 250, 'on the third shot');
+    const commit = vi.spyOn(CommentMover.prototype, 'commit');
+    const to = ramper(s, [c.fractal.id], { ripple: true, markers: true });
+    const asked = [level(c.fractal.id, 2), level(c.fractal.id, 2), shapeChange(c.p, [[c.fractal.id]], 'hero')!];
+    for (const step of asked) to(step);
+    const gestures = commit.mock.calls.map(([, opts]) => opts.gesture);
+    expect(gestures).toHaveLength(3);
+    // One gesture through all three, and each step knows the one before it as it was given: two
+    // steps that ask for equal ramps are still two steps.
+    expect(new Set(gestures.map((g) => g?.of)).size).toBe(1);
+    expect(gestures[1]?.last).toBe(asked[0]);
+    expect(gestures[2]?.last).toBe(asked[1]);
+    expect(gestures[2]?.last).not.toBe(asked[0]);
+    // Before its first step a gesture has made no change: what it names leaves the clips as found.
+    expect(gestures[0]?.last).toEqual({ ramps: { [c.fractal.id]: null } });
+    // Asked where a step takes what stood at a frame as an earlier one left it: at 200% the third
+    // shot began at 180, and under Hero it begins at 241.
+    expect(gestures[2]?.since(asked[1], 190)).toBe(251);
+    expect(gestures[2]?.since(asked[1], 30)).toBe(30);
+  });
+
+  for (const told of [true, false]) {
+    it(`takes a comment the other person makes or moves meanwhile on from the shot they put it on${told ? '' : ', also when it is not told its steps'}`, () => {
+      const owner = seat();
+      const guest = seat();
+      const c = cut();
+      owner.store.replaceAll(c.p);
+      connect(owner.store.doc, guest.store.doc);
+      connect(owner.review.doc, guest.review.doc);
+      note(guest, 60, 'on the first shot');
+      note(guest, 250, 'on the third shot');
+      const steps = owner.store.undoManager.undoStack.length;
+      const drag = ramper(owner, [c.fractal.id], { ripple: true, markers: true }, told);
+      const to = (v: number): void => drag(level(c.fractal.id, v));
+      const id = (text: string): string => guest.review.get().find((n) => n.text === text)!.id;
+      const both = (expected: Record<string, number>): void => {
+        for (const s of [owner, guest]) expect(Object.fromEntries(notes(s))).toEqual(expected);
+      };
+
+      to(0.5);
+      rest();
+      // Slower still, and before the drag has rested: the second shot runs from 120 to 320 and the
+      // third begins at 320. The guest pins notes on the picture as it is now.
+      to(0.6);
+      expect(owner.store.get().clips[c.aurora.id].start).toBe(320);
+      note(guest, 330, 'new on the third');
+      note(guest, 150, 'new on the second');
+      note(guest, 300, 'new late in the second');
+      guest.review.move(new Map([[id('on the first shot'), 340]]));
+      guest.review.remove(id('on the third shot'));
+
+      for (const [v, second, third, late] of [
+        [0.4, 420, 420, 300],
+        [0.8, 270, 270, 270],
+        [0.5, 360, 360, 300],
+      ]) {
+        to(v);
+        rest();
+        expect(clipEnd(owner.store.get().clips[c.fractal.id])).toBe(second);
+        expect(guest.store.get().clips[c.aurora.id].start).toBe(third);
+        both({
+          'new on the second': 150,
+          'new late in the second': late,
+          'new on the third': third + 10,
+          'on the first shot': third + 20,
+        });
+      }
+
+      expect(owner.store.undoManager.undoStack.length).toBe(steps + 1);
+      owner.store.undo();
+      expect(layout(guest.store.get(), c.v1)).toEqual(['0-120', '120-240', '240-360']);
+      both({
+        'new on the second': 150,
+        'new late in the second': 300,
+        'new on the third': 330,
+        'on the first shot': 340,
+      });
+    });
+  }
 });

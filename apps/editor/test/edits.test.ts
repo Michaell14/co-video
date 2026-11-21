@@ -9,6 +9,10 @@ import {
   makeEffect,
   makeTrack,
   makeTransition,
+  setRamp,
+  shapeRamp,
+  sourceSpan,
+  sourceTimeAt,
   type Clip,
   type Edit,
   type Project,
@@ -1208,5 +1212,92 @@ describe('markers under a ripple', () => {
     expect(markerFrames(moved)).toEqual({ a: 0 });
     expect(markerEdits(p, [], [{ from: 5, by: -50 }])).toEqual([]);
     expect(markerEdits(p, [], [])).toEqual([]);
+  });
+});
+
+describe('a clip on a speed ramp', () => {
+  /** A sync clip from two seconds into a ten-second file, on Bullet, and a shot after it. */
+  function ramped(reverse = false) {
+    const f = fixture();
+    const p = applyEdits(f.p, [{ op: 'updateAsset', id: 'asset1', patch: { duration: 10 } }]);
+    const v = add(p, f.v1, 100, 120, { sourceIn: 2, linkId: 'L', reverse });
+    const a = add(v.p, f.a1, 100, 120, { sourceIn: 2, linkId: 'L', reverse });
+    const next = add(a.p, f.v1, 220, 60);
+    const ramp = shapeRamp('bullet', 2, 6, reverse);
+    const on = applyEdits(next.p, setRamp(next.p, [v.clip.id], { ramps: { [v.clip.id]: ramp } }));
+    return { ...f, p: on, picture: on.clips[v.clip.id], sound: on.clips[a.clip.id] };
+  }
+
+  it('is matched to the place in its file that each frame shows, forwards and backwards', () => {
+    for (const reverse of [false, true]) {
+      const r = ramped(reverse);
+      expect(r.picture).toMatchObject({ start: 100, duration: 27, reverse });
+      const times = [100, 105, 113, 120, 126].map((frame) => matchFrameAt(r.p, frame)!.time);
+      expect(times).toEqual([0, 5, 13, 20, 26].map((local) => sourceTimeAt(r.picture, local, r.p)));
+      // Five times as fast at either end: five frames of the timeline are 25 of the file. Backwards
+      // the first frame shows the last 5 frames of what the clip covers, and it runs down from there.
+      const top = sourceSpan(r.picture, r.p).out;
+      expect(top).toBeGreaterThan(5.9);
+      expect(times[0]).toBeCloseTo(reverse ? top - 5 / 30 : 2, 9);
+      expect(times[1] - times[0]).toBeCloseTo(((reverse ? -1 : 1) * 25) / 30, 9);
+      // A quarter of the speed in the middle, where the timeline spends most of its frames.
+      expect(Math.abs(times[2] - 4)).toBeLessThan(0.1);
+      expect(matchFrameAt(r.p, 113, [r.sound.id])).toEqual({ clip: r.sound, time: times[2] });
+    }
+  });
+
+  it('is duplicated as it is: the copies are the clips but for where they stand and what they are linked to', () => {
+    const r = ramped();
+    const made = duplicateClips(r.p, [r.picture.id, r.sound.id]);
+    const p = applyEdits(r.p, made.edits);
+    const [picture, sound] = made.created.map((id) => p.clips[id]);
+    expect(picture).toEqual({ ...r.picture, id: picture.id, start: 127, linkId: picture.linkId });
+    expect(sound).toEqual({ ...r.sound, id: sound.id, start: 127, linkId: sound.linkId });
+    expect(picture.ramp).toBe(r.picture.ramp);
+    for (let u = 0; u < 27; u++) expect(sourceTimeAt(picture, u, p)).toBe(sourceTimeAt(r.picture, u, r.p));
+    // As long as the ramp makes them, not as long as their media: they fit before the next shot.
+    expect(layout(p, r.v1)).toEqual(['100-127', '127-154', '220-280']);
+  });
+
+  it('takes pasted attributes without its ramp, its pitch or its length changing', () => {
+    const r = ramped();
+    const from = makeClip('video', r.v1.id, { scaleX: 1.3, grade: { ...DEFAULT_GRADE, exposure: 0.5 }, speed: 2 });
+    const fromSound = makeClip('audio', r.a1.id, { volume: -6, fadeIn: 6, keepPitch: false, speed: 2 });
+    const copied = copiedAttributes([from, fromSound], 30)!;
+    expect(JSON.stringify(copied)).not.toMatch(/ramp|keepPitch|speed|duration|sourceIn/);
+    expect(r.sound.keepPitch).toBe(true);
+    for (const target of [r.picture, r.sound]) {
+      const patch = attributePatch(r.p, target, copied, 'all')!;
+      const pasted = applyEdits(r.p, [{ op: 'updateClip', id: target.id, patch }]).clips[target.id];
+      const kept = ({ ramp, keepPitch, speed, duration, sourceIn, start }: Clip) => ({
+        ramp,
+        keepPitch,
+        speed,
+        duration,
+        sourceIn,
+        start,
+      });
+      expect(kept(pasted)).toEqual(kept(target));
+      expect(pasted.ramp).toBe(target.ramp);
+    }
+    // A clip on a ramp gives its look and its level like any other.
+    expect(copiedAttributes([r.picture, r.sound], 30)).toMatchObject({ look: { transform: { scaleX: 1 } } });
+  });
+
+  it('is pasted at another frame rate with its ramp as it is, and shows the same media at the same time', () => {
+    const r = ramped();
+    const at60 = applyEdits(r.p, [{ op: 'settings', patch: { fpsNum: 60, fpsDen: 1 } }]);
+    const { clips } = pasteable(at60, [r.picture, r.sound], 30);
+    expect(clips.map((c) => [c.start, c.duration])).toEqual([
+      [200, 54],
+      [200, 54],
+    ]);
+    for (const [i, was] of [r.picture, r.sound].entries()) {
+      expect(clips[i].ramp).toBe(was.ramp);
+      expect(clips[i]).toMatchObject({ sourceIn: was.sourceIn, keepPitch: was.keepPitch });
+      for (let u = 0; u < 27; u++) {
+        expect(sourceTimeAt(clips[i], 2 * u, at60)).toBeCloseTo(sourceTimeAt(was, u, r.p), 9);
+      }
+    }
   });
 });

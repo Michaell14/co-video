@@ -15,7 +15,9 @@ import {
   dbToGain,
   framesToSeconds,
   gainBreakpoints,
+  rampKey,
   sourcePerFrame,
+  timeMap,
   tracksOf,
   type Clip,
   type Project,
@@ -24,6 +26,7 @@ import {
 import { describeCause } from '../media/cause';
 import type { MediaFault, MediaLibrary } from '../media/library';
 import { FULL_KERNEL_STEP, Resampler, resampleReach, type Resampled } from './resample';
+import { Retimed, type Sounding } from './retimed';
 import { Sound, type SoundTrouble } from './sound';
 
 /** How long a voice waits before asking again for media that is not available yet. */
@@ -57,9 +60,10 @@ export interface AudioProblem {
 
 /**
  * `rate` is the sample rate the file declares for its sound. Decoded buffers carry their own, and
- * once one has been seen `sound.rate` is the rate to go by.
+ * once one has been seen `sound.rate` is the rate to go by. `sound` is the file's own, or for a
+ * retimed voice the stream made from it (see `Voice.as`).
  */
-type OpenAudio = { sound: Sound; start: number; rate: number };
+type OpenAudio = { sound: Sounding; start: number; rate: number };
 
 /** Told of each stretch of a clip's sound that could not be decoded. */
 type Report = (trouble: SoundTrouble) => void;
@@ -139,7 +143,7 @@ class Run {
    * plays forwards is not started for every chunk that follows: that is heard of once.
    */
   async *read(
-    sound: Sound,
+    sound: Pick<Sound, 'buffers'>,
     from: number,
     to: number,
     again: number,
@@ -315,6 +319,13 @@ export interface Session {
 
 interface Voice {
   clip: Clip;
+  /**
+   * For a retimed voice, what its buffers are scheduled by in place of `clip`: a clip at normal
+   * speed over the stream, the file's sound on the clock of `clip` (see `Retimed`). A clip on a
+   * speed ramp is retimed, and so is one that keeps its pitch at another speed. Null for every
+   * other voice, and until the voice's file is open.
+   */
+  as: Clip | null;
   gain: GainNode;
   pan: StereoPannerNode;
   sources: Set<AudioBufferSourceNode>;
@@ -333,7 +344,7 @@ interface Voice {
 
 /** Fields whose change requires re-scheduling a clip's buffers. */
 const structuralKey = (c: Clip): string =>
-  `${c.trackId}|${c.assetId}|${c.start}|${c.duration}|${c.sourceIn}|${c.speed}|${c.reverse}|${c.enabled}|${c.audioMuted}`;
+  `${c.trackId}|${c.assetId}|${c.start}|${c.duration}|${c.sourceIn}|${c.speed}|${c.reverse}|${c.enabled}|${c.audioMuted}|${c.keepPitch === true}|${rampKey(c.ramp)}`;
 
 export class AudioGraph {
   readonly master: GainNode;
@@ -567,6 +578,7 @@ export class AudioGraph {
     pan.connect(this.trackNodes(track).input);
     return {
       clip,
+      as: null,
       gain,
       pan,
       sources: new Set(),
@@ -662,7 +674,7 @@ export class AudioGraph {
   private convert(v: Voice, wb: WrappedAudioBuffer, srcOffset: number): number {
     const project = this.project!;
     const s = this.session!;
-    const clip = v.clip;
+    const clip = v.as ?? v.clip;
     const buffer = wb.buffer;
     const per = sourcePerFrame(clip, project) * this.fps;
     const clipStartSec = framesToSeconds(clip.start, project.settings);
@@ -720,7 +732,7 @@ export class AudioGraph {
   /** Schedule one decoded buffer of a voice. Returns the context time at which it ends. */
   private scheduleBuffer(v: Voice, wb: WrappedAudioBuffer, srcOffset: number): number {
     const project = this.project!;
-    const clip = v.clip;
+    const clip = v.as ?? v.clip;
     const s = this.session!;
     const per = sourcePerFrame(clip, project) * this.fps; // source seconds per timeline second
     const exact = this.passes(wb.buffer.sampleRate, per * s.rate);
@@ -820,16 +832,30 @@ export class AudioGraph {
     this.yieldedAt = performance.now();
   }
 
+  /**
+   * Between two buffers decoded for the stream of a preview's retimed voice: let the page have a
+   * turn once the voices have kept it for a while, as `pace` does between two buffers scheduled.
+   * A stream can take seconds of its file before it has a buffer to give, and `pace` is not
+   * reached until it has. A voice that was stopped meanwhile reads no further: its read ends
+   * here, by an error that `feed` takes for the end of a stopped voice.
+   */
+  private async turn(v: Voice): Promise<void> {
+    if (v.cancelled) throw new Error('the voice was stopped');
+    if (performance.now() - this.yieldedAt < SLICE_MS) return;
+    await new Promise((r) => setTimeout(r, 0));
+    this.yieldedAt = performance.now();
+  }
+
   /** Keep a voice's buffers scheduled up to `horizon` (context time). */
   private async feed(v: Voice, horizon: () => number): Promise<void> {
     if (v.feeding || v.done || v.cancelled || performance.now() < v.retryAt) return;
     v.feeding = true;
-    const clip = v.clip;
+    let clip = v.clip;
     const project = this.project!;
     const session = this.session!;
     const assetId = clip.assetId;
     try {
-      const opened = assetId ? await this.sinkFor(assetId) : null;
+      let opened = assetId ? await this.sinkFor(assetId) : null;
       if (v.cancelled) return;
       if (opened === 'missing' && this.realtime) {
         // Keep the voice and let a later pump ask again: its file may arrive while this plays.
@@ -840,6 +866,36 @@ export class AudioGraph {
         if (opened && assetId) this.onProblem?.({ clipId: clip.id, assetId, reason: opened });
         v.done = true;
         return;
+      }
+      // A clip on a speed ramp, and one that keeps its pitch at another speed, is retimed: it
+      // plays as a clip at normal speed over the stream, its file's sound on the clip's own clock.
+      // From here on `clip` and `opened` are that clip and that stream, and all that follows,
+      // which is written for a file read at one speed, reads the stream at speed 1. Pitch is kept
+      // from a tenth of the speed to ten times, which is what the stretcher is made for: beyond
+      // that it follows the speed. Every other voice is left as it is.
+      const own = sourcePerFrame(clip, project) * this.fps;
+      const keeps =
+        clip.keepPitch === true && Math.abs(own - 1) >= 1e-9 && own > 0.1 - 1e-9 && own < 10 + 1e-9;
+      if (!clip.freeze && (clip.ramp || keeps)) {
+        const map = timeMap(clip);
+        const sourceIn = map.stream(clip.sourceIn);
+        // An in point that the clip's clock reaches at no time is no place in any file: such a
+        // clip has nothing to play. No reader of projects lets one through.
+        if (!Number.isFinite(sourceIn)) {
+          v.done = true;
+          return;
+        }
+        v.as = clip = { ...clip, speed: 1, ramp: null, keepPitch: null, sourceIn };
+        const turn = this.realtime ? () => this.turn(v) : undefined;
+        const sound = new Retimed(
+          opened.sound,
+          opened.start,
+          map,
+          v.clip.keepPitch === true,
+          streamBuffer,
+          turn,
+        );
+        opened = { ...opened, sound, start: 0 };
       }
       const per = sourcePerFrame(clip, project) * this.fps;
       const clipStartSec = framesToSeconds(clip.start, project.settings);
@@ -1061,6 +1117,17 @@ export class AudioGraph {
 }
 
 const audibleKey = (p: Project): string => Array.from(audibleTracks(p)).sort().join(',');
+
+/** One buffer of a retimed voice's stream as the mixer plays it; `channels` are the buffer's own. */
+function streamBuffer(channels: Float32Array<ArrayBuffer>[], rate: number): AudioBuffer {
+  const buffer = new AudioBuffer({
+    numberOfChannels: channels.length,
+    length: channels[0].length,
+    sampleRate: rate,
+  });
+  channels.forEach((samples, c) => buffer.copyToChannel(samples, c));
+  return buffer;
+}
 
 const reverseCache = new WeakMap<AudioBuffer, AudioBuffer>();
 

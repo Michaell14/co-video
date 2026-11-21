@@ -4,9 +4,10 @@
  * An EDL is the lowest common denominator for moving a cut between editors: Resolve, Premiere,
  * Avid and most conform tools read it. It describes one video track and up to four audio tracks as
  * a list of events (source in / out, record in / out). Effects, titles and grades do not survive;
- * transitions are noted in comments and exported as cuts.
+ * transitions are noted in comments and exported as cuts. An event has one speed, so a clip on a
+ * speed ramp is listed at its average speed, with a comment that says what the ramp runs between.
  */
-import { clipEnd, clipsOnTrack, sourcePerFrame, tracksOf } from './query';
+import { clipEnd, clipsOnTrack, meanSpeed, sourcePerFrame, sourceSpan, speedRange, tracksOf } from './query';
 import { formatTimecode, isDropFrame, secondsToFrame } from './time';
 import type { Clip, ID, Project } from './types';
 
@@ -60,11 +61,19 @@ export function toEdl(p: Project, opts: EdlOptions = {}): string {
     const asset = p.assets[clip.assetId!];
     const name = asset?.name ?? 'Missing media';
     const still = clip.type === 'image' || clip.freeze;
+    const ramped = !still && clip.ramp !== null;
     // Source timecode: files are taken to start at zero (embedded timecode is not read).
-    const srcIn = secondsToFrame(clip.sourceIn, s);
-    const srcFrames = still
+    let srcIn = secondsToFrame(clip.sourceIn, s);
+    let srcFrames = still
       ? 1
       : Math.max(1, Math.round((clip.duration * sourcePerFrame(clip, p) * s.fpsNum) / s.fpsDen));
+    if (ramped) {
+      // The stretch of media the clip covers along its ramp, from the start of its file at the earliest.
+      const span = sourceSpan(clip, p);
+      const from = Math.max(0, span.in);
+      srcIn = secondsToFrame(from, s);
+      srcFrames = Math.max(1, Math.round(((span.out - from) * s.fpsNum) / s.fpsDen));
+    }
     const [a, b] = clip.reverse && !still ? [srcIn + srcFrames, srcIn] : [srcIn, srcIn + srcFrames];
     const num = String(i + 1).padStart(3, '0');
     const reel = reelName(name).padEnd(8, ' ');
@@ -73,7 +82,16 @@ export function toEdl(p: Project, opts: EdlOptions = {}): string {
     );
     // A motion-effect line carries the playback rate in frames per second (negative = reverse).
     if (still) lines.push(`M2   ${reel}       000.0                ${tc(srcIn)}`);
-    else if (clip.speed !== 1 || clip.reverse) {
+    else if (ramped) {
+      // One rate for the whole event: the media it covers over the time it takes.
+      const rate = fps * meanSpeed(clip, p) * (clip.reverse ? -1 : 1);
+      const { lo, hi } = speedRange(clip, p);
+      const percent = (speed: number): string => `${Math.round(speed * 100)}%`;
+      lines.push(
+        `M2   ${reel}       ${(rate < 0 ? '-' : '') + Math.abs(rate).toFixed(1).padStart(5, '0')}                ${tc(clip.reverse ? srcIn + srcFrames : srcIn)}`,
+        `* SPEED RAMP: ${percent(lo)} TO ${percent(hi)} (EXPORTED AT ITS AVERAGE SPEED)`,
+      );
+    } else if (clip.speed !== 1 || clip.reverse) {
       const rate = fps * clip.speed * (clip.reverse ? -1 : 1);
       lines.push(
         `M2   ${reel}       ${(rate < 0 ? '-' : '') + Math.abs(rate).toFixed(1).padStart(5, '0')}                ${tc(clip.reverse ? srcIn + srcFrames : srcIn)}`,

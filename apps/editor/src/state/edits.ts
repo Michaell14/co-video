@@ -17,11 +17,13 @@ import {
   handles,
   isRegionFree,
   linkedIds,
+  mediaToStream,
   neighbors,
   newId,
   openGap,
   pasteClips,
   placeClips,
+  rampTable,
   rippleCloseGap,
   rippleDelete,
   rippleTrim,
@@ -29,6 +31,7 @@ import {
   rollEdit,
   sameRate,
   setTransition,
+  shiftRamp,
   sourcePerFrame,
   sourceTimeAt,
   trackLabel,
@@ -881,10 +884,26 @@ function swapped(
   // A name the clip took from its media follows the media; one it was given by hand stays.
   if (!before || clip.name === before.name) patch.name = asset.name;
   const per = sourcePerFrame(clip, p);
-  const room =
+  let room =
     clip.type === 'image' || per <= 0 || asset.duration <= 0
       ? Infinity
       : Math.floor((asset.duration - from) / per + 1e-6);
+  if (clip.ramp && clip.type !== 'image' && !clip.freeze) {
+    // The ramp goes with the clip to its new place in the new file, so that the clip plays the
+    // same shape there. A ramp stands on whole microseconds, and the in point moves by as much as
+    // the ramp does: one that moved by a fraction more or less would begin at another place on
+    // the curve, and a sound cut against its picture would no longer be in step with it.
+    const micros = Math.round((from - clip.sourceIn) * 1e6);
+    const shift = (clip.sourceIn + micros / 1e6 < 0 ? micros + 1 : micros) / 1e6;
+    const ramp = shiftRamp(clip.ramp, shift);
+    const to = Math.max(0, clip.sourceIn + shift);
+    patch.sourceIn = to;
+    if (ramp !== clip.ramp) patch.ramp = ramp;
+    const table = rampTable(ramp);
+    const { fpsNum, fpsDen } = p.settings;
+    const left = mediaToStream(table, asset.duration) - mediaToStream(table, to);
+    room = asset.duration <= 0 ? Infinity : Math.floor((left * fpsNum) / fpsDen + 1e-6);
+  }
   const duration = Math.max(1, Math.min(clip.duration, room));
   if (duration === clip.duration) return { patch, shortened: false };
   patch.duration = duration;
@@ -898,9 +917,10 @@ function swapped(
 /**
  * Put another file behind a clip, where it stands: the clip keeps its place, its length, its speed,
  * its grade, effects, transform, keyframes and transitions, and shows `asset` from `sourceIn`
- * seconds on. Where the new media is shorter than the clip, the clip ends where the media does.
- * The sound that belongs to a picture (its linked audio from the same file) is replaced with it,
- * keeping the offset it had, and removed when the new file has no sound.
+ * seconds on. A clip on a speed ramp keeps the ramp, moved to where the clip now begins in its
+ * file, to the microsecond. Where the new media is shorter than the clip, the clip ends where the
+ * media does. The sound that belongs to a picture (its linked audio from the same file) is
+ * replaced with it, keeping the offset it had, and removed when the new file has no sound.
  */
 export function replaceEdits(p: Project, clipId: ID, asset: Asset, sourceIn = 0): Replaced {
   const clip = p.clips[clipId];

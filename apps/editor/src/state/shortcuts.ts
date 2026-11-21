@@ -1,5 +1,5 @@
 /** The command catalogue: one list drives keyboard shortcuts, the palette and the cheat sheet. */
-import { secondsToFrame } from '@tandem/core';
+import { RAMP_SHAPE_NAMES, secondsToFrame, type RampShape } from '@tandem/core';
 import { currentSession } from '../session/hooks';
 import { toast } from '../ui/core';
 import { layerOpen } from '../ui/layers';
@@ -43,6 +43,17 @@ function typeIntoTitle(): void {
   if (clip?.type === 'text') cmd.editText(clip.id);
   else toast('Select one title to type into it.', 'info');
 }
+
+/** The ready-made speed ramps, by the id each has in the catalogue. */
+const RAMP_COMMANDS: [id: string, shape: RampShape][] = [
+  ['ramp-up', 'rampUp'],
+  ['ramp-down', 'rampDown'],
+  ['ramp-montage', 'montage'],
+  ['ramp-hero', 'hero'],
+  ['ramp-bullet', 'bullet'],
+  ['ramp-flash-in', 'flashIn'],
+  ['ramp-flash-out', 'flashOut'],
+];
 
 export const COMMANDS: Command[] = [
   // Playback
@@ -269,6 +280,23 @@ export const COMMANDS: Command[] = [
   // `TitleEditor`). In this list Enter would be taken from every button that kept the focus of a
   // click, since `handleKey` does not ask what control a key was pressed on.
   { id: 'edit-text', title: 'Type into the selected title', group: 'Edit', run: typeIntoTitle },
+  // Without keys: they are found by name in the palette, and on the clip in the inspector.
+  { id: 'ramp-none', title: 'Speed ramp: None', group: 'Edit', run: () => cmd.setRamp('none') },
+  ...RAMP_COMMANDS.map(
+    ([id, shape]): Command => ({
+      id,
+      title: `Speed ramp: ${RAMP_SHAPE_NAMES[shape]}`,
+      group: 'Edit',
+      run: () => cmd.setRamp(shape),
+    }),
+  ),
+  {
+    id: 'ramp-add-point',
+    title: 'Add ramp point at playhead',
+    group: 'Edit',
+    run: () => void cmd.addRampPoint(),
+  },
+  { id: 'keep-pitch', title: 'Keep pitch: on or off', group: 'Edit', run: () => cmd.setKeepPitch() },
 
   // Timeline
   {

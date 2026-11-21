@@ -9,6 +9,8 @@ export * from './media/proxy';
 export * from './media/sources';
 export * from './media/cause';
 export * from './audio/graph';
+export { Retimed } from './audio/retimed';
+export { Stretcher } from './audio/stretch';
 export * from './audio/sound';
 export * from './audio/recorder';
 export * from './player';

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { WrappedAudioBuffer } from 'mediabunny';
-import { makeClip } from '@tandem/core';
+import { makeClip, timeMap } from '@tandem/core';
 import { AudioRuns } from '../src/audio/graph';
+import { Retimed } from '../src/audio/retimed';
 import type { Sound, SoundTrouble } from '../src/audio/sound';
 
 const RATE = 44100;
@@ -69,6 +70,70 @@ async function collect(buffers: AsyncGenerator<WrappedAudioBuffer, void, unknown
 
 const seconds = (samples: number) => samples / RATE;
 const clip = makeClip('audio', 'a1', { assetId: 'sound' });
+
+/** A buffer that holds its samples: what a stream reads of a decoded buffer, and what it hands on. */
+function holding(channels: Float32Array[], rate: number): AudioBuffer {
+  return {
+    length: channels[0].length,
+    sampleRate: rate,
+    numberOfChannels: channels.length,
+    duration: channels[0].length / rate,
+    getChannelData: (c: number) => channels[c],
+  } as unknown as AudioBuffer;
+}
+
+/** A file of `count` decoded buffers with sound in them: noise on a tone, every sample its own. */
+function recorded(count: number): WrappedAudioBuffer[] {
+  let seed = 9;
+  const samples = Float32Array.from({ length: count * BLOCK }, (_, i) => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return 0.3 * Math.sin((2 * Math.PI * 220 * i) / RATE) + 0.2 * ((seed % 20001) / 20000 - 0.5);
+  });
+  return decoded(0, count).map((wb, i) => ({
+    ...wb,
+    buffer: holding([samples.subarray(i * BLOCK, (i + 1) * BLOCK)], RATE),
+  }));
+}
+
+/**
+ * The stream of a clip over the file `all`, as the mixer makes one for a retimed voice: on a ramp
+ * with pitch following speed, and at one speed with pitch kept.
+ */
+function streamOver(all: WrappedAudioBuffer[], keepPitch: boolean) {
+  const { sink, stats } = sinkOver(all);
+  const retimed = makeClip(
+    'audio',
+    'a1',
+    keepPitch
+      ? { assetId: 'sound', speed: 1.5, keepPitch }
+      : {
+          assetId: 'sound',
+          ramp: [
+            { m: 1, v: 0.5 },
+            { m: 4, v: 2 },
+            { m: 7, v: 1 },
+          ],
+        },
+  );
+  const file = { rate: RATE, buffers: sink.buffers.bind(sink) };
+  // What is asked of the stream itself, in seconds of the stream.
+  const reads: [number, number][] = [];
+  const stream = new Retimed(file, 0, timeMap(retimed), keepPitch, holding);
+  const sound = {
+    buffers(from: number, to: number, report: (trouble: SoundTrouble) => void) {
+      reads.push([from, to]);
+      return stream.buffers(from, to, report);
+    },
+  };
+  return { sound, stream, stats, reads };
+}
+
+/** Where each buffer lies and every sample in it. */
+async function heard(buffers: AsyncGenerator<WrappedAudioBuffer, void, unknown>) {
+  const all: { at: number; samples: Float32Array }[] = [];
+  for await (const wb of buffers) all.push({ at: wb.timestamp, samples: wb.buffer.getChannelData(0) });
+  return all;
+}
 
 describe('AudioRuns', () => {
   it('reads that follow one another come out of one decode, which ends with the clip', async () => {
@@ -302,5 +367,66 @@ describe('AudioRuns', () => {
         [292, 296.5],
       ]),
     ).toEqual(['stretch']);
+  });
+
+  it('reads the stream of a retimed clip in one decode of its file, and the same samples wherever a read begins', async () => {
+    const all = recorded(520);
+    for (const keepPitch of [false, true]) {
+      const { sound, stats } = streamOver(all, keepPitch);
+      const runs = new AudioRuns();
+      // Seconds of the stream, of which the render plays those from 0.3 to 7.5.
+      const [low, high] = [0.3, 7.5];
+      const read = (from: number, to: number, again: number) =>
+        heard(runs.of(clip).read(sound, from, to, again, low, high, false, unheard));
+      const direct = (from: number, to: number) => heard(streamOver(all, keepPitch).stream.buffers(from, to));
+
+      // Each read begins a little before the one before it ended, as the chunks of an export do.
+      const first = await read(0.3, 3, 2.4);
+      expect(first).toEqual(await direct(0.3, 3));
+      expect(first.length).toBeGreaterThan(25);
+      const second = await read(2.5, 6, 5.4);
+      expect(second).toEqual(await direct(2.5, 6));
+      expect(stats.decodes).toHaveLength(1);
+      expect(stats.open).toBe(1);
+      // The buffers the two reads share are the very ones the first was given.
+      const shared = second.filter(({ at }) => at < 3);
+      expect(shared.length).toBeGreaterThan(3);
+      for (const { at, samples } of shared) expect(first.find((b) => b.at === at)?.samples).toBe(samples);
+      const third = await read(5.5, 7.5, 7.5);
+      expect(third).toEqual(await direct(5.5, 7.5));
+      expect(stats.decodes).toHaveLength(1);
+      expect(stats.open).toBe(0);
+
+      // From the middle, by a render that begins there: other buffers of the file, the same stream.
+      const fresh = streamOver(all, keepPitch);
+      const middle = await heard(
+        new AudioRuns().of(clip).read(fresh.sound, 4.1, 5.2, 5.2, 4.1, 5.2, false, unheard),
+      );
+      expect(fresh.stats.decodes).toHaveLength(1);
+      expect(fresh.stats.decodes[0][0]).toBeGreaterThan(stats.decodes[0][0] + 1);
+      expect(middle.length).toBeGreaterThan(10);
+      for (const block of middle) expect(second.find((b) => b.at === block.at)).toEqual(block);
+    }
+  });
+
+  it('reads the stream of a retimed clip that plays backwards once, and hands it out from the end', async () => {
+    const all = recorded(520);
+    for (const keepPitch of [false, true]) {
+      const { sound, stats, reads } = streamOver(all, keepPitch);
+      const runs = new AudioRuns();
+      const [low, high] = [1, 7.5];
+      const read = (from: number, to: number) =>
+        heard(runs.of(clip).read(sound, from, to, 0, low, high, true, unheard));
+      const direct = (from: number, to: number) => heard(streamOver(all, keepPitch).stream.buffers(from, to));
+      // Descending, each stretch reaching a little into the one before it.
+      expect(await read(5, 7.5)).toEqual(await direct(5, 7.5));
+      expect(await read(2.5, 5.4)).toEqual(await direct(2.5, 5.4));
+      expect(await read(1, 2.9)).toEqual(await direct(1, 2.9));
+      // One read of the stream, from where the render stops playing the clip to the first read's
+      // end, out of one decode of the file.
+      expect(reads).toEqual([[low, 7.5]]);
+      expect(stats.decodes).toHaveLength(1);
+      expect(stats.open).toBe(0);
+    }
   });
 });
