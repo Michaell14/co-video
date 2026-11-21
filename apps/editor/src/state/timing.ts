@@ -114,9 +114,11 @@ export type Retime = { speed: number; reverse?: boolean } | RampChange;
 
 const isRamp = (change: Retime): change is RampChange => 'ramps' in change;
 
-/** A speed given as a bare number is that one speed. */
-const asRetime = (change: number | Retime, reverse?: boolean): Retime =>
-  typeof change === 'number' ? { speed: change, reverse } : change;
+/** A speed given as a bare number is that one speed, and says nothing of the direction unless told. */
+function asRetime(change: number | Retime, reverse?: boolean): Retime {
+  if (typeof change !== 'number') return change;
+  return reverse === undefined ? { speed: change } : { speed: change, reverse };
+}
 
 /** The order the clips of a track are listed in: by where they start, then by id. */
 const byStart = (a: Clip, b: Clip): number => a.start - b.start || (a.id < b.id ? -1 : 1);
