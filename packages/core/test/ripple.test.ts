@@ -684,7 +684,8 @@ describe('ripple invariants', () => {
         if (offsets.length === before[linkId].length) expect(offsets, label).toEqual(before[linkId]);
       }
       const after = outOfStep(q);
-      for (const [linkId, gap] of Object.entries(after)) expect(gap, `${label}, ${linkId}`).toBeLessThan(1e-9);
+      for (const [linkId, gap] of Object.entries(after))
+        expect(gap, `${label}, ${linkId}`).toBeLessThan(1e-9);
       if (r.edits.length) pairs += Object.keys(after).length;
       for (const c of Object.values(q.clips)) {
         expect(c.start, label).toBeGreaterThanOrEqual(0);

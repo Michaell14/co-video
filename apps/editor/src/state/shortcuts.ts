@@ -282,14 +282,12 @@ export const COMMANDS: Command[] = [
   { id: 'edit-text', title: 'Type into the selected title', group: 'Edit', run: typeIntoTitle },
   // Without keys: they are found by name in the palette, and on the clip in the inspector.
   { id: 'ramp-none', title: 'Speed ramp: None', group: 'Edit', run: () => cmd.setRamp('none') },
-  ...RAMP_COMMANDS.map(
-    ([id, shape]): Command => ({
-      id,
-      title: `Speed ramp: ${RAMP_SHAPE_NAMES[shape]}`,
-      group: 'Edit',
-      run: () => cmd.setRamp(shape),
-    }),
-  ),
+  ...RAMP_COMMANDS.map(([id, shape]): Command => ({
+    id,
+    title: `Speed ramp: ${RAMP_SHAPE_NAMES[shape]}`,
+    group: 'Edit',
+    run: () => cmd.setRamp(shape),
+  })),
   {
     id: 'ramp-add-point',
     title: 'Add ramp point at playhead',

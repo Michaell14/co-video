@@ -98,7 +98,10 @@ describe('command catalogue', () => {
     };
     for (const [id, title] of Object.entries(wanted)) {
       const found = COMMANDS.filter((c) => c.id === id);
-      expect(found.map((c) => [c.title, c.group, c.keys]), id).toEqual([[title, 'Edit', undefined]]);
+      expect(
+        found.map((c) => [c.title, c.group, c.keys]),
+        id,
+      ).toEqual([[title, 'Edit', undefined]]);
     }
     // Each asks for what its name says.
     const setRamp = vi.spyOn(cmd, 'setRamp').mockImplementation(() => {});
@@ -106,7 +109,9 @@ describe('command catalogue', () => {
     const setKeepPitch = vi.spyOn(cmd, 'setKeepPitch').mockImplementation(() => {});
     for (const id of Object.keys(wanted)) COMMANDS.find((c) => c.id === id)!.run();
     expect(setRamp.mock.calls).toEqual(
-      ['none', 'rampUp', 'rampDown', 'montage', 'hero', 'bullet', 'flashIn', 'flashOut'].map((shape) => [shape]),
+      ['none', 'rampUp', 'rampDown', 'montage', 'hero', 'bullet', 'flashIn', 'flashOut'].map((shape) => [
+        shape,
+      ]),
     );
     expect(addRampPoint.mock.calls).toEqual([[]]);
     expect(setKeepPitch.mock.calls).toEqual([[]]);

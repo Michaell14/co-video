@@ -446,13 +446,15 @@ test.describe('speed ramps and kept pitch in the engine', () => {
       ];
       const out: Record<string, unknown> = {};
       for (const [name, clip] of Object.entries({
+        // In its file, the clip sounds.
+        sound: { ramp: up, sourceIn: 0.5 },
+        // A second that no file has, at one speed with the pitch following and with it kept,
         slow: { speed: 0.05, keepPitch: true, sourceIn: 1e308 },
         kept: { speed: 2, keepPitch: true, sourceIn: 1e308 },
-        // The clock of this ramp reaches such a second at a time that is still a number,
+        // and on ramps. A ramp that ends at double speed gets there at a time that is still a
+        // number, one that ends at half speed at none; before the file it is the other way round.
         up: { ramp: up, sourceIn: 1e308 },
-        // of this one at none,
         down: { ramp: down, keepPitch: true, sourceIn: 1e308 },
-        // and before the file both do.
         early: { ramp: up, keepPitch: true, sourceIn: -1e308 },
         earlier: { ramp: down, sourceIn: -1e308 },
       })) {
@@ -487,6 +489,10 @@ test.describe('speed ramps and kept pitch in the engine', () => {
       }
       return out;
     });
+    const sound = r.sound as { ended: number[]; problems: string[] };
+    expect(Math.min(...sound.ended)).toBeGreaterThan(0.2);
+    expect(sound.problems).toEqual([]);
+    // Nothing to play is not something gone wrong: no sound, no word of a failure, and an end.
     for (const name of ['slow', 'kept', 'up', 'down', 'early', 'earlier'])
       expect(r[name], name).toEqual({ ended: [0, 0], problems: [] });
     expect(errors).toEqual([]);

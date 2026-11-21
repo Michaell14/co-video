@@ -91,7 +91,10 @@ describe('EDL export', () => {
     const sound = makeClip('audio', f.a1.id, { assetId: 'asset1', start: 30, duration: 300, ...init });
     const q = applyEdits(p, [{ op: 'addClip', clip: sound }]);
     const ramp = shapeRamp('bullet', 4, 14, reverse);
-    return { p: applyEdits(q, setRamp(q, [clip.id], { ramps: { [clip.id]: ramp } })), ids: [clip.id, sound.id] };
+    return {
+      p: applyEdits(q, setRamp(q, [clip.id], { ramps: { [clip.id]: ramp } })),
+      ids: [clip.id, sound.id],
+    };
   }
 
   it('lists a clip on a speed ramp at its average speed, and says what the ramp runs between', () => {

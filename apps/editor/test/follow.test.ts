@@ -657,7 +657,11 @@ describe('a ramp gesture under ripple editing', () => {
     note(s, 250, 'on the third shot');
     const commit = vi.spyOn(CommentMover.prototype, 'commit');
     const to = ramper(s, [c.fractal.id], { ripple: true, markers: true });
-    const asked = [level(c.fractal.id, 2), level(c.fractal.id, 2), shapeChange(c.p, [[c.fractal.id]], 'hero')!];
+    const asked = [
+      level(c.fractal.id, 2),
+      level(c.fractal.id, 2),
+      shapeChange(c.p, [[c.fractal.id]], 'hero')!,
+    ];
     for (const step of asked) to(step);
     const gestures = commit.mock.calls.map(([, opts]) => opts.gesture);
     expect(gestures).toHaveLength(3);

@@ -1,4 +1,5 @@
-import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { isDeepStrictEqual } from 'node:util';
 import { clipEnd, sourceTimeAt, type Clip, type Project, type RampPoint } from '../packages/core/src/index';
 import { importFixtures, newProject, noReloads, trackErrors } from './helpers';
 
@@ -10,7 +11,27 @@ import { importFixtures, newProject, noReloads, trackErrors } from './helpers';
 async function localProject(page: Page): Promise<void> {
   await page.route('**/api/health', (route) => route.abort());
   await newProject(page);
+  await watchToasts(page);
 }
+
+/** Start noting what every toast says as it appears: a toast is gone again after a few seconds. */
+const watchToasts = (page: Page): Promise<void> =>
+  page.evaluate(() => {
+    const seen: string[] = ((window as any).__toasts = []);
+    new MutationObserver((records) => {
+      for (const r of records)
+        for (const n of Array.from(r.addedNodes))
+          if (n instanceof HTMLElement && n.classList.contains('toast')) seen.push(n.textContent ?? '');
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+
+/** The toasts so far that said `text`, whether they are still showing or not. */
+const said = (page: Page, text: string): Promise<string[]> =>
+  page.evaluate((text) => ((window as any).__toasts as string[]).filter((t) => t.includes(text)), text);
+
+/** Wait until `text` has been said as many times as that. */
+const saidTimes = (page: Page, text: string, times: number): Promise<void> =>
+  expect.poll(() => said(page, text), { message: text }).toHaveLength(times);
 
 /** The bundled sample: three shots of four seconds on V1, a title over the first on V2 and music under all on A1. */
 async function sampleProject(page: Page): Promise<void> {
@@ -135,10 +156,10 @@ test.describe('speed ramps by command', () => {
 
     // Nothing that has a speed is selected: a title has none.
     await setRamp(page, 'bullet');
-    await expect(toast(page, 'Select a video or sound clip to ramp its speed.')).toBeVisible();
+    await saidTimes(page, 'Select a video or sound clip to ramp its speed.', 1);
     await select(page, await idsOf(page, 'text'));
     await setRamp(page, 'bullet');
-    await expect(toast(page, 'Select a video or sound clip to ramp its speed.')).toHaveCount(2);
+    await saidTimes(page, 'Select a video or sound clip to ramp its speed.', 2);
     expect(await project(page)).toEqual(before);
     expect(await undoDepth(page)).toBe(depth);
 
@@ -151,7 +172,6 @@ test.describe('speed ramps by command', () => {
     expect(ramped.ramp?.map((q) => q.v)).toEqual([5, 5, 0.25, 5, 5]);
     expect(ramped.ramp?.map((q) => q.m)).toEqual([0, 1.68, 2, 2.32, 4]);
     expect(await markers(page)).toEqual([120]);
-    await expect(toast(page, 'The next clip is in the way')).toHaveCount(0);
     expect(await undoDepth(page)).toBe(depth + 1);
     // The same shape again is no change, and no step.
     await setRamp(page, 'bullet');
@@ -159,7 +179,10 @@ test.describe('speed ramps by command', () => {
 
     await undo(page);
     expect(await project(page)).toEqual(before);
-    expect(errors).toEqual([]);
+    // The clip had room all along: nothing was said of a clip in its way.
+    expect(await said(page, 'The next clip is in the way')).toEqual([]);
+    // The project is kept on this device: the request for the server, which is not let through, fails.
+    expect(errors.filter((e) => !e.includes('net::ERR_FAILED'))).toEqual([]);
   });
 
   test('a ramp that the next clip cuts short says so, and offers the room ripple editing would have made', async ({
@@ -207,7 +230,27 @@ test.describe('speed ramps by command', () => {
     await setRamp(page, 'rampUp');
     expect(await project(page)).toEqual(withRoom);
     expect(await undoDepth(page)).toBe(depth + 1);
-    await expect(toast(page, 'The next clip is in the way')).toHaveCount(0);
+
+    // An offer is about the clip as its change left it. After another change of ramp the room
+    // that was offered is no longer the room the clip is short of, and the old offer does nothing.
+    await undo(page);
+    await set(page, { rippleMode: false });
+    await setRamp(page, 'rampUp');
+    await saidTimes(page, 'so the clip now plays only the first 2 of its 3.2 seconds.', 2);
+    const stale = toast(page, 'so the clip now plays only the first 2 of its 3.2 seconds.').last();
+    const level = [
+      { m: 0, v: 0.25 },
+      { m: 4, v: 0.25 },
+    ];
+    await page.evaluate((level) => (window as any).tandem.cmd.setRampPoints(level), level);
+    // A quarter of the speed over what the 60 frames of Ramp up covered: 7.2 seconds.
+    await expect(toast(page, 'so the clip now plays only the first 2 of its 7.2 seconds.')).toBeVisible();
+    const held = await project(page);
+    expect(held.clips[dusk]).toMatchObject({ duration: 60, speed: 2, ramp: level });
+    await stale.getByRole('button', { name: 'Make room' }).click();
+    expect(await project(page)).toEqual(held);
+    // Three offers in all: ripple editing made its room without one.
+    expect(await said(page, 'The next clip is in the way')).toHaveLength(3);
   });
 
   test('with ripple editing what follows moves with the end of the clip, marker and comment on their shots', async ({
@@ -236,11 +279,12 @@ test.describe('speed ramps by command', () => {
     expect(await markers(page)).toEqual([120, 147]);
     await expect.poll(note).toBe(157);
     expect(await undoDepth(page)).toBe(depth + 1);
-    // Slower than it was, on Hero, it pushes them the other way.
+    // Hero takes about as long as one speed does, and pushes them back out. It is laid over what
+    // the 27 whole frames cover, a little less than the four seconds: 118 frames, not 121.
     await setRamp(page, 'hero');
-    expect(await rows(page)).toEqual({ ...SAMPLE, V1: ['0-120', '120-241', '241-361'] });
-    expect(await markers(page)).toEqual([120, 241]);
-    await expect.poll(note).toBe(251);
+    expect(await rows(page)).toEqual({ ...SAMPLE, V1: ['0-120', '120-238', '238-358'] });
+    expect(await markers(page)).toEqual([120, 238]);
+    await expect.poll(note).toBe(248);
 
     await undo(page);
     await undo(page);
@@ -268,11 +312,13 @@ test.describe('speed ramps by command', () => {
     await select(page, [dusk]);
     await setRamp(page, 'bullet');
     const refusal = toast(page, 'Unlock A2 to ripple');
+    await saidTimes(page, 'Unlock A2 to ripple', 1);
     await expect(refusal).toHaveCount(1);
     await expect(refusal).toHaveText('Unlock A2 to ripple: a linked clip on it has to move too.');
     expect((await rows(page)).V1).toEqual(['0-27', '120-240', '240-360']);
     expect((await clip(page, dusk)).ramp).toHaveLength(5);
     expect((await clip(page, aurora)).start).toBe(240);
+    expect(await said(page, 'Unlock A2 to ripple')).toHaveLength(1);
   });
 
   test('None returns a clip to its one speed, to within the frames the ramp rounded away', async ({
@@ -282,26 +328,32 @@ test.describe('speed ramps by command', () => {
     const [dusk] = await idsOf(page, 'video');
     await select(page, [dusk]);
     await set(page, { rippleMode: true });
-    await setSpeed(page, 0.5);
-    const found = await clip(page, dusk);
-    expect(found).toMatchObject({ speed: 0.5, duration: 240, ramp: null });
-
-    for (const shape of ['bullet', 'hero', 'flashOut'] as const) {
-      await setRamp(page, shape);
-      const on = await clip(page, dusk);
-      expect(on.ramp, shape).not.toBeNull();
-      // The speed it had is kept for when the ramp goes.
-      expect(on.speed, shape).toBe(0.5);
-      await setRamp(page, 'none');
-      const back = await clip(page, dusk);
-      expect(back, shape).toMatchObject({ ramp: null, speed: 0.5, sourceIn: 0 });
-      expect(Math.abs(back.duration - 240), shape).toBeLessThanOrEqual(3);
-      // What follows stands against it wherever it ends.
-      expect((await rows(page)).V1[1], shape).toBe(`${back.duration}-${back.duration + 120}`);
-      await undo(page);
-      // One step back from the shape is exact: the clip as it was found.
-      await undo(page);
-      expect(await clip(page, dusk), shape).toEqual(found);
+    // Once at the speed the clip came with, and once at half of it: a frame of its file is two there.
+    for (const [speed, length, within] of [
+      [1, 120, 3],
+      [0.5, 240, 6],
+    ]) {
+      await setSpeed(page, speed);
+      const found = await clip(page, dusk);
+      expect(found).toMatchObject({ speed, duration: length, ramp: null });
+      for (const shape of ['bullet', 'hero', 'flashOut'] as const) {
+        const label = `${shape} at ${speed}`;
+        await setRamp(page, shape);
+        const on = await clip(page, dusk);
+        expect(on.ramp, label).not.toBeNull();
+        // The speed it had is kept for when the ramp goes.
+        expect(on.speed, label).toBe(speed);
+        await setRamp(page, 'none');
+        const back = await clip(page, dusk);
+        expect(back, label).toMatchObject({ ramp: null, speed, sourceIn: 0 });
+        expect(Math.abs(back.duration - length), label).toBeLessThanOrEqual(within);
+        // What follows stands against it wherever it ends.
+        expect((await rows(page)).V1[1], label).toBe(`${back.duration}-${back.duration + 120}`);
+        await undo(page);
+        // One step back from the shape is exact: the clip as it was found.
+        await undo(page);
+        expect(await clip(page, dusk), label).toEqual(found);
+      }
     }
   });
 
@@ -324,6 +376,8 @@ test.describe('speed ramps by command', () => {
     expect(await rows(page)).toEqual({ A1: ['0-14', '60-120'], V1: ['0-14', '60-120'] });
     expect(await inStep()).toBeLessThan(1e-9);
     expect((await clip(page, sound)).ramp).toEqual((await clip(page, picture)).ramp);
+
+    await undo(page);
 
     // Linked selection off and the picture alone: the sound still goes with it.
     await set(page, { linkedSelection: false });
@@ -391,11 +445,11 @@ test.describe('speed ramps by command', () => {
     for (const ripple of [false, true]) {
       await set(page, { rippleMode: ripple });
       await setRamp(page, 'bullet');
-      await expect(toast(page, RAMP)).toHaveCount(ripple ? 2 : 1);
+      await saidTimes(page, RAMP, ripple ? 2 : 1);
       expect(await project(page)).toEqual(before);
     }
     await page.evaluate(() => (window as any).tandem.cmd.addRampPoint());
-    await expect(toast(page, RAMP)).toHaveCount(3);
+    await saidTimes(page, RAMP, 3);
     expect(await project(page)).toEqual(before);
     expect(await undoDepth(page)).toBe(depth);
 
@@ -411,12 +465,12 @@ test.describe('speed ramps by command', () => {
     for (const ripple of [false, true]) {
       await set(page, { rippleMode: ripple });
       await setSpeed(page, 2);
-      await expect(toast(page, SPEED)).toHaveCount(ripple ? 2 : 1);
+      await saidTimes(page, SPEED, ripple ? 2 : 1);
       expect(await project(page)).toEqual(ramped);
     }
     await page.locator(`[data-clip="${picture}"]`).click({ button: 'right' });
     await page.getByRole('menuitem', { name: 'Speed: 200%' }).click();
-    await expect(toast(page, SPEED)).toHaveCount(3);
+    await saidTimes(page, SPEED, 3);
     expect(await project(page)).toEqual(ramped);
 
     // A clip that is on no ramp has its speed set by itself, as before: the lock is not in its way.
@@ -444,7 +498,7 @@ test.describe('speed ramps by command', () => {
     expect(tiny.clips[dusk]).toMatchObject({ speed: 0.25, duration: 1 });
     const depth = await undoDepth(page);
     await setRamp(page, 'bullet');
-    await expect(toast(page, 'This clip is too short for a speed ramp.')).toBeVisible();
+    await saidTimes(page, 'This clip is too short for a speed ramp.', 1);
     expect(await project(page)).toEqual(tiny);
     expect(await undoDepth(page)).toBe(depth);
 
@@ -466,7 +520,7 @@ test.describe('speed ramps by command', () => {
     const again = await undoDepth(page);
     await setRamp(page, 'custom');
     expect(await undoDepth(page)).toBe(again);
-    await expect(toast(page, 'A ramp runs between')).toHaveCount(1);
+    await saidTimes(page, 'A ramp runs between', 1);
 
     // A twentieth of the speed is beyond it the other way.
     await setSpeed(page, 0.05);
@@ -482,7 +536,7 @@ test.describe('speed ramps by command', () => {
     await setRamp(page, 'custom');
     expect(await clip(page, aurora)).toMatchObject({ speed: 2, duration: 60 });
     expect((await clip(page, aurora)).ramp?.map((q) => q.v)).toEqual([2, 2]);
-    await expect(toast(page, 'A ramp runs between')).toHaveCount(2);
+    expect(await said(page, 'A ramp runs between')).toHaveLength(2);
   });
 
   test('a point is added where the playhead is, on the curve, up to the most a ramp holds', async ({
@@ -494,7 +548,7 @@ test.describe('speed ramps by command', () => {
       page.evaluate(() => (window as any).tandem.cmd.addRampPoint() as number | null);
     const points = async (): Promise<RampPoint[] | null> => (await clip(page, aurora)).ramp;
     expect(await addPoint()).toBeNull();
-    await expect(toast(page, 'Select a video or sound clip to ramp its speed.')).toBeVisible();
+    await saidTimes(page, 'Select a video or sound clip to ramp its speed.', 1);
 
     // A clip at one speed: three points at that speed, and the length it had.
     await select(page, [aurora]);
@@ -536,9 +590,9 @@ test.describe('speed ramps by command', () => {
     expect(await points()).toEqual(full);
     const held = await project(page);
     expect(await addPoint()).toBeNull();
-    await expect(toast(page, 'A ramp holds at most 32 points.')).toHaveCount(1);
+    await saidTimes(page, 'A ramp holds at most 32 points.', 1);
     await page.evaluate((more) => (window as any).tandem.cmd.setRampPoints(more), [...full, { m: 4, v: 1 }]);
-    await expect(toast(page, 'A ramp holds at most 32 points.')).toHaveCount(2);
+    await saidTimes(page, 'A ramp holds at most 32 points.', 2);
     expect(await project(page)).toEqual(held);
     // And no points are no ramp.
     await page.evaluate(() => (window as any).tandem.cmd.setRampPoints(null));
@@ -559,7 +613,7 @@ test.describe('speed ramps by command', () => {
       expect((await clip(page, id)).keepPitch).toBeNull();
     }
     await keepPitch();
-    await expect(toast(page, 'Select a sound clip to keep its pitch.')).toBeVisible();
+    await saidTimes(page, 'Select a sound clip to keep its pitch.', 1);
 
     await select(page, [picture, sound]);
     let depth = await undoDepth(page);
@@ -681,7 +735,7 @@ test.describe('speed ramps and two people', () => {
   /** The owner with a sync clip of two seconds on the timeline, and an editor who has joined. */
   async function together(
     page: Page,
-    browser: import('@playwright/test').Browser,
+    browser: Browser,
   ): Promise<{ b: Page; close: () => Promise<void>; picture: string; sound: string }> {
     await canBeCutOff(page.context());
     await newProject(page);
@@ -709,19 +763,25 @@ test.describe('speed ramps and two people', () => {
     return { b, close: () => ctxB.close(), picture, sound };
   }
 
-  /** Both have the same clips, and the picture and its sound are in step for both. */
-  async function alike(page: Page, b: Page, picture: string, sound: string): Promise<Project> {
-    await expect.poll(async () => (await project(b)).clips).toEqual((await project(page)).clips);
-    const p = await project(page);
-    expect(apart(p, p.clips[picture], p.clips[sound])).toBeLessThan(1e-9);
-    return p;
+  /** Wait until both have the same clips, and give the project they then share. */
+  async function alike(page: Page, b: Page): Promise<Project> {
+    let shared = await project(page);
+    await expect
+      .poll(async () => {
+        shared = await project(page);
+        return isDeepStrictEqual(shared.clips, (await project(b)).clips);
+      })
+      .toBe(true);
+    return shared;
   }
 
   test('two shapes set on one clip at the same moment leave one of them, whole, for both', async ({
     page,
     browser,
   }) => {
+    const errors = trackErrors(page);
     const { b, close, picture, sound } = await together(page, browser);
+    const theirErrors = trackErrors(b);
     const flat = [
       { m: 1, v: 1 },
       { m: 3, v: 1 },
@@ -741,8 +801,7 @@ test.describe('speed ramps and two people', () => {
       expect((await clip(page, picture)).duration).toBe(mine === 'bullet' ? 14 : 60);
       expect((await clip(b, picture)).duration).toBe(theirs === 'bullet' ? 14 : 60);
       for (const p of [page, b]) await reconnect(p);
-      await expect.poll(async () => (await clip(b, picture)).ramp).toEqual((await clip(page, picture)).ramp);
-      const p = await alike(page, b, picture, sound);
+      const p = await alike(page, b);
       const ramp = p.clips[picture].ramp!;
       const bullet = ramp.length === 5;
       won.push(bullet ? 'bullet' : 'custom');
@@ -751,13 +810,19 @@ test.describe('speed ramps and two people', () => {
         expect(p.clips[id]).toMatchObject({ start: 0, duration: bullet ? 14 : 60, sourceIn: 1 });
         expect(p.clips[id].ramp).toEqual(ramp);
       }
-      // Back to one speed for the next round, by one of them.
-      await setRamp(page, 'none');
-      await expect.poll(async () => (await clip(b, picture)).ramp).toBeNull();
-      expect((await alike(page, b, picture, sound)).clips[picture].duration).toBe(60);
+      expect(apart(p, p.clips[picture], p.clips[sound])).toBeLessThan(1e-9);
+      // Back to where they began for the next round: one of them undoes, then the other.
+      await undo(page);
+      await alike(page, b);
+      await undo(b);
+      const back = await alike(page, b);
+      for (const id of [picture, sound]) {
+        expect(back.clips[id]).toMatchObject({ ramp: null, start: 0, duration: 60, sourceIn: 1 });
+      }
     }
     // The same person's change stands both times, so each shape has stood once.
     expect(won.sort()).toEqual(['bullet', 'custom']);
+    expect([...errors, ...theirErrors]).toEqual([]);
     await close();
   });
 
@@ -787,9 +852,7 @@ test.describe('speed ramps and two people', () => {
         [picture, sound],
       );
       for (const p of [page, b]) await reconnect(p);
-      await expect.poll(async () => (await clip(trimmer, picture)).ramp).not.toBeNull();
-      await expect.poll(async () => (await project(b)).clips).toEqual((await project(page)).clips);
-      const p = await project(page);
+      const p = await alike(page, b);
       // The ramp stands for both clips, on the media it was set on, and the picture begins where
       // the trim put it: nobody else wrote its start.
       for (const id of [picture, sound]) {
@@ -831,7 +894,7 @@ test.describe('speed ramps and two people', () => {
         },
         [found.clips[picture], found.clips[sound]],
       );
-      await expect.poll(async () => (await project(b)).clips).toEqual(found.clips);
+      await expect.poll(async () => isDeepStrictEqual((await project(b)).clips, found.clips)).toBe(true);
     }
     // The same person's writes stand both times: once that was the shape, once the trim.
     expect(outcomes.sort()).toEqual(['ramp', 'trim']);

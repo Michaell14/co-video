@@ -1261,7 +1261,11 @@ describe('a clip on a speed ramp', () => {
 
   it('takes pasted attributes without its ramp, its pitch or its length changing', () => {
     const r = ramped();
-    const from = makeClip('video', r.v1.id, { scaleX: 1.3, grade: { ...DEFAULT_GRADE, exposure: 0.5 }, speed: 2 });
+    const from = makeClip('video', r.v1.id, {
+      scaleX: 1.3,
+      grade: { ...DEFAULT_GRADE, exposure: 0.5 },
+      speed: 2,
+    });
     const fromSound = makeClip('audio', r.a1.id, { volume: -6, fadeIn: 6, keepPitch: false, speed: 2 });
     const copied = copiedAttributes([from, fromSound], 30)!;
     expect(JSON.stringify(copied)).not.toMatch(/ramp|keepPitch|speed|duration|sourceIn/);

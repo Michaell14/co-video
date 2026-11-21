@@ -880,7 +880,8 @@ export const cmd = {
   /**
    * Set the speed of the selected clips. With ripple editing on, what follows moves by as much as
    * they grow or shrink; without, a clip stops at the next one, and when that cuts it short the
-   * toast offers to make room.
+   * toast offers to make room. A clip that is on a ramp goes to that one speed with everything
+   * linked to it.
    */
   setSpeed(speed: number, reverse?: boolean): void {
     editing((s, p) => void retimeClips(s, p, effectiveSelection(p), { speed, reverse }));
@@ -912,7 +913,8 @@ export const cmd = {
     editing((s, p) => {
       const [group] = rampGroups(p, effectiveSelection(p));
       if (!group) toast(SELECT_TO_RAMP, 'info');
-      else if (points && points.length > RAMP_POINTS) toast(`A ramp holds at most ${RAMP_POINTS} points.`, 'info');
+      else if (points && points.length > RAMP_POINTS)
+        toast(`A ramp holds at most ${RAMP_POINTS} points.`, 'info');
       else retimeClips(s, p, group, { ramps: { [rampLead(p, group)]: points } });
     });
   },

@@ -207,7 +207,13 @@ describe('replacing the media of a clip that is on a speed ramp', () => {
     const ramp = shiftRamp(p.clips.shot.ramp!, -2);
     expect(ramp[0]).toEqual({ m: 0, v: 1 });
     for (const id of ['shot', 'sound']) {
-      expect(after.clips[id]).toEqual({ ...p.clips[id], assetId: 'take2', name: 'take2.mp4', sourceIn: 0, ramp });
+      expect(after.clips[id]).toEqual({
+        ...p.clips[id],
+        assetId: 'take2',
+        name: 'take2.mp4',
+        sourceIn: 0,
+        ramp,
+      });
       // Every frame shows the place two seconds earlier in its file than it showed, handles included.
       for (const by of shifts(p, after, id)) expect(by).toBeCloseTo(-2, 9);
     }
@@ -217,7 +223,9 @@ describe('replacing the media of a clip that is on a speed ramp', () => {
   it('keeps a split edit in step, from an in point that is on no microsecond', () => {
     // The sound begins 15 frames before its picture, and the ramp has brought it forward.
     const p = ramped('bullet', (base) =>
-      applyEdits(base, [{ op: 'updateClip', id: 'sound', patch: { start: 85, duration: 135, sourceIn: 1.5 } }]),
+      applyEdits(base, [
+        { op: 'updateClip', id: 'sound', patch: { start: 85, duration: 135, sourceIn: 1.5 } },
+      ]),
     );
     expect(p.clips.sound).toMatchObject({ start: 97, duration: 30 });
     expect(apart(p, p.clips.shot, p.clips.sound)).toBeLessThan(1e-9);
