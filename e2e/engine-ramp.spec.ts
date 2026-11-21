@@ -344,7 +344,7 @@ test.describe('speed ramps and kept pitch in the engine', () => {
     await openRampLab(page);
     const r = await page.evaluate(async () => {
       const { lab, kit } = window as any;
-      const { engine } = lab;
+      const { core, engine } = lab;
       lab.init(160, 90);
       const assets = [
         await kit.add('dat', kit.noise(48000, 30, 4321), 48000),
@@ -367,10 +367,10 @@ test.describe('speed ramps and kept pitch in the engine', () => {
        * One clip at a time: several voices are added up in an order that is the browser's own, and
        * two renders of the same mix can differ in the last bit for that alone.
        */
-      const compare = async (clips: object[], seconds: number) => {
+      const compare = async (clips: object[], seconds: number, settings = ntsc) => {
         const worst = { fields: 0, apart: 0, chunked: 0, quietest: Infinity };
         for (const clip of clips) {
-          const project = kit.project(assets, [{ type: 'audio', ...clip }], ntsc);
+          const project = kit.project(assets, [{ type: 'audio', ...clip }], settings);
           const old = before(project);
           worst.fields += Object.values(old.clips).filter((c: any) => 'ramp' in c || 'keepPitch' in c).length;
           const [now, then] = [await kit.render(project, 0, seconds), await kit.render(old, 0, seconds)];
@@ -416,13 +416,35 @@ test.describe('speed ramps and kept pitch in the engine', () => {
         [{ assetId: 'dat', start: 3, duration: 100, speed: 2, keepPitch: true }],
         3.6,
       );
-      return { plain, outside, inside };
+      // So it is at a tenth of the speed and at ten times it, the two ends of what the stretcher
+      // is made for. At some frame rates the mixer's own arithmetic makes a hair less of the one
+      // and a hair more of the other (`speed` is what it works out), which is not what decides.
+      const ends: Record<string, { speed: number; apart: number }> = {};
+      for (const [name, speed, fpsNum, fpsDen] of [
+        ['a tenth at 29.97 fps', 0.1, 30000, 1001],
+        ['a tenth at 2997/100 fps', 0.1, 2997, 100],
+        ['ten times at 29.97 fps', 10, 30000, 1001],
+        ['ten times at 1000/33 fps', 10, 1000, 33],
+      ] as const) {
+        const settings = { fpsNum, fpsDen, sampleRate: 48000 };
+        const clip = { assetId: 'dat', start: 3, duration: 60, speed, keepPitch: true };
+        const project = kit.project(assets, [{ type: 'audio', ...clip }], settings);
+        const [made] = Object.values(project.clips);
+        ends[name] = {
+          speed: core.sourcePerFrame(made, project) * (fpsNum / fpsDen),
+          apart: (await compare([clip], 2.4, settings)).apart,
+        };
+      }
+      return { plain, outside, inside, ends };
     });
     expect(r.plain).toMatchObject({ fields: 0, apart: 0, chunked: 0 });
     expect(r.plain.quietest).toBeGreaterThan(0.1);
     expect(r.outside).toMatchObject({ fields: 0, apart: 0, chunked: 0 });
     expect(r.outside.quietest).toBeGreaterThan(0.01);
     expect(r.inside.apart).toBeGreaterThan(0.1);
+    expect(r.ends['a tenth at 2997/100 fps'].speed).toBeLessThan(0.1);
+    expect(r.ends['ten times at 1000/33 fps'].speed).toBeGreaterThan(10);
+    for (const [name, end] of Object.entries(r.ends)) expect(end.apart, name).toBeGreaterThan(0.1);
     expect(errors).toEqual([]);
   });
 

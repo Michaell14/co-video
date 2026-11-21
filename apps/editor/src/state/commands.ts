@@ -113,13 +113,13 @@ import { patchClips } from './props';
 import {
   addPointChange,
   durationEdits,
-  makeRoomEdits,
   moveEdits,
   rampGroups,
   rampLead,
   retimeEach,
   retimeRefusal,
   reverseEdits,
+  roomEdits,
   shapeChange,
   speedCutShort,
   speedRippleEdits,
@@ -277,16 +277,15 @@ function offerRoom(s: Session, short: CutShort[]): void {
     run: () =>
       editing((s, p) => {
         // The offer was about the clips as the change of speed left them.
-        const wants: Record<ID, number> = {};
-        for (const c of short) {
+        const still = short.filter((c) => {
           const now = p.clips[c.id];
           const then = left.clips[c.id];
           const same = now && then && now.speed === then.speed && deepEqual(now.ramp, then.ramp);
-          if (same && now.duration === c.duration) wants[c.id] = c.natural;
-        }
-        const r = makeRoomEdits(p, wants);
+          return same && now.duration === c.duration;
+        });
+        const r = roomEdits(p, still);
         if (r.refused) toast(r.refused);
-        else if (r.edits.length) commitEdits(s, withMarkers(p, r));
+        else if (r.edits.length) commitEdits(s, withMarkers(r.from, r));
       }),
   });
 }
