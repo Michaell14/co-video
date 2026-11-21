@@ -678,7 +678,10 @@ const placedIn = (p: Project, markers: boolean): Placed => ({
 export interface SpeedGesture {
   /** The clips the change is asked for. */
   ids: ID[];
-  /** The timing of the clips it can reach that have a speed, as the gesture found it. */
+  /**
+   * The timing of the clips it can reach that have a speed, as the gesture found it: first those
+   * it was asked for.
+   */
   from: Record<ID, Timing>;
   /** The same, as the gesture's last step left it. */
   left: Record<ID, Timing>;

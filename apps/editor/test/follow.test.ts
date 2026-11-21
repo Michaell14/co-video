@@ -33,6 +33,7 @@ import { asRipple, commitEdits, withMarkers } from '../src/state/follow';
 import {
   durationEdits,
   makeRoomEdits,
+  retimeEach,
   shapeChange,
   speedEach,
   speedEdits,
@@ -558,6 +559,33 @@ describe('a speed gesture under ripple editing', () => {
     expect(s.store.get().clips[c.aurora.id].start).toBe(180);
     expect(markers(s)).toEqual([240]);
     expect(notes(s)).toEqual([['on the third shot', 250]]);
+  });
+
+  it('names the speed of the step before, also when it holds a clip that no step reaches', () => {
+    const s = seat();
+    const c = cut(false);
+    // The second shot has a sound that begins ten frames before it and is not selected. The third
+    // is on a ramp, so the gesture holds whole groups of linked clips: that sound among them, and
+    // first of all, in whatever order they were taken, because its id reads as a number.
+    const linked = applyEdits(c.p, [
+      { op: 'updateClip', id: c.fractal.id, patch: { linkId: 'F', sourceIn: 1 } },
+    ]);
+    const sound = add(linked, c.a1, 110, 130, { id: '1', linkId: 'F', sourceIn: 1 - 10 / 30 });
+    s.store.replaceAll(applyEdits(sound.p, retimeEach(sound.p, [c.aurora.id], level(c.aurora.id, 1))));
+    note(s, 250, 'on the third shot');
+    const commit = vi.spyOn(CommentMover.prototype, 'commit');
+    try {
+      const to = scrubber(s, [c.fractal.id, c.aurora.id], { ripple: true, markers: true });
+      for (const speed of [0.8, 0.5, 0.4]) to(speed);
+      expect(s.store.get().clips[sound.clip.id]).toEqual(sound.clip);
+      expect(layout(s.store.get(), c.v1)).toEqual(['0-120', '120-420', '420-720']);
+      const gestures = commit.mock.calls.map(([, opts]) => opts.gesture);
+      expect(gestures.map((g) => g?.last)).toEqual([{ speed: 1 }, { speed: 0.8 }, { speed: 0.5 }]);
+      // At 50% the third shot began at 360, and at 40% it begins at 420.
+      expect(gestures[2]?.since(gestures[2].last, 370)).toBe(430);
+    } finally {
+      commit.mockRestore();
+    }
   });
 });
 

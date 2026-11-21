@@ -32,6 +32,7 @@ import {
   retimeEach,
   retimeRefusal,
   reverseEdits,
+  roomEdits,
   shapeChange,
   speedCutShort,
   speedEach,
@@ -1667,6 +1668,154 @@ describe('a change of ramp that the next clip cuts short', () => {
     expect(drag.state.p).toEqual(p);
     expect(speedGestureCutShort(drag.gesture()!, drag.state.p)).toEqual([]);
   });
+
+  /**
+   * A picture of four seconds whose sound begins three seconds in, the next shot right after both
+   * and a marker on that shot. `more` puts a third shot after it.
+   */
+  function lateSound(more = false) {
+    const f = fixture();
+    const v = add(f.p, f.v1, 0, 120, { linkId: 'L', sourceIn: 1 });
+    const a = add(v.p, f.a1, 90, 30, { linkId: 'L', sourceIn: 4 });
+    const nextV = add(a.p, f.v1, 120, 120, { linkId: 'M', sourceIn: 1 });
+    const nextA = add(nextV.p, f.a1, 120, 120, { linkId: 'M', sourceIn: 1 });
+    let p = applyEdits(nextA.p, [
+      { op: 'setMarker', marker: { id: 'next', frame: 150, name: 'next', color: '#fff', note: '' } },
+    ]);
+    if (more) {
+      p = add(p, f.v1, 240, 120, { linkId: 'N' }).p;
+      p = add(p, f.a1, 240, 120, { linkId: 'N' }).p;
+    }
+    return { ...f, p, picture: v.clip.id, sound: a.clip.id, next: [nextV.clip.id, nextA.clip.id] };
+  }
+
+  it('takes a sound that was left as one frame to its place when room is made for its picture', () => {
+    const s = lateSound();
+    const slow = level(s.picture, 0.5, 1, 5);
+    // Half as fast, the word the sound begins on comes at frame 180, where the next sound stands.
+    const slowed = applyEdits(s.p, retimeEach(s.p, [s.picture], slow));
+    expect(layout(slowed, s.v1)).toEqual(['0+120', '120+120']);
+    expect(layout(slowed, s.a1)).toEqual(['119+1', '120+120']);
+    // The picture is what is cut short, and it says how the change is made again.
+    const short = speedCutShort(s.p, [s.picture], slow);
+    expect(short).toMatchObject([{ id: s.picture, duration: 120, natural: 240 }]);
+    expect(short[0].again?.change).toBe(slow);
+    expect(Object.keys(short[0].again?.from ?? {}).sort()).toEqual([s.picture, s.sound].sort());
+    // Room at the end of the picture would leave the sound where it is, a second out of step.
+    const ends = applyEdits(slowed, makeRoomEdits(slowed, { [s.picture]: 240 }).edits);
+    expect(layout(ends, s.a1)).toEqual(['119+1', '240+120']);
+    const r = roomEdits(slowed, short);
+    expect(r.refused).toBeNull();
+    const p = applyEdits(slowed, [...r.edits, ...markerEdits(r.from, r.edits, r.spans)]);
+    expect(layout(p, s.v1)).toEqual(['0+240', '240+120']);
+    expect(layout(p, s.a1)).toEqual(['180+60', '240+120']);
+    expect(apart(p, p.clips[s.picture], p.clips[s.sound])).toBeLessThan(1e-9);
+    expect(markers(p)).toEqual([270]);
+    // The same project as setting the ramp with ripple editing on.
+    const rippled = speedRippleEdits(s.p, [s.picture], slow);
+    expect(p).toEqual(applyEdits(s.p, [...rippled.edits, ...markerEdits(s.p, rippled.edits, rippled.spans)]));
+  });
+
+  it('does so after a gesture too, told its steps or not, and for the other clips of the same change', () => {
+    const s = lateSound();
+    const slow = level(s.picture, 0.5, 1, 5);
+    const drag = ramper(s.p, [s.picture]);
+    drag.to(level(s.picture, 2, 1, 5));
+    drag.to(slow);
+    const left = speedGestureCutShort(drag.gesture()!, drag.state.p);
+    expect(left).toEqual(speedCutShort(s.p, [s.picture], slow));
+    expect(applyEdits(drag.state.p, roomEdits(drag.state.p, left).edits).clips).toEqual(
+      applyEdits(s.p, speedRippleEdits(s.p, [s.picture], slow).edits).clips,
+    );
+
+    // One speed for a pair that is on a ramp, from a gesture that is not told its steps.
+    const onRamp = applyEdits(s.p, retimeEach(s.p, [s.picture], level(s.picture, 1, 1, 5)));
+    expect(layout(onRamp, s.a1)).toEqual(['90+30', '120+120']);
+    const g = speedGesture(null, onRamp, [s.picture]);
+    const halved = applyEdits(onRamp, speedEdits(g, onRamp, 0.5));
+    expect(layout(halved, s.a1)).toEqual(['119+1', '120+120']);
+    const untold = speedGestureCutShort(speedStepped(g, halved), halved);
+    expect(untold).toEqual(speedCutShort(onRamp, [s.picture], 0.5));
+    expect(untold[0].again?.change).toEqual({ speed: 0.5 });
+    const roomy = applyEdits(halved, roomEdits(halved, untold).edits);
+    expect(layout(roomy, s.a1)).toEqual(['180+60', '240+120']);
+    expect(roomy.clips).toEqual(applyEdits(onRamp, speedRippleEdits(onRamp, [s.picture], 0.5).edits).clips);
+
+    // Two shots slowed at once: the second is cut short at the third, picture and sound alike,
+    // and gets its room at its end as ever, after the first has been made again.
+    const m = lateSound(true);
+    const ids = [m.picture, m.next[0]];
+    const both: Retime = { ramps: { ...level(ids[0], 0.5, 1, 5).ramps, ...level(ids[1], 0.5, 1, 5).ramps } };
+    const short = speedCutShort(m.p, ids, both);
+    expect(short.map((c) => [c.id, c.duration, c.natural, !!c.again])).toEqual([
+      [m.picture, 120, 240, true],
+      [m.next[0], 120, 240, false],
+      [m.next[1], 120, 240, false],
+    ]);
+    const held = applyEdits(m.p, retimeEach(m.p, ids, both));
+    const all = applyEdits(held, roomEdits(held, short).edits);
+    expect(layout(all, m.v1)).toEqual(['0+240', '240+240', '480+120']);
+    expect(layout(all, m.a1)).toEqual(['180+60', '240+240', '480+120']);
+    expect(all.clips).toEqual(applyEdits(m.p, speedRippleEdits(m.p, ids, both).edits).clips);
+  });
+
+  it('gives clips their room at their ends when they are no longer as the change left them, or its ripple is refused', () => {
+    const s = lateSound();
+    const slow = level(s.picture, 0.5, 1, 5);
+    const slowed = applyEdits(s.p, retimeEach(s.p, [s.picture], slow));
+    const short = speedCutShort(s.p, [s.picture], slow);
+    const wants = { [s.picture]: 240 };
+    // Somebody has given the one frame of sound a fade meanwhile. Put back as the change found
+    // it, the sound would lose that.
+    const faded = applyEdits(slowed, [{ op: 'updateClip', id: s.sound, patch: { fadeIn: 1 } }]);
+    expect(roomEdits(faded, short)).toEqual({ ...makeRoomEdits(faded, wants), from: faded });
+    expect(applyEdits(faded, roomEdits(faded, short).edits).clips[s.sound]).toEqual(faded.clips[s.sound]);
+    // The sound track has been locked meanwhile: the next shot cannot leave its sound behind.
+    const locked = applyEdits(slowed, [{ op: 'updateTrack', id: s.a1.id, patch: { locked: true } }]);
+    const r = roomEdits(locked, short);
+    expect(r.edits).toEqual([]);
+    expect(r.refused).toBe('Unlock A1 to ripple: a linked clip on it has to move too.');
+  });
+
+  it('takes markers along from where they stood when the change found the clips', () => {
+    // The picture ends 20 frames before the next shot, with music under everything.
+    const f = fixture();
+    const a2 = makeTrack('audio', 1);
+    const v = add(f.p, f.v1, 0, 100, { linkId: 'L', sourceIn: 1 });
+    const a = add(v.p, f.a1, 80, 20, { linkId: 'L', sourceIn: 1 + 80 / 30 });
+    const nextV = add(a.p, f.v1, 120, 120, { linkId: 'M' });
+    const nextA = add(nextV.p, f.a1, 120, 120, { linkId: 'M' });
+    const bed = add(applyEdits(nextA.p, [{ op: 'addTrack', track: a2 }]), a2, 0, 360, { assetId: null });
+    const p = applyEdits(bed.p, [
+      { op: 'setMarker', marker: { id: 'gap', frame: 110, name: 'gap', color: '#fff', note: '' } },
+      { op: 'setMarker', marker: { id: 'next', frame: 150, name: 'next', color: '#fff', note: '' } },
+    ]);
+    const slow = level(v.clip.id, 0.5, 1, 1 + 100 / 30);
+    // Slowed, the picture runs on through the gap, over the marker that stood on the music there.
+    const slowed = applyEdits(p, retimeEach(p, [v.clip.id], slow));
+    expect(layout(slowed, f.v1)).toEqual(['0+120', '120+120']);
+    expect(layout(slowed, f.a1)).toEqual(['119+1', '120+120']);
+    const r = roomEdits(slowed, speedCutShort(p, [v.clip.id], slow));
+    const roomy = applyEdits(slowed, [...r.edits, ...markerEdits(r.from, r.edits, r.spans)]);
+    // The gap is there again after the picture, as under ripple editing, and the marker is still
+    // on the music, which did not move.
+    expect(layout(roomy, f.v1)).toEqual(['0+200', '220+120']);
+    expect(layout(roomy, f.a1)).toEqual(['160+40', '220+120']);
+    expect(markers(roomy)).toEqual([110, 250]);
+    const rippled = speedRippleEdits(p, [v.clip.id], slow);
+    expect(roomy).toEqual(applyEdits(p, [...rippled.edits, ...markerEdits(p, rippled.edits, rippled.spans)]));
+  });
+
+  it('is room at their ends, and nothing else, for clips of which none was left beside its place', () => {
+    const c = cut();
+    const change = level(c.pairs[0][0], 0.5, 1, 5);
+    const short = speedCutShort(c.p, [c.pairs[0][0]], change);
+    expect(short.some((s) => s.again)).toBe(false);
+    const slowed = applyEdits(c.p, retimeEach(c.p, [c.pairs[0][0]], change));
+    const wants = Object.fromEntries(short.map((s) => [s.id, s.natural]));
+    expect(roomEdits(slowed, short)).toEqual({ ...makeRoomEdits(slowed, wants), from: slowed });
+    expect(roomEdits(slowed, short).edits.length).toBeGreaterThan(0);
+  });
 });
 
 describe('a ramp gesture under ripple editing', () => {
@@ -1857,6 +2006,31 @@ describe('one speed for clips that are on a ramp', () => {
     expect(layout(roomy, f.a1)).toEqual(['100+117', '217+183', '400+60']);
     expect(apart(roomy, roomy.clips[v.clip.id], roomy.clips[a.clip.id])).toBeLessThan(1e-9);
   });
+
+  it('counts as cut short what a step reached, not a clip the gesture holds because it is linked to one', () => {
+    const c = cut();
+    const [first, second] = c.pairs;
+    const p = applyEdits(c.p, retimeEach(c.p, [first[0]], level(first[0], 1, 1, 5)));
+    // The pictures alone are asked for. The first is on a ramp and takes its sound along; the
+    // second is on none, and its sound is held by the gesture but stays as it is.
+    const ids = [second[0], first[0]];
+    const g = speedGesture(null, p, ids);
+    expect(Object.keys(g.from).sort()).toEqual([...first, ...second].sort());
+    // The clips that were asked for come first: a speed that is read from the first clip is theirs.
+    expect(Object.keys(g.from).slice(0, 2)).toEqual(ids);
+    const halved = applyEdits(p, speedEdits(g, p, 0.5));
+    expect(halved.clips[second[1]]).toEqual(p.clips[second[1]]);
+    const byId = (short: { id: string }[]) => [...short].sort((x, y) => (x.id < y.id ? -1 : 1));
+    const short = byId(speedCutShort(p, ids, 0.5));
+    expect(short).toEqual(byId([...first, second[0]].map((id) => ({ id, duration: 120, natural: 240 }))));
+    const told = speedGestureCutShort(speedStepped(g, halved, 0.5), halved);
+    expect(byId(told)).toEqual(short);
+    expect(byId(speedGestureCutShort(speedStepped(g, halved), halved))).toEqual(short);
+    // Room made for them leaves that sound the length it has.
+    const roomy = applyEdits(halved, roomEdits(halved, told).edits);
+    expect(roomy.clips[second[0]].duration).toBe(240);
+    expect(roomy.clips[second[1]]).toMatchObject({ duration: 120, speed: 1, sourceIn: 1 });
+  });
 });
 
 describe('a change that would have to reach a clip on a locked track', () => {
@@ -1930,6 +2104,53 @@ describe('a change that would have to reach a clip on a locked track', () => {
     ]);
     // Nor of a ramp for clips that have nothing on that track.
     expect(retimeRefusal(l.p, [l.bed.id], shaped(l.p, [l.bed.id], 'hero'))).toBeNull();
+  });
+
+  it('gets no edit from a gesture that holds it and takes steps that do not reach it', () => {
+    const c = cut();
+    const [first, second] = c.pairs;
+    // The sound of the first shot is on a locked track of its own, and the second shot is on a ramp.
+    const a3 = { ...makeTrack('audio', 2), locked: true };
+    let p = applyEdits(c.p, [
+      { op: 'addTrack', track: a3 },
+      { op: 'updateClip', id: first[1], patch: { trackId: a3.id } },
+    ]);
+    p = applyEdits(p, retimeEach(p, [second[0]], level(second[0], 1, 1, 5)));
+    // One speed for the first picture, which is on no ramp, and for the second with its sound.
+    const ids = [first[0], ...second];
+    expect(retimeRefusal(p, ids, 2)).toBeNull();
+    for (const ripple of [false, true]) {
+      let g = speedGesture(null, p, ids, { ripple, markers: true });
+      expect(Object.keys(g.from)).toContain(first[1]);
+      let now = p;
+      for (const speed of [2, 0.5, 4]) {
+        const edits = speedEdits(g, now, speed);
+        const named = edits.map((e) => (e.op === 'updateClip' ? e.id : e.op));
+        expect(named, `${ripple} ${speed}`).toContain(first[0]);
+        expect(named, `${ripple} ${speed}`).not.toContain(first[1]);
+        now = applyEdits(now, edits);
+        g = speedStepped(g, now);
+      }
+      expect(now.clips[first[1]]).toBe(p.clips[first[1]]);
+      // The steps were made: with ripple editing what follows came up behind the faster picture.
+      expect(layout(now, c.v1)).toEqual(ripple ? ['0+30', '30+30', '60+120'] : ['0+30', '120+30', '240+120']);
+    }
+  });
+
+  it('gets none either when its track is locked under a gesture that has changed it', () => {
+    const c = cut();
+    const [picture, sound] = c.pairs[0];
+    const drag = ramper(c.p, [picture]);
+    drag.to(shaped(c.p, [picture], 'bullet'));
+    expect(drag.state.p.clips[sound].ramp).not.toBeNull();
+    // The sound is locked while the drag is under way, and the next step is one speed for the
+    // picture alone: it would have put the sound back as the gesture found it.
+    drag.meanwhile([{ op: 'updateTrack', id: c.a1.id, patch: { locked: true } }]);
+    const held = drag.state.p.clips[sound];
+    drag.to(2);
+    expect(drag.state.gestures).toBe(1);
+    expect(drag.state.p.clips[picture]).toMatchObject({ speed: 2, ramp: null, duration: 60 });
+    expect(drag.state.p.clips[sound]).toBe(held);
   });
 });
 

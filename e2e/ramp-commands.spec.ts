@@ -253,6 +253,57 @@ test.describe('speed ramps by command', () => {
     expect(await said(page, 'The next clip is in the way')).toHaveLength(3);
   });
 
+  test('room made for a picture brings back its linked sound, of which the next clip had left one frame', async ({
+    page,
+  }) => {
+    await syncSequence(page);
+    const [picture] = await idsOf(page, 'video');
+    const [sound] = await idsOf(page, 'audio');
+    // The sound of the first take begins 40 frames after its picture.
+    await page.evaluate(
+      ([sound]) => {
+        const { session } = (window as any).tandem;
+        const c = session.store.get().clips[sound];
+        const patch = { start: c.start + 40, duration: c.duration - 40, sourceIn: c.sourceIn + 40 / 30 };
+        session.store.commit([{ op: 'updateClip', id: sound, patch }]);
+      },
+      [sound],
+    );
+    expect(await rows(page)).toEqual({ A1: ['40-60', '60-120'], V1: ['0-60', '60-120'] });
+    const found = await project(page);
+
+    // Half as fast, the picture is cut at the next take, and the word its sound begins on comes
+    // at frame 80, where the sound of that take stands.
+    const half = [
+      { m: 1, v: 0.5 },
+      { m: 3, v: 0.5 },
+    ];
+    await select(page, [picture]);
+    await page.evaluate((half) => (window as any).tandem.cmd.setRampPoints(half), half);
+    const held = { A1: ['59-60', '60-120'], V1: ['0-60', '60-120'] };
+    expect(await rows(page)).toEqual(held);
+    const offer = toast(
+      page,
+      'The next clip is in the way, so the clip now plays only the first 2 of its 4 seconds.',
+    );
+    await expect(offer).toBeVisible();
+    await offer.getByRole('button', { name: 'Make room' }).click();
+    expect(await rows(page)).toEqual({ A1: ['80-120', '120-180'], V1: ['0-120', '120-180'] });
+    const withRoom = await project(page);
+    expect(apart(withRoom, withRoom.clips[picture], withRoom.clips[sound])).toBeLessThan(1e-9);
+
+    // Two steps back: the room, then the ramp.
+    await undo(page);
+    expect(await rows(page)).toEqual(held);
+    await undo(page);
+    expect(await project(page)).toEqual(found);
+
+    // The same change with ripple editing on leaves the same timeline.
+    await set(page, { rippleMode: true });
+    await page.evaluate((half) => (window as any).tandem.cmd.setRampPoints(half), half);
+    expect(await project(page)).toEqual(withRoom);
+  });
+
   test('with ripple editing what follows moves with the end of the clip, marker and comment on their shots', async ({
     page,
   }) => {
