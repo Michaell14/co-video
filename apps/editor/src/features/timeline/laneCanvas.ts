@@ -1,17 +1,10 @@
 /** Canvas painting for a track lane: filmstrips for picture clips, waveforms for sound. */
-import {
-  animated,
-  CLIP_TYPE_COLORS,
-  dbToGain,
-  hexToRgb,
-  sourcePerFrame,
-  type Clip,
-  type Project,
-} from '@tandem/core';
+import { animated, CLIP_TYPE_COLORS, dbToGain, hexToRgb, type Clip, type Project } from '@tandem/core';
 import { canvasTheme, type CanvasTheme } from './canvasTheme';
+import { columnPeak, loadedEdge, tileStep, tileTime } from './laneTimes';
 import { clipWidth, LABEL_H, LABEL_MIN_W, LABEL_TINT, NARROW_W } from './layout';
 import { clipBody, LEVEL_MIN_H, levelCurve } from './levelLine';
-import { FilmstripCache, type TimelineMedia } from './mediaCache';
+import type { TimelineMedia } from './mediaCache';
 
 export interface LaneView {
   scrollX: number;
@@ -92,21 +85,17 @@ export function drawLane(
       const tw = Math.max(20, th * aspect);
       const first = Math.max(0, Math.floor((visL - x0) / tw));
       const last = Math.floor((visR - x0) / tw);
-      const per = sourcePerFrame(clip, project);
-      const step = FilmstripCache.stepFor(((tw / ppf) * per) / 1);
       const poster = clip.assetId ? media.poster(clip.assetId, asset.thumb) : null;
       for (let i = first; i <= last; i++) {
         const tx = x0 + i * tw;
         let img: CanvasImageSource | null = null;
         if (clip.type === 'video' && clip.assetId) {
           const local = (i * tw) / ppf;
-          const t = clip.reverse
-            ? clip.sourceIn + (clip.duration - local) * per
-            : clip.sourceIn + local * per;
+          const t = tileTime(clip, project, local);
           img = media.film.get(
             clip.assetId,
             Math.max(0, Math.min(t, Math.max(0, asset.duration - 0.05))),
-            step,
+            tileStep(clip, project, local, tw / ppf),
           );
         }
         img ??= poster;
@@ -133,7 +122,6 @@ function drawWaveform(
   if (!clip.assetId || g.bodyH < 6) return;
   const wave = media.wave.get(clip.assetId, assetDuration);
   if (!wave) return;
-  const per = sourcePerFrame(clip, project); // source seconds per frame
   const mid = g.top + g.bodyH / 2;
   // The height of the waveform follows the clip's volume, through its keyframes where it has any:
   // a stretch that is turned down looks turned down.
@@ -142,21 +130,12 @@ function drawWaveform(
   const steady = full * Math.min(2, dbToGain(clip.volume));
   const ampAt = (x: number): number =>
     keyed ? full * Math.min(2, dbToGain(animated(clip, 'volume', (x - g.x0) / g.ppf, clip.volume))) : steady;
-  const secPerPx = per / g.ppf;
-  const srcEnd = clip.sourceIn + clip.duration * per;
-  const peaks = wave.peaks;
-  const pps = wave.perSecond;
   const xs: number[] = [];
   const ys: number[] = [];
   const startX = Math.floor(g.visL);
   const endX = Math.ceil(g.visR);
   for (let x = startX; x <= endX; x++) {
-    const local = (x - g.x0) * secPerPx;
-    const t = clip.reverse ? srcEnd - local - secPerPx : clip.sourceIn + local;
-    const a = Math.max(0, Math.floor(t * pps));
-    const b = Math.min(peaks.length - 1, Math.max(a, Math.floor((t + secPerPx) * pps)));
-    let p = 0;
-    for (let i = a; i <= b; i++) if (peaks[i] > p) p = peaks[i];
+    const p = columnPeak(clip, project, x - g.x0, g.ppf, wave);
     xs.push(x);
     // Perceptual scaling: quiet material stays visible instead of collapsing into a flat line.
     ys.push(Math.max(0.5, Math.pow(Math.min(1, p), 0.6) * ampAt(x)));
@@ -192,8 +171,14 @@ function drawWaveform(
   }
   if (!wave.done) {
     // Still analysing: hatch the part we have not reached yet.
-    const loadedX = g.x0 + ((wave.loaded - clip.sourceIn) / per) * g.ppf;
-    if (loadedX < g.visR) {
+    const edge = loadedEdge(clip, project, wave.loaded);
+    const loadedX = g.x0 + edge.frame * g.ppf;
+    if (edge.pending === 'before') {
+      if (loadedX > g.visL) {
+        ctx.fillStyle = theme.pending;
+        ctx.fillRect(g.visL, g.top, Math.min(g.visR, loadedX) - g.visL, g.bodyH);
+      }
+    } else if (loadedX < g.visR) {
       ctx.fillStyle = theme.pending;
       ctx.fillRect(Math.max(g.visL, loadedX), g.top, g.visR - Math.max(g.visL, loadedX), g.bodyH);
     }

@@ -438,6 +438,20 @@ function handingOver(
   return { sound, stats };
 }
 
+/** `sound`, asked no more than `most` times: a read that asked without end would not fail but hang. */
+function askedAtMost(sound: Sounding, most: number): Sounding {
+  let asks = 0;
+  return {
+    get rate() {
+      return sound.rate;
+    },
+    buffers(from, to, report) {
+      if (++asks > most) throw new Error(`asked more than ${most} times`);
+      return sound.buffers(from, to, report);
+    },
+  };
+}
+
 /** The buffers of one read, and the stream samples they hold by their index in the stream. */
 async function read(retimed: Retimed, from: number, to: number) {
   const blocks: WrappedAudioBuffer[] = [];
@@ -918,7 +932,8 @@ describe('Retimed', () => {
           // A read that begins just before the change has given nothing when it meets it.
           const from = map.stream(cut + 0.01);
           const file = soundOver(joined);
-          const { blocks } = await read(new Retimed(file.sound, 0, map, keepPitch, buffer), from, from + 1.2);
+          const once = askedAtMost(file.sound, 4);
+          const { blocks } = await read(new Retimed(once, 0, map, keepPitch, buffer), from, from + 1.2);
           // Once anew for the change, and once more where that ask was not sized for the rate
           // the file begins with: the last ask is then the first again.
           const asks = file.stats.asked;
@@ -968,7 +983,7 @@ describe('Retimed', () => {
     const [before, after] = handOvers['22.05 to 44.1 kHz'];
     for (const keepPitch of [false, true]) {
       const page = handingOver(before, after, 2, { always: true });
-      const retimed = new Retimed(page.sound, 0, steady(1.5, 0.25), keepPitch, buffer);
+      const retimed = new Retimed(askedAtMost(page.sound, 8), 0, steady(1.5, 0.25), keepPitch, buffer);
       const first = await read(retimed, 2.3, 3.4);
       // Anew once, and before and after that once more for a rate the ask was not sized for:
       // four asks at most. This read did not know the rate, and its first ask allowed for any.

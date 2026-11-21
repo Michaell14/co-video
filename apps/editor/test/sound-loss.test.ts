@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyEdits, emptyProject, makeClip, makeTrack, type Clip, type Project } from '@tandem/core';
+import {
+  applyEdits,
+  emptyProject,
+  makeClip,
+  makeTrack,
+  mediaAt,
+  type Clip,
+  type Project,
+  type RampPoint,
+} from '@tandem/core';
 import type { AudioProblem } from '@tandem/engine';
 import { soundLossChip, soundLossNotice, soundLossSpoken } from '../src/features/library/fault';
 import { TimelineMedia } from '../src/features/timeline/mediaCache';
@@ -147,6 +156,51 @@ describe('sound the preview played a clip without', () => {
     expect(losses.of(p.clips.take, p)).toEqual([]);
   });
 
+  it('is, on a clip that is on a speed ramp, the place in the file the clip plays at that moment', () => {
+    // From half speed to double speed over the first ten seconds of the file.
+    const ramp: RampPoint[] = [
+      { m: 0, v: 0.5 },
+      { m: 10, v: 2 },
+    ];
+    const p = project({ ramp, sourceIn: 1, duration: 150 });
+    const take = p.clips.take;
+    const frame = (q: Project, losses: SoundLosses) => losses.of(q.clips.take, q).map((gap) => gap.frame);
+    // Wherever in the clip the silence falls, it is marked on the frame it fell on.
+    for (const f of [0, 1, 29, 75, 76, 133, 149]) {
+      const losses = new SoundLosses();
+      expect(losses.note(lost((60 + f) / 30), p)).toBe(true);
+      expect(frame(p, losses)).toEqual([60 + f]);
+    }
+    const losses = new SoundLosses();
+    losses.note(lost(2 + 75 / 30), p);
+    // The place is the one the ramp gives: half-way through a clip that gathers speed, well short
+    // of the middle of what it plays, where a clip at the average speed would be.
+    const m = mediaAt(take, 75, p);
+    expect((1 + mediaAt(take, 150, p)) / 2 - m).toBeGreaterThan(0.5);
+    // Taken off its ramp, the clip plays that second of its file at another frame.
+    const plain = change(p, { ramp: null, duration: 600 });
+    expect(frame(plain, losses)).toEqual([60 + Math.floor((m - 1) * 30 + 1e-6)]);
+    expect(frame(plain, losses)).not.toEqual([135]);
+    // A trim of the head moves the window and leaves the ramp: the mark stays on its frame.
+    const trimmed = change(p, { start: 90, duration: 120, sourceIn: mediaAt(take, 30, p) });
+    expect(frame(trimmed, losses)).toEqual([135]);
+    expect(losses.keep(trimmed)).toBe(false);
+    // Another ramp over the same media plays the place at another moment.
+    const slower = change(p, { ramp: [ramp[0], { m: 10, v: 1 }] });
+    expect(frame(slower, losses)[0]).toBeGreaterThan(135);
+    // Cut short before the place, or begun behind it, the clip no longer plays it. Cut on the
+    // very frame the silence fell on, the place is the second piece's, at its first frame.
+    const short = change(p, { duration: 75 });
+    const rest = change(p, { start: 135, duration: 75, sourceIn: m });
+    const late = change(p, { start: 136, duration: 74, sourceIn: mediaAt(take, 76, p) });
+    expect(frame(short, losses)).toEqual([]);
+    expect(frame(rest, losses)).toEqual([135]);
+    expect(frame(late, losses)).toEqual([]);
+    expect(frame(change(p, { duration: 76 }), losses)).toEqual([135]);
+    expect(losses.keep(late)).toBe(true);
+    expect(frame(p, losses)).toEqual([]);
+  });
+
   it('has no place for a clip that plays backwards, of which the mixer cannot say where', () => {
     const p = project({ reverse: true });
     const losses = new SoundLosses();
@@ -155,6 +209,15 @@ describe('sound the preview played a clip without', () => {
     expect(losses.of(p.clips.take, p)).toEqual([{ lost: 'stretch', frame: null, cause: CAUSE }]);
     // Wherever the clip is taken, it is the same clip played the same way round.
     expect(losses.keep(change(p, { start: 0, sourceIn: 1, duration: 60 }))).toBe(false);
+    // On a ramp as at one speed.
+    const ramp: RampPoint[] = [
+      { m: 0, v: 0.5 },
+      { m: 10, v: 2 },
+    ];
+    const ramped = project({ reverse: true, ramp });
+    const heard = new SoundLosses();
+    expect(heard.note(lost(undefined), ramped)).toBe(true);
+    expect(heard.of(ramped.clips.take, ramped)).toEqual([{ lost: 'stretch', frame: null, cause: CAUSE }]);
   });
 
   it('is said in a word or two on the clip, in a phrase where the clip is read out, and in a sentence beside it', () => {

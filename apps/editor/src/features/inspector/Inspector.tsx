@@ -761,6 +761,10 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
     const say = () => {
       const p = currentSession()?.store.get();
       if (!p) return;
+      // What there is to say is about the clips as the gesture left them. Something else may have
+      // re-timed them while the keys rested (a point removed, a preset): that has said its own.
+      const now = { ripple: !!g.ripple, markers: !!g.ripple?.from.markers, ramp: !!g.starts };
+      if (speedGesture(g, p, g.ids, now) !== g) return;
       const locked = retimeRefusal(p, g.ids, last);
       if (locked) {
         if (told.current !== g) toast(locked, 'info');

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { applyEdits, DEFAULT_TEXT, emptyProject, makeClip, makeTrack, type Project } from '@tandem/core';
-import { describeClip, describeSelection, spokenTime } from '../src/features/timeline/describe';
+import {
+  applyEdits,
+  DEFAULT_TEXT,
+  emptyProject,
+  makeClip,
+  makeTrack,
+  type Project,
+  type RampPoint,
+} from '@tandem/core';
+import { describeClip, describeSelection, rampSpeeds, spokenTime } from '../src/features/timeline/describe';
 
 function project(): Project {
   const v1 = makeTrack('video', 0);
@@ -93,6 +101,59 @@ describe('what the timeline says about clips', () => {
     );
     expect(describeClip(sound, 'A1', p.settings, { soundLost: null })).toBe(
       'dusk.mp4, A1, 0:02.00 to 0:05.10',
+    );
+  });
+
+  it('says of a clip on a speed ramp how slow and how fast it gets, whichever way it plays', () => {
+    const p = project();
+    // 40% at the top of the file, 500% two seconds in, 100% from four seconds on.
+    const ramp: RampPoint[] = [
+      { m: 0, v: 0.4 },
+      { m: 2, v: 5 },
+      { m: 4, v: 1 },
+    ];
+    const ramped = { ...p.clips.dusk, ramp };
+    expect(describeClip(ramped, 'V1', p.settings)).toBe(
+      'dusk.mp4, V1, 0:02.00 to 0:05.10, speed ramp 40% to 500%',
+    );
+    expect(describeClip({ ...ramped, reverse: true }, 'V1', p.settings)).toBe(
+      'dusk.mp4, V1, 0:02.00 to 0:05.10, speed ramp 40% to 500%',
+    );
+    // It comes before anything that is wrong with the clip.
+    expect(
+      describeClip({ ...ramped, enabled: false }, 'V1', p.settings, { offline: true, overlapping: true }),
+    ).toBe(
+      'dusk.mp4, V1, 0:02.00 to 0:05.10, speed ramp 40% to 500%, disabled, media offline, overlaps another clip',
+    );
+    expect(describeSelection({ ...p, clips: { ...p.clips, dusk: ramped } }, ['dusk', 'dusk-sound'])).toBe(
+      'dusk.mp4, V1, 0:02.00 to 0:05.10, speed ramp 40% to 500%, with its linked clip',
+    );
+    // Only the stretch the clip plays counts: ten frames from the fastest point, half-way down.
+    const piece = { ...ramped, sourceIn: 2, duration: 10 };
+    expect(rampSpeeds(piece, p.settings)).toBe('300% to 500%');
+    expect(describeClip(piece, 'V1', p.settings)).toBe(
+      'dusk.mp4, V1, 0:02.00 to 0:02.10, speed ramp 300% to 500%',
+    );
+    // A ramp that is level over that stretch is one figure, not a range from it to itself.
+    const level = { ...ramped, sourceIn: 5 };
+    expect(rampSpeeds(level, p.settings)).toBe('100%');
+    expect(describeClip(level, 'V1', p.settings)).toBe('dusk.mp4, V1, 0:02.00 to 0:05.10, speed ramp 100%');
+  });
+
+  it('says nothing of the speed of a clip that is on no ramp, as before', () => {
+    const p = project();
+    for (const patch of [{ speed: 2 }, { speed: 0.5, reverse: true }, { reverse: true }, { freeze: true }]) {
+      expect(describeClip({ ...p.clips.dusk, ...patch }, 'V1', p.settings)).toBe(
+        'dusk.mp4, V1, 0:02.00 to 0:05.10',
+      );
+    }
+    // A frozen frame has no ramp, whatever is left in the data.
+    const ramp: RampPoint[] = [
+      { m: 0, v: 0.4 },
+      { m: 2, v: 5 },
+    ];
+    expect(describeClip({ ...p.clips.dusk, freeze: true, ramp }, 'V1', p.settings)).toBe(
+      'dusk.mp4, V1, 0:02.00 to 0:05.10',
     );
   });
 

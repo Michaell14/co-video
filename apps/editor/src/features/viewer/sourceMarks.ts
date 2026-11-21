@@ -2,7 +2,7 @@
  * The marks of the source monitor: what I and O set, which stretch of a file they stand for, and
  * what is kept of a file between two looks at it. All times are seconds into the file.
  */
-import { clamp, sourcePerFrame, type Clip, type ID, type Project } from '@tandem/core';
+import { clamp, sourceSpan, type Clip, type ID, type Project } from '@tandem/core';
 import { useUI, type SourceMarks } from '../../state/ui';
 
 /** A file the monitor has not shown yet: all of it, from the top. */
@@ -44,8 +44,9 @@ export function markedRange(
 export function clipMarks(clip: Clip, p: Project): Pick<SourceMarks, 'in' | 'out'> | null {
   const asset = clip.assetId ? p.assets[clip.assetId] : undefined;
   if (!asset || asset.kind === 'image' || asset.duration <= 0) return null;
-  const start = clamp(clip.sourceIn, 0, asset.duration);
-  const end = clamp(clip.sourceIn + clip.duration * sourcePerFrame(clip, p), 0, asset.duration);
+  const span = sourceSpan(clip, p);
+  const start = clamp(span.in, 0, asset.duration);
+  const end = clamp(span.out, 0, asset.duration);
   return end > start ? { in: start, out: end } : null;
 }
 

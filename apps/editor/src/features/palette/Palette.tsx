@@ -280,6 +280,8 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             ['Move a keyframe', 'Drag its mark on the selected clip'],
             ['Clip volume', 'Drag the level line of a selected clip'],
             ['Volume keyframe', 'Ctrl / ⌘ + click the level line'],
+            ['Move a ramp point', 'Drag it in the inspector’s graph'],
+            ['Add or remove a ramp point', 'Double-click the graph'],
             ['Source monitor to timeline', 'Drag the file’s name'],
             ['Type into a title', 'Double-click it in the viewer'],
             ['Disable snapping', 'Hold Shift while dragging'],

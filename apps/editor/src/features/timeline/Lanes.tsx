@@ -34,10 +34,12 @@ import {
   overlappingClips,
   placeClips,
   pasteClips,
+  RAMP_SHAPE_NAMES,
   rippleCloseGap,
   rippleTrim,
   rollEdit,
   separateClips,
+  shapeOf,
   slipClips,
   snapPoints,
   snapTo,
@@ -53,6 +55,7 @@ import {
   type ID,
   type OpResult,
   type Project,
+  type RampShape,
 } from '@tandem/core';
 import { decoderGap } from '@tandem/engine';
 import { usePeers, useProject, useSession, useSessionMeta } from '../../session/hooks';
@@ -75,7 +78,7 @@ import { insideRect, onDrop, useDrag, type DragPayload } from '../../ui/dnd';
 import { usingKeyboard } from '../../ui/layers';
 import { faultChip, soundLossChip } from '../library/fault';
 import { editEntry, useCanEdit } from './access';
-import { describeClip, describeSelection } from './describe';
+import { describeClip, describeSelection, rampSpeeds } from './describe';
 import { EdgeScroller, laneAxis, timeAxis } from './edgeScroll';
 import { keyframeRange, keyframeTimes, moveKeyframes, removeKeyframes } from './keyframes';
 import { drawLane } from './laneCanvas';
@@ -1817,6 +1820,21 @@ function clipMenu(p: Project, id: ID, at: MenuAt, editable: boolean): MenuEntry[
     { label: 'Go to in', keys: shortcutOf('go-in'), onSelect: () => cmd.goToRange('in') },
     { label: 'Go to out', keys: shortcutOf('go-out'), onSelect: () => cmd.goToRange('out') },
   ];
+  // The ramp the clip is on is the checked one: a ready-made shape, or none. A ramp that was
+  // shaped by hand is none of them.
+  const ramps = (): MenuEntry[] => {
+    const shape = c.ramp ? shapeOf(c.ramp, c.reverse) : null;
+    return [
+      { label: 'None', checked: !c.ramp, onSelect: () => cmd.setRamp('none') },
+      ...(Object.keys(RAMP_SHAPE_NAMES) as RampShape[]).map((name) => ({
+        label: RAMP_SHAPE_NAMES[name],
+        checked: shape === name,
+        onSelect: () => cmd.setRamp(name),
+      })),
+      'separator',
+      { label: 'Add point at playhead', onSelect: () => void cmd.addRampPoint() },
+    ];
+  };
   const hasFile = !!c.assetId && !!p.assets[c.assetId];
   const labels: MenuEntry[] = [
     'separator',
@@ -1858,14 +1876,24 @@ function clipMenu(p: Project, id: ID, at: MenuAt, editable: boolean): MenuEntry[
             disabled: ui.selection.length < 2,
           },
     ),
+    // Turning a clip round is not a change of speed: it leaves a ramp, and every length, alone.
     timed &&
       edit({
         label: c.reverse ? 'Play forwards' : 'Reverse',
-        onSelect: () => cmd.setSpeed(c.speed, !c.reverse),
+        onSelect: () => cmd.setReverse(!c.reverse),
       }),
     timed && edit({ label: 'Speed: 50%', onSelect: () => cmd.setSpeed(0.5) }),
     timed && edit({ label: 'Speed: 100%', onSelect: () => cmd.setSpeed(1) }),
     timed && edit({ label: 'Speed: 200%', onSelect: () => cmd.setSpeed(2) }),
+    // A step away, like the two further down, and as a whole out of reach of someone who may not edit.
+    timed && (editable ? further('Speed ramp…', at, ramps) : { label: 'Speed ramp…', disabled: true }),
+    timed &&
+      c.type === 'audio' &&
+      edit({
+        label: 'Keep pitch',
+        checked: c.keepPitch === true,
+        onSelect: () => cmd.setKeepPitch(c.keepPitch !== true),
+      }),
     c.type === 'audio' &&
       edit({ label: 'Normalise loudness (−14 LUFS)', onSelect: () => void cmd.normalizeLoudness(-14) }),
     // Only there for a clip that shares frames with another: two people placed them at one moment.
@@ -2152,7 +2180,14 @@ const ClipView = memo(function ClipView({
               Freeze
             </span>
           )}
-          {!clip.freeze && (clip.speed !== 1 || clip.reverse) && (
+          {!clip.freeze && clip.ramp && (
+            <span className="clip__chip" title={`Speed ramp, ${rampSpeeds(clip, settings)}`}>
+              <Gauge />
+              {clip.reverse ? '−' : ''}
+              Ramp
+            </span>
+          )}
+          {!clip.freeze && !clip.ramp && (clip.speed !== 1 || clip.reverse) && (
             <span className="clip__chip">
               <Gauge />
               {clip.reverse ? '−' : ''}

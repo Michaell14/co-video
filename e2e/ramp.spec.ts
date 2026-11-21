@@ -698,6 +698,42 @@ test.describe('the ramp graph by keyboard', () => {
     await expect(point(page, 2, 2)).toBeFocused();
   });
 
+  test('what a run of keys left behind is not said once something else has changed the clip', async ({
+    page,
+  }) => {
+    await sample(page);
+    const fractal = await named(page, 'fractal.mp4');
+    await show(page, [fractal.id]);
+    await chip(page, 'Custom').click();
+    await seek(page, fractal.start + 60);
+    await speed(page).getByRole('button', { name: 'Add point' }).click();
+    const level = await clip(page, fractal.id);
+    expect(level.ramp!.map((q) => q.v)).toEqual([1, 1, 1]);
+    const offer = 'The next clip is in the way';
+
+    // The first point is taken down to a quarter: the clip would run on into the next shot, and
+    // once the keys have rested the panel says so.
+    await point(page, 1, 3).focus();
+    await burst(page, ['PageDown', 'PageDown']);
+    expect(await clip(page, fractal.id)).toMatchObject({ duration: 120 });
+    expect((await clip(page, fractal.id)).ramp![0].v).toBe(0.25);
+    expect(await said(page, offer)).toHaveLength(0);
+    await expect.poll(() => said(page, offer), { timeout: 5_000 }).toHaveLength(1);
+    await undo(page);
+    expect(await clip(page, fractal.id)).toEqual(level);
+
+    // The same run, and the point removed before the keys have rested: the clip is level again,
+    // over the media the next shot had left it, with room to spare. Nothing is said about a
+    // state that is no longer there.
+    await point(page, 1, 3).focus();
+    await burst(page, ['PageDown', 'PageDown', 'Delete']);
+    const flat = await clip(page, fractal.id);
+    expect(flat.ramp!.map((q) => q.v)).toEqual([1, 1]);
+    expect(flat.duration).toBeLessThan(120);
+    await page.waitForTimeout(1_800);
+    expect(await said(page, offer)).toHaveLength(1);
+  });
+
   test('Add point hands the keyboard to the new point, and a press on a dot leaves it alone', async ({
     page,
   }) => {

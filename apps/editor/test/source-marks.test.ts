@@ -6,9 +6,11 @@ import {
   makeClip,
   makeTrack,
   secondsToFrame,
+  sourceSpan,
   type Asset,
   type Clip,
   type Project,
+  type RampPoint,
 } from '@tandem/core';
 import {
   clipMarks,
@@ -96,6 +98,32 @@ describe('clipMarks', () => {
   it('ends with the file', () => {
     const { p, clip } = project({ sourceIn: 9, duration: 90 });
     expect(clipMarks(clip, p)).toEqual({ in: 9, out: 10 });
+  });
+
+  it('is the stretch a clip on a speed ramp plays, whichever way it plays it, kept within the file', () => {
+    // From half speed to four times the speed between seconds 1 and 5 of the file: 16/9 s.
+    const ramp: RampPoint[] = [
+      { m: 1, v: 0.5 },
+      { m: 5, v: 4 },
+    ];
+    const on = project({ sourceIn: 1, ramp });
+    const out = sourceSpan(on.clip, on.p).out;
+    // Two seconds of clip: the ease, and what is left of them at four times the speed.
+    expect(out).toBeCloseTo(5 + (2 - 16 / 9) * 4, 9);
+    expect(clipMarks(on.clip, on.p)).toEqual({ in: 1, out });
+    const back = project({ sourceIn: 1, ramp, reverse: true });
+    expect(clipMarks(back.clip, back.p)).toEqual({ in: 1, out });
+    // A clip at the average speed would be marked a second short of that: a ramp has no one speed.
+    expect(clipMarks({ ...on.clip, ramp: null, speed: 2 }, on.p)).toEqual({ in: 1, out: 5 });
+
+    const long = project({ sourceIn: 1, ramp, duration: 120 });
+    expect(sourceSpan(long.clip, long.p).out).toBeGreaterThan(10);
+    expect(clipMarks(long.clip, long.p)).toEqual({ in: 1, out: 10 });
+    // A document can hold an in point before its file: the marks begin where the file does.
+    const early = project({ sourceIn: -0.5, ramp });
+    expect(clipMarks(early.clip, early.p)).toEqual({ in: 0, out: sourceSpan(early.clip, early.p).out });
+    const never = project({ sourceIn: -30, ramp });
+    expect(clipMarks(never.clip, never.p)).toBeNull();
   });
 
   it('marks nothing for a frozen frame, a still or a clip without media', () => {

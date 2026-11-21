@@ -2,7 +2,9 @@
 import {
   clipEnd,
   displayTracks,
+  emptyProject,
   formatTimecode,
+  speedRange,
   trackLabel,
   type Clip,
   type ID,
@@ -25,6 +27,17 @@ export function clipName(clip: Clip): string {
   return clip.name || clip.type;
 }
 
+/**
+ * The slowest and the fastest a clip on a speed ramp plays over the stretch it shows, as it is
+ * said and written: "40% to 500%", or one figure for a ramp that is level there.
+ */
+export function rampSpeeds(clip: Clip, settings: Project['settings']): string {
+  // Of a project, the clip's clock asks for nothing but the frame rate.
+  const { lo, hi } = speedRange(clip, emptyProject(settings));
+  const [slowest, fastest] = [Math.round(lo * 100), Math.round(hi * 100)];
+  return slowest === fastest ? `${slowest}%` : `${slowest}% to ${fastest}%`;
+}
+
 /** What is wrong with a clip, in the words that follow its name: nothing, for most clips. */
 export interface ClipTrouble {
   /** Its media cannot be had, on this device or from the server. */
@@ -39,7 +52,10 @@ export interface ClipTrouble {
   overlapping?: boolean;
 }
 
-/** A clip in words: its name, its track and the time it takes up, and anything wrong with it. */
+/**
+ * A clip in words: its name, its track and the time it takes up, the ramp its speed is on, and
+ * anything wrong with it.
+ */
 export function describeClip(
   clip: Clip,
   track: string,
@@ -51,6 +67,7 @@ export function describeClip(
     track,
     `${spokenTime(clip.start, settings)} to ${spokenTime(clipEnd(clip), settings)}`,
   ];
+  if (clip.ramp && !clip.freeze) parts.push(`speed ramp ${rampSpeeds(clip, settings)}`);
   if (!clip.enabled) parts.push('disabled');
   if (trouble.offline) parts.push('media offline');
   if (trouble.undecodable) {

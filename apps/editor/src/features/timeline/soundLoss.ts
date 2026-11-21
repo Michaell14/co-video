@@ -7,7 +7,15 @@
  * clip, one of a kind, so that the clip can say it where it lies: with a mark on the timeline, in
  * its read-out, and in the inspector.
  */
-import { clipEnd, secondsToFrames, sourcePerFrame, type Clip, type ID, type Project } from '@tandem/core';
+import {
+  clipEnd,
+  frameOfMedia,
+  mediaAt,
+  secondsToFrames,
+  type Clip,
+  type ID,
+  type Project,
+} from '@tandem/core';
 import type { AudioProblem } from '@tandem/engine';
 
 /** A part of a clip's sound with sound behind it, or everything from some place on. */
@@ -44,10 +52,6 @@ interface Heard {
   losses: Partial<Record<SoundLossKind, Loss>>;
 }
 
-/** How many frames into the clip it plays `source`, whether or not it reaches that far. */
-const localFrame = (clip: Clip, project: Project, source: number): number =>
-  (source - clip.sourceIn) / sourcePerFrame(clip, project);
-
 /** Whether the clip is still the one the mixer spoke of: the same file, played the same way round. */
 const same = (heard: Heard, clip: Clip | undefined): clip is Clip =>
   !!clip && clip.type === 'audio' && clip.assetId === heard.assetId && clip.reverse === heard.reverse;
@@ -55,7 +59,11 @@ const same = (heard: Heard, clip: Clip | undefined): clip is Clip =>
 /** Whether the clip, as it is now, plays the place in its file where the silence begins. */
 function plays(clip: Clip, project: Project, loss: Loss): boolean {
   if (loss.source === null) return true;
-  const at = localFrame(clip, project, loss.source);
+  // How many frames into the clip it plays the place, whether or not it reaches that far.
+  const at = frameOfMedia(clip, loss.source, project);
+  // Along a ramp the way back from a place to its frame is found by iteration, and comes out a
+  // hair to either side of a whole frame: a place where the clip ends is not one it plays.
+  if (clip.ramp) return at > -1e-6 && at < clip.duration - 1e-6;
   return at > -1e-6 && at < clip.duration;
 }
 
@@ -72,11 +80,12 @@ export class SoundLosses {
     if (problem.reason !== 'decode-error' || !clip || clip.assetId !== problem.assetId) return false;
     // Nothing of what was asked for is, to a clip that was entered part-way, the rest of it.
     const kind: SoundLossKind = problem.lost === 'stretch' ? 'stretch' : 'rest';
+    // The mixer plays a clip on a ramp by the clip's own clock, and says where on the timeline
+    // the silence fell: the same clock gives the place in the file.
     const source =
       problem.at === undefined || clip.reverse
         ? null
-        : clip.sourceIn +
-          (secondsToFrames(problem.at, project.settings) - clip.start) * sourcePerFrame(clip, project);
+        : mediaAt(clip, secondsToFrames(problem.at, project.settings) - clip.start, project);
     let heard = this.heard.get(clip.id);
     if (!heard || !same(heard, clip)) {
       heard = { assetId: problem.assetId, reverse: clip.reverse, losses: {} };
@@ -110,7 +119,7 @@ export class SoundLosses {
           ? null
           : Math.min(
               clipEnd(clip) - 1,
-              clip.start + Math.max(0, Math.floor(localFrame(clip, project, loss.source) + 1e-6)),
+              clip.start + Math.max(0, Math.floor(frameOfMedia(clip, loss.source, project) + 1e-6)),
             );
       gaps.push({ lost, frame, cause: loss.cause });
     }
