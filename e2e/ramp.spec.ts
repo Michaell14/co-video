@@ -456,6 +456,43 @@ test.describe('the ramp graph by pointer', () => {
     await expect(points(page)).toHaveCount(2);
   });
 
+  test('a point left beyond what the clip plays is out of reach until there is room for it', async ({
+    page,
+  }) => {
+    await sample(page);
+    const dusk = await named(page, 'dusk.mp4');
+    await show(page, [dusk.id]);
+    await chip(page, 'Montage').click();
+    const montage = await clip(page, dusk.id);
+    expect(montage.duration).toBeLessThan(120);
+    await expect(points(page)).toHaveCount(6);
+    const remove = speed(page).getByRole('button', { name: 'Remove point' });
+    const chosen = speed(page).locator('.ramp__pt[data-chosen]');
+
+    // The fifth point is taken down: the clip would run on past the next shot, which holds it at
+    // its length. In hand, the point is the chosen one and stays where the pointer is.
+    const at = await dot(page, 4);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    for (let dy = 10; dy <= 50; dy += 10) await page.mouse.move(at.x, at.y + dy);
+    await expect(chosen.locator('[aria-label="Ramp point 5 of 6"]')).toHaveCount(1);
+    await page.mouse.up();
+    const short = await clip(page, dusk.id);
+    expect(short.duration).toBe(120);
+    expect(short.ramp![4].v).toBeLessThan(1);
+    // Let go, the clip ends before it gets to the point. A point that is not shown is not the
+    // chosen one, and is not removed unseen.
+    await expect(points(page)).toHaveCount(4);
+    await expect(chosen).toHaveCount(0);
+    await expect(remove).toBeDisabled();
+    // Room made, the point is there again, and the chosen one as it was.
+    await toast(page, 'The next clip is in the way').getByRole('button', { name: 'Make room' }).click();
+    await expect(points(page)).toHaveCount(6);
+    await expect(chosen.locator('[aria-label="Ramp point 5 of 6"]')).toHaveCount(1);
+    await remove.click();
+    expect((await clip(page, dusk.id)).ramp).toEqual(short.ramp!.filter((_, i) => i !== 4));
+  });
+
   test('a point stops at its neighbour, and Shift keeps it from snapping to 100%', async ({ page }) => {
     await sample(page);
     const aurora = await named(page, 'aurora.mp4');
@@ -698,7 +735,7 @@ test.describe('the ramp graph by keyboard', () => {
     await expect(point(page, 2, 2)).toBeFocused();
   });
 
-  test('what a run of keys left behind is not said once something else has changed the clip', async ({
+  test('what a run of keys left behind is said when they rest, unless the clip has changed again', async ({
     page,
   }) => {
     await sample(page);
@@ -711,14 +748,16 @@ test.describe('the ramp graph by keyboard', () => {
     expect(level.ramp!.map((q) => q.v)).toEqual([1, 1, 1]);
     const offer = 'The next clip is in the way';
 
-    // The first point is taken down to a quarter: the clip would run on into the next shot, and
-    // once the keys have rested the panel says so.
+    // The first point is taken down to a quarter: the clip would run on into the next shot.
     await point(page, 1, 3).focus();
     await burst(page, ['PageDown', 'PageDown']);
     expect(await clip(page, fractal.id)).toMatchObject({ duration: 120 });
     expect((await clip(page, fractal.id)).ramp![0].v).toBe(0.25);
     expect(await said(page, offer)).toHaveLength(0);
-    await expect.poll(() => said(page, offer), { timeout: 5_000 }).toHaveLength(1);
+    // When the keys have rested the graph lets go of the stretch it held, and the last point lies
+    // beyond what the clip now plays. That is when the panel says so, not a while after.
+    await expect(points(page)).toHaveCount(2);
+    expect(await said(page, offer)).toHaveLength(1);
     await undo(page);
     expect(await clip(page, fractal.id)).toEqual(level);
 
@@ -784,6 +823,56 @@ test.describe('the ramp graph by keyboard', () => {
     await page.keyboard.press('ArrowRight');
     expect(await frame(page)).toBe(stood + 1);
     expect((await clip(page, aurora.id)).ramp).toEqual(bullet.ramp);
+  });
+
+  test('the keyboard is handed to a point once, and not again when the graph comes back', async ({
+    page,
+  }) => {
+    await sample(page);
+    const aurora = await named(page, 'aurora.mp4');
+    const dusk = await named(page, 'dusk.mp4');
+    await show(page, [aurora.id]);
+    await chip(page, 'Hero').click();
+    const hero = await clip(page, aurora.id);
+    await seek(page, aurora.start + 50);
+    await speed(page).getByRole('button', { name: 'Add point' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(point(page, 4, 7)).toBeFocused();
+    const more = await clip(page, aurora.id);
+    const head = inspector(page).locator('.section__head', { hasText: 'Speed' });
+
+    // The keyboard goes on to the head of the section, which folds it and unfolds it again.
+    const fold = async () => {
+      await head.focus();
+      await page.keyboard.press('Enter');
+      await expect(head).toHaveAttribute('aria-expanded', 'false');
+      await page.keyboard.press('Enter');
+    };
+    await fold();
+    await expect(points(page)).toHaveCount(7);
+    await expect(head).toBeFocused();
+    // Another clip is selected, and this one again.
+    await select(page, [dusk.id]);
+    await expect(plot(page)).toHaveCount(0);
+    await select(page, [aurora.id]);
+    await expect(points(page)).toHaveCount(7);
+    await expect(head).toBeFocused();
+    // The ramp is taken off with the pointer, and undo brings it back.
+    await chip(page, 'None').click();
+    await expect(plot(page)).toHaveCount(0);
+    await page.keyboard.press('Control+z');
+    await expect(points(page)).toHaveCount(7);
+    await expect(chip(page, 'None')).toBeFocused();
+    expect(await clip(page, aurora.id)).toEqual(more);
+
+    // The same for the point that Remove point went on to.
+    await speed(page).getByRole('button', { name: 'Remove point' }).focus();
+    await page.keyboard.press('Enter');
+    expect(await clip(page, aurora.id)).toEqual(hero);
+    await expect(point(page, 4, 6)).toBeFocused();
+    await fold();
+    await expect(points(page)).toHaveCount(6);
+    await expect(head).toBeFocused();
   });
 });
 
@@ -867,15 +956,26 @@ test.describe('what the ramp graph shows', () => {
     // still there, and are shown again when the clip is trimmed back out.
     await select(page, [aurora.id]);
     await seek(page, hero.start);
+    const second = await dot(page, 1);
+    await page.mouse.click(second.x, second.y);
+    const chosen = speed(page).locator('.ramp__pt[data-chosen]');
+    const remove = speed(page).getByRole('button', { name: 'Remove point' });
+    await expect(chosen.locator('[aria-label="Ramp point 2 of 6"]')).toHaveCount(1);
+    await expect(remove).toBeEnabled();
     await page.evaluate(() => (window as any).tandem.cmd.trimEdge(20));
     const trimmed = await clip(page, aurora.id);
     expect(trimmed.sourceIn).toBeGreaterThan(1.2);
     expect(trimmed.ramp).toEqual(hero.ramp);
     await expect(points(page)).toHaveCount(4);
     await expect(point(page, 1, 4)).toHaveAttribute('aria-valuenow', '30');
+    // The chosen point is one of those: no point is marked, and there is none to remove.
+    await expect(chosen).toHaveCount(0);
+    await expect(remove).toBeDisabled();
     await page.evaluate(() => (window as any).tandem.cmd.trimEdge(-20));
     expect((await clip(page, aurora.id)).sourceIn).toBeCloseTo(0, 9);
     await expect(points(page)).toHaveCount(6);
+    await expect(chosen.locator('[aria-label="Ramp point 2 of 6"]')).toHaveCount(1);
+    await expect(remove).toBeEnabled();
 
     // Turned round, the clip plays the end of its media first: the graph is the mirror image.
     await chip(page, 'Flash in').click();

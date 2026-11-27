@@ -284,7 +284,10 @@ export class Retimed implements Sounding {
    * WebCodecs decoder can give a few buffers in one format and hand over to the browser's own,
    * which gives another, and every read after that one is decoded by the browser's own from its
    * first buffer (see `Sound`). Begun anew, the read is such a read: one series, in ascending
-   * order. Sound that changes again in the same place is given as two series.
+   * order. Sound that changes again in the same place is given as two series, and so is a change
+   * met once a buffer has been given. The first buffer is given when the file is decoded as far as
+   * it reaches, and one that lies in front of the file, where a read begins a little before a
+   * file's first sample, reaches no further than the first of the file's sound.
    */
   async *buffers(
     from: number,

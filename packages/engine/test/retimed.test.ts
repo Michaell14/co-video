@@ -920,6 +920,54 @@ describe('Retimed', () => {
     }
   });
 
+  it('gives two series where the read begins before the file and the first decoder gave the first of its sound', async () => {
+    // A voice that converts asks from a kernel's reach before what it plays. For a clip that
+    // starts on its file's first sample the read then begins in the buffer in front of the file,
+    // and that one is complete, and given, with the first of the file's sound: as much of it as a
+    // kernel reaches where pitch follows speed, 27.5 ms where it is kept. The same read from
+    // second 0 has a whole buffer of the stream to make first, and begins anew (see above).
+    const from = -0.001;
+    const format = (wb: WrappedAudioBuffer) => `${wb.buffer.sampleRate}/${wb.buffer.numberOfChannels}`;
+    for (const [what, [before, after]] of Object.entries(handOvers)) {
+      const { sampleRate: rate, numberOfChannels } = before[0].buffer;
+      // The packet a decoder gives in front of the file's sound: it ends on the first sample.
+      const front = decoded(
+        Array.from({ length: numberOfChannels }, () => new Float32Array(1024)),
+        { rate, at: -1024 },
+      );
+      for (const keepPitch of [false, true]) {
+        for (const map of [steady(0.5, 0), steady(1.5, 0), ramp(sixPoints, 0)]) {
+          const note = `${what}, keep pitch ${keepPitch}`;
+          const later = await read(new Retimed(soundOver(after).sound, 0, map, keepPitch, buffer), from, 1.2);
+          // Nothing of the file's sound from the first decoder: no buffer is complete yet.
+          const silent = handingOver([...front, ...before], after, 1);
+          const anew = await read(new Retimed(silent.sound, 0, map, keepPitch, buffer), from, 1.2);
+          expect(silent.stats.asked, note).toHaveLength(2);
+          expect(told(anew.blocks), note).toEqual(told(later.blocks));
+          // Two packets of it, 43 ms at 48 kHz: the buffer in front of the file has been given.
+          const page = handingOver(before, after, 2);
+          const { blocks } = await read(new Retimed(page.sound, 0, map, keepPitch, buffer), from, 1.2);
+          expect(page.stats.asked, note).toHaveLength(1);
+          expect(page.stats.open, note).toBe(0);
+          const one = blocks.filter((wb) => format(wb) === format(before[0]));
+          const two = blocks.filter((wb) => format(wb) === format(after[0]));
+          expect(one[0].timestamp, note).toBe(-BLOCK / rate);
+          expect(two.length, note).toBeGreaterThan(5);
+          expect(blocks, note).toEqual([...one, ...two]);
+          // As the sound of a file that changes there is read.
+          const cut = before[1].timestamp + before[1].duration;
+          const joint = soundOver(
+            [...before.slice(0, 2), ...after.filter((wb) => wb.timestamp >= cut - 1e-3)],
+            null,
+          );
+          const same = await read(new Retimed(joint.sound, 0, map, keepPitch, buffer), from, 1.2);
+          expect(joint.stats.asked, note).toEqual(page.stats.asked);
+          expect(told(blocks), note).toEqual(told(same.blocks));
+        }
+      }
+    }
+  });
+
   it('gives two series, having begun anew once, where the sound changes in the same place however often it is decoded', async () => {
     for (const [what, [before, after]] of Object.entries(handOvers)) {
       // The file itself changes format two and a half seconds in.
