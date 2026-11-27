@@ -273,18 +273,12 @@ the store decides what the step still means:
   where the undo manager has itself put the sound's start back (a second move, both undone), and not
   for a trim of the head; after each of these such a sound can be out of step with its picture. A
   sound that would have to begin before the timeline does stays where it is.
-- The ramp and the length that a change of speed or ramp gave a clip are taken back together
-  (`keepRetimes`, when the step is settled and before it is re-timed). For a step that had set the
-  clip's speed or ramp: where the undo or redo has put back the length and not the ramp, the clip
-  must play, on the ramp it is on, the stretch it plays on the ramp the step had found it on, to
-  within what one frame plays, so that a ramp set at the same moment on the old length stands with
-  it and one set since on the new length does not; where it has put a ramp back for the clip to be
-  on and not the length, the step must have left the length alone. A clip that fails is written back
-  as the undo found it, in every field the undo wrote, within the same step, and a step of which
-  nothing else was taken back is not filed and counts in `StepOutcome.dropped`. A trim or a move,
-  and a clip that is on no ramp and was on none for the step, are not looked at. It does not reach
-  the undo of a ramp edit that left the length alone (None from a level ramp) after the speed under
-  it has changed, nor a speed taken back underneath someone else's ramp.
+- A change of speed or of ramp is taken back value by value like any other step: nothing holds the
+  length it gave a clip to the ramp the clip is on. When someone else has since edited the ramp
+  without changing the length, the undo puts the old length back under their ramp and the step
+  counts as taken; the redo of a change made before their ramp or their trim does the same the other
+  way round. The README lists this among its limits, and `packages/core/test/undo.test.ts` states
+  the case with its figures.
 
 Undo and redo put values back as they were written, and a frame number names a moment only at the
 frame rate it was written at. Every step is therefore stamped with the rate it was recorded at, and

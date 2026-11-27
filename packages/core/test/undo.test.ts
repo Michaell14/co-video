@@ -1938,8 +1938,7 @@ describe('undo of a move or a trim after someone else changed the ramp of the cl
 describe('undo of a change of speed or ramp after someone else changed the ramp or the length of the clip', () => {
   /**
    * A take that plays seconds 1 to 5 of its file: its picture on V1 and its sound on A1, linked.
-   * Nobody's step has put it there: an undo that finds nothing left of a step goes on to the step
-   * before it, and here there is none.
+   * Nobody's step has put it there, so the only steps to take back are the ones a test makes.
    */
   function pair(s: ProjectStore) {
     const v1 = tracksOf(s.get()).video[0];
@@ -1985,7 +1984,7 @@ describe('undo of a change of speed or ramp after someone else changed the ramp 
     [1, 5],
   ];
 
-  it('gives the old length back under a ramp that someone else has set since without changing the length: the clips then play media they did not hold', () => {
+  it('gives the old length back under a ramp that someone else has set since without changing the length: the clips then play more media than they held, or less', () => {
     // What undo is left with in this order of work, stated so that it is not forgotten. "Custom"
     // writes the ramp and nothing else, so the length is still the change of speed's to take
     // back, and it is taken back like any other value: nothing looks at whether a length and the

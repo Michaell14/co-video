@@ -566,22 +566,28 @@ Three ideas carry most of the weight:
   frames). Undo of a trim of the head does not put such a sound right: measured after Ramp up and
   after Bullet it was 0.5 to 2.9 s out of step with its picture or shared no frame with it, and
   after Hero it was in step.
-- A change of speed or a shape is undone, and redone, only where the length it gave the clip still
-  belongs to the ramp the clip is on. Once someone else has edited that ramp without changing the
-  length (Custom, Add point, a point dragged), your old length would play media the clip never held,
-  so Undo leaves the clip as it is; so does an Undo or Redo that would put a ramp back on a clip
-  someone else has trimmed or retimed since. Undo then goes on to your step before it and says so,
-  as for any step that someone else has replaced whole. A ramp that someone set at the very same
-  moment, not having seen your change, is no hindrance: your Undo then gives the clip its whole
-  stretch back under their ramp.
-- Four orders of work between two people are not caught, and nothing is said until the speed or
-  the shape is set anew: Undo of “None” after someone else has taken back the speed under it (Keep
-  pitch is then off as well); Undo of your speed under someone else's shape that changed the
-  length, followed by their Undo of the shape; Undo of a shape after someone else has trimmed the
-  clip, which takes the ramp off and leaves their length at 100 %; and, on a clip that is on no
-  ramp, Undo of a speed after someone else has trimmed the clip, which is as it always was. Each
-  leaves the clip at a speed and a length that do not belong together, so that it plays more or
-  less media than it held (measured: a clip that held 3 to 4 s playing 0.7 to 8 s of media).
+- Undo and Redo put back each value of your step that nobody else has written since, and nothing
+  holds a clip's length to the ramp it is on. So once someone else has edited a clip's ramp without
+  changing its length (Custom, Add point, a point dragged), Undo of your change of speed or of your
+  shape gives the clip its old length under their ramp, and nothing is said: the clip then plays
+  more media than it held, or less (measured on a clip that held 4 s: 5 s after 125 % and their
+  Custom, 8 s after 200 %, 2 s after 50 %, 19.4 s after Bullet and their Add point; where the file
+  ends first, the picture stands on its last frame). Redo does the same the other way round when
+  someone has put the clip on a ramp, or trimmed it, between your Undo and your Redo. With ripple
+  editing the clips and markers after the clip move back with the length, so no gap opens and
+  nothing overlaps. The opposite press puts the clip right: Redo after such an Undo, Undo after such
+  a Redo. Failing that, trim its end to where its media ended; a speed or a shape set anew does not
+  do it, because it is made on the stretch the clip plays by then. A ramp that someone set at the
+  very same moment, not having seen your change, is not affected: your Undo then gives the clip its
+  whole stretch back under their ramp.
+- Four more orders of work between two people end the same way, and nothing is said: Undo of “None”
+  after someone else has taken back the speed under it (Keep pitch is then off as well); Undo of
+  your speed under someone else's shape that changed the length, followed by their Undo of the
+  shape; Undo of a shape after someone else has trimmed the clip, which takes the ramp off and
+  leaves their length at 100 %; and, on a clip that is on no ramp, Undo of a speed after someone
+  else has trimmed the clip. Each leaves the clip at a speed and a length that do not belong
+  together, so that it plays more or less media than it held (measured: a clip that held 3 to 4 s
+  playing 0.7 to 8 s of media).
 - Undo of the change that first switched Keep pitch on leaves it on under a speed or a ramp that
   someone else has set since, and it then stays on when they take theirs back as well. Where nothing
   else of your step is left, Undo goes on to your step before it, as for any step that someone else
