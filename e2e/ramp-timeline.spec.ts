@@ -405,6 +405,43 @@ test.describe('speed ramps on the timeline', () => {
     await expect(speedChip(page, dusk)).toHaveCount(0);
   });
 
+  test("a point added from the menu of one of several selected clips is that clip's, where the playhead is", async ({
+    page,
+  }) => {
+    await sampleProject(page);
+    await zoom(page, 3);
+    const [dusk, fractal, aurora] = await idsOf(page, 'video');
+    // With ripple editing a point that changed the first shot's length would move the others.
+    await page.evaluate(() => (window as any).tandem.ui.getState().set({ rippleMode: true }));
+    await setRamp(page, [dusk], 'hero');
+    await setRamp(page, [aurora], 'hero');
+    await select(page, [dusk, aurora]);
+    const found = await project(page);
+    await seek(page, found.clips[aurora].start + 75);
+    const depth = await undoDepth(page);
+
+    await openRamps(page, aurora);
+    await menuItem(page, 'Add point at playhead').click();
+    const pointed = await project(page);
+    const shown = Math.round(sourceTimeAt(found.clips[aurora], 75, found) * 1e6) / 1e6;
+    expect(pointed.clips[aurora].ramp).toHaveLength(7);
+    expect(pointed.clips[aurora].ramp!.map((q) => q.m)).toContain(shown);
+    // The other selected clip is not the menu's: it keeps its ramp and its length, and nothing moves.
+    expect(pointed.clips[dusk]).toEqual(found.clips[dusk]);
+    expect(pointed.clips[fractal]).toEqual(found.clips[fractal]);
+    expect(pointed.clips[aurora].start).toBe(found.clips[aurora].start);
+    expect(await undoDepth(page)).toBe(depth + 1);
+    expect(await page.evaluate(() => (window as any).tandem.ui.getState().selection)).toEqual([dusk, aurora]);
+
+    // The menu of the other clip adds to that one: the playhead is not on it, so in its widest gap.
+    await openRamps(page, dusk);
+    await menuItem(page, 'Add point at playhead').click();
+    const both = await project(page);
+    expect(both.clips[dusk].ramp).toHaveLength(7);
+    expect(both.clips[aurora].ramp).toEqual(pointed.clips[aurora].ramp);
+    expect(await undoDepth(page)).toBe(depth + 2);
+  });
+
   test('the clip menu offers ramps to what has a speed, Keep pitch to sound, and neither to someone who may not edit', async ({
     page,
   }) => {

@@ -581,6 +581,11 @@ button.conn:hover {
   grid-template-columns: 1fr;
   gap: 4px;
 }
+/* Controls that do not fit their column on one line take a second one, inside the panel. */
+.row--wrap > .row__ctrl {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
 .kf {
   display: grid;
   place-items: center;

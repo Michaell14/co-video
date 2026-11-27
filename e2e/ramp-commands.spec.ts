@@ -648,6 +648,28 @@ test.describe('speed ramps by command', () => {
     // And no points are no ramp.
     await page.evaluate(() => (window as any).tandem.cmd.setRampPoints(null));
     expect(await points()).toBeNull();
+
+    // A point is one clip's. Of several selected clips it is the one under the playhead, and not
+    // the first of them: here the first shot, which the playhead is nowhere near.
+    const [dusk] = await idsOf(page, 'video');
+    await select(page, [dusk]);
+    await setRamp(page, 'rampUp');
+    await select(page, [aurora]);
+    await setRamp(page, 'rampUp');
+    await select(page, [dusk, aurora]);
+    const two = await project(page);
+    await seek(page, two.clips[aurora].start + 48);
+    expect(await addPoint()).toBe(Math.round(sourceTimeAt(two.clips[aurora], 48, two) * 1e6) / 1e6);
+    const pointed = await project(page);
+    expect(pointed.clips[aurora].ramp).toHaveLength(3);
+    expect(pointed.clips[dusk]).toEqual(two.clips[dusk]);
+    // With the playhead on none of them there is no saying which was meant: nothing is added.
+    await seek(page, two.clips[dusk].start + two.clips[dusk].duration + 10);
+    const steps = await undoDepth(page);
+    expect(await addPoint()).toBeNull();
+    await saidTimes(page, 'Select one clip to add a point to its ramp.', 1);
+    expect(await project(page)).toEqual(pointed);
+    expect(await undoDepth(page)).toBe(steps);
   });
 
   test('sound keeps its pitch from the first change of its speed on, written in the document, until it is switched off', async ({

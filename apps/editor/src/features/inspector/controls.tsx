@@ -125,9 +125,25 @@ export function Section({
   );
 }
 
-export function Row({ label, children, stack }: { label: ReactNode; children: ReactNode; stack?: boolean }) {
+/**
+ * A label and its controls. `stack` puts the controls under the label, over the panel's width;
+ * `wrap` lets controls that are wider than their column (a line of chips in a narrow panel) go on
+ * to a second line beside the label, instead of running out of the panel where they cannot be
+ * pressed.
+ */
+export function Row({
+  label,
+  children,
+  stack,
+  wrap,
+}: {
+  label: ReactNode;
+  children: ReactNode;
+  stack?: boolean;
+  wrap?: boolean;
+}) {
   return (
-    <Labelled className={stack ? 'row row--stack' : 'row'}>
+    <Labelled className={`row${stack ? ' row--stack' : ''}${wrap ? ' row--wrap' : ''}`}>
       <div className="row__label">
         <LabelText>{label}</LabelText>
       </div>

@@ -26,6 +26,7 @@ import {
   durationEdits,
   makeRoomEdits,
   moveEdits,
+  pointGroup,
   rampGroups,
   rampLead,
   retimeComments,
@@ -1059,6 +1060,54 @@ describe('a point added to a ramp', () => {
         refused: 'This clip is too short for a speed ramp.',
       });
     }
+  });
+});
+
+describe('the clip a point is added to', () => {
+  it('is the one clip that is reached, wherever the playhead is', () => {
+    const f = fixture();
+    const a = add(f.p, f.v1, 0, 120);
+    const groups = rampGroups(a.p, [a.clip.id]);
+    for (const frame of [0, 60, 500]) expect(pointGroup(a.p, groups, frame)).toBe(groups[0]);
+    expect(pointGroup(a.p, [], 0)).toBeNull();
+  });
+
+  it('is, of several, the one under the playhead, and not the first of them', () => {
+    const f = fixture();
+    const first = add(f.p, f.v1, 0, 120, { ramp: shapeRamp('hero', 0, 4, false) });
+    const second = add(first.p, f.v1, 240, 120, { ramp: shapeRamp('hero', 0, 4, false) });
+    const groups = rampGroups(second.p, [first.clip.id, second.clip.id]);
+    expect(groups).toEqual([[first.clip.id], [second.clip.id]]);
+    expect(pointGroup(second.p, groups, 315)).toEqual([second.clip.id]);
+    expect(pointGroup(second.p, groups, 0)).toEqual([first.clip.id]);
+    // The point then goes where the playhead shows that clip, and the other clip is not named.
+    const point = addPointChange(second.p, pointGroup(second.p, groups, 315)!, 315);
+    if ('refused' in point) throw new Error(point.refused);
+    expect(point.m).toBeCloseTo(sourceTimeAt(second.clip, 75, second.p), 6);
+    expect(Object.keys(point.change.ramps)).toEqual([second.clip.id]);
+  });
+
+  it('is none of several when the playhead is on none of them, or on more than one', () => {
+    const f = fixture();
+    const below = add(f.p, f.v1, 0, 120);
+    const above = add(below.p, f.v2, 60, 120);
+    const groups = rampGroups(above.p, [below.clip.id, above.clip.id]);
+    expect(groups).toHaveLength(2);
+    // Between the two ends the playhead is on both; from frame 180 on it is on neither.
+    expect(pointGroup(above.p, groups, 90)).toBeNull();
+    expect(pointGroup(above.p, groups, 180)).toBeNull();
+    expect(pointGroup(above.p, groups, 30)).toEqual([below.clip.id]);
+    expect(pointGroup(above.p, groups, 150)).toEqual([above.clip.id]);
+  });
+
+  it('is found by the clip the ramp is named for: the picture of a linked pair', () => {
+    const j = jCut();
+    const other = add(j.p, j.v2, 0, 80);
+    const groups = rampGroups(other.p, [j.sound.id, other.clip.id]);
+    // At frame 70 the sound of the pair plays and its picture has not begun: only the other clip
+    // is under the playhead by its lead. At frame 100 the picture plays, and the other has ended.
+    expect(pointGroup(other.p, groups, 70)).toEqual([other.clip.id]);
+    expect(pointGroup(other.p, groups, 100)?.sort()).toEqual([j.picture.id, j.sound.id].sort());
   });
 });
 

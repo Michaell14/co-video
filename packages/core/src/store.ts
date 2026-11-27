@@ -782,6 +782,8 @@ export class ProjectStore {
   private stepping = false;
   /** Values that `prepare` has pointed at what stands in for them, for one step only. */
   private readonly lent: Y.Item[] = [];
+  /** Values that came already written over, in an update that left their key as it found it. */
+  private readonly passed = new WeakSet<Y.Item>();
   private readonly ySettings: Y.Map<unknown>;
   private readonly yAssets: Y.Map<Y.Map<unknown>>;
   private readonly yTracks: Y.Map<Y.Map<unknown>>;
@@ -856,7 +858,7 @@ export class ProjectStore {
     this.yClips.observeDeep((events, tr) => {
       if (tr.origin === this.origin || tr.origin === this.undoManager) return;
       for (const ev of events) {
-        if (ev.target !== this.yClips) this.keepRewritten(ev.target as ValueMap, ev.changes.keys);
+        if (ev.target !== this.yClips) this.keepRewritten(tr, ev.target as ValueMap, ev.changes.keys);
       }
     });
     // Listeners run in the order they were added: the undo manager's has stamped the step by now.
@@ -1232,19 +1234,31 @@ export class ProjectStore {
    * the next step of a drag of one of its points, does that. So it is kept, and so is each one that
    * is written over a kept one. Without them a move or a trim could no longer be taken back for
    * the fields a ramp writes again, only for the others: the picture went back and its sound stayed.
+   *
+   * Changes made while this session was not connected arrive as one update, and of the values in
+   * it that were written over on the way the server has kept nothing. What such an update leaves
+   * under a key is then compared with what stood there before it: where that is the same, the
+   * values in between are noted (`passed`), and `prepare` goes by them.
    */
-  private keepRewritten(fields: ValueMap, changed: ReadonlyMap<string, unknown>): void {
+  private keepRewritten(tr: Y.Transaction, fields: ValueMap, changed: ReadonlyMap<string, unknown>): void {
     if (!changed.has('ramp')) return;
     const { undoStack, redoStack } = this.undoManager;
+    const came = (item: Y.Item): boolean => item.id.clock >= (tr.beforeState.get(item.id.client) ?? 0);
     for (const key of RAMP_EDIT) {
       if (!changed.has(key)) continue;
       const now = fields._map.get(key);
-      const was = now?.left;
-      if (!now || now.deleted || !was) continue;
-      if (!(now.content instanceof Y.ContentAny) || !(was.content instanceof Y.ContentAny)) continue;
+      if (!now || now.deleted || !(now.content instanceof Y.ContentAny)) continue;
+      const between: Y.Item[] = [];
+      let was = now.left;
+      for (; was && came(was); was = was.left) between.push(was);
+      if (!was || !(was.content instanceof Y.ContentAny)) continue;
       if (!deepEqual(now.content.getContent().at(-1), was.content.getContent().at(-1))) continue;
-      const held = (steps: UndoStep[]): boolean => steps.some((step) => Y.isDeleted(step.insertions, was.id));
-      if (was.keep || held(undoStack) || held(redoStack)) keep(now);
+      const stood = was;
+      const held = (steps: UndoStep[]): boolean =>
+        steps.some((step) => Y.isDeleted(step.insertions, stood.id));
+      if (!stood.keep && !held(undoStack) && !held(redoStack)) continue;
+      keep(now);
+      for (const item of between) this.passed.add(item);
     }
   }
 
@@ -1254,11 +1268,12 @@ export class ProjectStore {
    *
    * - A value the step wrote may since have been written again by someone else without being
    *   changed: a change of frame rate writes the place of every clip, moved or not, and what it
-   *   does alter is the same value at another rate. The undo manager would take any such write
-   *   for a change of mind and leave the step with nothing to take back. So the step's value is
-   *   pointed at the one that stands in for it, the way the undo manager links its own
-   *   restorations, and the step is taken back from there. (Not for a step that set the frame
-   *   rate itself: once someone else has set another, there is nothing of it to take back.)
+   *   does alter is the same value at another rate; a change of a ramp writes what was worked out
+   *   with the ramp, as often as the ramp changes (`keepRewritten`). The undo manager would take
+   *   any such write for a change of mind and leave the step with nothing to take back. So the
+   *   step's value is pointed at the one that stands in for it, the way the undo manager links
+   *   its own restorations, and the step is taken back from there. (Not for a step that set the
+   *   frame rate itself: once someone else has set another, there is nothing of it to take back.)
    *   Where the step's value has been taken back and made again since, it is the last copy of it
    *   that is pointed there, and only until the step is done (`lent`): a copy may yet have to be
    *   put back by the step that removed it, and a pointer on it says that this has been done.
@@ -1297,8 +1312,14 @@ export class ProjectStore {
             gone.set(map, (gone.get(map) ?? new Set()).add(key));
             return;
           }
-          // Whoever sets a speed says for themselves that the pitch is kept: never a copy of the step's.
+          // Whoever sets a speed says for themselves that the pitch is kept (`KEEP_PITCH`): theirs
+          // is never a copy of the step's.
           if (key === KEEP_PITCH && map._item?.parent === this.yClips) return;
+          // Written over before it got here, in an update that left the key as it found it.
+          if (this.passed.has(next)) {
+            now = next;
+            continue;
+          }
           if (setsRate || !own?.has(key) || !(next.content instanceof Y.ContentAny)) return;
           if (!next.content.getContent().every(same)) return;
           const copy = this.latest(tr, next);

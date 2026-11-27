@@ -1569,6 +1569,50 @@ describe('undo after someone else changed the ramp of the clip more than once', 
     }
   });
 
+  it('takes back a move after changes of the ramp that all arrived at once, written over on the way', () => {
+    // Through a server, which keeps nothing of a value once it has been written over: whoever was
+    // away gets what happened meanwhile as one update, with only the last value under each key.
+    const server = new Y.Doc();
+    const a = new ProjectStore();
+    a.initIfEmpty({ name: 'Spring campaign' });
+    const b = new ProjectStore();
+    const sync = (s: ProjectStore): void => {
+      Y.applyUpdate(server, Y.encodeStateAsUpdate(s.doc, Y.encodeStateVector(server)), 'remote');
+      Y.applyUpdate(s.doc, Y.encodeStateAsUpdate(server, Y.encodeStateVector(s.doc)), 'remote');
+    };
+    const { picture, sound, both } = pair(a);
+    sync(a);
+    sync(b);
+    b.commit(both.map((id): Edit => ({ op: 'updateClip', id, patch: { start: 45 } })));
+    sync(b);
+    sync(a);
+    for (const ramp of [hero, bullet, hero]) {
+      ramped(a, picture.id, ramp);
+      sync(a);
+    }
+    sync(b);
+    expect(b.undo()).toEqual(TAKEN);
+    sync(b);
+    sync(a);
+    for (const s of [a, b]) {
+      expect(both.map((id) => s.get().clips[id].start)).toEqual([0, 0]);
+      inStep(s, picture, sound);
+    }
+    expect(b.redo()).toEqual(TAKEN);
+    sync(b);
+    sync(a);
+    for (const s of [a, b]) expect(both.map((id) => s.get().clips[id].start)).toEqual([45, 45]);
+
+    // What such an update leaves somewhere else is somebody's move, and the step is passed over.
+    a.commit(both.map((id): Edit => ({ op: 'updateClip', id, patch: { start: 70 } })));
+    sync(a);
+    ramped(a, picture.id, bullet);
+    sync(a);
+    sync(b);
+    expect(b.undo()).toEqual({ changed: false, dropped: 1 });
+    expect(both.map((id) => b.get().clips[id].start)).toEqual([70, 70]);
+  });
+
   it('still passes over a move once someone has put the clip elsewhere and back', () => {
     const { a, b } = together();
     const { picture, both } = pair(a);

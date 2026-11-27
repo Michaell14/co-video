@@ -81,14 +81,14 @@ with projects stored in your browser.
   seconds (`2.5s`), or relative to where it is (`+12`, `-12`)
 - Speed changes from 5 % to 10 000 %, reverse playback and freeze frames
 - **Speed ramps**: a clip's speed can change along its media. The inspector's Speed section has a
-  chip for None, Custom and seven ready-made shapes (Ramp up, Ramp down, Montage, Hero, Bullet,
-  Flash in, Flash out), and a graph of the speed, from 10 % to 1000 %, over the media the clip
-  plays, with the playhead on it and marks under it for the seconds of the clip. A point is dragged
-  up and down for its speed and sideways for its place, and snaps to 100 % and to the playhead
-  unless `Shift` is held; a double-click adds a point on the curve or removes the one it is on; a
-  press beside the points moves the playhead. Between two points the speed eases from the one to
-  the other. On a ramp the Speed row shows the average and cannot be set; a preset or None takes
-  the clip back to one speed
+  chip for None, Custom (a level ramp to shape by hand) and seven ready-made shapes (Ramp up, Ramp
+  down, Montage, Hero, Bullet, Flash in, Flash out), and for a clip on a ramp a graph of the speed,
+  from 10 % to 1000 %, over the media the clip plays, with the playhead on it and marks under it for
+  the seconds of the clip. A point is dragged up and down for its speed and sideways for its place,
+  and snaps to 100 % and to the playhead unless `Shift` is held; a double-click adds a point on the
+  curve or removes the one it is on; a press beside the points moves the playhead. Between two
+  points the speed eases from the one to the other. On a ramp the Speed row shows the average and
+  cannot be set; a preset or None takes the clip back to one speed
 - A ramp changes how long a clip is, as a change of speed does: the same stretch of media plays,
   faster here and slower there. With ripple editing on, what follows moves with the clip's end;
   without it the clip stops at the next one, says so and offers to make room. A drag of a point is
@@ -329,14 +329,13 @@ a point, and with the pointer in the graph:
 | Add a point on the curve · remove a point         | double-click the graph · the point |
 | Take the playhead to a moment of the clip         | press beside the points, and drag  |
 
-The graph runs from left to right in the order the clip plays, so `→` takes a point to the right
-and later in the clip, also on a clip that plays backwards, where that is earlier in its file. A
-point stops a hundredth of the graph short of its neighbours and at the ends of what the clip
-plays, and a drag snaps to 100 % and to the playhead unless `Shift` is held. A run of key presses is
-one undo step
-and so is a drag; a point added or removed is a step of its own, and removing one by key hands the
-keyboard to the point beside it. “Add point” under the graph puts a point where the playhead is, or
-in the widest gap when the playhead is off the clip or on a point, and for someone working by
+The graph runs from left to right in the order the clip plays, so `→` takes a point to the right and
+later in the clip, also on a clip that plays backwards, where that is earlier in its file. A point
+stops a hundredth of the graph short of its neighbours and at the ends of what the clip plays, and a
+drag snaps to 100 % and to the playhead unless `Shift` is held. A run of key presses is one undo
+step and so is a drag; a point added or removed is a step of its own, and removing one by key hands
+the keyboard to the point beside it. “Add point” under the graph puts a point where the playhead is,
+or in the widest gap when the playhead is off the clip or on a point, and for someone working by
 keyboard the keyboard goes to the new point. A ramp keeps at least two points and holds 32 at most.
 
 The rest of the editor is within reach of the keyboard as well:
@@ -523,8 +522,9 @@ Three ideas carry most of the weight:
   and six at 50 %; a shot of 120 frames is 121 on Hero and 118 on Hero after Bullet), and keyframes
   that a fast stretch put on one frame stay together.
 - A shape needs a few milliseconds of media to hold its points apart (1 ms for Ramp up, 12.5 ms for
-  Bullet, which needs most), and a clip that plays less is refused it. “Custom” on a clip faster than 1000 % or slower than 10 %
-  starts the ramp at the nearest speed a ramp runs at, which changes the clip's length, and says so.
+  Bullet, which needs most), and a clip that plays less is refused it. “Custom” on a clip faster
+  than 1000 % or slower than 10 % starts the ramp at the nearest speed a ramp runs at, which changes
+  the clip's length, and says so.
 - Linked sound is kept in step with its picture through a change of ramp only while the two share
   frames of the timeline: a sound that begins where its picture ends is retimed by itself. Where the
   clips beside it leave it no room, one frame of the sound is left, out of step; “Make room” puts it
@@ -595,7 +595,7 @@ Three ideas carry most of the weight:
   place where the decoded sound of its file changes sample rate or channel count, when one of the
   export's four-second chunks of sound ends shortly after that place; the preview has the sound. The
   stretch grows as the clip slows down: measured at up to 0.03 s at 150 %, 0.11 s at 50 %, 0.17 s at
-  25 % and 0.7 s at 10 % for sound at 24 kHz, about half as long at 48 kHz. Files that change like
+  25 % and 0.7 s at 10 % for sound at 24 kHz, about half as long at 44.1 kHz. Files that change like
   this are rare (two recordings joined into one stream).
 - A browser can make the same change by itself, when its WebCodecs decoder gives the first packets
   of a file and then leaves the file to the browser's other decoder. A clip on a ramp or with Keep
@@ -609,9 +609,9 @@ Three ideas carry most of the weight:
   Safari or Firefox, and the graph not by touch. No browser test covers sound that will not decode
   under a clip on a ramp or with Keep pitch, Keep pitch on HE-AAC, or a clip of more than five
   minutes that plays backwards on a ramp in an export.
-- Three messages are off. A clip that a change of speed or ramp cuts short by a frame or two is told
-  “the clip now plays only the first 4 of its 4 seconds”, both lengths being rounded to a tenth of a
-  second (Hero on a shot with another right behind it does that). From the menu of a clip on a
+- Three messages are off. A clip that a change of speed or ramp cuts short by a frame or two is
+  told “the clip now plays only the first 4 of its 4 seconds”, both lengths being rounded to a tenth
+  of a second (Hero on a shot with another right behind it does that). From the menu of a clip on a
   locked track the ramp entries answer “Select a video or sound clip to ramp its speed.” and “Keep
   pitch” answers “Select a sound clip to keep its pitch.”, instead of naming the lock.
 - Keyframes ease by preset; there is no curve editor with bezier handles.

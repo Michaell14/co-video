@@ -763,6 +763,14 @@ test.describe('speed ramps and kept pitch in the engine', () => {
         // decode before it placed the same sound.
         await lab.addFile('sweep', '/fixtures/sweep-vorbis.webm', 'sweep-vorbis.webm'),
       ];
+      // A tone with a burst of 5 ms on every half second of the file. At 125 % from the start of
+      // the file a burst lies on each place where the chain of grains is brought back to its map.
+      const beat = kit.sine(1000, 48000, 13, 0.25);
+      for (let i = 12000; i < beat.length; i++) {
+        const t = (i % 24000) / 48000;
+        if (t < 0.005) beat[i] += 0.4 * Math.sin(2 * Math.PI * 4000 * t);
+      }
+      assets.push(await kit.add('beat48', beat, 48000));
       const ntsc = { fpsNum: 30000, fpsDen: 1001, sampleRate: 48000 };
       const fps = 30000 / 1001;
       const one = (clip: object, settings: object = ntsc) =>
@@ -843,6 +851,17 @@ test.describe('speed ramps and kept pitch in the engine', () => {
         };
       };
 
+      /** How far off 1 kHz the tone under the bursts is in each two seconds of the grains, in Hz. */
+      const beaten = async () => {
+        const film = { fpsNum: 30, fpsDen: 1, sampleRate: 48000 };
+        const clip = { assetId: 'beat48', start: 0, duration: 270, speed: 1.25, keepPitch: true };
+        const whole = await kit.render(one(clip, film), 0, 9);
+        const off = [];
+        for (let at = 0; at + 96000 <= whole.length; at += 96000)
+          off.push(kit.pitch(whole, 1000, 48000, 0.25, at, at + 96000).hz - 1000);
+        return { off, peak: kit.peak(whole) };
+      };
+
       const out: Record<string, unknown> = {};
       for (const [name, kind] of Object.entries(kinds)) {
         out[name] = {
@@ -855,6 +874,7 @@ test.describe('speed ramps and kept pitch in the engine', () => {
       return {
         kinds: out as Record<string, Record<string, any>>,
         plain: kit.apart((await kit.chunked(plain, start)).joined, await kit.render(plain, start, 9)),
+        beaten: await beaten(),
         lossy: {
           slower: await lossy({ start: 3, duration: 266, speed: 0.5 }, 44100),
           slowerConverted: await lossy({ start: 3, duration: 266, speed: 0.5 }, 48000),
@@ -892,6 +912,11 @@ test.describe('speed ramps and kept pitch in the engine', () => {
       // chunks differ by is what the browser's own start part-way into a buffer differs by.
       expect(r.kinds[kind].dat.alone, kind).toBeLessThan(Math.max(1e-9, 10 * r.plain));
     }
+    // What comes round with the grains does not pull the tone off its pitch: slid out over two
+    // seconds, the 5 ms between the burst and the map were 2.5 Hz, in every block alike.
+    expect(r.beaten.off).toHaveLength(4);
+    for (const hz of r.beaten.off) expect(Math.abs(hz)).toBeLessThan(0.3);
+    expect(r.beaten.peak).toBeGreaterThan(0.5);
     for (const name of ['slower', 'slowerConverted', 'fasterBackwards', 'ramp'] as const) {
       const m = r.lossy[name];
       expect(m.lengths, name).toEqual([4 * m.rate, 4 * m.rate, m.rate]);

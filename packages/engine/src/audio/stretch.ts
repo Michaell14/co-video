@@ -14,10 +14,11 @@
  * would come out differently after a seek, in the next chunk of an export or in the right half of
  * a split. So the stream is made in blocks of two hundred grains, and the first grain of every
  * block, its anchor, lies exactly on the map. The chain starts anew at each anchor, and what it
- * is off by when it arrives at the next one is taken out again along the block, most of it where
- * that is heard least. A sample of the stream therefore depends on its own index, on the map and
- * on the source of its own block, and on nothing else: not on where reading began, on how the
- * source arrived, or on what was made before it.
+ * is off by when it arrives at the next one is taken out again: in one step shortly before the
+ * anchor where the sound repeats itself and a grain that much nearer goes on as well, and what is
+ * left along the block, most of it where that is heard least. A sample of the stream therefore
+ * depends on its own index, on the map and on the source of its own block, and on nothing else:
+ * not on where reading began, on how the source arrived, or on what was made before it.
  */
 import type { Resampled } from './resample';
 
@@ -30,6 +31,8 @@ const GRAINS = 200;
  */
 const PULL = 0.05;
 const PULL_ANCHOR = 0.3;
+/** How many of the grains before an anchor are tried for a step onto it (see `step`). */
+const STEP_GRAINS = 8;
 /** Samples to a page of source kept. */
 const PAGE = 256;
 /** Places in a file beyond this many samples are not told apart: no file is that long. */
@@ -164,6 +167,9 @@ export class Stretcher {
   private readonly likeness = new Float64Array(GRAINS + 1);
   private readonly energy = new Float64Array(GRAINS + 1);
   private readonly ease = new Float64Array(GRAINS + 1);
+  /** Of the place `seek` found last: its likeness to what it was compared with, and its score. */
+  private alike = 0;
+  private score = 0;
   private readonly offset = new Int32Array(GRAINS + 1);
 
   /** Where the map puts the grains from `firstGrain` on, worked out as they are first asked for. */
@@ -296,7 +302,7 @@ export class Stretcher {
    * continuation.
    */
   private place(k0: number, i: number): void {
-    const { hop, search, dec, chained, before, around } = this;
+    const { hop, search, chained, before } = this;
     const length = 2 * hop;
     const centre = this.centre(k0 + i);
     // The grain before as chained, and from its centre on the grain that would follow it in the
@@ -314,14 +320,33 @@ export class Stretcher {
       this.likeness[i] = 1;
       return;
     }
+    // An anchor's place is looked for on the samples themselves, all over the range.
+    const anchor = i === GRAINS;
+    chained[i] = this.seek(centre, energy, -search, search, 0, anchor ? PULL_ANCHOR : PULL, anchor);
+    this.likeness[i] = this.alike;
+  }
+
+  /**
+   * The offset between `low` and `high` at which the source around `centre` is most like `before`,
+   * whose energy is `energy`, when what lies further from `aim` gives up `pull` for it. Looked for
+   * on sums of `dec` samples first and then around the best of those, or at `every` place.
+   */
+  private seek(
+    centre: number,
+    energy: number,
+    low: number,
+    high: number,
+    aim: number,
+    pull: number,
+    every: boolean,
+  ): number {
+    const { hop, search, dec, before, around } = this;
+    const length = 2 * hop;
     // `around[n]` is source sample `lowest + n`; a grain at offset `d` begins at `d + search`.
     const lowest = centre - search - hop;
     this.mono(lowest, 2 * search + length, around);
-    let low = -search;
-    let high = search;
-    let pull = PULL_ANCHOR;
-    let best = 0;
-    if (i < GRAINS) {
+    let best = low;
+    if (!every) {
       // First on sums of `dec` samples, at every place that begins on a multiple of `dec` in the
       // file, so that the places compared do not depend on where the grain before happens to lie.
       const { beforeCoarse, aroundCoarse } = this;
@@ -333,8 +358,8 @@ export class Stretcher {
         beforeCoarse[m] = sum;
         coarseEnergy += sum * sum;
       }
-      const j0 = Math.ceil(lowest / dec);
-      const j1 = Math.floor((centre + search - hop) / dec);
+      const j0 = Math.ceil((centre + low - hop) / dec);
+      const j1 = Math.floor((centre + high - hop) / dec);
       for (let m = 0; m < j1 - j0 + count; m++) {
         let sum = 0;
         for (let s = 0; s < dec; s++) sum += around[(j0 + m) * dec - lowest + s];
@@ -350,16 +375,15 @@ export class Stretcher {
           own += v * v;
         }
         const d = j * dec + hop - centre;
-        const score = dot / Math.sqrt(coarseEnergy * own + 1e-12) - PULL * (d / search) ** 2;
+        const score = dot / Math.sqrt(coarseEnergy * own + 1e-12) - pull * ((d - aim) / search) ** 2;
         if (score > top) {
           top = score;
           best = d;
         }
       }
       // Then every place around the best of those, on the samples themselves.
-      low = Math.max(-search, best - dec);
-      high = Math.min(search, best + dec);
-      pull = PULL;
+      low = Math.max(low, best - dec);
+      high = Math.min(high, best + dec);
     }
     let top = -Infinity;
     let alike = 0;
@@ -372,24 +396,62 @@ export class Stretcher {
         own += v * v;
       }
       const match = dot / Math.sqrt(energy * own + 1e-12);
-      const score = match - pull * (d / search) ** 2;
+      const score = match - pull * ((d - aim) / search) ** 2;
       if (score > top) {
         top = score;
         best = d;
         alike = match;
       }
     }
-    chained[i] = best;
-    this.likeness[i] = alike;
+    this.alike = alike;
+    this.score = top;
+    return best;
+  }
+
+  /**
+   * The chain has arrived at the next anchor off by `rest`. Slid out along the block, that is a
+   * slow drift through the file, and on a steady tone a change of pitch: up to a third of a percent
+   * for the two seconds, and the same in block after block when what placed the chain at the anchor
+   * comes round as often as the anchors do (a click every half second under a tone, at 125 %).
+   * Where the sound repeats itself a grain can instead lie nearer the anchor by the rest, or by
+   * part of it, and go on from the grain before it as well as it does where it lies. So the last
+   * grains before the anchor are asked, the last first, each by the measure it was placed by, with
+   * the place that brings the chain onto the anchor as the one it is drawn to. The first that
+   * would lie elsewhere by that measure moves there, and those after it with it: so much is out in
+   * one step, of whole periods where there is a tone. Returns it; what is left is slid out.
+   */
+  private step(k0: number, rest: number): number {
+    const { hop, search, chained, before } = this;
+    for (let i = GRAINS - 1; i >= GRAINS - STEP_GRAINS; i--) {
+      const lies = chained[i];
+      const aim = lies - rest;
+      const low = Math.max(-search, Math.min(lies, aim));
+      const high = Math.min(search, Math.max(lies, aim));
+      const centre = this.centre(k0 + i);
+      this.mono(this.centre(k0 + i - 1) + chained[i - 1], 2 * hop, before);
+      // Where it lies it is as far from that place as the chain is from the anchor.
+      const stays = this.likeness[i] - PULL * (rest / search) ** 2;
+      if (this.seek(centre, this.energy[i], low, high, aim, PULL, false) === lies || this.score <= stays)
+        continue;
+      // How far it moves is asked of every place: sums of samples do not tell one period of a tone
+      // from the next, and each period short of the anchor would be left to be slid out.
+      const best = this.seek(centre, this.energy[i], low, high, aim, PULL, true);
+      this.likeness[i] = this.alike;
+      for (let h = i; h < GRAINS; h++) chained[h] += best - lies;
+      return lies - best;
+    }
+    return 0;
   }
 
   /** The stream samples of the block whose grains have all been chained. */
   private render(k0: number): Resampled {
     const { hop, chained, likeness, energy, ease, offset, window, one, other } = this;
-    // The chain arrives at the next anchor off by `rest`, and the anchor lies on the map. Each
-    // grain gives up a share of that, and the shares are largest where the grains are quiet or
-    // unlike each other anyway: there a slip of a few samples between two grains is not heard.
-    const rest = chained[GRAINS];
+    // The chain arrives at the next anchor off by so much, and the anchor lies on the map. Of what
+    // no step takes out each grain gives up a share, and the shares are largest where the grains
+    // are quiet or unlike each other anyway: there a slip of a few samples between two grains is
+    // not heard.
+    const off = chained[GRAINS];
+    const rest = off === 0 ? 0 : off - this.step(k0, off);
     let mean = 0;
     for (let i = 1; i <= GRAINS; i++) mean += energy[i] / GRAINS;
     let total = 0;

@@ -1832,7 +1832,8 @@ function clipMenu(p: Project, id: ID, at: MenuAt, editable: boolean): MenuEntry[
         onSelect: () => cmd.setRamp(name),
       })),
       'separator',
-      { label: 'Add point at playhead', onSelect: () => void cmd.addRampPoint() },
+      // The point is this clip's, whatever else is selected with it.
+      { label: 'Add point at playhead', onSelect: () => void cmd.addRampPoint(c.id) },
     ];
   };
   const hasFile = !!c.assetId && !!p.assets[c.assetId];

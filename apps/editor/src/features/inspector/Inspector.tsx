@@ -863,7 +863,7 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
           />
         </Row>
       </div>
-      <Row label="Presets">
+      <Row label="Presets" wrap>
         {[0.25, 0.5, 1, 2, 4].map((v) => (
           <button
             key={v}

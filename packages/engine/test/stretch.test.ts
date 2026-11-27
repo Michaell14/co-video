@@ -537,6 +537,42 @@ describe('Stretcher', () => {
     }
   });
 
+  it('keeps a tone at its pitch in every two seconds when something else comes round with the anchors', () => {
+    // A tone in one channel and a burst of 5 ms every half second in the other. At 125 % a burst
+    // lies on every anchor, and at 80 % on every fifth. The chain arrives there as far from the map
+    // as it happens to be, with the burst as what it goes on from, and that is not to be slid out
+    // of the tone: 240 samples in two seconds are 2.5 Hz at 1 kHz.
+    const seconds = 34;
+    const lowTone = tone(1000, seconds);
+    const bursts = Float32Array.from({ length: lowTone.length }, (_, i) => {
+      const t = i / RATE;
+      return t >= 0.25 && t % 0.5 < 0.005 ? 0.8 * Math.sin(2 * Math.PI * 4000 * (t % 0.5)) : 0;
+    });
+    const quarter = RATE / 4;
+    for (const speed of [0.8, 1.25]) {
+      const length = 2 * Math.floor((seconds - 2) / speed / 2);
+      const out = stretch([lowTone, bursts], steady(speed, 0), 0, length * RATE)[0];
+      let worst = 0;
+      for (let at = 0; at + quarter <= out.length; at += quarter) {
+        // A quarter second and a tenth each side, which the measure leaves aside.
+        const from = Math.max(0, at - RATE / 10);
+        const to = Math.min(out.length, at + quarter + RATE / 10);
+        if (to - from < quarter + RATE / 5) continue;
+        worst = Math.max(worst, Math.abs(analyseTone(out.subarray(from, to), 1000).hz - 1000));
+      }
+      expect(worst, `in a quarter second at ${speed}x`).toBeLessThan(0.3);
+      expect(Math.abs(analyseTone(out, 1000).hz - 1000), `over ${length} s at ${speed}x`).toBeLessThan(0.05);
+    }
+
+    // The last sample of a file on the last sample of a block is such a thing as well: the chain
+    // goes on from the place where the tone breaks off.
+    for (const speed of [0.8, 1.25, 2]) {
+      const out = stretch([tone(1000, 8 * speed, 0.3)], steady(speed, 0), 0, 8 * RATE)[0];
+      const last = analyseTone(out.subarray(6 * RATE, 8 * RATE - RATE / 20), 1000);
+      expect(Math.abs(last.hz - 1000), `the last block at ${speed}x`).toBeLessThan(0.3);
+    }
+  });
+
   it('gives exactly the samples asked for, in blocks that abut', () => {
     const source = [signals().speech.subarray(0, 12 * RATE)];
     const { block, hop, search } = grainMeasures(RATE);

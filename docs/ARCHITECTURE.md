@@ -118,18 +118,19 @@ their times are scaled, `scaleKeyframes`, as they always were). No start moves, 
 grows stops at the next one, unless `setRamp` is passed `free`, which whoever asks how long a clip
 is with nothing in its way does. Linked clips are the one exception. A ramp is set on a whole link
 group, whichever of its clips is named, and it is the ramp of the group's lead: of the clips the
-change names, the first that is not sound, or else the first. The editor names the first clip of
-the group that is not sound (`rampLead`). A clip that was in step with the lead (playing the same way, sharing frames of the timeline, as far apart
-in their media at both ends of what they share) is a follower. It keeps the stretch of media it
-played, goes on the lead's ramp moved by that distance (`shiftRamp`), and is placed where the lead's
-new stream reaches the second it began on, so the two show the same media on every frame they share:
-the second of sound that led into a J cut is the same second, however long it now takes. A
-follower's head is cut where the clip before it on its track is in the way, and it begins on the
-first frame its file has media for. It is never moved out of step to fit; only where its neighbours
-leave it no room at all is one frame of it left. A member that is not in step is retimed by itself.
-`setSpeed` on a clip that is on a ramp takes its whole group to that one speed by the same routine
-(`retimeGroup`); on a clip without a ramp it runs the lines it always ran, for that clip alone.
-Sound whose speed or ramp changes gets `keepPitch: true` unless the field has been set.
+change names, the first that is not sound, or else the first. The editor names the first clip of the
+group that is not sound (`rampLead`). A clip that was in step with the lead (playing the same way,
+sharing frames of the timeline, as far apart in their media at both ends of what they share) is a
+follower. It keeps the stretch of media it played, goes on the lead's ramp moved by that distance
+(`shiftRamp`), and is placed where the lead's new stream reaches the second it began on, so the two
+show the same media on every frame they share: the second of sound that led into a J cut is the same
+second, however long it now takes. A follower's head is cut where the clip before it on its track is
+in the way, and it begins on the first frame its file has media for. It is never moved out of step
+to fit; only where its neighbours leave it no room at all is one frame of it left. A member that is
+not in step is retimed by itself. `setSpeed` on a clip that is on a ramp takes its whole group to
+that one speed by the same routine (`retimeGroup`); on a clip without a ramp it runs the lines it
+always ran, for that clip alone. Sound whose speed or ramp changes gets `keepPitch: true` unless the
+field has been set.
 
 **Rounding.** A length or a frame worked out along a ramp is rounded half up with a millionth to
 spare (`roundHalfUp`): the shapes put lengths exactly on a half frame for ordinary clips, and a
@@ -183,7 +184,11 @@ was set on, and so does the trim's start; where the ramp's writes are the later 
 the ramp's length and its untrimmed in point, and a linked sound keeps the start the ramp edit
 wrote, so that pair is out of step by the trim. Against a speed set at the same moment on a clip
 that had no ramp, the ramp is from the one, the speed from the other and the length from whoever
-wins it. Setting the ramp a clip already has writes nothing and makes no undo step.
+wins it. Setting the ramp a clip already has writes nothing and makes no undo step. A change of
+speed or of ramp that finds `keepPitch` on writes it again, on (`KEEP_PITCH`): whoever sets a speed
+says for themselves that the pitch is kept. Taking back the change that first switched it on then
+leaves it on under a speed or a ramp somebody else has set since, and switches it off again where
+nobody has.
 
 The store rebuilds only the entities a transaction touched and keeps every other object
 referentially identical, so React can skip unchanged clips and the engine can cache by identity.
@@ -599,18 +604,19 @@ differently meet there is a click.
 
 **Retimed sound.** A clip on a speed ramp, and a sound clip that keeps its pitch at a speed between
 10 % and 1000 % other than 100 %, is retimed. The mixer decides that once for each voice, when the
-clip's file is open (`AudioGraph.feed`), and from there on plays the voice as a clip at normal
-speed (`Voice.as`: speed 1, no ramp, its in point at the stream time at which the file reaches the
-clip's in point) over the stream, the file's sound on the clip's own clock (`Retimed`,
-`audio/retimed.ts`, built from core's `timeMap`). Everything the mixer does for a file read at one
-speed then runs as it is: a clip that plays backwards reads its stream forwards and plays it
-backwards, and in an export the stream is what `AudioRuns` carries from chunk to chunk, so the file
-is decoded once and retimed once. The gain envelope, the pan and what is reported of lost sound
-stay with the clip itself. A clip without a ramp that does not keep its pitch never comes this way
-and renders the samples it rendered before there were ramps (`e2e/engine-ramp.spec.ts` holds the
-difference to 0). Keep pitch at exactly 100 %, and at one speed under 10 % or over 1000 %, is such
-a clip: beyond what the stretcher is made for the pitch follows the speed. A change of the switch
-or of the ramp while playing restarts the mix, as a change of speed does (`structuralKey`).
+clip's file is open (`AudioGraph.feed`), and from there on plays the voice as a clip at normal speed
+(`Voice.as`: speed 1, no ramp, its in point at the stream time at which the file reaches the clip's
+in point) over the stream, the file's sound on the clip's own clock (`Retimed`, `audio/retimed.ts`,
+built from core's `timeMap`). Everything the mixer does for a file read at one speed then runs as it
+is: a clip that plays backwards reads its stream forwards and plays it backwards, and in an export
+the stream is what `AudioRuns` carries from chunk to chunk, so the file is decoded once and retimed
+once. The gain envelope, the pan and what is reported of lost sound stay with the clip itself. A
+clip without a ramp that does not keep its pitch never comes this way: `Voice.as` stays null and the
+lines that were there before there were ramps read the clip itself (`e2e/engine-ramp.spec.ts` mixes
+such clips with the two fields and without them and holds the difference to 0). Keep pitch at
+exactly 100 %, and at one speed under 10 % or over 1000 %, is such a clip: beyond what the stretcher
+is made for the pitch follows the speed. A change of the switch or of the ramp while playing
+restarts the mix, as a change of speed does (`structuralKey`).
 
 `scheduleBuffer` plays a buffer in one of three ways, and a retimed voice takes them as a clip at
 normal speed does. A stream at the mix's sample rate is played sample for sample, the voice as a
@@ -649,17 +655,18 @@ file's own speed, so what sounds at a moment of the timeline can differ from wha
 by up to `(15 ms + 10 ms · |1 − v|) / v` at speed `v`: 15 ms at 100 %, 12.5 ms at 200 %, 40 ms at
 50 %, 90 ms at 25 %. Without Keep pitch the sound is in its place to the sample.
 
-Two grains overlap at every sample, in shares that add up to one. Two grains that follow one
-another in the file therefore give the file, and no sample of the stream is larger than the larger
-of the two it is made of. Two grains that are unlike add up in power, and nothing makes up for it:
-steady noise comes out up to 1.2 dB low with a ripple at the rate of the grains of up to 2.5 dB
-(the tests' bounds; 0.3 to 0.9 dB and 0.5 to 1.9 dB measured between 50 % and 200 %). One gain for
-all that sounds in such a junction would ripple a tone under the noise and lift samples above the
-highest of the file. The other bounds, each a unit test in `packages/engine/test/stretch.test.ts`:
-a tone keeps its frequency to 0.3 Hz + 0.11 % and its level to 0.1 dB with nothing else above
-−40 dB; slowed to half speed a click of a millisecond is played at most three times within 35 ms;
-at 150 % and 200 % fewer than six in ten such clicks are lost between two grains (a third and just
-under half measured), while a burst that takes 8 ms to die away never is.
+Two grains overlap at every sample, in shares that add up to one. Two grains that follow one another
+in the file therefore give the file, and no sample of the stream is larger than the larger of the
+two it is made of. Two grains that are unlike add up in power, and nothing makes up for it: steady
+noise comes out up to 1.2 dB low with a ripple at the rate of the grains of up to 2.5 dB (the tests'
+bounds; 0.3 to 0.9 dB and 0.5 to 1.9 dB measured between 50 % and 200 %). One gain for all that
+sounds in such a junction would ripple a tone under the noise and lift samples above the highest of
+the file. The other bounds, each a unit test in `packages/engine/test/stretch.test.ts`: a tone keeps
+its frequency to 0.3 Hz + 0.11 % and its level to 0.1 dB with nothing else above −40 dB; slowed to
+half speed a click of a millisecond is played at most three times within 35 ms; at 150 % and 200 %
+fewer than six in ten such clicks are lost between two grains (31 % and 46 % measured), while a
+burst that takes 8 ms to die away never is: it keeps an eighth of its height or more, and its energy
+is 3 dB down in the middle case at 200 % and 15 dB at worst.
 
 The work runs on the main thread, ahead of the playhead, where the mixer's conversion runs. The
 file is decoded forwards and the stretcher makes one block at a time; a preview gets a turn between
@@ -675,21 +682,22 @@ all reversed sound is.
 **A change of format on the way.** A file's decoded sound can change sample rate or channel count.
 The stream is then two series of buffers, each on the grid of its own rate and silent where it has
 no sound, and the second begins before the last buffers of the first; the mixer adds them up.
-`Run.read`, out of which the chunks of an export are handed their buffers, takes what it holds to
-be in ascending order, so a chunk that ends shortly after such a change can be handed the first
-series and none of the second: it lacks the sound between the change and its own end. How much that
-can be grows as the clip slows down, because the first series runs on behind the change for as far
-as a kernel can reach, 1724 samples of the file, however long the clip takes to play them: measured
-at 28 ms at 150 % and 169 ms at 25 % for a change in mid-file, and 34 ms at 150 %, 0.11 s at 50 %
-and 0.72 s at 10 % behind a hand-over, all at 24 kHz. Most often the change is the decoder's and
-not the file's: on the first read of a file in the page's life the WebCodecs decoder can give a few
-buffers in one format and hand over to the browser's own decoder, which gives another, and from
-then on every read of the file is decoded by the browser's own from its first buffer (`Sound`). So
-a read that meets a change of format before it has given a buffer closes its decode and begins
-anew, once, as a read that knows the new rate (`Retimed.buffers`): after a hand-over it is one
-series in ascending order, sample for sample the buffers every later read of the file gives. What
-the decode that was given up had reported as lost goes with it, and the decode that follows reports
-its own losses.
+`Run.read`, out of which the chunks of an export are handed their buffers, takes what it holds to be
+in ascending order, so a chunk that ends shortly after such a change can be handed the first series
+and none of the second: it lacks the sound between the change and its own end. How much that can be
+grows as the clip slows down, because the first series runs on behind the change for as far as its
+sound reaches, with pitch following a kernel's reach of 1724 samples of the file, however long the
+clip takes to play them: measured at 28 ms at 150 % and 169 ms at 25 % for a change in mid-file, and
+34 ms at 150 %, 0.11 s at 50 % and 0.72 s at 10 % behind a hand-over, all with pitch following at 24
+kHz. At 44.1 kHz it was 0.37 s at 10 %, and with pitch kept 0.34 s at 24 kHz and 0.38 s at 44.1 kHz.
+Most often the change is the decoder's and not the file's: on the first read of a file in the page's
+life the WebCodecs decoder can give a few buffers in one format and hand over to the browser's own
+decoder, which gives another, and from then on every read of the file is decoded by the browser's
+own from its first buffer (`Sound`). So a read that meets a change of format before it has given a
+buffer closes its decode and begins anew, once, as a read that knows the new rate
+(`Retimed.buffers`): after a hand-over it is one series in ascending order, sample for sample the
+buffers every later read of the file gives. What the decode that was given up had reported as lost
+goes with it, and the decode that follows reports its own losses.
 
 Two series remain where the change is there again on the second decode (two recordings joined into
 one stream), and where it is met after a buffer has been given. A read gives its first buffer once

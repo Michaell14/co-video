@@ -114,6 +114,7 @@ import {
   addPointChange,
   durationEdits,
   moveEdits,
+  pointGroup,
   rampGroups,
   rampLead,
   retimeEach,
@@ -269,8 +270,14 @@ function offerRoom(s: Session, short: CutShort[]): void {
   const seconds = (frames: number): number => Number(framesToSeconds(frames, left.settings).toFixed(1));
   const [first] = short;
   const alike = short.every((c) => c.duration === first.duration && c.natural === first.natural);
+  // A clip that is short by a frame or two has both lengths read alike in tenths of a second
+  // ("the first 4 of its 4 seconds"): then they are counted in frames, which always differ.
+  const lengths =
+    seconds(first.duration) === seconds(first.natural)
+      ? `${first.duration} of its ${first.natural} frames`
+      : `${seconds(first.duration)} of its ${seconds(first.natural)} seconds`;
   const text = alike
-    ? `The next clip is in the way, so the clip now plays only the first ${seconds(first.duration)} of its ${seconds(first.natural)} seconds.`
+    ? `The next clip is in the way, so the clip now plays only the first ${lengths}.`
     : `The next clip is in the way, so ${short.length} clips are cut short at their new speed.`;
   toast(text, 'info', {
     label: 'Make room',
@@ -317,6 +324,8 @@ function retimeClips(s: Session, p: Project, ids: ID[], change: Retime): boolean
 }
 
 const SELECT_TO_RAMP = 'Select a video or sound clip to ramp its speed.';
+
+const ONE_TO_POINT = 'Select one clip to add a point to its ramp.';
 
 const percent = (speed: number): string => `${Math.round(speed * 100)}%`;
 
@@ -918,19 +927,28 @@ export const cmd = {
     });
   },
   /**
-   * Add a point to the ramp of the first of the selected clips: where the playhead shows it, else
-   * in the widest gap between its points (see `addPointChange`). Returns the place of the new
-   * point in seconds of the clip's media, or null when none was added.
+   * Add a point to the ramp of one clip: where the playhead shows it, else in the widest gap
+   * between its points (see `addPointChange`). The clip is `clipId`, for a menu that was opened on
+   * one, else the selected one. Of several selected clips it is the one under the playhead, and
+   * with the playhead on none or on more than one of them no point is added: it would land on a
+   * clip that was not asked for (see `pointGroup`). Returns the place of the new point in seconds
+   * of the clip's media, or null when none was added.
    */
-  addRampPoint(): number | null {
+  addRampPoint(clipId?: ID): number | null {
     let added: number | null = null;
     editing((s, p) => {
-      const [group] = rampGroups(p, effectiveSelection(p));
-      if (!group) {
+      const at = frame();
+      const groups = rampGroups(p, effectiveSelection(p, clipId ? [clipId] : undefined));
+      if (!groups.length) {
         toast(SELECT_TO_RAMP, 'info');
         return;
       }
-      const point = addPointChange(p, group, frame());
+      const group = pointGroup(p, groups, at);
+      if (!group) {
+        toast(ONE_TO_POINT, 'info');
+        return;
+      }
+      const point = addPointChange(p, group, at);
       if ('refused' in point) {
         toast(point.refused, 'info');
         return;

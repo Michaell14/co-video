@@ -190,6 +190,22 @@ export function shapeChange(
 export const TOO_SHORT_TO_RAMP = 'This clip is too short for a speed ramp.';
 
 /**
+ * The one of `groups` that a point is added to. A point is one clip's, so among several groups it
+ * goes to the one whose lead the playhead (`frame`) is on: the place the point is asked for. Null
+ * when the playhead is on none of them, where a point would land on a clip nobody named, away
+ * from the playhead, and change that clip's length; and when it is on more than one, where there
+ * is no saying which was meant.
+ */
+export function pointGroup(p: Project, groups: ID[][], frame: number): ID[] | null {
+  if (groups.length <= 1) return groups[0] ?? null;
+  const under = groups.filter((group) => {
+    const lead = p.clips[rampLead(p, group)];
+    return !!lead && frame >= lead.start && frame < clipEnd(lead);
+  });
+  return under.length === 1 ? under[0] : null;
+}
+
+/**
  * The change that adds a point to the ramp of a group of linked clips, and where it puts it, in
  * seconds of the media: where the playhead (`frame`) shows the group's lead, or, when the playhead
  * is not on that clip or a point stands there already, in the middle of the widest gap between the

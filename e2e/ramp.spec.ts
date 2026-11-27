@@ -333,6 +333,57 @@ test.describe('the ramp chips', () => {
     await offer.getByRole('button', { name: 'Make room' }).click();
     expect(await shots(page)).toEqual(['0+96', '96+120', '216+120']);
     expect(await undoDepth(page)).toBe(cut + 1);
+
+    // Hero plays the next shot's four seconds in 121 frames, and 120 fit. Both lengths are four
+    // seconds to the tenth, so the panel counts them in frames: one that is missing can be told.
+    const fractal = await named(page, 'fractal.mp4');
+    await show(page, [fractal.id]);
+    await chip(page, 'Hero').click();
+    expect(await shots(page)).toEqual(['0+96', '96+120', '216+120']);
+    const frames = toast(
+      page,
+      'The next clip is in the way, so the clip now plays only the first 120 of its 121 frames.',
+    );
+    await expect(frames).toBeVisible();
+    expect(await said(page, 'of its 4 seconds')).toEqual([]);
+    await frames.getByRole('button', { name: 'Make room' }).click();
+    expect(await shots(page)).toEqual(['0+96', '96+121', '217+120']);
+  });
+
+  test('in a panel as narrow as it goes, the presets are all inside it and within reach of the pointer', async ({
+    page,
+  }) => {
+    await sample(page);
+    const dusk = await named(page, 'dusk.mp4');
+    await show(page, [dusk.id]);
+    const presets = ['0.25×', '0.5×', '1×', '2×', '4×'];
+    const boxes = async () => {
+      await speed(page).getByText('Duration').scrollIntoViewIfNeeded();
+      const panel = (await inspector(page).boundingBox())!;
+      const chips = await Promise.all(presets.map(async (name) => (await chip(page, name).boundingBox())!));
+      return { panel, chips };
+    };
+    // At the width the panel comes with they stand on one line.
+    const usual = await boxes();
+    expect(new Set(usual.chips.map((box) => box.y)).size).toBe(1);
+
+    const splitter = page.getByRole('separator', { name: 'Inspector width' });
+    const narrowest = Number(await splitter.getAttribute('aria-valuemin'));
+    await splitter.focus();
+    await page.keyboard.press('Home');
+    await expect(splitter).toHaveAttribute('aria-valuenow', String(narrowest));
+    await expect.poll(async () => (await boxes()).panel.width).toBe(narrowest);
+    // Five chips are wider than the column there: the last of them go on to a second line.
+    const narrow = await boxes();
+    for (const [i, box] of narrow.chips.entries()) {
+      expect(box.x, presets[i]).toBeGreaterThanOrEqual(narrow.panel.x);
+      expect(box.x + box.width, presets[i]).toBeLessThanOrEqual(narrow.panel.x + narrow.panel.width);
+    }
+    expect(new Set(narrow.chips.map((box) => box.y)).size).toBe(2);
+    const four = narrow.chips[4];
+    await page.mouse.click(four.x + four.width / 2, four.y + four.height / 2);
+    expect(await clip(page, dusk.id)).toMatchObject({ speed: 4, duration: 30 });
+    await expect(chip(page, '4×')).toHaveAttribute('aria-pressed', 'true');
   });
 });
 
