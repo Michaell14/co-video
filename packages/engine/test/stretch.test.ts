@@ -573,6 +573,49 @@ describe('Stretcher', () => {
     }
   });
 
+  it('keeps a tone within half a sample to the grain where a file has fewer samples: 22.05 kHz', () => {
+    // A grain lies on a whole sample of the file. Where the period of a tone is no whole number of
+    // samples, each grain can lie half a sample off where the tone goes on from the one before, and
+    // the same way grain after grain for seconds on end: 0.11 % at 44.1 and 48 kHz, where the
+    // bounds above are taken, and 0.23 % at 22.05 kHz. A click every half second over the tone
+    // sends the chain there and back.
+    const rate = 22050;
+    const { hop } = grainMeasures(rate);
+    expect(hop).toBe(221);
+    const slip = (0.5 / hop) * 1000;
+    const seconds = 26;
+    const clicks = Float32Array.from({ length: seconds * rate }, (_, i) => {
+      const t = i / rate;
+      return t >= 0.25 && t % 0.5 < 0.005 ? Math.sin(2 * Math.PI * 4000 * (t % 0.5)) : 0;
+    });
+    const quarter = Math.round(rate / 4);
+    const margin = Math.round(rate / 10);
+    for (const beside of [true, false]) {
+      // The clicks in a channel of their own, and in the channel of the tone.
+      const lowTone = tone(1000, seconds, beside ? 0.5 : 0.4, rate);
+      const source = beside
+        ? [lowTone, clicks.map((x) => 0.8 * x)]
+        : [lowTone.map((x, i) => x + 0.4 * clicks[i])];
+      for (const speed of [0.5, 0.8, 1.25, 2]) {
+        const length = Math.floor((seconds - 2) / speed) * rate;
+        const out = stretch(source, steady(speed, 0), 0, length, { rate })[0];
+        let worst = 0;
+        for (let at = 0; at + quarter <= out.length; at += quarter) {
+          const from = Math.max(0, at - margin);
+          const to = Math.min(out.length, at + quarter + margin);
+          if (to - from < quarter + 2 * margin) continue;
+          worst = Math.max(worst, Math.abs(analyseTone(out.subarray(from, to), 1000, rate).hz - 1000));
+        }
+        const whole = Math.abs(analyseTone(out, 1000, rate).hz - 1000);
+        const what = `${beside ? 'beside' : 'under'} the clicks at ${speed}x`;
+        // Measured: 1.86 Hz at 50 % and 2.09 Hz at 200 % beside the clicks, 1.34 and 2.14 under them.
+        expect(worst, `in a quarter second ${what}`).toBeLessThan(0.3 + slip);
+        // Over the whole stretch the bound of the other rates holds here too.
+        expect(whole, `over the whole ${what}`).toBeLessThan(0.3 + 0.0011 * 1000);
+      }
+    }
+  });
+
   it('gives exactly the samples asked for, in blocks that abut', () => {
     const source = [signals().speech.subarray(0, 12 * RATE)];
     const { block, hop, search } = grainMeasures(RATE);

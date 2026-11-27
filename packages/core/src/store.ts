@@ -1212,11 +1212,13 @@ export class ProjectStore {
         if (clip) places.set(clip.id, { start: clip.start, duration: clip.duration });
       }
     }
-    // Which speed and which ramp each clip is left with whose Keep pitch the step switched on.
+    // Which speed and which ramp each clip had whose Keep pitch the step switched on, when it did
+    // so, and what the step has set them to itself since: a gesture writes them many times.
     for (const [fields, noted] of (step.meta.get(STEP_PITCH) as StepPitch | undefined) ?? []) {
       for (const key of RETIMES) {
         const head = fields._map.get(key);
-        noted.set(key, head && !head.deleted ? head.lastId : null);
+        const stands = head && !head.deleted ? head.lastId : null;
+        if (!noted.has(key) || (stands && Y.isDeleted(step.insertions, stands))) noted.set(key, stands);
       }
     }
   }
@@ -1225,7 +1227,7 @@ export class ProjectStore {
   private notePitch(step: UndoStep, fields: ValueMap, on: Y.ID | null): void {
     let pitch = step.meta.get(STEP_PITCH) as StepPitch | undefined;
     if (!pitch) step.meta.set(STEP_PITCH, (pitch = new Map()));
-    if (on) pitch.set(fields, new Map([[KEEP_PITCH, on]]));
+    if (on) pitch.set(fields, (pitch.get(fields) ?? new Map<string, Y.ID | null>()).set(KEEP_PITCH, on));
     else pitch.delete(fields);
   }
 
@@ -1250,7 +1252,8 @@ export class ProjectStore {
       if (!pitch || pitch.deleted || pitch.content.getContent().at(-1) !== true) continue;
       const since = RETIMES.some((key) => {
         const head = fields._map.get(key);
-        if (!head || head.deleted || deepEqual(head.content.getContent().at(-1), CLIP_DEFAULTS[key])) return false;
+        if (!head || head.deleted || deepEqual(head.content.getContent().at(-1), CLIP_DEFAULTS[key]))
+          return false;
         return at(noted.get(key)) !== head;
       });
       if (!since) continue;
@@ -1260,7 +1263,7 @@ export class ProjectStore {
   }
 
   /**
-   * The undo manager takes a step back by looking at what stands under each key now, and three
+   * The undo manager takes a step back by looking at what stands under each key now, and four
    * things mislead it. They are put right before it looks.
    *
    * - A value the step wrote may since have been written again by someone else without being
@@ -1280,6 +1283,9 @@ export class ProjectStore {
    * - It finds its way from a value, and from the clip or track the value belongs to, to the copy
    *   it once restored that as, and on from there. A copy that was deleted again long ago may
    *   have been collected, and the undo manager falls over what is left of it (`unlinkCollected`).
+   * - Keep pitch that the step switched on is the step's own value still when someone else has
+   *   set the clip's speed or its ramp since, because their change found it on and wrote nothing.
+   *   An undo leaves it standing then (`leavePitch`).
    */
   private prepare(step: UndoStep, type: 'undo' | 'redo'): void {
     const values = step.meta.get(STEP_VALUES) as StepValues | undefined;
@@ -1311,9 +1317,6 @@ export class ProjectStore {
             gone.set(map, (gone.get(map) ?? new Set()).add(key));
             return;
           }
-          // Keep pitch that someone else's change of speed switched on at the same moment belongs
-          // to that change, which stands: it is no copy of what this step switched on.
-          if (key === KEEP_PITCH && map._item?.parent === this.yClips) return;
           if (setsRate || !own?.has(key) || !(next.content instanceof Y.ContentAny)) return;
           if (!next.content.getContent().every(same)) return;
           const copy = this.latest(tr, next);
@@ -1430,7 +1433,7 @@ export class ProjectStore {
 
   /**
    * The undo manager has taken a step back, or made one again, and filed that as a step of its
-   * own. It works value by value and knows nothing of what the values mean, which leaves three
+   * own. It works value by value and knows nothing of what the values mean, which leaves four
    * things to do:
    *
    * - `mend`: put back what it took away without putting anything in its place;
@@ -1639,7 +1642,9 @@ export class ProjectStore {
       if (fields === true || !was || !lead?.ramp || !lead.linkId || lead.start === was.start) continue;
       if (!deepEqual(lead, { ...was, start: lead.start })) continue;
       for (const c of Object.values(found.clips)) {
-        if (c.linkId !== lead.linkId || !c.ramp || written.clips.has(c.id)) continue;
+        if (c.linkId !== lead.linkId || !c.ramp) continue;
+        const back = written.clips.get(c.id);
+        if (back === true || back?.has('start')) continue;
         const start = c.start + lead.start - was.start;
         const placed = values?.get(this.yClips.get(c.id) as ValueMap)?.has('start');
         if (placed && start >= 0 && inStep(found, was, c) !== null) starts.set(c.id, start);
@@ -1649,7 +1654,9 @@ export class ProjectStore {
     this.doc.transact(() => {
       for (const [id, start] of starts) {
         this.patchEntity(this.yClips, id, { start }, CLIP_DEFAULTS);
-        written.clips.set(id, new Set(['start']));
+        // Noted like what the undo manager wrote, for `makeRoom`.
+        const back = written.clips.get(id);
+        if (back !== true) written.clips.set(id, new Set(back).add('start'));
       }
     }, this.origin);
   }

@@ -582,9 +582,9 @@ button.conn:hover {
   gap: 4px;
 }
 /*
- * Stacked only where it has to be. Beside the label the control has the column the other rows
- * give theirs; it asks for the width its content needs, and where the panel has less than that
- * to give beside the label, the control goes on to a line of its own, as wide as the panel.
+ * Stacked only where it has to be. The control asks for the width its content needs: where the
+ * panel has that much beside the label, the row is laid out as every other row is; where it has
+ * not, the control goes on to a line of its own under the label, as wide as the panel.
  */
 .row--stack-auto {
   display: flex;

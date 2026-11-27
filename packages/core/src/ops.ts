@@ -1310,8 +1310,8 @@ function retimeGroup(
     const patch: Partial<Clip> = { ramp: sameRamp ? c.ramp : to.ramp, duration: place.duration };
     if (how.speed || (to.ramp === null && to.speed !== c.speed)) patch.speed = to.speed;
     if (how.reverse !== undefined) patch.reverse = how.reverse;
-    // A new clock is written with all that was worked out by it, changed or not: see `RAMP_EDIT`
-    // in the store.
+    // An edit to a new clock carries all that was worked out by it, changed or not: whoever plans
+    // around the edit reads the clip's place off it. The store writes what differs.
     if (retimed || sourceIn !== c.sourceIn) patch.sourceIn = sourceIn;
     if (follows && (retimed || place.start !== c.start)) patch.start = place.start;
     const moved =
@@ -1492,9 +1492,9 @@ export interface RampChange {
  * gets the ramp `change` names for it, or else the group's, by itself.
  *
  * Every edit carries `ramp` and `duration`; one that changes the ramp carries `sourceIn` and, for a
- * clip placed by another, `start` as well, changed or not, and the store writes them so. Setting
- * the ramp a clip has changes nothing. Sound whose ramp changes keeps its pitch from then on,
- * unless that has been decided.
+ * clip placed by another, `start` as well, changed or not. The store writes those that differ from
+ * what the clip has, as for any edit. Setting the ramp a clip has changes nothing. Sound whose ramp
+ * changes keeps its pitch from then on, unless that has been decided.
  */
 export function setRamp(p: Project, ids: ID[], change: RampChange, free = false): Edit[] {
   const edits: Edit[] = [];
