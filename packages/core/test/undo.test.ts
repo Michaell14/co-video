@@ -1899,6 +1899,28 @@ describe('undo of a move or a trim after someone else changed the ramp of the cl
       expect(two.b.get().clips[second.sound.id]).toEqual(parted);
     });
 
+    it('leaves the sound where it is when it would have to begin before the timeline does', () => {
+      // A J cut at the head of the timeline. Ramp up begins at half speed: the half second of
+      // sound before the picture now takes a second, for which there is room only after the move.
+      const { a, b } = together();
+      const v1 = tracksOf(a.get()).video[0];
+      const a1 = tracksOf(a.get()).audio[0];
+      const picture = makeClip('video', v1.id, { start: 15, duration: 105, sourceIn: 1.5, linkId: 'take' });
+      const sound = makeClip('audio', a1.id, { start: 0, duration: 120, sourceIn: 1, linkId: 'take' });
+      a.commit([picture, sound].map((clip): Edit => ({ op: 'addClip', clip })));
+      move(b, [picture.id, sound.id], 45);
+      shaped(a, picture.id, 'rampUp');
+      const made = a.get().clips;
+      expect([made[picture.id].start, made[sound.id].start]).toEqual([60, 30]);
+      expect(b.undo()).toEqual(TAKEN);
+      for (const s of [a, b]) {
+        expect(s.get().clips[picture.id].start).toBe(15);
+        expect(s.get().clips[sound.id]).toEqual(made[sound.id]);
+      }
+      expect(b.redo()).toEqual(TAKEN);
+      for (const s of [a, b]) expect(s.get().clips).toEqual(made);
+    });
+
     it('moves nothing along for clips without a ramp', () => {
       const { a, b } = together();
       const { picture, sound, ids } = split(a, 15);
@@ -2011,6 +2033,12 @@ describe('keep pitch, switched on by a change of speed', () => {
     expect(a.redo()).toEqual(TAKEN);
     for (const s of [a, b])
       expect(s.get().clips[sound.id]).toMatchObject({ speed: 1.5, ramp: hero, keepPitch: true });
+    // Left on, it is no step's to take back any more: it stays on when both have taken theirs
+    // back, at the speed the clip had before, where its pitch followed the speed.
+    expect(a.undo()).toEqual(TAKEN);
+    expect(b.undo()).toEqual(TAKEN);
+    for (const s of [a, b])
+      expect(s.get().clips[sound.id]).toMatchObject({ speed: 2, ramp: null, keepPitch: true });
   });
 
   it('stays on when it was switched on by hand and someone else has set a speed since, and its old value is not put back', () => {

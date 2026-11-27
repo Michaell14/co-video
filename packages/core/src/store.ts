@@ -1214,11 +1214,11 @@ export class ProjectStore {
     }
     // Which speed and which ramp each clip had whose Keep pitch the step switched on, when it did
     // so, and what the step has set them to itself since: a gesture writes them many times.
-    for (const [fields, noted] of (step.meta.get(STEP_PITCH) as StepPitch | undefined) ?? []) {
+    for (const [fields, stood] of (step.meta.get(STEP_PITCH) as StepPitch | undefined) ?? []) {
       for (const key of RETIMES) {
         const head = fields._map.get(key);
         const stands = head && !head.deleted ? head.lastId : null;
-        if (!noted.has(key) || (stands && Y.isDeleted(step.insertions, stands))) noted.set(key, stands);
+        if (!stood.has(key) || (stands && Y.isDeleted(step.insertions, stands))) stood.set(key, stands);
       }
     }
   }
@@ -1226,9 +1226,12 @@ export class ProjectStore {
   /** The step has written Keep pitch of a clip: `on` is the value, when it switched it on. */
   private notePitch(step: UndoStep, fields: ValueMap, on: Y.ID | null): void {
     let pitch = step.meta.get(STEP_PITCH) as StepPitch | undefined;
+    if (!on) {
+      pitch?.delete(fields);
+      return;
+    }
     if (!pitch) step.meta.set(STEP_PITCH, (pitch = new Map()));
-    if (on) pitch.set(fields, (pitch.get(fields) ?? new Map<string, Y.ID | null>()).set(KEEP_PITCH, on));
-    else pitch.delete(fields);
+    pitch.set(fields, (pitch.get(fields) ?? new Map<string, Y.ID | null>()).set(KEEP_PITCH, on));
   }
 
   /**
@@ -1247,14 +1250,14 @@ export class ProjectStore {
       const item = id ? Y.getItemCleanStart(tr, id) : null;
       return item instanceof Y.Item ? this.latest(tr, item) : null;
     };
-    for (const [fields, noted] of (step.meta.get(STEP_PITCH) as StepPitch | undefined) ?? []) {
-      const pitch = at(noted.get(KEEP_PITCH));
+    for (const [fields, stood] of (step.meta.get(STEP_PITCH) as StepPitch | undefined) ?? []) {
+      const pitch = at(stood.get(KEEP_PITCH));
       if (!pitch || pitch.deleted || pitch.content.getContent().at(-1) !== true) continue;
       const since = RETIMES.some((key) => {
         const head = fields._map.get(key);
         if (!head || head.deleted || deepEqual(head.content.getContent().at(-1), CLIP_DEFAULTS[key]))
           return false;
-        return at(noted.get(key)) !== head;
+        return at(stood.get(key)) !== head;
       });
       if (!since) continue;
       this.spared.add(pitch);

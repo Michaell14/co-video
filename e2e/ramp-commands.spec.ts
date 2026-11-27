@@ -848,20 +848,36 @@ test.describe('speed ramps and two people', () => {
     return shared;
   }
 
-  test('two shapes set on one clip at the same moment leave one of them, whole, for both', async ({
+  /** Put clips back as they were found: where they are, their media, their ramp and their pitch. */
+  const putBack = (page: Page, clips: Clip[]): Promise<void> =>
+    page.evaluate((clips) => {
+      const { session } = (window as any).tandem;
+      session.store.commit(
+        clips.map(({ id, start, duration, sourceIn, ramp, keepPitch }: any) => ({
+          op: 'updateClip',
+          id,
+          patch: { start, duration, sourceIn, ramp, keepPitch },
+        })),
+      );
+    }, clips);
+
+  test('two shapes set on one clip at the same moment leave one of them for both, on the length Bullet gave the clip', async ({
     page,
     browser,
   }) => {
     const errors = trackErrors(page);
     const { b, close, picture, sound } = await together(page, browser);
     const theirErrors = trackErrors(b);
+    const found = await project(page);
     const flat = [
       { m: 1, v: 1 },
       { m: 3, v: 1 },
     ];
     const won: string[] = [];
-    // Bullet makes the clip 14 frames long and Custom leaves it at 60. Whoever's ramp stands,
-    // the length that goes with it stands too. Once with each of them asking for each.
+    // Bullet makes the clip 14 frames long. Custom leaves it at 60 and so writes no length: an
+    // edit writes what it changes. Whoever's ramp stands, the one length that was written stands
+    // with it, and Custom, where it wins, is left on the first 14 frames of the stretch. Once
+    // with each of them asking for each.
     for (const [mine, theirs] of [
       ['bullet', 'custom'],
       ['custom', 'bullet'],
@@ -880,20 +896,33 @@ test.describe('speed ramps and two people', () => {
       won.push(bullet ? 'bullet' : 'custom');
       if (!bullet) expect(ramp).toEqual(flat);
       for (const id of [picture, sound]) {
-        expect(p.clips[id]).toMatchObject({ start: 0, duration: bullet ? 14 : 60, sourceIn: 1 });
+        expect(p.clips[id]).toMatchObject({ start: 0, duration: 14, sourceIn: 1 });
         expect(p.clips[id].ramp).toEqual(ramp);
       }
+      // Either way picture and sound play the same media on every frame. Under Custom these are
+      // the first 14 frames of the stretch, at the speed it was shot. Both people then look at
+      // the last of them.
       expect(apart(p, p.clips[picture], p.clips[sound])).toBeLessThan(1e-9);
-      // Back to where they began for the next round: one of them undoes, then the other.
-      await undo(page);
-      await alike(page, b);
-      await undo(b);
+      if (!bullet) expect(sourceTimeAt(p.clips[picture], 13, p)).toBeCloseTo(1 + 13 / 30, 9);
+      for (const who of [page, b]) await seek(who, 13);
+      // Whoever set Bullet takes it back: the length, which is theirs whichever ramp stands, and
+      // the ramp where theirs is the one that stands. Custom, where it won, then has the whole
+      // stretch.
+      await undo(mine === 'bullet' ? page : b);
       const back = await alike(page, b);
       for (const id of [picture, sound]) {
-        expect(back.clips[id]).toMatchObject({ ramp: null, start: 0, duration: 60, sourceIn: 1 });
+        expect(back.clips[id]).toMatchObject({
+          ramp: bullet ? null : flat,
+          start: 0,
+          duration: 60,
+          sourceIn: 1,
+        });
       }
+      // As it was found, for the next round.
+      await putBack(page, [found.clips[picture], found.clips[sound]]);
+      await expect.poll(async () => isDeepStrictEqual((await project(b)).clips, found.clips)).toBe(true);
     }
-    // The same person's change stands both times, so each shape has stood once.
+    // The same person's ramp stands both times, so each shape has stood once.
     expect(won.sort()).toEqual(['bullet', 'custom']);
     expect([...errors, ...theirErrors]).toEqual([]);
     await close();
@@ -926,50 +955,28 @@ test.describe('speed ramps and two people', () => {
       );
       for (const p of [page, b]) await reconnect(p);
       const p = await alike(page, b);
-      // The ramp stands for both clips, on the media it was set on, and the picture begins where
-      // the trim put it: nobody else wrote its start.
+      // The ramp stands for both clips, on the media it was set on, and both begin where the trim
+      // put them, on its in point: the shape left those as they were and so wrote neither.
+      const trim = { start: 10, duration: 50, sourceIn: 1 + 10 / 30 };
       for (const id of [picture, sound]) {
         expect(p.clips[id].ramp).toEqual([
           { m: 1, v: 2 },
           { m: 3, v: 0.5 },
         ]);
+        expect(p.clips[id]).toMatchObject({ start: trim.start, sourceIn: trim.sourceIn });
       }
-      expect(p.clips[picture].start).toBe(10);
-      // Length and in point are one person's, and so is where the sound begins, which both wrote.
-      const trim = { start: 10, duration: 50, sourceIn: 1 + 10 / 30 };
-      const places = [picture, sound].map((id) => {
-        const { start, duration, sourceIn } = p.clips[id];
-        return { start, duration, sourceIn };
-      });
-      const trimWon = places[0].duration === 50;
-      if (trimWon) {
-        expect(places).toEqual([trim, trim]);
-        // The trim's in point on the ramp: picture and sound play the same media on every frame.
-        expect(apart(p, p.clips[picture], p.clips[sound])).toBeLessThan(1e-9);
-      } else {
-        expect(places).toEqual([
-          { start: 10, duration: 48, sourceIn: 1 },
-          { start: 0, duration: 48, sourceIn: 1 },
-        ]);
-      }
-      outcomes.push(trimWon ? 'trim' : 'ramp');
+      // The length is the one thing both wrote. It is one person's, for the picture and its sound.
+      const length = p.clips[picture].duration;
+      expect([48, trim.duration]).toContain(length);
+      expect(p.clips[sound].duration).toBe(length);
+      // Whoever's it is, picture and sound play the same media on every frame.
+      expect(apart(p, p.clips[picture], p.clips[sound])).toBeLessThan(1e-9);
+      outcomes.push(length === trim.duration ? 'trim' : 'ramp');
       // As it was found, for the next round.
-      await page.evaluate(
-        (clips) => {
-          const { session } = (window as any).tandem;
-          session.store.commit(
-            clips.map(({ id, start, duration, sourceIn, ramp, keepPitch }: any) => ({
-              op: 'updateClip',
-              id,
-              patch: { start, duration, sourceIn, ramp, keepPitch },
-            })),
-          );
-        },
-        [found.clips[picture], found.clips[sound]],
-      );
+      await putBack(page, [found.clips[picture], found.clips[sound]]);
       await expect.poll(async () => isDeepStrictEqual((await project(b)).clips, found.clips)).toBe(true);
     }
-    // The same person's writes stand both times: once that was the shape, once the trim.
+    // The same person's length stands both times: once that was the shape's, once the trim's.
     expect(outcomes.sort()).toEqual(['ramp', 'trim']);
     await close();
   });
