@@ -192,6 +192,56 @@ const drawnClicks = (page: Page, id: string): Promise<number[]> =>
     return found;
   }, id);
 
+/**
+ * The stretch of a clip that the lane canvas shades as not analysed yet, in pixels from the clip's
+ * left edge, or null where it shades none of it. Read off the canvas: under the shade the ground of
+ * the clip holds more paint, in every column that no click fills from top to bottom.
+ */
+const shaded = (page: Page, id: string): Promise<[number, number] | null> =>
+  page.evaluate((id) => {
+    const el = document.querySelector(`.clip[data-clip="${id}"]`)!;
+    const canvas = el.closest('.lane')!.querySelector('canvas')!;
+    const r = el.getBoundingClientRect();
+    const c = canvas.getBoundingClientRect();
+    const scale = canvas.width / c.width;
+    const left = (r.left - c.left) * scale;
+    const { data, width, height } = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height);
+    // Inside the rounded corners of the clip, and below its label strip.
+    const from = Math.ceil(left + 8 * scale);
+    const to = Math.floor(left + (r.width - 8) * scale);
+    const ground: number[] = [];
+    for (let x = from; x < to; x++) {
+      let least = 255;
+      for (let y = Math.round(22 * scale); y < height - Math.round(8 * scale); y++) {
+        least = Math.min(least, data[(y * width + x) * 4 + 3]);
+      }
+      ground.push(least);
+    }
+    const bare = Math.min(...ground);
+    // A column that a click fills, or slopes through, has no ground to read: it is as its neighbours are.
+    const under = ground.map((paint) => (paint > bare + 20 ? null : paint > bare + 5));
+    const first = under.indexOf(true);
+    if (first < 0) return null;
+    const last = under.lastIndexOf(true);
+    if (under.slice(first, last + 1).includes(false)) throw new Error('the shade has a hole in it');
+    return [(from + first - left) / scale, (from + last + 1 - left) / scale];
+  }, id);
+
+/**
+ * Have the lane canvas draw as it does while a file is still being analysed, `loaded` seconds in:
+ * the waveform's own record of how far it has read is set back, and the view nudged so that the
+ * lanes are painted again. Null puts the record right again.
+ */
+const analysedTo = (page: Page, loaded: number | null): Promise<void> =>
+  page.evaluate((loaded) => {
+    const { session, ui } = (window as any).tandem;
+    const [asset] = Object.values(session.store.get().assets) as any[];
+    const wave = session.thumbs.wave.get(asset.id, asset.duration);
+    wave.done = loaded === null;
+    wave.loaded = loaded ?? asset.duration;
+    ui.getState().set({ scrollX: loaded === null ? 0 : 1 });
+  }, loaded);
+
 /** A local project with nothing in it but a click track on A1, drawn at four pixels to the frame. */
 async function clickProject(page: Page): Promise<string> {
   await localProject(page);
@@ -445,15 +495,36 @@ test.describe('speed ramps on the timeline', () => {
     expect(ramped).toMatchObject({ duration: 192, start: 30, sourceIn: 0 });
     await expect.poll(() => off(frameOfMedia)).toBeLessThan(1.5);
     // Not where a clip at the average speed would have it: that is tens of pixels off.
-    expect(await off(linear)).toBeGreaterThan(40);
+    const byAverage = await off(linear);
+    expect(byAverage).toBeGreaterThan(40);
+    expect(byAverage).toBeLessThan(200);
 
     // Backwards the sound runs through the file from the top: each click at its distance from the end.
     await page.evaluate(() => (window as any).tandem.cmd.setReverse(true));
     expect(await clip(page, id)).toEqual({ ...ramped, reverse: true });
     await expect.poll(() => off((c, m, p) => c.duration - frameOfMedia(c, m, p))).toBeLessThan(1.5);
 
-    // A trim moves the window and not the ramp: what is left is drawn where it was.
+    // While the file is still being analysed, what has not been read is shaded: the columns
+    // whose sound lies further into the file, which a clip that plays backwards plays first.
+    const edge = frameOfMedia(ramped, 3, await project(page)) * ppf;
+    await analysedTo(page, 3);
+    await expect
+      .poll(async () => {
+        const shade = await shaded(page, id);
+        return shade ? Math.max(shade[0] - 8, Math.abs(shade[1] - (192 * ppf - edge))) : Infinity;
+      })
+      .toBeLessThan(1.5);
     await page.evaluate(() => (window as any).tandem.cmd.setReverse(false));
+    await expect
+      .poll(async () => {
+        const shade = await shaded(page, id);
+        return shade ? Math.max(Math.abs(shade[0] - edge), 192 * ppf - 8 - shade[1]) : Infinity;
+      })
+      .toBeLessThan(1.5);
+    await analysedTo(page, null);
+    await expect.poll(() => shaded(page, id)).toBeNull();
+
+    // A trim moves the window and not the ramp: what is left is drawn where it was.
     const before = await drawnClicks(page, id);
     await seek(page, 30 + 60);
     await page.evaluate(() => (window as any).tandem.cmd.trimToPlayhead('start'));
@@ -585,23 +656,31 @@ test.describe('speed ramps on the timeline', () => {
           const film = session.thumbs.film;
           const { assetId, start } = session.store.get().clips[id];
           const calls: { time: number; step: number }[] = [];
-          const get = film.get;
-          film.get = function (asset: string, time: number, step: number) {
-            if (asset === assetId) calls.push({ time, step });
-            return get.call(film, asset, time, step);
+          // Every painting of a lane says which view it paints before it asks for anything. A
+          // painting of the view as it was can still be on its way: only this view's count.
+          let view = NaN;
+          film.viewing = function (scrollX: number, at: number) {
+            view = at;
+            return Object.getPrototypeOf(film).viewing.call(film, scrollX, at);
           };
-          // A change of view paints every lane.
+          film.get = function (asset: string, time: number, step: number) {
+            if (asset === assetId && view === ppf) calls.push({ time, step });
+            return Object.getPrototypeOf(film).get.call(film, asset, time, step);
+          };
           ui.getState().set({ ppf, scrollX: start * ppf - 24 });
-          return new Promise<{ time: number; step: number }[]>((resolve) =>
-            requestAnimationFrame(() =>
+          const began = performance.now();
+          return new Promise<{ time: number; step: number }[]>((resolve) => {
+            const look = () =>
               requestAnimationFrame(() => {
-                film.get = get;
+                if (!calls.length && performance.now() - began < 10_000) return look();
+                delete film.viewing;
+                delete film.get;
                 // A thumbnail that arrived meanwhile had the lane painted again: one painting is enough.
                 const again = calls.findIndex((call, i) => i > 0 && call.time <= calls[i - 1].time);
                 resolve(again < 0 ? calls : calls.slice(0, again));
-              }),
-            ),
-          );
+              });
+            look();
+          });
         },
         [fractal, ppf] as const,
       );
