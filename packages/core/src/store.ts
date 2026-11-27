@@ -36,7 +36,7 @@ import {
 import { getEffectDef, type ParamDef } from './effects';
 import { conformEasing } from './keyframes';
 import { overlappingPairs, roundedTogether, separateClips } from './overlaps';
-import { inStep, sourceTimeAt } from './query';
+import { inStep } from './query';
 import { conformRamp } from './ramp';
 import { clipAtRate, fpsOf, sameRate } from './time';
 import { getTransitionDef } from './transitions';
@@ -59,7 +59,6 @@ import type {
   ParamValue,
   Project,
   ProjectSettings,
-  RampPoint,
   ShapeKind,
   ToneMapOp,
   Track,
@@ -631,13 +630,6 @@ type StepValues = Map<ValueMap, Map<string, unknown>>;
 type Place = Pick<Clip, 'start' | 'duration'>;
 type StepPlaces = Map<ID, Place>;
 type StepPitch = Map<ValueMap, Map<string, Y.ID | null>>;
-/** What a step did to the speed, the ramp and the length of a clip (see `keepRetimes`). */
-interface Retime {
-  /** The ramp the step found the clip on: the one it replaced, or none (null) where it replaced none. */
-  ramps: unknown[];
-  /** Whether the step set the clip's length. */
-  length: boolean;
-}
 
 /** The field that says a sound keeps its pitch at another speed. */
 const KEEP_PITCH = 'keepPitch';
@@ -733,9 +725,8 @@ export interface StepOutcome {
   changed: boolean;
   /**
    * How many steps were passed over on the way because nothing of them was left to take back:
-   * someone else has since changed or removed everything they had touched, or has changed a clip
-   * so that the speed the step gave it cannot go back, and then none of the step does (see
-   * `keepRetimes`). They are gone from the history, and the step after them was taken instead.
+   * someone else has since changed or removed everything they had touched. They are gone from the
+   * history, and the step after them was taken instead.
    */
   dropped: number;
 }
@@ -1445,18 +1436,17 @@ export class ProjectStore {
 
   /**
    * The undo manager has taken a step back, or made one again, and filed that as a step of its
-   * own. It works value by value and knows nothing of what the values mean, which leaves five
+   * own. It works value by value and knows nothing of what the values mean, which leaves four
    * things to do:
    *
    * - `mend`: put back what it took away without putting anything in its place;
-   * - `keepRetimes`: take nothing of the step back where a ramp and a length would come apart;
    * - `retime`: bring what the step wrote to the frame rate the document has by now;
    * - `keepInStep`: take a clip along that a ramp has placed by the one the step moved;
    * - `makeRoom`: move a clip that came back onto frames someone else's clip has taken since.
    *
    * All of it is written to the document like any edit, so everyone receives it, and made part of
    * the filed step: one press of undo is one step, for whoever takes it back and for whoever keeps
-   * notes on it. A step of which `keepRetimes` has left nothing taken back is not filed at all.
+   * notes on it.
    */
   private settle(step: UndoStep, type: 'undo' | 'redo'): void {
     const written = this.written;
@@ -1476,31 +1466,9 @@ export class ProjectStore {
     const now = fpsOf(this.project.settings);
     const back = now / step.meta.get(STEP_RATE);
     const rest = now / filed.meta.get(STEP_RATE);
-    const held = this.keepRetimes(step, found, written);
     if (!sameRate(back) || !sameRate(rest)) this.retime(step, back, rest, written);
     else this.keepInStep(step, found, written);
     this.makeRoom(step, filed, written, !sameRate(back), !sameRate(rest));
-    if (held && !written.clips.size && deepEqual(this.project, found)) {
-      // Nothing of the step was left to take back but what `keepRetimes` has kept as it was. All
-      // is as the undo found it: the step counts as passed over, like one that someone else has
-      // left nothing of, and what was written on the way is no step to take the other way.
-      // Each value the undo took away stands again, written anew. It is pointed at the one that
-      // stands for it, the way the undo manager notes its own restorations: this session's other
-      // steps, the ones still to be made again after an undo and the ones before a redo, then
-      // find their values where they left them.
-      this.doc.transact((tr) => {
-        eachValue(tr, filed.deletions, (was) => {
-          const now = (was.parent as ValueMap)._map.get(was.parentSub as string);
-          if (now && !now.deleted && was.redone === null) standsFor(now, was);
-        });
-      });
-      // Whoever else keeps notes on the step, to take back what went with it (the comments a
-      // ripple took along), is told after this and finds none: nothing of it was taken back.
-      step.meta.clear();
-      stack.splice(stack.indexOf(filed));
-      this.stepStood = false;
-      return;
-    }
     for (const extra of stack.splice(stack.indexOf(filed) + 1)) {
       // A value the step put back and one of the above then replaced is the same value in another
       // form. The undo manager is told so, the way it notes its own restorations: an earlier step
@@ -1653,128 +1621,6 @@ export class ProjectStore {
         }
       }
     }, this.origin);
-  }
-
-  /**
-   * A change of speed or of ramp gives a clip another length, and the two belong together: a ramp
-   * on a length it did not give plays media the clip never held, or loses some of what it did.
-   * The undo manager takes back, of all a step wrote, each value that still stands as the step
-   * left it, and for such a step that can be one of the two without the other. Someone else's
-   * edit of the ramp that left the clip as long as it was wrote the ramp and nothing more, so the
-   * length is still the step's to take back; someone else's trim wrote the length, so the ramp is.
-   *
-   * So the ramp and the length that a change of speed or ramp gave a clip are taken back together.
-   * For a step that had set a clip's speed or its ramp, an undo or redo that has put back
-   *
-   * - the length and not the ramp, must leave the clip playing, on the ramp it is on, the stretch
-   *   of media that this length was the length of: the one it plays on the ramp the step had found
-   *   it on (`retimesOf`). A ramp that someone set at the same moment, not having seen the step,
-   *   is such a ramp; one set since, on the length the step gave, is not;
-   * - a ramp, for the clip to be on, and not the length, must be of a step that had left the
-   *   length as it was.
-   *
-   * A clip for which that does not hold is left as the undo found it, and with it all else the
-   * step did: every field of every clip and every marker that the undo wrote is written back as
-   * it was. A step is taken back whole or not at all. With ripple editing the step that gave the
-   * clip its length also moved what follows by as many frames, and those moves taken back around
-   * a clip that keeps its length would open a hole after it, or put the next clip on its frames.
-   * So nothing of the step is taken back, as when someone has set another speed since, and
-   * `settle` passes it over. A clip that is on no ramp, and was on none for the step, is not
-   * looked at: a speed alone is taken back as it always was.
-   *
-   * Only a step that also put whole clips there or took them away, which no change of speed or
-   * ramp does, is taken back around the clip that is kept: a clip that has gone or come back has
-   * no fields to write back. And a clip the undo wrote while it had no track to be on is not in
-   * `found`: it stays as the undo wrote it, and the step then counts as taken back.
-   *
-   * A trim and a move set neither a speed nor a ramp, and are taken back under any ramp. Returns
-   * whether anything was kept as it was; what was is no longer among `written`.
-   */
-  private keepRetimes(step: UndoStep, found: Project, written: StepWrites): boolean {
-    let retimes: Map<ID, Retime> | undefined;
-    const kept = new Set<ID>();
-    for (const [id, fields] of written.clips) {
-      const was = found.clips[id];
-      const now = this.project.clips[id];
-      if (fields === true || !was || !now) continue;
-      const [ramp, length] = [fields.has('ramp'), fields.has('duration')];
-      // Both came back, or neither; or the ramp was taken off, and the clip is at one speed.
-      if (ramp === length || (ramp && !now.ramp)) continue;
-      retimes ??= this.retimesOf(step);
-      const retime = retimes.get(id);
-      if (!retime) continue;
-      const together = ramp
-        ? !retime.length
-        : retime.ramps.some((before) => this.sameStretch(now, conformRamp(before) ?? null));
-      if (!together) kept.add(id);
-    }
-    if (!kept.size) return false;
-    const around = Array.from(written.clips.values()).includes(true);
-    this.doc.transact(() => {
-      for (const [id, fields] of written.clips) {
-        const was = found.clips[id];
-        if (fields === true || !was || (around && !kept.has(id))) continue;
-        const patch = Object.fromEntries(Array.from(fields, (key) => [key, was[key as keyof Clip]]));
-        this.patchEntity(this.yClips, id, patch, CLIP_DEFAULTS);
-        written.clips.delete(id);
-      }
-      if (around) return;
-      for (const id of written.markers) {
-        if (!Object.hasOwn(found.markers, id)) this.yMarkers.delete(id);
-        else if (!deepEqual(this.project.markers[id], found.markers[id]))
-          this.yMarkers.set(id, found.markers[id]);
-      }
-      written.markers.clear();
-    }, this.origin);
-    return true;
-  }
-
-  /**
-   * Whether `clip` plays the same stretch of media on `ramp` as on the ramp it has, over the
-   * frames it has: from the same second to the same second, give or take what one frame plays at
-   * its end. A length is a whole number of frames, and two ramps that play one stretch seldom
-   * need the same number to the last fraction.
-   */
-  private sameStretch(clip: Clip, ramp: RampPoint[] | null): boolean {
-    if (deepEqual(ramp, clip.ramp)) return true;
-    const p = this.project;
-    const other = { ...clip, ramp };
-    const ends = (c: Clip): number[] => [sourceTimeAt(c, 0, p), sourceTimeAt(c, c.duration, p)];
-    const perFrame = (c: Clip): number =>
-      Math.abs(sourceTimeAt(c, c.duration, p) - sourceTimeAt(c, c.duration - 1, p));
-    const room = Math.max(perFrame(clip), perFrame(other)) + 1e-9;
-    const [here, there] = [ends(clip), ends(other)];
-    return here.every((second, i) => Math.abs(second - there[i]) <= room);
-  }
-
-  /**
-   * What the step did to each clip whose speed or ramp it set or took away, by the clip's id: a
-   * clip that was deleted and has come back is another map than the one the step wrote to.
-   */
-  private retimesOf(step: UndoStep): Map<ID, Retime> {
-    const retimes = new Map<ID, Retime>();
-    const lengths = new Set<ID>();
-    this.doc.transact((tr) => {
-      for (const set of [step.insertions, step.deletions]) {
-        eachValue(tr, set, (item) => {
-          const clip = (item.parent as ValueMap)._item;
-          if (clip?.parent !== this.yClips || clip.parentSub === null) return;
-          if (item.parentSub === 'duration') lengths.add(clip.parentSub);
-          if (!RETIMES.some((key) => key === item.parentSub)) return;
-          let retime = retimes.get(clip.parentSub);
-          if (!retime) retimes.set(clip.parentSub, (retime = { ramps: [], length: false }));
-          // What the step replaced is among what it deleted, and not among what it wrote itself.
-          if (set !== step.deletions || item.parentSub !== 'ramp') return;
-          if (!(item.content instanceof Y.ContentAny) || Y.isDeleted(step.insertions, item.id)) return;
-          retime.ramps.push(item.content.getContent().at(-1));
-        });
-      }
-    });
-    for (const [id, retime] of retimes) {
-      if (!retime.ramps.length) retime.ramps.push(null);
-      retime.length = lengths.has(id);
-    }
-    return retimes;
   }
 
   /**
