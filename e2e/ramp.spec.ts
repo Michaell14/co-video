@@ -385,6 +385,103 @@ test.describe('the ramp chips', () => {
     expect(await clip(page, dusk.id)).toMatchObject({ speed: 4, duration: 30 });
     await expect(chip(page, '4×')).toHaveAttribute('aria-pressed', 'true');
   });
+
+  // The presets were not alone in running out of the narrowest panel: the three shapes of a mask
+  // are one control, which cannot go on to a second line as the chips do.
+  test('in a panel as narrow as it goes, the shape of a mask goes under its label and nothing runs out of the panel', async ({
+    page,
+  }) => {
+    await sample(page);
+    const dusk = await named(page, 'dusk.mp4');
+    await select(page, [dusk.id]);
+    const mask = inspector(page).locator('.section', {
+      has: page.locator('.section__head', { hasText: 'Mask' }),
+    });
+    await mask.locator('.section__head').click();
+    const row = mask.locator('.row', { has: page.locator('.row__label', { hasText: /^Shape$/ }) });
+    const shapes = ['None', 'Rectangle', 'Ellipse'];
+    const boxes = async () => {
+      await row.scrollIntoViewIfNeeded();
+      const box = async (part: Locator) => (await part.boundingBox())!;
+      return {
+        panel: await box(inspector(page)),
+        label: await box(row.locator('.row__label')),
+        segments: await Promise.all(
+          shapes.map((name) => box(row.getByRole('button', { name, exact: true }))),
+        ),
+        thumb: await box(row.locator('.seg__thumb')),
+      };
+    };
+    /** How far the edges of the thumb are from those of the segment that is chosen. */
+    const thumbOff = async (name: string) => {
+      const { segments, thumb } = await boxes();
+      const chosen = segments[shapes.indexOf(name)];
+      return Math.max(
+        Math.abs(thumb.x - chosen.x),
+        Math.abs(thumb.x + thumb.width - (chosen.x + chosen.width)),
+      );
+    };
+    const press = async (name: string) => {
+      const at = (await boxes()).segments[shapes.indexOf(name)];
+      await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+    };
+
+    // At the width the panel comes with, the control stands beside its label.
+    const usual = await boxes();
+    expect(usual.segments[0].x).toBeGreaterThanOrEqual(usual.label.x + usual.label.width);
+    expect(usual.segments[0].y).toBeLessThan(usual.label.y);
+    expect(usual.segments[0].y + usual.segments[0].height).toBeGreaterThan(
+      usual.label.y + usual.label.height,
+    );
+    await press('Rectangle');
+    expect((await clip(page, dusk.id)).mask?.type).toBe('rect');
+    await expect.poll(() => thumbOff('Rectangle')).toBeLessThan(1.5);
+
+    const splitter = page.getByRole('separator', { name: 'Inspector width' });
+    const narrowest = Number(await splitter.getAttribute('aria-valuemin'));
+    await splitter.focus();
+    await page.keyboard.press('Home');
+    await expect.poll(async () => (await boxes()).panel.width).toBe(narrowest);
+    // Three words are wider than the column there. Every segment is inside the panel all the
+    // same: the control is under the label, where the width of the panel is its own.
+    const narrow = await boxes();
+    for (const [i, box] of narrow.segments.entries()) {
+      expect(box.x, shapes[i]).toBeGreaterThanOrEqual(narrow.panel.x);
+      expect(box.x + box.width, shapes[i]).toBeLessThanOrEqual(narrow.panel.x + narrow.panel.width);
+    }
+    expect(narrow.segments[0].y).toBeGreaterThanOrEqual(narrow.label.y + narrow.label.height);
+    // The segments have moved and grown with the control: the thumb is still on the chosen one.
+    await expect.poll(() => thumbOff('Rectangle')).toBeLessThan(1.5);
+    // Each of them answers a press at its middle.
+    await press('Ellipse');
+    expect((await clip(page, dusk.id)).mask?.type).toBe('ellipse');
+    await expect.poll(() => thumbOff('Ellipse')).toBeLessThan(1.5);
+    await press('None');
+    expect((await clip(page, dusk.id)).mask).toBeNull();
+    await press('Rectangle');
+    expect((await clip(page, dusk.id)).mask?.type).toBe('rect');
+
+    // With every section of the shot open, no control of the panel reaches past its edges.
+    const closed = inspector(page).locator('.section__head[aria-expanded="false"]');
+    for (let left = await closed.count(); left > 0; left--) await closed.first().click();
+    await expect(closed).toHaveCount(0);
+    const outside = await inspector(page).evaluate((panel) => {
+      const edge = panel.getBoundingClientRect();
+      const controls = 'button, input, select, [role=slider], [role=switch], [role=combobox]';
+      return Array.from(panel.querySelectorAll(controls))
+        .filter((el) => {
+          const box = el.getBoundingClientRect();
+          return box.width > 0 && (box.left < edge.left - 0.5 || box.right > edge.right + 0.5);
+        })
+        .map((el) => {
+          const where =
+            el.closest('.row')?.querySelector('.row__label')?.textContent ??
+            el.closest('.section')?.querySelector('.section__head')?.textContent;
+          return `${where ?? 'panel'}: ${el.getAttribute('aria-label') ?? el.textContent?.trim() ?? el.tagName}`;
+        });
+    });
+    expect(outside).toEqual([]);
+  });
 });
 
 test.describe('the ramp graph by pointer', () => {

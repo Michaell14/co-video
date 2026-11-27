@@ -126,10 +126,12 @@ export function Section({
 }
 
 /**
- * A label and its controls. `stack` puts the controls under the label, over the panel's width;
- * `wrap` lets controls that are wider than their column (a line of chips in a narrow panel) go on
- * to a second line beside the label, instead of running out of the panel where they cannot be
- * pressed.
+ * A label and its controls. `stack` puts the controls under the label, over the panel's width:
+ * always, or with `'auto'` only where the panel is too narrow for them beside the label (for a
+ * control that is one piece and cannot be made narrower, like a line of segments with words in
+ * them). `wrap` lets controls that are wider than their column (a line of chips in a narrow
+ * panel) go on to a second line beside the label. Either way nothing runs out of the panel,
+ * where it could not be pressed.
  */
 export function Row({
   label,
@@ -139,11 +141,12 @@ export function Row({
 }: {
   label: ReactNode;
   children: ReactNode;
-  stack?: boolean;
+  stack?: boolean | 'auto';
   wrap?: boolean;
 }) {
+  const stacked = stack === 'auto' ? ' row--stack-auto' : stack ? ' row--stack' : '';
   return (
-    <Labelled className={`row${stack ? ' row--stack' : ''}${wrap ? ' row--wrap' : ''}`}>
+    <Labelled className={`row${stacked}${wrap ? ' row--wrap' : ''}`}>
       <div className="row__label">
         <LabelText>{label}</LabelText>
       </div>

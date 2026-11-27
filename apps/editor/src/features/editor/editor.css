@@ -581,6 +581,22 @@ button.conn:hover {
   grid-template-columns: 1fr;
   gap: 4px;
 }
+/*
+ * Stacked only where it has to be. Beside the label the control has the column the other rows
+ * give theirs; it asks for the width its content needs, and where the panel has less than that
+ * to give beside the label, the control goes on to a line of its own, as wide as the panel.
+ */
+.row--stack-auto {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.row--stack-auto > .row__label {
+  flex: 0 0 84px;
+}
+.row--stack-auto > .row__ctrl {
+  flex: 1 1 auto;
+}
 /* Controls that do not fit their column on one line take a second one, inside the panel. */
 .row--wrap > .row__ctrl {
   flex-wrap: wrap;

@@ -654,7 +654,7 @@ function MaskSection({ clips }: { clips: Clip[] }) {
   );
   return (
     <Section id="mask" title="Mask" defaultCollapsed>
-      <Row label="Shape">
+      <Row label="Shape" stack="auto">
         <Segmented
           block
           value={mask ? mask.type : 'none'}

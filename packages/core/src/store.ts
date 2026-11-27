@@ -36,6 +36,7 @@ import {
 import { getEffectDef, type ParamDef } from './effects';
 import { conformEasing } from './keyframes';
 import { overlappingPairs, roundedTogether, separateClips } from './overlaps';
+import { inStep } from './query';
 import { conformRamp } from './ramp';
 import { clipAtRate, fpsOf, sameRate } from './time';
 import { getTransitionDef } from './transitions';
@@ -616,6 +617,11 @@ const STEP_PLACES = 'tandem.places';
  * project the step gives back when it is taken (see `makeRoom`).
  */
 const STEP_SHARED = 'tandem.shared';
+/**
+ * Where an undo step keeps, for each clip it switched Keep pitch on for, which value that was and
+ * which values stood under the clip's speed and its ramp once the step was made (see `leavePitch`).
+ */
+const STEP_PITCH = 'tandem.pitch';
 
 type UndoStep = Y.UndoManager['undoStack'][number];
 /** A map that holds single values: the settings, the markers, the folders, or one asset, track or clip. */
@@ -623,6 +629,12 @@ type ValueMap = Y.Map<unknown>;
 type StepValues = Map<ValueMap, Map<string, unknown>>;
 type Place = Pick<Clip, 'start' | 'duration'>;
 type StepPlaces = Map<ID, Place>;
+type StepPitch = Map<ValueMap, Map<string, Y.ID | null>>;
+
+/** The field that says a sound keeps its pitch at another speed. */
+const KEEP_PITCH = 'keepPitch';
+/** The fields that give a clip another speed. */
+const RETIMES = ['speed', 'ramp'] as const;
 
 /** One name for two clips, whichever comes first. */
 const pairOf = (a: Clip, b: Clip): string => (a.id < b.id ? `${a.id} ${b.id}` : `${b.id} ${a.id}`);
@@ -654,39 +666,13 @@ function eachValue(tr: Y.Transaction, set: UndoStep['insertions'], f: (item: Y.I
  */
 function standsFor(now: Y.Item, was: Y.Item): void {
   was.redone = now.id;
-  keep(now);
-}
-
-/**
- * Keep a value, and the maps it lies in, for as long as the document is open: the document would
- * otherwise drop what it held once someone has written over it.
- */
-function keep(value: Y.Item): void {
-  for (let item: Y.Item | null = value; item !== null && !item.keep; item = (item.parent as ValueMap)._item) {
+  for (let item: Y.Item | null = now; item !== null && !item.keep; item = (item.parent as ValueMap)._item) {
     item.keep = true;
   }
 }
 
 /** The fields that say where a clip is. A change of frame rate writes them whether they change or not. */
 const PLACEMENT: ReadonlySet<string> = new Set(['start', 'duration']);
-
-/**
- * The fields a new ramp is worked out together with: how long the clip then is, where its media
- * begins and, for a clip placed by the one it is linked to, where it starts. An edit that changes
- * the ramp writes those it carries whether they change or not. Two people who set different ramps
- * on a clip at the same moment then both write all of them, and one of them wins the clip whole:
- * otherwise the length that one ramp had left as it was would be lost to the other's, and the clip
- * would play one person's curve over the other's length.
- */
-const RAMP_EDIT: ReadonlySet<string> = new Set(['ramp', 'duration', 'sourceIn', 'start']);
-
-/**
- * The field that says a sound keeps its pitch at another speed. A change of speed or of ramp that
- * finds it on writes it again, on: a speed is set with the pitch kept unless someone switches that
- * off, and this is the word of whoever set the speed that stands. Taking back an earlier change of
- * speed, the one that first switched it on among them, then leaves it with the speed set since.
- */
-const KEEP_PITCH = 'keepPitch';
 
 /** What an undo or redo wrote: the fields of each clip (`true` for a clip put there whole) and the markers. */
 interface StepWrites {
@@ -782,8 +768,8 @@ export class ProjectStore {
   private stepping = false;
   /** Values that `prepare` has pointed at what stands in for them, for one step only. */
   private readonly lent: Y.Item[] = [];
-  /** Values that came already written over, in an update that left their key as it found it. */
-  private readonly passed = new WeakSet<Y.Item>();
+  /** Values of the step being taken back that it leaves standing (see `leavePitch`). */
+  private readonly spared = new Set<Y.Item>();
   private readonly ySettings: Y.Map<unknown>;
   private readonly yAssets: Y.Map<Y.Map<unknown>>;
   private readonly yTracks: Y.Map<Y.Map<unknown>>;
@@ -820,7 +806,11 @@ export class ProjectStore {
 
     this.undoManager = new Y.UndoManager(
       [this.ySettings, this.yAssets, this.yTracks, this.yClips, this.yFolders, this.yMarkers],
-      { trackedOrigins: new Set([this.origin]), captureTimeout: 1e12 },
+      {
+        trackedOrigins: new Set([this.origin]),
+        captureTimeout: 1e12,
+        deleteFilter: (item) => !this.spared.has(item),
+      },
     );
     this.undoManager.on('stack-item-added', ({ stackItem, origin }) => {
       stackItem.meta.set(STEP_RATE, this.rate);
@@ -853,13 +843,6 @@ export class ProjectStore {
     });
     this.yMarkers.observe((event, tr) => {
       if (tr.origin === this.undoManager) for (const id of event.keysChanged) this.written.markers.add(id);
-    });
-    // What others write is looked at while the values it replaced can still be read.
-    this.yClips.observeDeep((events, tr) => {
-      if (tr.origin === this.origin || tr.origin === this.undoManager) return;
-      for (const ev of events) {
-        if (ev.target !== this.yClips) this.keepRewritten(tr, ev.target as ValueMap, ev.changes.keys);
-      }
     });
     // Listeners run in the order they were added: the undo manager's has stamped the step by now.
     doc.on('afterTransaction', this.noteRate);
@@ -1161,7 +1144,7 @@ export class ProjectStore {
     this.stepping = true;
     try {
       while (!changed && from.length > 0) {
-        this.prepare(from[from.length - 1]);
+        this.prepare(from[from.length - 1], type);
         // Left to itself the undo manager goes straight on to the next step when one comes to
         // nothing, and that one has not been looked at yet. So it is given one step at a time. The
         // others wait at the bottom of the other stack, where it still finds them when it asks
@@ -1176,6 +1159,7 @@ export class ProjectStore {
         } finally {
           from.splice(0, 0, ...to.splice(0, waiting.length));
           for (const item of this.lent.splice(0)) item.redone = null;
+          this.spared.clear();
         }
         if (this.stepStood) changed = true;
         else dropped++;
@@ -1219,46 +1203,59 @@ export class ProjectStore {
         if (!keys) values.set(parent, (keys = new Map()));
         const last = Math.min(item.id.clock + item.length, clock + len) - item.id.clock - 1;
         keys.set(item.parentSub, item.content.getContent()[last]);
+        if (item.parentSub === KEEP_PITCH && parent._item?.parent === this.yClips) {
+          const on = item.content.getContent()[last] === true;
+          this.notePitch(step, parent, on ? Y.createID(client, item.id.clock + last) : null);
+        }
         if (!PLACEMENT.has(item.parentSub) || parent._item?.parent !== this.yClips) continue;
         const clip = this.allClips.get(parent._item.parentSub as ID);
         if (clip) places.set(clip.id, { start: clip.start, duration: clip.duration });
       }
     }
+    // Which speed and which ramp each clip is left with whose Keep pitch the step switched on.
+    for (const [fields, noted] of (step.meta.get(STEP_PITCH) as StepPitch | undefined) ?? []) {
+      for (const key of RETIMES) {
+        const head = fields._map.get(key);
+        noted.set(key, head && !head.deleted ? head.lastId : null);
+      }
+    }
+  }
+
+  /** The step has written Keep pitch of a clip: `on` is the value, when it switched it on. */
+  private notePitch(step: UndoStep, fields: ValueMap, on: Y.ID | null): void {
+    let pitch = step.meta.get(STEP_PITCH) as StepPitch | undefined;
+    if (!pitch) step.meta.set(STEP_PITCH, (pitch = new Map()));
+    if (on) pitch.set(fields, new Map([[KEEP_PITCH, on]]));
+    else pitch.delete(fields);
   }
 
   /**
-   * Someone else's change of a ramp has written fields of a clip, those of `RAMP_EDIT` whether they
-   * changed or not. One that it wrote again as it stood, over a value that a step of this session
-   * holds, is how `prepare` gets from the step's value to the one that stands, and it has to be
-   * readable for that after it has been written over in its turn: a second change of the ramp, or
-   * the next step of a drag of one of its points, does that. So it is kept, and so is each one that
-   * is written over a kept one. Without them a move or a trim could no longer be taken back for
-   * the fields a ramp writes again, only for the others: the picture went back and its sound stayed.
+   * A change of speed or of ramp switches Keep pitch on for sound that had nothing decided, and
+   * that is part of the step. Later changes of speed find it on and write nothing, so the step
+   * that first switched it on stays the only one that holds it: taken back as it stands, it would
+   * switch the pitch off under a speed or a ramp that someone else has set since, and that nobody
+   * made without it. So it is taken back only while the clip's speed and ramp are still the ones
+   * the step left (or copies of them, put back by an undo of this session). Once another stands
+   * there, Keep pitch stays on, and the value it had before the step is not put back either.
    *
-   * Changes made while this session was not connected arrive as one update, and of the values in
-   * it that were written over on the way the server has kept nothing. What such an update leaves
-   * under a key is then compared with what stood there before it: where that is the same, the
-   * values in between are noted (`passed`), and `prepare` goes by them.
+   * Only an undo is held to this. What a redo switches off was switched off by hand.
    */
-  private keepRewritten(tr: Y.Transaction, fields: ValueMap, changed: ReadonlyMap<string, unknown>): void {
-    if (!changed.has('ramp')) return;
-    const { undoStack, redoStack } = this.undoManager;
-    const came = (item: Y.Item): boolean => item.id.clock >= (tr.beforeState.get(item.id.client) ?? 0);
-    for (const key of RAMP_EDIT) {
-      if (!changed.has(key)) continue;
-      const now = fields._map.get(key);
-      if (!now || now.deleted || !(now.content instanceof Y.ContentAny)) continue;
-      const between: Y.Item[] = [];
-      let was = now.left;
-      for (; was && came(was); was = was.left) between.push(was);
-      if (!was || !(was.content instanceof Y.ContentAny)) continue;
-      if (!deepEqual(now.content.getContent().at(-1), was.content.getContent().at(-1))) continue;
-      const stood = was;
-      const held = (steps: UndoStep[]): boolean =>
-        steps.some((step) => Y.isDeleted(step.insertions, stood.id));
-      if (!stood.keep && !held(undoStack) && !held(redoStack)) continue;
-      keep(now);
-      for (const item of between) this.passed.add(item);
+  private leavePitch(tr: Y.Transaction, step: UndoStep, gone: Map<ValueMap, Set<string>>): void {
+    const at = (id: Y.ID | null | undefined): Y.Item | null => {
+      const item = id ? Y.getItemCleanStart(tr, id) : null;
+      return item instanceof Y.Item ? this.latest(tr, item) : null;
+    };
+    for (const [fields, noted] of (step.meta.get(STEP_PITCH) as StepPitch | undefined) ?? []) {
+      const pitch = at(noted.get(KEEP_PITCH));
+      if (!pitch || pitch.deleted || pitch.content.getContent().at(-1) !== true) continue;
+      const since = RETIMES.some((key) => {
+        const head = fields._map.get(key);
+        if (!head || head.deleted || deepEqual(head.content.getContent().at(-1), CLIP_DEFAULTS[key])) return false;
+        return at(noted.get(key)) !== head;
+      });
+      if (!since) continue;
+      this.spared.add(pitch);
+      gone.set(fields, (gone.get(fields) ?? new Set()).add(KEEP_PITCH));
     }
   }
 
@@ -1268,12 +1265,11 @@ export class ProjectStore {
    *
    * - A value the step wrote may since have been written again by someone else without being
    *   changed: a change of frame rate writes the place of every clip, moved or not, and what it
-   *   does alter is the same value at another rate; a change of a ramp writes what was worked out
-   *   with the ramp, as often as the ramp changes (`keepRewritten`). The undo manager would take
-   *   any such write for a change of mind and leave the step with nothing to take back. So the
-   *   step's value is pointed at the one that stands in for it, the way the undo manager links
-   *   its own restorations, and the step is taken back from there. (Not for a step that set the
-   *   frame rate itself: once someone else has set another, there is nothing of it to take back.)
+   *   does alter is the same value at another rate. The undo manager would take any such write
+   *   for a change of mind and leave the step with nothing to take back. So the step's value is
+   *   pointed at the one that stands in for it, the way the undo manager links its own
+   *   restorations, and the step is taken back from there. (Not for a step that set the frame
+   *   rate itself: once someone else has set another, there is nothing of it to take back.)
    *   Where the step's value has been taken back and made again since, it is the last copy of it
    *   that is pointed there, and only until the step is done (`lent`): a copy may yet have to be
    *   put back by the step that removed it, and a pointer on it says that this has been done.
@@ -1285,11 +1281,14 @@ export class ProjectStore {
    *   it once restored that as, and on from there. A copy that was deleted again long ago may
    *   have been collected, and the undo manager falls over what is left of it (`unlinkCollected`).
    */
-  private prepare(step: UndoStep): void {
+  private prepare(step: UndoStep, type: 'undo' | 'redo'): void {
     const values = step.meta.get(STEP_VALUES) as StepValues | undefined;
     const setsRate = this.setsRate(step);
     const k = fpsOf(this.project.settings) / step.meta.get(STEP_RATE);
-    /** The keys under which the step's value is gone and nothing has come in its place. */
+    /**
+     * The keys under which nothing is to be put back: the step's value is gone and nothing has
+     * come in its place, or it is one the step leaves standing (`leavePitch`).
+     */
     const gone = new Map<ValueMap, Set<string>>();
     const retired = Y.createDeleteSet();
     this.doc.transact((tr) => {
@@ -1312,14 +1311,9 @@ export class ProjectStore {
             gone.set(map, (gone.get(map) ?? new Set()).add(key));
             return;
           }
-          // Whoever sets a speed says for themselves that the pitch is kept (`KEEP_PITCH`): theirs
-          // is never a copy of the step's.
+          // Keep pitch that someone else's change of speed switched on at the same moment belongs
+          // to that change, which stands: it is no copy of what this step switched on.
           if (key === KEEP_PITCH && map._item?.parent === this.yClips) return;
-          // Written over before it got here, in an update that left the key as it found it.
-          if (this.passed.has(next)) {
-            now = next;
-            continue;
-          }
           if (setsRate || !own?.has(key) || !(next.content instanceof Y.ContentAny)) return;
           if (!next.content.getContent().every(same)) return;
           const copy = this.latest(tr, next);
@@ -1329,6 +1323,7 @@ export class ProjectStore {
         standsFor(now, last);
         if (last !== mine) this.lent.push(last);
       });
+      if (type === 'undo') this.leavePitch(tr, step, gone);
       eachValue(tr, step.deletions, (was) => {
         this.unlinkCollected(was);
         if (!gone.get(was.parent as ValueMap)?.has(was.parentSub as string)) return;
@@ -1440,6 +1435,7 @@ export class ProjectStore {
    *
    * - `mend`: put back what it took away without putting anything in its place;
    * - `retime`: bring what the step wrote to the frame rate the document has by now;
+   * - `keepInStep`: take a clip along that a ramp has placed by the one the step moved;
    * - `makeRoom`: move a clip that came back onto frames someone else's clip has taken since.
    *
    * All of it is written to the document like any edit, so everyone receives it, and made part of
@@ -1456,6 +1452,7 @@ export class ProjectStore {
     // deleted. Nothing changed then, and nothing was filed.
     if (!filed) return;
     this.stepStood = true;
+    const found = this.before;
     const stack = type === 'undo' ? this.undoManager.redoStack : this.undoManager.undoStack;
     this.mend(step, filed);
     // To the present rate, which may be one of the values just mended: from the rate of what the
@@ -1464,6 +1461,7 @@ export class ProjectStore {
     const back = now / step.meta.get(STEP_RATE);
     const rest = now / filed.meta.get(STEP_RATE);
     if (!sameRate(back) || !sameRate(rest)) this.retime(step, back, rest, written);
+    else this.keepInStep(step, found, written);
     this.makeRoom(step, filed, written, !sameRate(back), !sameRate(rest));
     for (const extra of stack.splice(stack.indexOf(filed) + 1)) {
       // A value the step put back and one of the above then replaced is the same value in another
@@ -1620,6 +1618,43 @@ export class ProjectStore {
   }
 
   /**
+   * A change of ramp places a clip that is in step with the one it is linked to where that one's
+   * media now reaches it (`retimeGroup`): sound that starts before or after its picture. That is
+   * then the last word on where the clip starts, so a move of both made before it is no longer the
+   * step's to take back for this clip, and the undo manager has moved the other alone. Left so,
+   * the two would be apart by the whole move, and on a ramp no longer in step on any frame.
+   *
+   * So the clip goes with it. `found` is the project as the undo or redo found it. A clip on a
+   * ramp follows a clip linked to it that the step has just moved, and changed in nothing else,
+   * when the step had placed both, the two were in step, and the undo manager has left the clip
+   * alone: by as many frames, within the same step, so that the opposite step takes it back. A
+   * clip that would have to begin before the timeline does stays where it is.
+   */
+  private keepInStep(step: UndoStep, found: Project, written: StepWrites): void {
+    const values = step.meta.get(STEP_VALUES) as StepValues | undefined;
+    const starts = new Map<ID, number>();
+    for (const [id, fields] of written.clips) {
+      const was = found.clips[id];
+      const lead = this.project.clips[id];
+      if (fields === true || !was || !lead?.ramp || !lead.linkId || lead.start === was.start) continue;
+      if (!deepEqual(lead, { ...was, start: lead.start })) continue;
+      for (const c of Object.values(found.clips)) {
+        if (c.linkId !== lead.linkId || !c.ramp || written.clips.has(c.id)) continue;
+        const start = c.start + lead.start - was.start;
+        const placed = values?.get(this.yClips.get(c.id) as ValueMap)?.has('start');
+        if (placed && start >= 0 && inStep(found, was, c) !== null) starts.set(c.id, start);
+      }
+    }
+    if (!starts.size) return;
+    this.doc.transact(() => {
+      for (const [id, start] of starts) {
+        this.patchEntity(this.yClips, id, { start }, CLIP_DEFAULTS);
+        written.clips.set(id, new Set(['start']));
+      }
+    }, this.origin);
+  }
+
+  /**
    * A clip the step placed may have come back to frames where someone else has put a clip since.
    * It gives way and goes to a free track, as a clip pasted where there is no room does.
    *
@@ -1757,20 +1792,9 @@ export class ProjectStore {
       case 'addClip':
         this.writeEntity(this.yClips, e.clip as unknown as Record<string, unknown>, CLIP_DEFAULTS);
         break;
-      case 'updateClip': {
-        const fields = this.yClips.get(e.id);
-        const ramps = e.patch.ramp !== undefined && !deepEqual(fields?.get('ramp') ?? null, e.patch.ramp);
-        const always = retiming ? PLACEMENT : ramps ? RAMP_EDIT : undefined;
-        const speeds =
-          e.patch.speed !== undefined &&
-          e.patch.speed !== (fields?.has('speed') ? fields.get('speed') : CLIP_DEFAULTS.speed);
-        // See `KEEP_PITCH`. Not where the edit itself says what the pitch does: that is written as it is.
-        const stays = e.patch.keepPitch === undefined || e.patch.keepPitch === true;
-        const keeps = fields?.get(KEEP_PITCH) === true && (ramps || speeds) && stays;
-        this.patchEntity(this.yClips, e.id, e.patch, CLIP_DEFAULTS, always);
-        if (keeps) fields?.set(KEEP_PITCH, true);
+      case 'updateClip':
+        this.patchEntity(this.yClips, e.id, e.patch, CLIP_DEFAULTS, retiming ? PLACEMENT : undefined);
         break;
-      }
       case 'removeClip':
         this.yClips.delete(e.id);
         break;

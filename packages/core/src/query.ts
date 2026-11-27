@@ -242,6 +242,23 @@ export function sourceTimeAt(clip: Clip, localFrame: number, p: Project): number
   return clip.sourceIn + localFrame * per;
 }
 
+/**
+ * How far apart in their media two linked clips are, when they are in step: playing the same way,
+ * sharing frames of the timeline, and that far apart at both ends of what they share (nothing for
+ * the picture and the sound of one take, the recorded offset for sound from another file). Null
+ * when they are not.
+ */
+export function inStep(p: Project, lead: Clip, c: Clip): number | null {
+  if (lead.reverse !== c.reverse) return null;
+  const from = Math.max(lead.start, c.start);
+  const to = Math.min(clipEnd(lead), clipEnd(c));
+  if (to <= from) return null;
+  const apart = (frame: number): number =>
+    sourceTimeAt(c, frame - c.start, p) - sourceTimeAt(lead, frame - lead.start, p);
+  const offset = apart(from);
+  return Math.abs(apart(to) - offset) <= 1e-6 ? offset : null;
+}
+
 /** How many extra frames a clip could be extended by at its head and tail given its source media. */
 export function handles(clip: Clip, asset: Asset | undefined, p: Project): { head: number; tail: number } {
   if (!hasSourceTime(clip.type) || clip.freeze || !asset || asset.duration <= 0)
