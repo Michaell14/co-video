@@ -1441,6 +1441,20 @@ export function Segmented<T extends string>({
     const el = ref.current?.querySelector<HTMLElement>('[aria-pressed="true"]');
     if (el) setThumb({ x: el.offsetLeft, w: el.offsetWidth });
   }, [value, options.length]);
+  // A control that fills its box shares the width out among its segments again whenever the box
+  // changes (a panel made wider or narrower): the thumb is put where the chosen one now is.
+  useLayoutEffect(() => {
+    const group = ref.current;
+    if (!block || !group) return;
+    const observer = new ResizeObserver(() => {
+      const el = group.querySelector<HTMLElement>('[aria-pressed="true"]');
+      if (!el) return;
+      const now = { x: el.offsetLeft, w: el.offsetWidth };
+      setThumb((was) => (was && was.x === now.x && was.w === now.w ? was : now));
+    });
+    observer.observe(group);
+    return () => observer.disconnect();
+  }, [block]);
   return (
     <div ref={ref} className={cx('seg', block && 'seg--block')} role="group" {...name}>
       {thumb && (
