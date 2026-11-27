@@ -91,10 +91,11 @@ with projects stored in your browser.
   cannot be set; a preset or None takes the clip back to one speed
 - A ramp changes how long a clip is, as a change of speed does: the same stretch of media plays,
   faster here and slower there. With ripple editing on, what follows moves with the clip's end;
-  without it the clip stops at the next one, says so and offers to make room. A drag of a point is
-  one undo step. A ramp is one for a picture and the sound linked to it, whatever the linked
-  selection, and the two stay in step, also as a split edit; it is refused while one of them is on
-  a locked track
+  without it the clip stops at the next one, says so and offers to make room. For one clip the
+  notice gives the length it plays and the length it would need, in seconds, or in frames where the
+  two would read alike (“the first 120 of its 121 frames”). A drag of a point is one undo step. A
+  ramp is one for a picture and the sound linked to it, whatever the linked selection, and the two
+  stay in step, also as a split edit; it is refused while one of them is on a locked track
 - A clip on a ramp says so on the timeline. Its chip reads “Ramp” (“−Ramp” when it plays backwards)
   and names its slowest and fastest speed when pointed at, its filmstrip shows on each tile the
   picture of that moment, and its waveform is drawn where the sound plays, wide where the clip is
@@ -507,10 +508,16 @@ Three ideas carry most of the weight:
   more.
 - The ramp graph shapes one clip at a time, with what is linked to it: with several selected it is
   shown and cannot be worked, and a shape, a speed or the direction is set on all of them. “Add
-  point at playhead”, from a clip's menu or from the palette, then adds to the clip that was
-  selected first, which need not be the one whose menu it was or the one under the playhead. A point
-  has no fields to type its speed and place into, the Speed slider does not scale a ramp, and the
-  timeline draws no line of speed on a clip.
+  point at playhead” from a clip's menu then adds to that clip, in its widest gap when the playhead
+  is not on it, and “Add ramp point at playhead” from the palette adds to the one of them the
+  playhead is on: with the playhead on none of them, or on more than one, it adds nothing and says
+  “Select one clip to add a point to its ramp.” A point has no fields to type its speed and place
+  into, the Speed slider does not scale a ramp, and the timeline draws no line of speed on a clip.
+- While a point of the ramp graph has the keyboard, the editor's letter shortcuts and `Space` still
+  act, as they do on every slider: such a control keeps the keys it answers (on a point the arrows,
+  the page keys, `Home`, `End`, `Delete`, `Backspace` and `Enter`) and every other key goes on to
+  the editor. `Space` plays, `J` and `L` shuttle, `S` splits the clip under the playhead and `T`
+  adds a title, which takes the keyboard with it.
 - Points of a ramp that lie beyond a trimmed edge, or beyond where the next clip cut the clip
   short, are kept but not shown, and come back when the clip is trimmed out or room is made. Without
   ripple editing a point dragged slower can vanish from the graph that way when it is let go, until
@@ -533,12 +540,31 @@ Three ideas carry most of the weight:
   to each other.
 - A constant speed set on a split edit (sound that starts before or after its picture) still parts
   the two, as it always did: only on a ramp, and coming off one, are they kept together. Reversing a
-  split edit parts it too, at one speed and on a ramp.
-- Of two ramps set on one clip at the same moment one stands for everyone, whole. A ramp set while
-  someone else trims the head of the clip leaves the ramp and the trim's start, with the length and
-  the in point of one of the two, and linked sound can then be out of step with its picture by the
-  trim. Two people who drag points of one ramp at once each start the other's drag anew: one ramp
-  stands, and a drag can be more than one undo step.
+  split edit parts it too, at one speed and on a ramp. Reverse, and one speed set on a clip that is
+  on no ramp, change what is selected and not locked: with its linked sound on a locked track the
+  picture alone is turned round or retimed, nothing is said, and the two are out of step. A ramp,
+  and one speed on a clip that is on a ramp, are refused there and name the track to unlock.
+- Two people who set different ramps on one clip at the very same moment end with the same clip, on
+  one of the two ramps, and its length can be the one the other ramp gave it. A linked sound that
+  starts before or after its picture can also be left where the other ramp put it, out of step with
+  the picture. A ramp set while someone else trims the head of the clip leaves the ramp with the
+  trim's start and in point, at the length of one of the two. Picture and sound that start together
+  and are trimmed together stay in step; where the sound starts before or after its picture, or one
+  of the two is trimmed alone, they can be out of step. Two people who drag points of one ramp at
+  once each start the other's drag anew: one ramp stands, and a drag can be more than one undo step.
+- A move or a trim of the head made before someone else changed the clip's ramp, once or many times,
+  is still yours to undo and to redo, for picture and linked sound together: the clip goes back to
+  where it was, on the ramp that stands and at the length that ramp has given it since. Where the
+  sound starts before or after its picture, the other person's ramp has placed it anew. Undo of a
+  move then takes it along with the picture, as far from it as the ramp put it, unless it would have
+  to begin before the start of the timeline, where it stays. Undo of a trim of the head does not put
+  such a sound right: measured after Ramp up and after Bullet it was 0.5 to 2.9 s out of step with
+  its picture or shared no frame with it, and after Hero it was in step.
+- Undo of the change that first switched Keep pitch on leaves it on under a speed or a ramp that
+  someone else has set since, and it then stays on when they take theirs back as well. Where nothing
+  else of your step is left, Undo goes on to your step before it, as for any step that someone else
+  has replaced whole, and says so; and at the very moment someone else sets a speed, that Undo still
+  switches Keep pitch off under their speed.
 - A collaborator's tab that still runs a build from before speed ramps plays a clip on a ramp at
   its stored speed, and a trim made there writes an in point worked out at that speed; the ramp
   stays in the project.
@@ -551,9 +577,17 @@ Three ideas carry most of the weight:
   the tests hold, and how a voice or a song comes out has not been judged by ear.
 - Keep pitch plays sound in grains of 20 ms, each taken unchanged from near its place in the file;
   it does not look for transients and has no control of formants. A tone keeps its frequency to
-  within 0.3 Hz + 0.11 % over a long stretch; within any two seconds it can be further off, so a
-  sustained low chord is detuned by cents, by another amount every two seconds (measured on a fifth
-  of 82 and 123 Hz: a note up to 13 cents off, in steps of up to 22 cents).
+  within 0.3 Hz + 0.11 % over a long stretch. Within any two seconds it can be further off. A grain
+  is placed to the sample, so a tone whose period is no whole number of samples can be half a sample
+  to the grain off for seconds on end: 0.11 % in a file of 44.1 or 48 kHz, 0.23 % in one of
+  22.05 kHz. Measured on a tone of 1 kHz in a file that also has a click every half second, it
+  stayed within 0.6 Hz in every quarter second at 44.1 and 48 kHz, and at 22.05 kHz it was up to
+  1.7 Hz off at 50 % and 2.3 Hz at 200 %, for up to two seconds on end.
+- With Keep pitch a sustained chord is detuned by cents, and its notes lose level to what then
+  sounds beside them. Measured on a fifth of 82 and 123 Hz: a note up to 13 cents off, by another
+  amount every two seconds, in steps of up to 22 cents. Measured on three notes of 220, 277 and
+  330 Hz: a note up to 33 cents off, and two of the three 4 to 6 dB down over the whole clip at 50 %
+  and 125 % (less at 80 % and 200 %), while the level of the whole stayed within 0.3 dB.
 - With Keep pitch what sounds lies within 15 ms of the place in the file that the picture shows
   (3 to 6 ms in the root mean square, measured on signals shaped like speech and music), and exactly
   on it every two seconds, so nothing builds up over a long clip. On the timeline that is up to
@@ -562,10 +596,16 @@ Three ideas carry most of the weight:
   the sample.
 - A click of a millisecond is played up to three times within 35 ms when it is slowed to 50 %.
   Played faster it is softened or lost when it falls between two grains: 5 % of such clicks at
-  110 %, 18 % at 125 %, 31 % at 150 % and 46 % at 200 % were measured at less than a quarter of
-  their height. A sound that takes 8 ms to die away is not lost at 150 % or 200 %, but it is
-  softened: by 3 dB in the middle case at 200 % and by up to 15 dB. Slowed to 50 % such a sound was
-  measured twice on average and up to five times, within 42 ms.
+  110 %, 18 % at 125 %, 30 % at 150 % and 46 % at 200 % were measured at less than a quarter of
+  their height. A regular beat can fare far worse, because clicks a whole number of grains apart
+  fall on the same place of every grain. Measured on a click of 5 ms every half second: at 200 %, 21
+  of 23 came out 14 dB down, and with the same clicks a quarter second later in the file not one
+  sample of the 24 was left; at 400 %, 22 of 23 were 14 dB down or gone, and again none of the 24
+  was left. Nothing under the switch says so: the inspector warns only beyond 400 %.
+- A sound that takes 8 ms to die away is not lost at 150 % or 200 % with Keep pitch, but it is
+  softened: by 3 dB in the middle case at 200 %, and at worst by 15 dB on one kind of burst and by
+  18.5 dB on another, where it was measured. Slowed to 50 % such a sound was measured twice on
+  average and up to five times, within 42 ms.
 - Steady noise (hiss, applause, rain) comes out quieter when stretched, with a flutter at the rate
   of the grains, a hundred times a second: measured 0.3 to 0.9 dB quieter with 0.5 to 1.9 dB of
   flutter between 50 % and 200 %, and up to 1.2 dB with 2.6 dB at 400 %. A stretched clip never
@@ -595,25 +635,23 @@ Three ideas carry most of the weight:
   place where the decoded sound of its file changes sample rate or channel count, when one of the
   export's four-second chunks of sound ends shortly after that place; the preview has the sound. The
   stretch grows as the clip slows down: measured at up to 0.03 s at 150 %, 0.11 s at 50 %, 0.17 s at
-  25 % and 0.7 s at 10 % for sound at 24 kHz, about half as long at 44.1 kHz. Files that change like
-  this are rare (two recordings joined into one stream).
-- A browser can make the same change by itself, when its WebCodecs decoder gives the first packets
-  of a file and then leaves the file to the browser's other decoder. A clip on a ramp or with Keep
-  pitch is then read again from the start and loses nothing, with two exceptions: a clip whose first
-  buffer of sound the first decoder had already reached (85 ms of the clip at 48 kHz, two seconds
-  with Keep pitch), and a clip that starts on its file's first sample in a project at another sample
-  rate than the file declares, for which the very first of the file's sound from the first decoder
-  is enough: one packet without Keep pitch, 28 ms with it. It can happen once for a file while the
-  page is open, the first time its sound is decoded; an export made after that is not affected.
+  25 % and 0.7 s at 10 % for sound at 24 kHz, about half as long at 44.1 kHz. Such files are rare
+  (two recordings joined into one stream), but a browser can make the same change by itself, once
+  for a file while the page is open: its WebCodecs decoder gives the first packets and then leaves
+  the file to the browser's other decoder. The clip is then read again from the start and loses
+  nothing, with two exceptions: a clip whose first buffer of sound the first decoder had already
+  reached (85 ms of the clip at 48 kHz, two seconds with Keep pitch), and a clip that starts on its
+  file's first sample in a project at another sample rate than the file declares, for which the very
+  first of the file's sound from the first decoder is enough (one packet without Keep pitch, 28 ms
+  with it). An export made after that first decode is not affected.
 - Speed ramps and Keep pitch are tested in Chromium on Linux only: not on macOS or Windows, not in
   Safari or Firefox, and the graph not by touch. No browser test covers sound that will not decode
   under a clip on a ramp or with Keep pitch, Keep pitch on HE-AAC, or a clip of more than five
   minutes that plays backwards on a ramp in an export.
-- Three messages are off. A clip that a change of speed or ramp cuts short by a frame or two is
-  told “the clip now plays only the first 4 of its 4 seconds”, both lengths being rounded to a tenth
-  of a second (Hero on a shot with another right behind it does that). From the menu of a clip on a
-  locked track the ramp entries answer “Select a video or sound clip to ramp its speed.” and “Keep
-  pitch” answers “Select a sound clip to keep its pitch.”, instead of naming the lock.
+- Two messages are off. From the menu of a clip on a locked track the ramp entries answer “Select a
+  video or sound clip to ramp its speed.” and “Keep pitch” answers “Select a sound clip to keep its
+  pitch.”, instead of naming the lock. The lock is named only where the clip is linked to one on a
+  track that is not locked.
 - Keyframes ease by preset; there is no curve editor with bezier handles.
 - No multicam, no nested sequences, no motion tracking, no AI features. Not yet.
 - A change of frame rate re-times what the project holds at that moment. Edits a collaborator made

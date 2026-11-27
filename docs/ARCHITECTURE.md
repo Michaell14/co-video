@@ -120,17 +120,17 @@ is with nothing in its way does. Linked clips are the one exception. A ramp is s
 group, whichever of its clips is named, and it is the ramp of the group's lead: of the clips the
 change names, the first that is not sound, or else the first. The editor names the first clip of the
 group that is not sound (`rampLead`). A clip that was in step with the lead (playing the same way,
-sharing frames of the timeline, as far apart in their media at both ends of what they share) is a
-follower. It keeps the stretch of media it played, goes on the lead's ramp moved by that distance
-(`shiftRamp`), and is placed where the lead's new stream reaches the second it began on, so the two
-show the same media on every frame they share: the second of sound that led into a J cut is the same
-second, however long it now takes. A follower's head is cut where the clip before it on its track is
-in the way, and it begins on the first frame its file has media for. It is never moved out of step
-to fit; only where its neighbours leave it no room at all is one frame of it left. A member that is
-not in step is retimed by itself. `setSpeed` on a clip that is on a ramp takes its whole group to
-that one speed by the same routine (`retimeGroup`); on a clip without a ramp it runs the lines it
-always ran, for that clip alone. Sound whose speed or ramp changes gets `keepPitch: true` unless the
-field has been set.
+sharing frames of the timeline, as far apart in their media at both ends of what they share:
+`inStep` in `query.ts`, which the store's undo asks as well) is a follower. It keeps the stretch of
+media it played, goes on the lead's ramp moved by that distance (`shiftRamp`), and is placed where
+the lead's new stream reaches the second it began on, so the two show the same media on every frame
+they share: the second of sound that led into a J cut is the same second, however long it now takes.
+A follower's head is cut where the clip before it on its track is in the way, and it begins on the
+first frame its file has media for. It is never moved out of step to fit; only where its neighbours
+leave it no room at all is one frame of it left. A member that is not in step is retimed by itself.
+`setSpeed` on a clip that is on a ramp takes its whole group to that one speed by the same routine
+(`retimeGroup`); on a clip without a ramp it runs the lines it always ran, for that clip alone.
+Sound whose speed or ramp changes gets `keepPitch: true` unless the field has been set.
 
 **Rounding.** A length or a frame worked out along a ramp is rounded half up with a millionth to
 spare (`roundHalfUp`): the shapes put lengths exactly on a half frame for ordinary clips, and a
@@ -173,22 +173,28 @@ instant resolve to one of the two lists, which is the right trade for values tha
 unit.
 
 A `ramp` is such a value, and more hangs on it than on most: a clip's length and in point were
-worked out from it. So an edit that changes a clip's ramp writes `ramp`, `duration`, `sourceIn` and,
-for a clip placed by the one it is linked to, `start`, whether those numbers change or not
-(`RAMP_EDIT` in `store.ts`), as a change of frame rate writes every clip's place. The same person
-then wins all of them: of two ramps set on one clip at the same moment one stands for everyone,
-whole, with the length, the in point and, for linked sound, the place that the same person's edit
-worked out, and nobody is left with one person's curve over the other's length. Against a trim made
-at the same moment each field is from one of the two. The ramp stands either way, on the media it
-was set on, and so does the trim's start; where the ramp's writes are the later word the clip has
-the ramp's length and its untrimmed in point, and a linked sound keeps the start the ramp edit
-wrote, so that pair is out of step by the trim. Against a speed set at the same moment on a clip
-that had no ramp, the ramp is from the one, the speed from the other and the length from whoever
-wins it. Setting the ramp a clip already has writes nothing and makes no undo step. A change of
-speed or of ramp that finds `keepPitch` on writes it again, on (`KEEP_PITCH`): whoever sets a speed
-says for themselves that the pitch is kept. Taking back the change that first switched it on then
-leaves it on under a speed or a ramp somebody else has set since, and switches it off again where
-nobody has.
+worked out from it. It is written like any other field all the same. `setRamp` puts `ramp`,
+`duration`, `sourceIn` and, for a clip placed by the one it is linked to, `start` into its edits
+whether they change or not, for whoever plans around them, and the store writes those that differ
+from what the document holds and no others; only a change of frame rate writes every clip's place
+whether it changes or not. A shape that leaves a clip as long as it is writes the ramp alone. So a
+ramp edit owns only what it changed: unless it places the clip anew, as it does sound that starts
+before or after its picture, where the clip starts and where its media begins stay the word of
+whoever moved or trimmed it last, and theirs to take back. The price is paid when two people set
+different ramps on one clip at the same moment. One ramp stands for everyone, on the picture and its
+linked sound alike, with the length and, for linked sound, the place of whichever edit changed them:
+the clip can be left with one person's ramp over the length the other's gave it (Custom against
+Bullet: a level ramp over Bullet's few frames), and a sound that starts before or after its picture
+where the other ramp put it, out of step. Against a trim of the head made at the same moment the
+ramp stands, on the media it was set on, and so do the trim's start and in point, which the ramp
+edit did not change and so did not write; the length is from one of the two. Picture and sound that
+start together and are trimmed together stay in step. A sound that starts before or after its
+picture is placed anew by the ramp edit, its start is then from one of the two, and that pair can be
+out of step. Against a speed set at the same moment on a clip that had no ramp, the ramp is from the
+one, the speed from the other and the length from whoever wins it. Setting the ramp a clip already
+has writes nothing and makes no undo step. `keepPitch` is written once, by the change of speed or of
+ramp that finds nothing decided; later changes find it on and write nothing, so a switch made by
+hand at the same moment as someone else's change of speed stands.
 
 The store rebuilds only the entities a transaction touched and keeps every other object
 referentially identical, so React can skip unchanged clips and the engine can cache by identity.
@@ -246,6 +252,23 @@ the store decides what the step still means:
 - A clip that returns onto frames another clip has taken since moves to a free track of its kind,
   or to a new one, within the same step. A person working alone always gets back exactly the state
   before the step.
+- Keep pitch that a change of speed or of ramp switched on is part of that step and of no later one.
+  Its undo leaves it on (`leavePitch`) while a speed or a ramp that someone else has set since
+  stands on the clip, and it then stays on when they take theirs back as well; where nothing else of
+  the step is left, the step is passed over like any other. A redo is not held to this, and an undo
+  made at the very moment someone else, not having seen it, sets a speed leaves that speed without
+  Keep pitch.
+- A move or a trim made before someone else's change of ramp is taken back field by field like any
+  other: the start and the in point return, and the length stays the one the ramp has given the clip
+  since. One case needs more. A change of ramp places sound that starts before or after its picture
+  where the picture's media now reaches it, and that is then the last word on where the sound
+  starts, so the undo or redo of a move of both made before it would move the picture alone. The
+  store takes the sound along by as many frames, within the same step (`keepInStep`): a clip on a
+  ramp that was in step with the linked clip the step has just moved, that the step had placed as
+  well, and that the undo manager left alone. It is not done for a step that is also re-timed to
+  another frame rate, it does not reach a trim of the head, after whose undo such a sound can be out
+  of step with its picture, and a sound that would have to begin before the timeline does stays
+  where it is.
 
 Undo and redo put values back as they were written, and a frame number names a moment only at the
 frame rate it was written at. Every step is therefore stamped with the rate it was recorded at, and
@@ -642,18 +665,22 @@ to ten times). Unit tests hold a tone read along a ramp between a quarter and fo
 to nothing else above −90 dB (−80 dB up to ten times), and a click to within half a sample of where
 the map puts it.
 
-Where pitch is kept (`Stretcher`, `audio/stretch.ts`), the stream is made of grains of 20 ms under
-a Hann window, one every 10 ms, each taken unchanged from near where the map puts it, at the place
+Where pitch is kept (`Stretcher`, `audio/stretch.ts`), the stream is made of grains of 20 ms under a
+Hann window, one every 10 ms, each taken unchanged from near where the map puts it, at the place
 where it best continues the grain before it (WSOLA). Left to itself that chain of choices would run
 from wherever it began. So the stream is made in blocks of 200 grains, two seconds, and the first
-grain of every block, its anchor, lies exactly on the map: the chain begins anew at each anchor,
-and what it is off by on arriving at the next is taken out along the block, most of it where the
-grains are quiet or unlike each other. That is what makes a sample a function of its position, and
-it sets the bound on sync. A grain's centre plays media within 15 ms of its place on the map, and
-exactly on it every two seconds, so nothing builds up. A grain plays 20 ms of the file at the
-file's own speed, so what sounds at a moment of the timeline can differ from what the picture shows
-by up to `(15 ms + 10 ms · |1 − v|) / v` at speed `v`: 15 ms at 100 %, 12.5 ms at 200 %, 40 ms at
-50 %, 90 ms at 25 %. Without Keep pitch the sound is in its place to the sample.
+grain of every block, its anchor, lies exactly on the map: the chain begins anew at each anchor, and
+what it is off by on arriving at the next is taken out again. Where the sound repeats itself, one of
+the eight grains before the anchor can lie nearer the anchor by that much, or by part of it, and
+continue the grain before it as well by the measure it was placed by: then it does, and the grains
+after it with it (`step`), a step of whole periods where there is a tone. What is left is slid out
+along the block, most of it where the grains are quiet or unlike each other. That is what makes a
+sample a function of its position, and it sets the bound on sync. A grain's centre plays media
+within 15 ms of its place on the map, and exactly on it every two seconds, so nothing builds up. A
+grain plays 20 ms of the file at the file's own speed, so what sounds at a moment of the timeline
+can differ from what the picture shows by up to `(15 ms + 10 ms · |1 − v|) / v` at speed `v`: 15 ms
+at 100 %, 12.5 ms at 200 %, 40 ms at 50 %, 90 ms at 25 %. Without Keep pitch the sound is in its
+place to the sample.
 
 Two grains overlap at every sample, in shares that add up to one. Two grains that follow one another
 in the file therefore give the file, and no sample of the stream is larger than the larger of the
@@ -661,12 +688,20 @@ two it is made of. Two grains that are unlike add up in power, and nothing makes
 noise comes out up to 1.2 dB low with a ripple at the rate of the grains of up to 2.5 dB (the tests'
 bounds; 0.3 to 0.9 dB and 0.5 to 1.9 dB measured between 50 % and 200 %). One gain for all that
 sounds in such a junction would ripple a tone under the noise and lift samples above the highest of
-the file. The other bounds, each a unit test in `packages/engine/test/stretch.test.ts`: a tone keeps
-its frequency to 0.3 Hz + 0.11 % and its level to 0.1 dB with nothing else above −40 dB; slowed to
+the file. The other bounds, each a unit test in `packages/engine/test/stretch.test.ts`: over a long
+stretch a tone keeps its frequency to 0.3 Hz + 0.11 % and its level to 0.1 dB with nothing else
+above −40 dB; a tone of 1 kHz with a burst of 5 ms every half second in the other channel, which at
+125 % lies on every anchor, stays within 0.3 Hz in every quarter second at 80 % and 125 %, and so
+does the last block of a tone whose file ends on that block's last sample (slid out over the block,
+the 5 ms between such a burst and the map would be 2.5 Hz, in block after block); at 22.05 kHz,
+where a grain has half as many samples to be placed by and half a sample to the grain is 0.23 % and
+not the 0.11 % of 44.1 and 48 kHz, a tone of 1 kHz with such clicks beside it or over it stays
+within 0.3 Hz + 0.23 % in every quarter second and within 0.3 Hz + 0.11 % over the whole; slowed to
 half speed a click of a millisecond is played at most three times within 35 ms; at 150 % and 200 %
-fewer than six in ten such clicks are lost between two grains (31 % and 46 % measured), while a
-burst that takes 8 ms to die away never is: it keeps an eighth of its height or more, and its energy
-is 3 dB down in the middle case at 200 % and 15 dB at worst.
+fewer than six in ten such clicks are lost between two grains (30 % and 46 % measured, for clicks
+that come at no multiple of the grains: of a click every half second all can be lost), while a burst
+that takes 8 ms to die away never is: it keeps an eighth of its height or more, and its energy is
+3 dB down in the middle case at 200 % and 15 dB at worst.
 
 The work runs on the main thread, ahead of the playhead, where the mixer's conversion runs. The
 file is decoded forwards and the stretcher makes one block at a time; a preview gets a turn between
