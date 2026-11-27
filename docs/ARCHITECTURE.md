@@ -25,7 +25,8 @@ A project is plain JSON: settings, assets, tracks, clips, markers. Three rules s
 
 **Timeline positions are integer frames; source offsets are seconds.** Integer frames make cuts
 exact and comparisons trivial. Source media has its own timebase, so a clip stores `sourceIn` in
-seconds and a `speed`. `changeFrameRate` re-times a whole sequence when the frame rate changes.
+seconds and either one `speed` or a `ramp` (see “Speed ramps” below). `changeFrameRate` re-times a
+whole sequence when the frame rate changes.
 
 **Spatial values are resolution independent.** Positions are fractions of the frame, text sizes
 are fractions of the frame height, blur radii are "pixels at 1080p". The compositor multiplies by
@@ -45,8 +46,8 @@ Every mutation is a list of atomic `Edit`s (`addClip`, `updateClip`, `removeClip
 - applied to a snapshot with `applyEdits` → a drag preview, without touching the document;
 - asserted on in a unit test, with no browser and no CRDT.
 
-Overwrite semantics, ripple, roll, slip, split, paste, speed changes and frame-rate conforming are
-all implemented once, here, and covered by `packages/core/test`.
+Overwrite semantics, ripple, roll, slip, split, paste, speed changes, speed ramps and frame-rate
+conforming are all implemented once, here, and covered by `packages/core/test`.
 
 **Ripples are sync-locked.** A ripple takes time out of the sequence, or puts it in, and every
 unlocked track follows — not only the one being edited — so picture, sound and titles further down
@@ -67,6 +68,83 @@ ripple's; `commitEdits`, which `commit` goes through, commits a marked list and 
 moved. One switch, `markersFollow`, turns both off. A list that is copied or spread loses the mark,
 so a ripple is committed as `commit(withMarkers(p, ripple))`, with anything else for the same step
 passed as its third argument.
+
+### Speed ramps
+
+Two fields of a clip carry speed that varies and what sound does at another speed. `ramp` is null
+(the clip plays at its one `speed`) or a list of two to 32 points `{ m, v }` in ascending order of
+`m`: at second `m` of the clip's media, the axis `sourceIn` is on, the speed is `v`, between 0.1
+and 10. `keepPitch` is `true` (sound keeps its pitch at another speed), `false`, or null, which
+means never set and plays as `false`. `speed` stays on a clip that is on a ramp, as the speed it
+returns to.
+
+**Points stand on the media and the ease runs in time.** Between two points the speed eases from the
+one to the other, as a smoothstep of the time that has passed since the first, and beyond the
+outermost points it holds. An ease from speed `a` to speed `b` over `L` seconds of media takes
+`2L / (a + b)` seconds: the media over the mean of the two speeds. A ramp has no steps: an ease
+begins at the speed of its first point and ends at that of its second, and two points are a
+millisecond of media apart or more, so no ease takes no time.
+
+**Stream time.** Played along its ramp, the media is a clock of its own: stream time is the time at
+which it reaches a given second. `rampTable` (`ramp.ts`) lays a ramp out once for each array (the
+stream time of each point and the time each ease takes), and three maps read it: `streamToMedia`,
+`mediaToStream` and `streamSpeed`. They use additions, subtractions, multiplications, divisions and
+comparisons only, in one fixed order, so every engine and every collaborator computes the same
+number from the same ramp. `mediaToStream` inside an ease is found by Newton's method held between
+two bounds, so nothing asks it once a frame or once a sample: the stream time of a clip's in point
+is kept for each clip object (`streamIn`).
+
+A clip is a window on that stream: it opens where the stream reaches `sourceIn` and is `duration`
+frames long. `query.ts` has what everything else reads. `mediaAt(clip, u)` is the second of media
+`u` frames after the in point, forwards through the media whichever way the clip plays and for any
+real `u`: beyond the clip the ramp carries on, which is what a trim outwards and a transition handle
+show. `frameOfMedia` is the way back, `sourceSpan` the stretch a clip covers, and `sourceTimeAt`,
+which the frame resolver asks, mirrors a clip that plays backwards. `timeMap(clip)` hands the clock
+itself (`media`, `stream`, `speed`) to the mixer, which plays a clip sample by sample. A clip at one
+speed has the clock of that speed, so both kinds are read alike.
+
+**Window edits move the in point by the map and never write the ramp.** The points belong to the
+media, not to the clip. A trim, a split, a roll and a ripple go through `retime`, which on a ramp
+moves the in point to `mediaAt(clip, delta)` when the head moves (the tail, for a clip that plays
+backwards); `slipClips` moves it along the stream, and `handles` counts on the same clock. A change
+of frame rate counts frames and touches neither the in point nor the ramp. `start`, `duration` and
+`sourceIn` change and `ramp` does not, so every frame that is kept shows what it showed, and the
+pieces of a split go on playing the one ramp.
+
+**A change of speed keeps the media and changes the length.** `setSpeed` and `setRamp` work out how
+long the stretch a clip plays takes on its new clock, to the frame, and move its keyframes to the
+frames that now show what theirs showed (`remapKeyframes`). No start moves, and a clip that grows
+stops at the next one unless `free` is passed, which whoever makes room for it does. Linked clips
+are the one exception. A ramp is set on a whole link group, whichever of its clips is named, and is
+named for its lead: the first clip of the group that is not sound, or the first when all are. A clip
+that was in step with the lead (playing the same way, sharing frames of the timeline, as far apart
+in their media at both ends of what they share) is a follower. It keeps the stretch of media it
+played, goes on the lead's ramp moved by that distance (`shiftRamp`), and is placed where the lead's
+new stream reaches the second it began on, so the two show the same media on every frame they share:
+the second of sound that led into a J cut is the same second, however long it now takes. A
+follower's head is cut where the clip before it on its track is in the way, and it begins on the
+first frame its file has media for. It is never moved out of step to fit; only where its neighbours
+leave it no room at all is one frame of it left. A member that is not in step is retimed by itself.
+`setSpeed` on a clip that is on a ramp takes its whole group to that one speed by the same routine
+(`retimeGroup`); on a clip without a ramp it runs the lines it always ran, for that clip alone.
+Sound whose speed or ramp changes gets `keepPitch: true` unless the field has been set.
+
+**Rounding.** A length or a frame worked out along a ramp is rounded half up with a millionth to
+spare (`roundHalfUp`): the shapes put lengths exactly on a half frame for ordinary clips, and a
+picture and its sound, worked out one after the other, must fall the same way. Points are written
+with places to the microsecond and speeds to the thousandth (`tidyRamp`), so two people who apply
+the same shape write the same bytes, and a follower's distance from its lead is taken to the
+microsecond.
+
+**There is no migration.** Both fields are null by default, and a field at its default is not
+written with a new clip, so a clip made before the fields existed has neither key, and a missing key
+reads as null. The schema number did not change. An old project renders as it did because a clip
+without a ramp that does not keep its pitch takes the code path it took before: `sourcePerFrame`,
+`sourceTimeAt`, `retime`, `slipClips` and `handles` ask for `clip.ramp` first and otherwise run the
+expressions they had, and the mixer and the timeline's drawing do the same. Tests hold copies of the
+old expressions and compare (`packages/core/test/query.test.ts`, `ramp-ops.test.ts`,
+`apps/editor/test/lane-times.test.ts`), and `e2e/engine-ramp.spec.ts` holds the mix of such a clip
+to a difference of 0.
 
 ### Frame resolution
 
@@ -90,6 +168,20 @@ a curve) are stored as whole JSON values — two people editing the same effect 
 instant resolve to one of the two lists, which is the right trade for values that are edited as a
 unit.
 
+A `ramp` is such a value, and more hangs on it than on most: a clip's length and in point were
+worked out from it. So an edit that changes a clip's ramp writes `ramp`, `duration`, `sourceIn` and,
+for a clip placed by the one it is linked to, `start`, whether those numbers change or not
+(`RAMP_EDIT` in `store.ts`), as a change of frame rate writes every clip's place. The same person
+then wins all of them: of two ramps set on one clip at the same moment one stands for everyone,
+whole, with the length, the in point and, for linked sound, the place that the same person's edit
+worked out, and nobody is left with one person's curve over the other's length. Against a trim made
+at the same moment each field is from one of the two. The ramp stands either way, on the media it
+was set on, and so does the trim's start; where the ramp's writes are the later word the clip has
+the ramp's length and its untrimmed in point, and a linked sound keeps the start the ramp edit
+wrote, so that pair is out of step by the trim. Against a speed set at the same moment on a clip
+that had no ramp, the ramp is from the one, the speed from the other and the length from whoever
+wins it. Setting the ramp a clip already has writes nothing and makes no undo step.
+
 The store rebuilds only the entities a transaction touched and keeps every other object
 referentially identical, so React can skip unchanged clips and the engine can cache by identity.
 
@@ -99,7 +191,11 @@ keyframe lists, effect stacks, grades and their curves, titles, shapes, markers 
 item by item; enumerations are checked against their lists; colours are hex or they are the
 default, because a colour ends up in a style attribute; an asset poster is an inline image or
 nothing; settings are clamped to what the engine can work with (a real frame rate, a size a texture
-can have). An entity of a type this version does not know is left out. A value that is already
+can have). A speed ramp is read as two to 32 points in order of place, a millisecond of media apart
+or more, with speeds from 10 % to 1000 % and places within a million seconds, or as none
+(`conformRamp`); a title, a still and a freeze have none; and the in point of a clip on a ramp, or
+of sound that keeps its pitch, is held within a million seconds, where its clock is a finite
+number. An entity of a type this version does not know is left out. A value that is already
 well-formed is handed back as it is, which is what keeps identities stable. A malformed or hostile
 update can neither crash a peer's renderer nor make their browser fetch anything. Project files go
 through the same readers.
@@ -225,19 +321,39 @@ where that put it (the clip under it did not go back either), one made since is 
 that was dropped moves nothing, and after someone else's change of frame rate the noted frames are
 read at the present rate. A commit that joins the step before it adds to that step's note.
 
-The speed slider under ripple editing commits at every move of the pointer and plans each step from
-where the drag began. Such an edit names its gesture (`FollowOptions.gesture`, a `GestureStep`), and
-the mover keeps the frame each comment had when the gesture began with the gesture, not with an undo
-step, because a gesture is not always recorded as one step. A comment that somebody makes or moves
-while the drag is under way has no frame from where the drag began. The mover notes the frame it was
-put at and the step it came after, and asks each later step where it takes a frame of that step's
-timeline (`GestureStep.since`). `speedEdits` answers by planning that step again from the speed it
-set. So such a comment stays on the shot it was put on, and comes back when time that was taken out
-from under it is put back. The drag is not started anew for it: that would plan the clips again from
-the middle of the drag, round their lengths a second time and lose the fades the drag had shortened.
-Its first step is written at once and later ones when the drag rests for `GESTURE_REST_MS`, or
-sooner when its undo or another edit needs the comments in place. A comment that somebody moves or
-deletes in the meantime keeps what they did.
+The speed slider and the points of a speed ramp commit at every move of the pointer and plan each
+step from where the drag began. To the planner a change of timing is one thing (`Retime` in
+`state/timing.ts`): one speed, or a ramp for each clip it names, and the ripple, the clip that is
+cut short, the room made for it and the gesture are worked out the same way for both. A ramp is set
+on whole groups of linked clips, so a gesture that sets one keeps the timing and the start of every
+clip of those groups from the moment it begins, and a step that asks for the ramps it found puts
+each of them back to the letter. Under ripple editing such an edit names its gesture
+(`FollowOptions.gesture`, a `GestureStep`), and the mover keeps the frame each comment had when the
+gesture began with the gesture, not with an undo step, because a gesture is not always recorded as
+one step. A comment that somebody makes or moves while the drag is under way has no frame from where
+the drag began. The mover notes the frame it was put at and the step it came after, and asks each
+later step where it takes a frame of that step's timeline (`GestureStep.since`). `speedEdits`
+answers by planning that step again from the change it made, which the gesture keeps
+(`SpeedGesture.last`): a clip does not say what was asked of it once the next clip has cut it short.
+So such a comment stays on the shot it was put on, and comes back when time that was taken out from
+under it is put back. The drag is not started anew for it: that would plan the clips again from the
+middle of the drag, round their lengths a second time and lose the fades the drag had shortened. Its
+first step is written at once and later ones when the drag rests for `GESTURE_REST_MS`, or sooner
+when its undo or another edit needs the comments in place. A comment that somebody moves or deletes
+in the meantime keeps what they did.
+
+Without ripple editing a clip that a change of speed or of ramp makes longer stops at the next one.
+`speedCutShort`, and `speedGestureCutShort` for a gesture that has ended, list the clips a change
+left shorter than they play (`CutShort`), and the “Make room” that is then offered goes through
+`roomEdits`. Each such clip gets the length it has with nothing in its way, by moving what follows
+on every track that can follow (`makeRoomEdits`). One case needs more than room at an end: a linked
+sound whose first word now falls where the next clip on its track stands was left as one frame
+beside its place, and room behind its picture would leave it there, out of step. The cut-short
+clips of that group then carry the change itself and how it found and left them (`CutShort.again`),
+and `roomEdits` puts the group back as the change found it and makes the change again with the
+ripple it has under ripple editing, as long as the clips are still as the change left them and that
+ripple is not refused. `Room.from` is the project the result is a ripple of, so markers and
+comments follow as they do under the ripple itself.
 
 ### The server (`apps/server`)
 
@@ -478,6 +594,122 @@ The mix is rendered in chunks, but each clip's sound is decoded in one pass over
 a seek exactly where the decode before it placed the same sound, and where two stretches placed
 differently meet there is a click.
 
+**Retimed sound.** A clip on a speed ramp, and a sound clip that keeps its pitch at a speed between
+10 % and 1000 % other than 100 %, is retimed. The mixer decides that once for each voice, when the
+clip's file is open (`AudioGraph.feed`), and from there on plays the voice as a clip at normal
+speed (`Voice.as`: speed 1, no ramp, its in point at the stream time at which the file reaches the
+clip's in point) over the stream, the file's sound on the clip's own clock (`Retimed`,
+`audio/retimed.ts`, built from core's `timeMap`). Everything the mixer does for a file read at one
+speed then runs as it is: a clip that plays backwards reads its stream forwards and plays it
+backwards, and in an export the stream is what `AudioRuns` carries from chunk to chunk, so the file
+is decoded once and retimed once. The gain envelope, the pan and what is reported of lost sound
+stay with the clip itself. A clip without a ramp that does not keep its pitch never comes this way
+and renders the samples it rendered before there were ramps (`e2e/engine-ramp.spec.ts` holds the
+difference to 0). Keep pitch at exactly 100 %, and at one speed under 10 % or over 1000 %, is such
+a clip: beyond what the stretcher is made for the pitch follows the speed. A change of the switch
+or of the ramp while playing restarts the mix, as a change of speed does (`structuralKey`).
+
+`scheduleBuffer` plays a buffer in one of three ways, and a retimed voice takes them as a clip at
+normal speed does. A stream at the mix's sample rate is played sample for sample, the voice as a
+whole on the sample nearest its place. A stream at another rate is converted (`convert`): each
+output sample computed, band-limited, at its exact place. And where a preview does not convert
+(`converting`: while shuttling, and beyond the step up to which the kernel has all its lobes) the
+buffer source plays the stream at the matching rate itself: shuttling at double speed, a retimed
+clip's stream plays at twice the rate, an octave up, like every other clip, whether or not it keeps
+its pitch.
+
+Second `t` of the stream is second `map.media(t)` of the file. The stream has the sample rate of
+the file's decoded sound and is handed on in buffers of 4096 samples that lie on one grid counted
+from second 0 of the stream, whatever is asked for. A sample of the stream is a function of its
+position: of its own index, of the map and of the file's samples around its place, and of nothing
+that was made before it. So the chunks of an export, the sound after a seek and the two halves of a
+split are pieces of one stream and meet without a seam, and neither a chunk nor a seek has any
+state to carry over or to rebuild.
+
+Where pitch follows speed (`Reader`), each sample of the stream is read at its own place on the map
+through a band-limited kernel chosen for the speed at that moment, out of a family of four kernels
+to a doubling of the speed (`kernelNear`, `audio/resample.ts`; fifteen serve a tenth of the speed
+to ten times). Unit tests hold a tone read along a ramp between a quarter and four times the speed
+to nothing else above −90 dB (−80 dB up to ten times), and a click to within half a sample of where
+the map puts it.
+
+Where pitch is kept (`Stretcher`, `audio/stretch.ts`), the stream is made of grains of 20 ms under
+a Hann window, one every 10 ms, each taken unchanged from near where the map puts it, at the place
+where it best continues the grain before it (WSOLA). Left to itself that chain of choices would run
+from wherever it began. So the stream is made in blocks of 200 grains, two seconds, and the first
+grain of every block, its anchor, lies exactly on the map: the chain begins anew at each anchor,
+and what it is off by on arriving at the next is taken out along the block, most of it where the
+grains are quiet or unlike each other. That is what makes a sample a function of its position, and
+it sets the bound on sync. A grain's centre plays media within 15 ms of its place on the map, and
+exactly on it every two seconds, so nothing builds up. A grain plays 20 ms of the file at the
+file's own speed, so what sounds at a moment of the timeline can differ from what the picture shows
+by up to `(15 ms + 10 ms · |1 − v|) / v` at speed `v`: 15 ms at 100 %, 12.5 ms at 200 %, 40 ms at
+50 %, 90 ms at 25 %. Without Keep pitch the sound is in its place to the sample.
+
+Two grains overlap at every sample, in shares that add up to one. Two grains that follow one
+another in the file therefore give the file, and no sample of the stream is larger than the larger
+of the two it is made of. Two grains that are unlike add up in power, and nothing makes up for it:
+steady noise comes out up to 1.2 dB low with a ripple at the rate of the grains of up to 2.5 dB
+(the tests' bounds; 0.3 to 0.9 dB and 0.5 to 1.9 dB measured between 50 % and 200 %). One gain for
+all that sounds in such a junction would ripple a tone under the noise and lift samples above the
+highest of the file. The other bounds, each a unit test in `packages/engine/test/stretch.test.ts`:
+a tone keeps its frequency to 0.3 Hz + 0.11 % and its level to 0.1 dB with nothing else above
+−40 dB; slowed to half speed a click of a millisecond is played at most three times within 35 ms;
+at 150 % and 200 % fewer than six in ten such clicks are lost between two grains (a third and just
+under half measured), while a burst that takes 8 ms to die away never is.
+
+The work runs on the main thread, ahead of the playhead, where the mixer's conversion runs. The
+file is decoded forwards and the stretcher makes one block at a time; a preview gets a turn between
+decoded buffers (`AudioGraph.turn`, which also ends the read of a voice that has been stopped), and
+an export passes none. Guards on wall time in the unit tests hold a second of stereo to 40 ms of
+stretching, to 80 ms of reading at ten times the speed, and a first block to 60 ms; in the browser
+one stereo voice at 200 % measured 8 to 13 ms for each second of sound. A stretched voice is first
+heard when the block it starts in has been decoded and chained, which needs the file decoded to
+that block's far anchor: up to two seconds of the stream on, twenty seconds of the file at ten
+times the speed. A clip that plays backwards is read to its end before any of it is scheduled, as
+all reversed sound is.
+
+**A change of format on the way.** A file's decoded sound can change sample rate or channel count.
+The stream is then two series of buffers, each on the grid of its own rate and silent where it has
+no sound, and the second begins before the last buffers of the first; the mixer adds them up.
+`Run.read`, out of which the chunks of an export are handed their buffers, takes what it holds to
+be in ascending order, so a chunk that ends shortly after such a change can be handed the first
+series and none of the second: it lacks the sound between the change and its own end. How much that
+can be grows as the clip slows down, because the first series runs on behind the change for as far
+as a kernel can reach, 1724 samples of the file, however long the clip takes to play them: measured
+at 28 ms at 150 % and 169 ms at 25 % for a change in mid-file, and 34 ms at 150 %, 0.11 s at 50 %
+and 0.72 s at 10 % behind a hand-over, all at 24 kHz. Most often the change is the decoder's and
+not the file's: on the first read of a file in the page's life the WebCodecs decoder can give a few
+buffers in one format and hand over to the browser's own decoder, which gives another, and from
+then on every read of the file is decoded by the browser's own from its first buffer (`Sound`). So
+a read that meets a change of format before it has given a buffer closes its decode and begins
+anew, once, as a read that knows the new rate (`Retimed.buffers`): after a hand-over it is one
+series in ascending order, sample for sample the buffers every later read of the file gives. What
+the decode that was given up had reported as lost goes with it, and the decode that follows reports
+its own losses.
+
+Two series remain where the change is there again on the second decode (two recordings joined into
+one stream), and where it is met after a buffer has been given. A read gives its first buffer once
+the file is decoded as far as that buffer reaches: 4096 samples of the stream with pitch following,
+a block of grains with pitch kept. Where a read begins before the file that is next to nothing. A
+voice that converts asks a kernel's reach before what it plays (`around` in `AudioGraph.feed`), so
+for a clip that starts on its file's first sample, in a mix at another rate than the file declares,
+the first buffer is the one in front of the file, and it is complete once the first of the file's
+sound is decoded: 32 to 125 samples of it with pitch following, 27.5 ms with pitch kept. `Sound`
+hands over at once only where the WebCodecs decoder gave nothing behind one pre-roll into the file
+(`soundFrom`), and that decoder can have given the first packet of the file's sound by then, or a
+packet of priming that begins before time zero and ends after it. The first read of such a clip in
+the page's life is then two series, and an export that makes it is the one that can lack sound just
+after the clip's start. A preview and a render in one piece place each buffer by its own time and
+lose nothing either way; around the change they are not, sample for sample, what one decoder gives.
+
+**The same sound however a render is cut up.** `e2e/engine-ramp.spec.ts` renders retimed clips in
+the chunks of an export, whether the chunks share a decode or each decode and retime for themselves,
+split in two, trimmed and trimmed back, and moved by a whole number of samples, and holds each to
+the samples of the one render it came from within a millionth of full scale (3e-8 measured; 8e-12
+for a file at the mix's rate, which is what a clip at normal speed differs by too). The exception is
+a file whose decoded sound changes format on the way and is read as two series, above.
+
 Decoded sound reaches the mixer, an export and the waveforms through `Sound` (`audio/sound.ts`),
 which wraps Mediabunny's `AudioBufferSink`. When the WebCodecs decoder fails, decoding starts again
 behind the packet that stopped it, further on each time it fails at once and a bounded number of
@@ -502,15 +734,18 @@ stretch at the clip's start, and is reported as one.
 
 In the preview the mixer's reports reach the editor through `Player.onAudioProblem`. The timeline's
 media cache keeps them by clip and kind, a stretch or the rest (`TimelineMedia.heard`,
-`features/timeline/soundLoss.ts`). Each is kept as a place in the clip's file, so it follows the
-clip when it is moved, slipped or played at another speed, and however often the mixer says it again
+`features/timeline/soundLoss.ts`). Each is kept as a place in the clip's file, found on the clip's
+own clock (`mediaAt` there, `frameOfMedia` back), so it follows the clip when it is moved, slipped,
+played at another speed or put on a ramp, and however often the mixer says it again
 (it does on every play) it is one mark. It is let go when the clip goes, is of another file or is
 turned round, no longer plays the place, or when its file is read anew (`TimelineMedia.refresh`).
 Sound of which nothing decodes is a fault of the file instead (`DecodeFault.sound`, with the
 decoder's `cause`) and is not also kept by clip. Which of the two it is, the file's waveform finds
 out, since it reads all of the file: a clip of which the preview heard nothing decode waits for it
 (`TimelineMedia.heard`, `WaveformCache.done`), and is marked only if some of the file's sound
-decodes. Normalise loudness reads through `Sound` too, so it measures what plays.
+decodes. Normalise loudness reads through `Sound` too, so it measures what plays. Of a clip on a
+ramp it reads the stretch of the file the clip covers (`sourceSpan`), as the file has it: it does
+not measure the stream.
 
 The player's master clock is the audio clock, offset by output latency, so picture follows sound.
 If the audio context is not running yet the player uses a monotonic clock and hands over cleanly
@@ -560,6 +795,29 @@ when it starts.
 - **The timeline** is DOM for clips (so hover, selection and drag feedback are just CSS) with one
   canvas per lane underneath for filmstrips and waveforms. Only clips near the viewport exist in the
   DOM; scrolling is a transform on one element; the playhead is moved outside React.
+- **The lanes are drawn through the clip's map.** Which media a pixel of a lane's canvas shows is
+  worked out apart from the drawing, in `features/timeline/laneTimes.ts`: `tileTime` is the second
+  of its file a filmstrip tile shows, `tileStep` the spacing its thumbnail is asked in,
+  `columnRange` the stretch of its file a clip's sound runs through under one pixel column, and
+  `loadedEdge` the place on the clip where the analysed part of its file ends. For a clip on a speed
+  ramp these are the clip's own maps, the ones the renderer and the mixer play it by. A tile shows
+  `sourceTimeAt` at the fractional frame it begins on, and its thumbnail step is chosen for the
+  media that one tile covers, so a slow stretch is asked for near pictures and a fast one for few. A
+  column from `u0` to `u1` frames into the clip covers `[mediaAt(u0), mediaAt(u1)]`, and
+  `[mediaAt(D − u1), mediaAt(D − u0)]` in a clip of `D` frames that plays backwards, which is where
+  the mixer plays that sound; media before the file or beyond it has no peak. A clip at one speed is
+  drawn by the arithmetic the canvas had before there were ramps, expression for expression:
+  `apps/editor/test/lane-times.test.ts` holds a copy of it and compares with `Object.is`, so a
+  project without ramps paints the pixels it painted.
+- **The ramp graph says what the points should be, and the planner plans.** The graph in the
+  inspector's Speed section (`features/inspector/RampGraph.tsx`, with its arithmetic in
+  `rampPoints.ts`) writes nothing: a drag of a point or a run of keys on one enters the planner
+  through the section's three closures (`begin`, `change`, `end` in `SpeedSection`), where
+  `change({ ramps: { [lead]: points } })` asks `speedGesture` for a gesture over whole link groups,
+  commits `speedEdits` and tells the gesture its step, while a point added or removed goes through
+  `cmd.setRampPoints` as a step of its own. A drag finds its point again by its place in the ramp
+  at every move, so a point somebody else removes meanwhile stays removed and a drag whose own
+  point is gone simply ends.
 - **Media** is stored in the Origin Private File System. Thumbnails and waveform peaks are
   generated lazily by priority — what is on screen now is always computed before what you have
   scrolled past.
@@ -673,14 +931,14 @@ bundle; the editor chunk is warmed in the background while you choose a project.
 
 ## 5. Testing strategy
 
-| Layer   | What is checked                                                                                                                                                                           | Where                                                                                                                   |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Model   | timecode, keyframes, every edit operation, CRDT convergence, per-user undo, hostile input                                                                                                 | `packages/core/test`                                                                                                    |
-| Server  | auth, roles, sync, persistence across restart and torn logs, resumable media, versions, connection limits, deleting projects and versions, the sweep of unused media                      | `apps/server/test`                                                                                                      |
-| Engine  | all shaders compile and draw, geometry and colour, frame accuracy, HDR code values, memory held, context loss, title wrapping, sound that will not decode, exports inspected with ffprobe | `e2e/engine*.spec.ts`, `packages/engine/test`                                                                           |
-| Editor  | the parts that are plain functions: panel layout, layers and focus, access, the transfer queue, timing, shortcuts, the service worker, the title field's geometry, the typing history     | `apps/editor/test`                                                                                                      |
-| Product | mouse-driven editing, reload persistence, panels and dialogs from the keyboard, export, multi-user sessions with roles, typing into titles, deleting                                      | `e2e/editor.spec.ts`, `e2e/collab.spec.ts`, `e2e/text-edit.spec.ts`, `e2e/delete.spec.ts` and the other specs in `e2e/` |
-| Build   | the production build in a browser: the site, its menu and notices, the editor under `/app/`, security headers, service worker, no network                                                 | `e2e/smoke` (`pnpm test:smoke`)                                                                                         |
+| Layer   | What is checked                                                                                                                                                                                                                                  | Where                                                                                                                                        |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model   | timecode, keyframes, every edit operation, the clock of a speed ramp, CRDT convergence, per-user undo, hostile input                                                                                                                             | `packages/core/test`                                                                                                                         |
+| Server  | auth, roles, sync, persistence across restart and torn logs, resumable media, versions, connection limits, deleting projects and versions, the sweep of unused media                                                                             | `apps/server/test`                                                                                                                           |
+| Engine  | all shaders compile and draw, geometry and colour, frame accuracy, HDR code values, memory held, context loss, title wrapping, sound that will not decode, sound along a speed ramp and at kept pitch, exports inspected with ffprobe and ffmpeg | `e2e/engine*.spec.ts`, `packages/engine/test`                                                                                                |
+| Editor  | the parts that are plain functions: panel layout, layers and focus, access, the transfer queue, timing, shortcuts, the service worker, the title field's geometry, the typing history, the ramp graph's arithmetic, what the lanes draw where    | `apps/editor/test`                                                                                                                           |
+| Product | mouse-driven editing, reload persistence, panels and dialogs from the keyboard, export, multi-user sessions with roles, typing into titles, deleting, speed ramps                                                                                | `e2e/editor.spec.ts`, `e2e/collab.spec.ts`, `e2e/text-edit.spec.ts`, `e2e/delete.spec.ts`, `e2e/ramp*.spec.ts` and the other specs in `e2e/` |
+| Build   | the production build in a browser: the site, its menu and notices, the editor under `/app/`, security headers, service worker, no network                                                                                                        | `e2e/smoke` (`pnpm test:smoke`)                                                                                                              |
 
 The engine tests run through a bare "lab" page (`apps/editor/lab.html`) that exposes the engine
 without the editor around it. WebGL runs on SwiftShader, so the suite needs no GPU.

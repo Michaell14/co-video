@@ -22,6 +22,15 @@ pnpm test:e2e     # Playwright: real editor + real server + real render engine
 pnpm test:smoke   # builds everything, then opens the production build in a browser
 ```
 
+A few tests are guards on wall time: that a second of stereo sound is stretched in under 40 ms and
+its first block in under 60 ms (`packages/engine/test/stretch.test.ts`), that it is read along a
+speed ramp at ten times the speed in under 80 ms (`packages/engine/test/retimed.test.ts`), and
+that stretching one voice of a preview costs under 60 ms for a second of sound
+(`e2e/engine-ramp.spec.ts`). The unit tests take the best of three runs, and every one of these
+bounds has room for a machine a few times slower than the one it was written on. They are still the
+first to fail on a machine that is busy with something else: the reader's has been seen at 103 ms
+under heavy load. Run such a test again by itself before looking for a cause in your change.
+
 ### The browser tests
 
 End-to-end tests download nothing at run time; fixtures live in `e2e/fixtures`. A few export tests

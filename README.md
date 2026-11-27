@@ -80,6 +80,33 @@ with projects stored in your browser.
 - A clip's name, start and duration can be typed in the inspector: as timecode, as frames, as
   seconds (`2.5s`), or relative to where it is (`+12`, `-12`)
 - Speed changes from 5 % to 10 000 %, reverse playback and freeze frames
+- **Speed ramps**: a clip's speed can change along its media. The inspector's Speed section has a
+  chip for None, Custom and seven ready-made shapes (Ramp up, Ramp down, Montage, Hero, Bullet,
+  Flash in, Flash out), and a graph of the speed, from 10 % to 1000 %, over the media the clip
+  plays, with the playhead on it and marks under it for the seconds of the clip. A point is dragged
+  up and down for its speed and sideways for its place, and snaps to 100 % and to the playhead
+  unless `Shift` is held; a double-click adds a point on the curve or removes the one it is on; a
+  press beside the points moves the playhead. Between two points the speed eases from the one to
+  the other. On a ramp the Speed row shows the average and cannot be set; a preset or None takes
+  the clip back to one speed
+- A ramp changes how long a clip is, as a change of speed does: the same stretch of media plays,
+  faster here and slower there. With ripple editing on, what follows moves with the clip's end;
+  without it the clip stops at the next one, says so and offers to make room. A drag of a point is
+  one undo step. A ramp is one for a picture and the sound linked to it, whatever the linked
+  selection, and the two stay in step, also as a split edit; it is refused while one of them is on
+  a locked track
+- A clip on a ramp says so on the timeline. Its chip reads “Ramp” (“−Ramp” when it plays backwards)
+  and names its slowest and fastest speed when pointed at, its filmstrip shows on each tile the
+  picture of that moment, and its waveform is drawn where the sound plays, wide where the clip is
+  slow and close where it is fast. The clip's menu has “Speed ramp…” (None, the seven shapes with
+  the present one ticked, “Add point at playhead”), and the command palette has the same by name:
+  “Speed ramp: Bullet”, “Add ramp point at playhead”. “Reverse” in the clip's menu and in the
+  inspector turns a clip round and leaves its speed, its ramp and its length as they are
+- **Keep pitch**: sound at another speed, or on a ramp, plays at its own pitch instead of rising
+  and falling with the speed. It is a switch in the Speed section for whatever reaches a sound
+  clip, an entry in a sound clip's menu and “Keep pitch: on or off” in the palette, and it works
+  between 10 % and 1000 %. The first change of a sound clip's speed or ramp made from now on
+  switches it on; sound in projects made before, and sound nobody retimes, plays as it did
 - Titles with 13 bundled open-source typefaces, outlines, shadows, gradients, backgrounds and
   animated in / out presets; shapes, solids and **adjustment layers**
 - A title is typed into where it stands in the picture: double-click it in the viewer and the caret
@@ -153,7 +180,8 @@ with projects stored in your browser.
 ### Audio
 
 - Per-clip gain, pan and equal-power fades (all keyframeable); per-track fader, pan, mute, solo,
-  three-band EQ and compressor; live peak meters; waveforms on the timeline
+  three-band EQ and compressor; live peak meters; waveforms on the timeline, drawn through a clip's
+  speed and its ramp
 - A sound clip's level is drawn over its waveform as a line. On a selected clip the line is dragged
   up or down to set the level, a `Ctrl`-click on it makes a volume keyframe, and a keyframe on it is
   dragged like the line
@@ -286,6 +314,29 @@ unlocked track is cut at the playhead and what follows moves later to make room.
 free track and leaves every other clip where it is. The monitor stays open after either, and `Esc`
 closes it.
 
+The points of a speed ramp, in the graph of the inspector's Speed section, are stops for `Tab`. On
+a point, and with the pointer in the graph:
+
+|                                                   |                                    |
+| ------------------------------------------------- | ---------------------------------- |
+| Speed up / down by a twentieth · by 1.62 times    | `↑` `↓` · with `Shift`             |
+| Double / halve the speed                          | `Page Up` `Page Down`              |
+| Slowest (10 %) / fastest (1000 %)                 | `Home` `End`                       |
+| Move the point a hundredth of the graph · a tenth | `←` `→` · with `Shift`             |
+| Remove the point                                  | `Delete` or `Backspace`            |
+| Take the playhead to the point                    | `Enter`                            |
+| Move a point                                      | drag it                            |
+| Add a point on the curve · remove a point         | double-click the graph · the point |
+| Take the playhead to a moment of the clip         | press beside the points, or drag   |
+
+`←` and `→` move a point the way the clip plays, so they change sides on a clip that plays
+backwards. A point stops short of its neighbours and at the ends of what the clip plays, and a drag
+snaps to 100 % and to the playhead unless `Shift` is held. A run of key presses is one undo step
+and so is a drag; a point added or removed is a step of its own, and removing one by key hands the
+keyboard to the point beside it. “Add point” under the graph puts a point where the playhead is, or
+in the widest gap when the playhead is off the clip or on a point, and for someone working by
+keyboard the keyboard goes to the new point. A ramp keeps at least two points and holds 32 at most.
+
 The rest of the editor is within reach of the keyboard as well:
 
 - The timeline's clips are one stop for `Tab`. On a clip the keyboard has reached, `←` `→` go to
@@ -405,7 +456,8 @@ pnpm test:smoke   # the production build, served by the built server, in a brows
 
 The end-to-end suite drives the real application: it edits with the mouse, exports through the
 export dialog and inspects the files with `ffprobe`, connects several browsers to one project,
-records a voiceover from a fake microphone, builds a proxy, and compares the picture that an HDR
+records a voiceover from a fake microphone, builds a proxy, exports a clip on a speed ramp and
+measures with `ffmpeg` where its tone and its clicks lie, and compares the picture that an HDR
 export hands to the encoder with its 10-bit PQ source, to within one code value. The smoke test
 goes through the built product once, under the security headers and the service worker that only
 a production build has. CI runs all of it on every pull request, and also builds the Docker image
@@ -442,13 +494,109 @@ Three ideas carry most of the weight:
 - The names, roles and keyboard behaviour of the interface are checked against Chromium's
   accessibility tree, by the test suite. Nobody has gone through the editor with a screen reader.
   For someone who may not edit, the read-only panels are closed to assistive technology together
-  with their controls, so a screen reader does not read out the values in them.
+  with their controls, so a screen reader does not read out the values in them. A ticked entry of a
+  menu (“Keep pitch”, the shape a clip is on) is drawn with its tick and not announced as ticked.
 - No account system: access control is by capability link. Fine for teams; not a public SaaS
   permission model.
 - HDR _display_ preview is tone-mapped to SDR in the viewer; scopes read true PQ nits and exports
   are true HDR. Wide-gamut canvas output is not wired up yet.
-- Speed changes resample audio (pitch follows speed); there is no pitch-preserving time stretch,
-  and no keyframed speed ramps.
+- A speed ramp eases from point to point and holds the outermost speed beyond them: no steps, no
+  handles on a point and no easing of its own for one, and one direction (backwards is the clip's
+  Reverse). A ramp has 2 to 32 points between 10 % and 1000 %, a millisecond of media apart or
+  more.
+- The ramp graph shapes one clip at a time, with what is linked to it: with several selected it is
+  shown and cannot be worked, and a shape, a speed or the direction is set on all of them. A point
+  has no fields to type its speed and place into, the Speed slider does not scale a ramp, and the
+  timeline draws no line of speed on a clip.
+- Points of a ramp that lie beyond a trimmed edge, or beyond where the next clip cut the clip
+  short, are kept but not shown, and come back when the clip is trimmed out or room is made. Without
+  ripple editing a point dragged slower can vanish from the graph that way when it is let go, until
+  “Make room” is pressed.
+- Every change of speed or ramp rounds a clip to whole frames, and moves keyframes of other
+  properties to the whole frames that now show what theirs showed. Undo is exact and so is a drag
+  that returns; two commands are not: a clip taken off a shape with None can come back a few frames
+  longer or shorter (the test allows three at 100 % and six at 50 %), and keyframes that a fast
+  stretch put on one frame stay together.
+- A shape needs a few milliseconds of media to hold its points apart (12.5 ms for Bullet), and a
+  clip that plays less is refused it. “Custom” on a clip faster than 1000 % or slower than 10 %
+  starts the ramp at the nearest speed a ramp runs at, which changes the clip's length, and says so.
+- Linked sound is kept in step with its picture through a change of ramp only while the two share
+  frames of the timeline: a sound that begins where its picture ends is retimed by itself. Where the
+  clips beside it leave it no room, one frame of the sound is left, out of step. Two linked sounds
+  from different files are each stretched by themselves and are not held to each other.
+- A constant speed set on a split edit (sound that starts before or after its picture) still parts
+  the two, as it always did: only on a ramp, and coming off one, are they kept together. Reversing a
+  split edit parts it too, at one speed and on a ramp.
+- Of two ramps set on one clip at the same moment one stands for everyone, whole. A ramp set while
+  someone else trims the head of the clip leaves the ramp and the trim's start, with the length and
+  the in point of one of the two, and linked sound can then be out of step with its picture by the
+  trim. Two people who drag points of one ramp at once each start the other's drag anew: one ramp
+  stands, and a drag can be more than one undo step.
+- A collaborator's tab that still runs a build from before speed ramps plays a clip on a ramp at
+  its stored speed, and a trim made there writes an in point worked out at that speed.
+- Nobody has listened to Keep pitch. It has been measured, on generated tones, clicks, bursts,
+  noise and signals shaped like speech and music; what follows are those measurements and the bounds
+  the tests hold, and how a voice or a song comes out has not been judged by ear.
+- Keep pitch plays sound in grains of 20 ms, each taken unchanged from near its place in the file.
+  A tone keeps its frequency to within 0.3 Hz + 0.11 % over a long stretch; within any two seconds
+  it can be further off, so a sustained low chord is detuned by cents, by another amount every two
+  seconds (measured on a fifth of 82 and 123 Hz: a note up to 13 cents off, in steps of up to 22
+  cents).
+- With Keep pitch what sounds lies within 15 ms of the place in the file that the picture shows,
+  and exactly on it every two seconds, so nothing builds up over a long clip. On the timeline that
+  is up to (15 ms + 10 ms × |1 − speed|) ÷ speed: 15 ms at 100 %, 12.5 ms at 200 %, 40 ms at 50 %
+  and 90 ms at 25 %, so it stays under 20 ms from about 85 % up. Without Keep pitch sound is in its
+  place to the sample.
+- A click of a millisecond is played up to three times within 35 ms when it is slowed to 50 %, and
+  from 150 % up it is softened or lost when it falls between two grains: about a third of such
+  clicks at 150 % and about half at 200 % were measured at less than a quarter of their height. A
+  sound that takes 8 ms to die away is kept.
+- Steady noise (hiss, applause, rain) comes out up to a decibel quiet when stretched, with a
+  flutter of up to 2 dB at the rate of the grains, a hundred times a second (measured 0.3 to 0.9 dB
+  and 0.5 to 1.9 dB between 50 % and 200 %). A stretched clip never peaks above its file.
+- Beyond 400 % Keep pitch leaves out more of the file than it plays, and under 25 % it plays every
+  part of it several times over: the sound stays in time and at pitch, and the inspector warns under
+  the switch that it turns rough. At one speed beyond 1000 % or under 10 % the switch does nothing
+  and the pitch follows the speed.
+- In the preview a stretched clip is heard only once the two seconds of grains it starts in are
+  made: after play is pressed, after a seek, and after an edit that moves, trims or retimes a sound
+  clip while playing, which rebuilds the mix. That took 30 to 90 ms where it was measured (a clip at
+  normal speed: under 20 ms) and needs twenty seconds of the file decoded at 1000 %. A point of a
+  ramp dragged while playing mutes stretched sound for as long as the drag moves.
+- Stretching runs on the page's main thread, ahead of the playhead: 8 to 13 ms for each second of a
+  stereo clip at 200 % where it was measured, on one machine with four cores. Stretched sound is
+  made two seconds at a time, so a machine that falls behind goes without it until the next two
+  seconds are ready.
+- Played backwards in the preview, sound on a ramp or with Keep pitch is retimed to the clip's end
+  before any of it is heard, as all reversed sound is decoded first: measured at about half a second
+  for twenty seconds of clip and one to two seconds for a minute, and what should have played
+  meanwhile is not heard. While shuttling at double speed all sound is an octave up, with or without
+  Keep pitch.
+- Loudness normalisation measures the stretch of the file a clip plays as the file has it, not as
+  the ramp or Keep pitch plays it: a part the ramp dwells on counts no more than one it runs
+  through, and what stretching takes off noise is not counted.
+- An export can lack a stretch of the sound of a clip on a ramp or with Keep pitch just after a
+  place where the decoded sound of its file changes sample rate or channel count, when one of the
+  export's four-second chunks of sound ends shortly after that place; the preview has the sound. The
+  stretch grows as the clip slows down: measured at up to 0.03 s at 150 %, 0.11 s at 50 %, 0.17 s at
+  25 % and 0.7 s at 10 % for sound at 24 kHz, about half as long at 48 kHz. Files that change like
+  this are rare (two recordings joined into one stream).
+- A browser can make the same change by itself, when its WebCodecs decoder gives the first packets
+  of a file and then leaves the file to the browser's other decoder. A clip on a ramp or with Keep
+  pitch is then read again from the start and loses nothing, with two exceptions: a clip whose first
+  buffer of sound the first decoder had already reached (85 ms of the clip at 48 kHz, two seconds
+  with Keep pitch), and a clip that starts on its file's first sample in a project at another sample
+  rate than the file declares, for which one packet of the file's sound from the first decoder is
+  enough (28 ms of it with Keep pitch). It can happen once for a file while the page is open, the
+  first time its sound is decoded; an export made after that is not affected.
+- Speed ramps and Keep pitch are tested in Chromium on Linux only: not on macOS or Windows, not in
+  Safari or Firefox, and the graph not by touch. No browser test covers sound that will not decode
+  under a clip on a ramp or with Keep pitch, Keep pitch on HE-AAC, or a clip of more than five
+  minutes that plays backwards on a ramp in an export.
+- Two messages are off. A clip that a change of speed or ramp cuts short by a frame or two is told
+  “the clip now plays only the first 4 of its 4 seconds”, both lengths being rounded to a tenth of a
+  second; and from the menu of a clip on a locked track the ramp entries answer “Select a video or
+  sound clip to ramp its speed.” instead of naming the lock.
 - Keyframes ease by preset; there is no curve editor with bezier handles.
 - No multicam, no nested sequences, no motion tracking, no AI features. Not yet.
 - A change of frame rate re-times what the project holds at that moment. Edits a collaborator made
@@ -456,7 +604,8 @@ Three ideas carry most of the weight:
 - Proxies are made and kept per device; collaborators each create their own. HDR sources are not
   proxied.
 - EDL export is cuts-only (transitions are listed as comments) and assumes source timecode starts
-  at zero.
+  at zero. An event has one speed, so a clip on a speed ramp is listed at its average speed, with a
+  comment that gives the slowest and the fastest it runs at.
 - Two people who put a clip on the same frames of a track at the same moment both succeed. One of
   the two clips is then moved to a free track, a moment after the edits meet, by the session that
   placed it. If that session has gone by then, the clips stay on top of each other, marked in the
@@ -478,9 +627,10 @@ Three ideas carry most of the weight:
   or a version that is restored, leaves them at their frames. Two people who ripple at the same
   moment each move the comments, and for each comment one of the two frames is kept for everyone; it
   need not be the one that goes with where the clips ended up. A ripple made offline does not move
-  comments that were added meanwhile. A comment that someone makes while the speed slider is being
-  dragged is placed by the picture as the drag's last step left it. When the person who makes it
-  sees the drag late, it can land as far off its shot as the drag moved in between.
+  comments that were added meanwhile. A comment that someone makes while the speed slider or a point
+  of a speed ramp is being dragged is placed by the picture as the drag's last step left it. When
+  the person who makes it sees the drag late, it can land as far off its shot as the drag moved in
+  between.
 - The second decoder is for AAC in MP4, MOV or Matroska: AAC-LC, HE-AAC and HE-AAC v2. AAC Main,
   xHE-AAC, low-delay AAC, AAC in transport streams and other codecs have the one decoder; when it
   fails, the export says so, with the cause. What the second decoder gives is used only when it
