@@ -95,7 +95,7 @@ two bounds, so nothing asks it once a frame or once a sample: the stream time of
 is kept for each clip object (`streamIn`).
 
 A clip is a window on that stream: it opens where the stream reaches `sourceIn` and is `duration`
-frames long. `query.ts` has what everything else reads. `mediaAt(clip, u)` is the second of media
+frames long. `query.ts` has what everything else reads. `mediaAt(clip, u, p)` is the second of media
 `u` frames after the in point, forwards through the media whichever way the clip plays and for any
 real `u`: beyond the clip the ramp carries on, which is what a trim outwards and a transition handle
 show. `frameOfMedia` is the way back, `sourceSpan` the stretch a clip covers, and `sourceTimeAt`,
@@ -113,11 +113,13 @@ pieces of a split go on playing the one ramp.
 
 **A change of speed keeps the media and changes the length.** `setSpeed` and `setRamp` work out how
 long the stretch a clip plays takes on its new clock, to the frame, and move its keyframes to the
-frames that now show what theirs showed (`remapKeyframes`). No start moves, and a clip that grows
-stops at the next one unless `free` is passed, which whoever makes room for it does. Linked clips
-are the one exception. A ramp is set on a whole link group, whichever of its clips is named, and is
-named for its lead: the first clip of the group that is not sound, or the first when all are. A clip
-that was in step with the lead (playing the same way, sharing frames of the timeline, as far apart
+frames that now show what theirs showed (`remapKeyframes` along a ramp; from one speed to another
+their times are scaled, `scaleKeyframes`, as they always were). No start moves, and a clip that
+grows stops at the next one, unless `setRamp` is passed `free`, which whoever asks how long a clip
+is with nothing in its way does. Linked clips are the one exception. A ramp is set on a whole link
+group, whichever of its clips is named, and it is the ramp of the group's lead: of the clips the
+change names, the first that is not sound, or else the first. The editor names the first clip of
+the group that is not sound (`rampLead`). A clip that was in step with the lead (playing the same way, sharing frames of the timeline, as far apart
 in their media at both ends of what they share) is a follower. It keeps the stretch of media it
 played, goes on the lead's ramp moved by that distance (`shiftRamp`), and is placed where the lead's
 new stream reaches the second it began on, so the two show the same media on every frame they share:
@@ -143,8 +145,9 @@ without a ramp that does not keep its pitch takes the code path it took before: 
 `sourceTimeAt`, `retime`, `slipClips` and `handles` ask for `clip.ramp` first and otherwise run the
 expressions they had, and the mixer and the timeline's drawing do the same. Tests hold copies of the
 old expressions and compare (`packages/core/test/query.test.ts`, `ramp-ops.test.ts`,
-`apps/editor/test/lane-times.test.ts`), and `e2e/engine-ramp.spec.ts` holds the mix of such a clip
-to a difference of 0.
+`apps/editor/test/lane-times.test.ts`), and `e2e/engine-ramp.spec.ts` mixes such clips with the two
+fields and without them, as a project made before has them, and holds the two mixes to a difference
+of 0.
 
 ### Frame resolution
 
