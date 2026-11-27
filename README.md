@@ -504,8 +504,7 @@ Three ideas carry most of the weight:
   are true HDR. Wide-gamut canvas output is not wired up yet.
 - A speed ramp eases from point to point and holds the outermost speed beyond them: no steps, no
   handles on a point and no easing of its own for one, and one direction (backwards is the clip's
-  Reverse). A ramp has 2 to 32 points between 10 % and 1000 %, a millisecond of media apart or
-  more.
+  Reverse). A ramp has 2 to 32 points between 10 % and 1000 %, a millisecond of media apart or more.
 - The ramp graph shapes one clip at a time, with what is linked to it: with several selected it is
   shown and cannot be worked, and a shape, a speed or the direction is set on all of them. “Add
   point at playhead” from a clip's menu then adds to that clip, in its widest gap when the playhead
@@ -548,23 +547,47 @@ Three ideas carry most of the weight:
   one of the two ramps, and its length can be the one the other ramp gave it. A linked sound that
   starts before or after its picture can also be left where the other ramp put it, out of step with
   the picture. A ramp set while someone else trims the head of the clip leaves the ramp with the
-  trim's start and in point, at the length of one of the two. Picture and sound that start together
-  and are trimmed together stay in step; where the sound starts before or after its picture, or one
-  of the two is trimmed alone, they can be out of step. Two people who drag points of one ramp at
-  once each start the other's drag anew: one ramp stands, and a drag can be more than one undo step.
-- A move or a trim of the head made before someone else changed the clip's ramp, once or many times,
-  is still yours to undo and to redo, for picture and linked sound together: the clip goes back to
-  where it was, on the ramp that stands and at the length that ramp has given it since. Where the
-  sound starts before or after its picture, the other person's ramp has placed it anew. Undo of a
-  move then takes it along with the picture, as far from it as the ramp put it, unless it would have
-  to begin before the start of the timeline, where it stays. Undo of a trim of the head does not put
-  such a sound right: measured after Ramp up and after Bullet it was 0.5 to 2.9 s out of step with
-  its picture or shared no frame with it, and after Hero it was in step.
+  trim's start and in point, at the length of one of the two. A ramp set while someone else, cut off
+  at that moment, moves a split edit leaves the sound placed from where it stood before the move
+  (0.86 s out of step with its picture, measured for a move of 45 frames). Picture and sound that
+  start together and are trimmed together stay in step; where the sound starts before or after its
+  picture, or one of the two is trimmed alone, they can be out of step. Two people who drag points
+  of one ramp at once each start the other's drag anew: one ramp stands, and a drag can be more than
+  one undo step.
+- A move or a trim of the head made before someone else changed the clip's ramp, once or many
+  times, is still yours to undo and to redo, for picture and linked sound together: the clip goes
+  back to where it was, on the ramp that stands and at the length that ramp has given it since.
+  Where the sound starts before or after its picture, the other person's ramp has placed it anew. In
+  the ordinary case Undo of a move then takes it along with the picture, as far from it as the ramp
+  put it. It does not once the ramp has been taken off again, after a change of frame rate, where
+  the move also took the clips to other tracks, after a second move when both are undone, or where
+  the sound would have to begin before the start of the timeline: the picture then goes back alone,
+  nothing is said, and the two are out of step until Redo (0.9 to 1.8 s measured for a move of 45
+  frames). Undo of a trim of the head does not put such a sound right: measured after Ramp up and
+  after Bullet it was 0.5 to 2.9 s out of step with its picture or shared no frame with it, and
+  after Hero it was in step.
+- A change of speed or a shape is undone, and redone, only where the length it gave the clip still
+  belongs to the ramp the clip is on. Once someone else has edited that ramp without changing the
+  length (Custom, Add point, a point dragged), your old length would play media the clip never held,
+  so Undo leaves the clip as it is; so does an Undo or Redo that would put a ramp back on a clip
+  someone else has trimmed or retimed since. Undo then goes on to your step before it and says so,
+  as for any step that someone else has replaced whole. A ramp that someone set at the very same
+  moment, not having seen your change, is no hindrance: your Undo then gives the clip its whole
+  stretch back under their ramp.
+- Three orders of work between two people are not caught, and nothing is said until the speed or
+  the shape is set anew: Undo of “None” after someone else has taken back the speed under it; Undo
+  of your speed under someone else's shape that changed the length, followed by their Undo of the
+  shape; and, on a clip that is on no ramp, Undo of a speed after someone else has trimmed the clip,
+  which is as it always was. Each leaves the clip at a speed and a length that do not belong
+  together, so that it plays more or less media than it held (measured: a clip of 4 s playing 3.2 to
+  8 s of media).
 - Undo of the change that first switched Keep pitch on leaves it on under a speed or a ramp that
   someone else has set since, and it then stays on when they take theirs back as well. Where nothing
   else of your step is left, Undo goes on to your step before it, as for any step that someone else
   has replaced whole, and says so; and at the very moment someone else sets a speed, that Undo still
-  switches Keep pitch off under their speed.
+  switches Keep pitch off under their speed. It also switches it off, and nothing is said, where
+  between your change and theirs you had deleted the clip and taken the deletion back, or restored a
+  version and taken that back.
 - A collaborator's tab that still runs a build from before speed ramps plays a clip on a ramp at
   its stored speed, and a trim made there writes an in point worked out at that speed; the ramp
   stays in the project.
@@ -579,29 +602,31 @@ Three ideas carry most of the weight:
   it does not look for transients and has no control of formants. A tone keeps its frequency to
   within 0.3 Hz + 0.11 % over a long stretch. Within any two seconds it can be further off. A grain
   is placed to the sample, so a tone whose period is no whole number of samples can be half a sample
-  to the grain off for seconds on end: 0.11 % in a file of 44.1 or 48 kHz, 0.23 % in one of
-  22.05 kHz. Measured on a tone of 1 kHz in a file that also has a click every half second, it
-  stayed within 0.6 Hz in every quarter second at 44.1 and 48 kHz, and at 22.05 kHz it was up to
-  1.7 Hz off at 50 % and 2.3 Hz at 200 %, for up to two seconds on end.
+  to the grain off for seconds on end: 0.11 % in a file of 44.1 or 48 kHz, 0.23 % in one of 22.05
+  kHz. Measured on a tone of 1 kHz in a file that also has a click every half second, it stayed
+  within 0.6 Hz in every quarter second at 44.1 and 48 kHz, and at 22.05 kHz it was up to 1.7 Hz off
+  at 50 % and 2.3 Hz at 200 %, for up to two seconds on end.
 - With Keep pitch a sustained chord is detuned by cents, and its notes lose level to what then
   sounds beside them. Measured on a fifth of 82 and 123 Hz: a note up to 13 cents off, by another
-  amount every two seconds, in steps of up to 22 cents. Measured on three notes of 220, 277 and
-  330 Hz: a note up to 33 cents off, and two of the three 4 to 6 dB down over the whole clip at 50 %
-  and 125 % (less at 80 % and 200 %), while the level of the whole stayed within 0.3 dB.
-- With Keep pitch what sounds lies within 15 ms of the place in the file that the picture shows
-  (3 to 6 ms in the root mean square, measured on signals shaped like speech and music), and exactly
-  on it every two seconds, so nothing builds up over a long clip. On the timeline that is up to
-  (15 ms + 10 ms × |1 − speed|) ÷ speed: 15 ms at 100 %, 12.5 ms at 200 %, 40 ms at 50 % and 90 ms
-  at 25 %, so it stays under 20 ms from about 85 % up. Without Keep pitch sound is in its place to
-  the sample.
+  amount every two seconds, in steps of up to 22 cents. Measured on three notes of 220, 277 and 330
+  Hz: a note up to 33 cents off, and two of the three 4 to 6 dB down over the whole clip at 50 % and
+  125 % (less at 80 % and 200 %), while the level of the whole stayed within 0.3 dB.
+- With Keep pitch what sounds lies within 15 ms of the place in the file that the picture shows (3
+  to 6 ms in the root mean square, measured on signals shaped like speech and music), and exactly on
+  it every two seconds, so nothing builds up over a long clip. On the timeline that is up to (15 ms
+
+* 10 ms × |1 − speed|) ÷ speed: 15 ms at 100 %, 12.5 ms at 200 %, 40 ms at 50 % and 90 ms at 25 %,
+  so it stays under 20 ms from about 85 % up. Without Keep pitch sound is in its place to the
+  sample.
+
 - A click of a millisecond is played up to three times within 35 ms when it is slowed to 50 %.
-  Played faster it is softened or lost when it falls between two grains: 5 % of such clicks at
-  110 %, 18 % at 125 %, 30 % at 150 % and 46 % at 200 % were measured at less than a quarter of
-  their height. A regular beat can fare far worse, because clicks a whole number of grains apart
-  fall on the same place of every grain. Measured on a click of 5 ms every half second: at 200 %, 21
-  of 23 came out 14 dB down, and with the same clicks a quarter second later in the file not one
-  sample of the 24 was left; at 400 %, 22 of 23 were 14 dB down or gone, and again none of the 24
-  was left. Nothing under the switch says so: the inspector warns only beyond 400 %.
+  Played faster it is softened or lost when it falls between two grains: 5 % of such clicks at 110
+  %, 18 % at 125 %, 30 % at 150 % and 46 % at 200 % were measured at less than a quarter of their
+  height. A regular beat can fare far worse, because clicks a whole number of grains apart fall on
+  the same place of every grain. Measured on a click of 5 ms every half second: at 200 %, 21 of 23
+  came out 14 dB down, and with the same clicks a quarter second later in the file not one sample of
+  the 24 was left; at 400 %, 22 of 23 were 14 dB down or gone, and again none of the 24 was left.
+  Nothing under the switch says so: the inspector warns only beyond 400 %.
 - A sound that takes 8 ms to die away is not lost at 150 % or 200 % with Keep pitch, but it is
   softened: by 3 dB in the middle case at 200 %, and at worst by 15 dB on one kind of burst and by
   18.5 dB on another, where it was measured. Slowed to 50 % such a sound was measured twice on

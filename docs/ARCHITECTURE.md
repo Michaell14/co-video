@@ -252,12 +252,14 @@ the store decides what the step still means:
 - A clip that returns onto frames another clip has taken since moves to a free track of its kind,
   or to a new one, within the same step. A person working alone always gets back exactly the state
   before the step.
-- Keep pitch that a change of speed or of ramp switched on is part of that step and of no later one.
-  Its undo leaves it on (`leavePitch`) while a speed or a ramp that someone else has set since
+- Keep pitch that a change of speed or of ramp switched on is part of that step and of no later
+  one. Its undo leaves it on (`leavePitch`) while a speed or a ramp that someone else has set since
   stands on the clip, and it then stays on when they take theirs back as well; where nothing else of
   the step is left, the step is passed over like any other. A redo is not held to this, and an undo
   made at the very moment someone else, not having seen it, sets a speed leaves that speed without
-  Keep pitch.
+  Keep pitch. `leavePitch` looks for what stands under the clip's speed and ramp in the map the step
+  wrote to; a clip that this session deleted, or replaced by restoring a version, and brought back
+  by undo is another map, and there the undo switches Keep pitch off.
 - A move or a trim made before someone else's change of ramp is taken back field by field like any
   other: the start and the in point return, and the length stays the one the ramp has given the clip
   since. One case needs more. A change of ramp places sound that starts before or after its picture
@@ -265,10 +267,24 @@ the store decides what the step still means:
   starts, so the undo or redo of a move of both made before it would move the picture alone. The
   store takes the sound along by as many frames, within the same step (`keepInStep`): a clip on a
   ramp that was in step with the linked clip the step has just moved, that the step had placed as
-  well, and that the undo manager left alone. It is not done for a step that is also re-timed to
-  another frame rate, it does not reach a trim of the head, after whose undo such a sound can be out
-  of step with its picture, and a sound that would have to begin before the timeline does stays
-  where it is.
+  well, and that the undo manager left alone. It is done only where the undo manager moved the
+  picture and changed nothing else of it: not for a step that is also re-timed to another frame
+  rate, not where the move also changed the track, not once the clips are off the ramp again, not
+  where the undo manager has itself put the sound's start back (a second move, both undone), and not
+  for a trim of the head; after each of these such a sound can be out of step with its picture. A
+  sound that would have to begin before the timeline does stays where it is.
+- The ramp and the length that a change of speed or ramp gave a clip are taken back together
+  (`keepRetimes`, when the step is settled and before it is re-timed). For a step that had set the
+  clip's speed or ramp: where the undo or redo has put back the length and not the ramp, the clip
+  must play, on the ramp it is on, the stretch it plays on the ramp the step had found it on, to
+  within what one frame plays, so that a ramp set at the same moment on the old length stands with
+  it and one set since on the new length does not; where it has put a ramp back for the clip to be
+  on and not the length, the step must have left the length alone. A clip that fails is written back
+  as the undo found it, in every field the undo wrote, within the same step, and a step of which
+  nothing else was taken back is not filed and counts in `StepOutcome.dropped`. A trim or a move,
+  and a clip that is on no ramp and was on none for the step, are not looked at. It does not reach
+  the undo of a ramp edit that left the length alone (None from a level ramp) after the speed under
+  it has changed, nor a speed taken back underneath someone else's ramp.
 
 Undo and redo put values back as they were written, and a frame number names a moment only at the
 frame rate it was written at. Every step is therefore stamped with the rate it was recorded at, and
