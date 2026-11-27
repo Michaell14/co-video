@@ -560,6 +560,11 @@ button.conn:hover {
 .row__ctrl > .kfnav:first-child + .num:last-child {
   flex: 1;
 }
+/* Beside keyframe arrows the slider is what gives way where the panel is narrow: the number keeps
+   its place in the column of the numbers above and below it, inside the panel. */
+.row__ctrl:has(> .kfnav) > .slider {
+  min-width: 16px;
+}
 /* A number a switch turns on stands in the column of the numbers above and below it. */
 .row__ctrl > .switch + .num {
   margin-left: auto;
