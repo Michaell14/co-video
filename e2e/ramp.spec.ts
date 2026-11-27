@@ -482,6 +482,91 @@ test.describe('the ramp chips', () => {
     });
     expect(outside).toEqual([]);
   });
+
+  // A parameter with a keyframe has two arrows between its slider and its number, and the three
+  // are wider than the column a narrow panel leaves them.
+  test('in a panel as narrow as it goes, the number of a keyframed parameter stays in its column, inside the panel', async ({
+    page,
+  }) => {
+    await sample(page);
+    const dusk = await named(page, 'dusk.mp4');
+    await select(page, [dusk.id]);
+    await seek(page, dusk.start + 20);
+    const panel = inspector(page);
+    for (const name of ['Effects', 'Opacity & Blend']) {
+      const head = panel.locator('.section__head', { hasText: name });
+      if ((await head.getAttribute('aria-expanded')) !== 'true') await head.click();
+    }
+    // Film Grain comes with the shot; Opacity is a row outside any effect.
+    const grain = panel.locator('.fxitem', { hasText: 'Film Grain' });
+    const rowOf = (within: Locator, label: string): Locator =>
+      within.locator('.row', { has: page.locator('.row__label', { hasText: new RegExp(`^${label}$`) }) });
+    const amount = rowOf(grain, 'Amount');
+    const size = rowOf(grain, 'Size');
+    const opacity = rowOf(panel, 'Opacity').first();
+    const box = async (part: Locator) => (await part.boundingBox())!;
+    const pressDiamond = async (row: Locator) => {
+      await row.scrollIntoViewIfNeeded();
+      const at = await box(row.locator('button.kf'));
+      await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+      await expect(row.locator('.kfnav')).toBeVisible();
+    };
+    /** Whether the panel can be pushed sideways. */
+    const sideways = () =>
+      panel.locator('.panel__body').evaluate((body) => body.scrollWidth - body.clientWidth);
+
+    // At the width the panel comes with, the slider of a keyframed row keeps its least width.
+    await pressDiamond(amount);
+    expect(Object.keys((await clip(page, dusk.id)).keyframes)).toHaveLength(1);
+    expect((await box(amount.locator('.slider'))).width).toBeGreaterThanOrEqual(40);
+
+    const splitter = page.getByRole('separator', { name: 'Inspector width' });
+    const narrowest = Number(await splitter.getAttribute('aria-valuemin'));
+    await splitter.focus();
+    await page.keyboard.press('Home');
+    await expect.poll(async () => (await box(panel)).width).toBe(narrowest);
+    await pressDiamond(opacity);
+
+    // The number of the keyframed row stands where the number of the row under it does, which
+    // has no keyframe: inside the effect, and so inside the panel.
+    await amount.scrollIntoViewIfNeeded();
+    const edge = await box(panel);
+    const [keyed, plain, card] = [
+      await box(amount.locator('.num')),
+      await box(size.locator('.num')),
+      await box(grain),
+    ];
+    expect(Math.abs(keyed.x - plain.x)).toBeLessThan(0.5);
+    expect(Math.abs(keyed.width - plain.width)).toBeLessThan(0.5);
+    expect(keyed.x + keyed.width).toBeLessThanOrEqual(card.x + card.width);
+    expect(keyed.x + keyed.width).toBeLessThanOrEqual(edge.x + edge.width);
+    expect(await sideways()).toBe(0);
+    // The slider has given way and is still there to be dragged, before the arrows.
+    const [slider, arrows] = [await box(amount.locator('.slider')), await box(amount.locator('.kfnav'))];
+    expect(slider.width).toBeGreaterThanOrEqual(16);
+    expect(slider.x + slider.width).toBeLessThanOrEqual(arrows.x);
+    expect(arrows.x + arrows.width).toBeLessThanOrEqual(keyed.x);
+
+    // Outside an effect the number ends where the column of the controls does.
+    await opacity.scrollIntoViewIfNeeded();
+    const column = await box(opacity.locator('.row__ctrl'));
+    const number = await box(opacity.locator('.num'));
+    expect(number.x + number.width).toBeLessThanOrEqual(column.x + column.width + 0.5);
+    expect(await sideways()).toBe(0);
+
+    // The number takes a press at its middle and what is typed there.
+    await amount.scrollIntoViewIfNeeded();
+    const field = await box(amount.locator('.num'));
+    await page.mouse.click(field.x + field.width / 2, field.y + field.height / 2);
+    await page.keyboard.press('ControlOrMeta+a');
+    await page.keyboard.type('0.5');
+    await page.keyboard.press('Enter');
+    const [[path, keys]] = Object.entries((await clip(page, dusk.id)).keyframes).filter(([key]) =>
+      key.startsWith('fx:'),
+    );
+    expect(path).toMatch(/:amount$/);
+    expect(keys.map((key) => key.v)).toEqual([0.5]);
+  });
 });
 
 test.describe('the ramp graph by pointer', () => {

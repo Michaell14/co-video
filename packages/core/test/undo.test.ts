@@ -2530,6 +2530,38 @@ describe('keep pitch, switched on by a change of speed', () => {
     for (const s of [a, b]) expect(s.get().clips[sound.id]).toMatchObject({ ramp: null, keepPitch: null });
   });
 
+  it('is not followed to a clip that was deleted and has come back: there it goes off under what someone else has set since', () => {
+    // What undo and redo are left with after a deletion taken back in between, stated so that it
+    // is not forgotten: the clip that comes back is another one in the document than the one
+    // the step wrote to, and what stands under its speed and ramp is not looked for there.
+    for (const [mine, theirs] of [
+      ['speed', 'speed'],
+      ['ramp', 'ramp'],
+      ['speed', 'ramp'],
+    ]) {
+      const { a, b } = together();
+      const { picture, sound } = pair(a);
+      const ids = [picture.id, sound.id];
+      if (mine === 'speed') a.commit(setSpeed(a.get(), ids, 1.25));
+      else ramped(a, picture.id, bullet);
+      a.commit(deleteClips(a.get(), ids));
+      expect(a.undo()).toEqual(TAKEN);
+      expect(b.get().clips[sound.id].keepPitch).toBe(true);
+      if (theirs === 'speed') b.commit(setSpeed(b.get(), ids, 1.5));
+      else ramped(b, picture.id, hero);
+      const stands = b.get().clips;
+      if (mine === 'speed' && theirs === 'ramp') {
+        // Under a ramp nothing of a change of speed is taken back, Keep pitch among it.
+        expect(a.undo()).toEqual(PASSED);
+        for (const s of [a, b]) expect(s.get().clips).toEqual(stands);
+      } else {
+        expect(a.undo()).toEqual(TAKEN);
+        for (const s of [a, b])
+          expect(s.get().clips[sound.id]).toEqual({ ...stands[sound.id], keepPitch: null });
+      }
+    }
+  });
+
   it('is left as it was switched by hand: off through a change of speed, and on again when the switch is taken back', () => {
     const { a, b } = together();
     const { picture, sound } = pair(a);
