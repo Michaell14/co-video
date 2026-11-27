@@ -574,13 +574,14 @@ Three ideas carry most of the weight:
   as for any step that someone else has replaced whole. A ramp that someone set at the very same
   moment, not having seen your change, is no hindrance: your Undo then gives the clip its whole
   stretch back under their ramp.
-- Three orders of work between two people are not caught, and nothing is said until the speed or
-  the shape is set anew: Undo of “None” after someone else has taken back the speed under it; Undo
-  of your speed under someone else's shape that changed the length, followed by their Undo of the
-  shape; and, on a clip that is on no ramp, Undo of a speed after someone else has trimmed the clip,
-  which is as it always was. Each leaves the clip at a speed and a length that do not belong
-  together, so that it plays more or less media than it held (measured: a clip of 4 s playing 3.2 to
-  8 s of media).
+- Four orders of work between two people are not caught, and nothing is said until the speed or
+  the shape is set anew: Undo of “None” after someone else has taken back the speed under it (Keep
+  pitch is then off as well); Undo of your speed under someone else's shape that changed the
+  length, followed by their Undo of the shape; Undo of a shape after someone else has trimmed the
+  clip, which takes the ramp off and leaves their length at 100 %; and, on a clip that is on no
+  ramp, Undo of a speed after someone else has trimmed the clip, which is as it always was. Each
+  leaves the clip at a speed and a length that do not belong together, so that it plays more or
+  less media than it held (measured: a clip that held 3 to 4 s playing 0.7 to 8 s of media).
 - Undo of the change that first switched Keep pitch on leaves it on under a speed or a ramp that
   someone else has set since, and it then stays on when they take theirs back as well. Where nothing
   else of your step is left, Undo goes on to your step before it, as for any step that someone else
@@ -613,12 +614,10 @@ Three ideas carry most of the weight:
   125 % (less at 80 % and 200 %), while the level of the whole stayed within 0.3 dB.
 - With Keep pitch what sounds lies within 15 ms of the place in the file that the picture shows (3
   to 6 ms in the root mean square, measured on signals shaped like speech and music), and exactly on
-  it every two seconds, so nothing builds up over a long clip. On the timeline that is up to (15 ms
-
-* 10 ms × |1 − speed|) ÷ speed: 15 ms at 100 %, 12.5 ms at 200 %, 40 ms at 50 % and 90 ms at 25 %,
-  so it stays under 20 ms from about 85 % up. Without Keep pitch sound is in its place to the
-  sample.
-
+  it every two seconds, so nothing builds up over a long clip. On the timeline that is up to 15 ms
+  plus 10 ms × |1 − speed|, divided by the speed: 15 ms at 100 %, 12.5 ms at 200 %, 40 ms at 50 %
+  and 90 ms at 25 %, so it stays under 20 ms from about 85 % up. Without Keep pitch sound is in its
+  place to the sample.
 - A click of a millisecond is played up to three times within 35 ms when it is slowed to 50 %.
   Played faster it is softened or lost when it falls between two grains: 5 % of such clicks at 110
   %, 18 % at 125 %, 30 % at 150 % and 46 % at 200 % were measured at less than a quarter of their
