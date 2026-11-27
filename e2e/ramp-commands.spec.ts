@@ -980,4 +980,88 @@ test.describe('speed ramps and two people', () => {
     expect(outcomes.sort()).toEqual(['ramp', 'trim']);
     await close();
   });
+
+  test('with ripple editing a speed that cannot be undone takes nothing back: what follows stays, with its marker and its comment, and Undo says so', async ({
+    page,
+    browser,
+  }) => {
+    const errors = trackErrors(page);
+    const { b, close, picture } = await together(page, browser);
+    const theirErrors = trackErrors(b);
+    await watchToasts(b);
+    // A second take right after the first, with a marker and a comment half a second into it.
+    await page.evaluate(() => {
+      const { session, cmd, ui } = (window as any).tandem;
+      const [asset] = Object.values(session.store.get().assets);
+      cmd.addAsset(asset, { frame: 60, sourceIn: 1, sourceOut: 3 });
+      session.store.commit([
+        { op: 'setMarker', marker: { id: 'second', frame: 75, name: 'second', color: '#fff', note: '' } },
+      ]);
+      const user = { authorId: 'u1', authorName: 'Ada', authorColor: '#51cf66' };
+      session.review.add({ ...user, frame: 75, text: 'on the second take', x: null, y: null });
+      ui.getState().clearSelection();
+    });
+    /** Where the comment stands, for each of the two. */
+    const notes = (): Promise<number[]> =>
+      Promise.all(
+        [page, b].map((who) =>
+          who.evaluate(() => (window as any).tandem.session.review.get()[0]?.frame as number),
+        ),
+      );
+    await expect.poll(notes).toEqual([75, 75]);
+    await expect.poll(() => rows(b)).toEqual({ V1: ['0-60', '60-120'], A1: ['0-60', '60-120'] });
+
+    // The editor who joined slows the first take to half speed with ripple editing on: the second
+    // take moves out by the 60 frames the first grew, and what stands on it goes along.
+    const SLOW = { V1: ['0-120', '120-180'], A1: ['0-120', '120-180'] };
+    await set(b, { rippleMode: true });
+    await select(b, [picture]);
+    await setSpeed(b, 0.5);
+    expect(await rows(b)).toEqual(SLOW);
+    expect(await markers(b)).toEqual([135]);
+    await expect.poll(notes).toEqual([135, 135]);
+    // The owner puts the clip on a ramp that leaves it as long as it is.
+    await alike(page, b);
+    await select(page, [picture]);
+    await setRamp(page, 'custom');
+    const theirs = await alike(page, b);
+    expect(theirs.clips[picture]).toMatchObject({ speed: 0.5, duration: 120 });
+    expect(theirs.clips[picture].ramp).toHaveLength(2);
+
+    // The length is no longer the editor's to take back, and so nothing of the step is: taken
+    // back around the clip, the second take would return to frame 60, under the first.
+    await undo(b);
+    await saidTimes(b, 'Nothing left to undo', 1);
+    expect(await rows(b)).toEqual(SLOW);
+    expect(await markers(b)).toEqual([135]);
+    expect((await project(b)).clips).toEqual(theirs.clips);
+    expect((await alike(page, b)).clips).toEqual(theirs.clips);
+    expect(await notes()).toEqual([135, 135]);
+
+    // Made again the same way. The owner takes the ramp off; the editor returns the take to full
+    // speed, which closes the 60 frames up again, and takes that back.
+    await undo(page);
+    await expect.poll(async () => (await clip(b, picture)).ramp).toBeNull();
+    await setSpeed(b, 1);
+    expect(await rows(b)).toEqual({ V1: ['0-60', '60-120'], A1: ['0-60', '60-120'] });
+    await expect.poll(notes).toEqual([75, 75]);
+    await undo(b);
+    expect(await rows(b)).toEqual(SLOW);
+    await expect.poll(notes).toEqual([135, 135]);
+    await alike(page, b);
+    await setRamp(page, 'custom');
+    const level = await alike(page, b);
+    expect(level.clips[picture].ramp).toHaveLength(2);
+    // Redo would shorten the clip under the owner's ramp and move the second take up with it.
+    await b.evaluate(() => (window as any).tandem.cmd.redo());
+    await saidTimes(b, 'Nothing left to redo', 1);
+    expect(await rows(b)).toEqual(SLOW);
+    expect(await markers(b)).toEqual([135]);
+    expect((await project(b)).clips).toEqual(level.clips);
+    expect((await alike(page, b)).clips).toEqual(level.clips);
+    expect(await notes()).toEqual([135, 135]);
+    expect(await said(b, 'Nothing left to')).toHaveLength(2);
+    expect([...errors, ...theirErrors]).toEqual([]);
+    await close();
+  });
 });

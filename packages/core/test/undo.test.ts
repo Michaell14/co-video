@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import {
+  CommentMover,
   FRAME_RATE_PRESETS,
   ProjectStore,
+  ReviewStore,
   addGenerator,
   applyEdits,
   changeFrameRate,
@@ -18,6 +20,7 @@ import {
   rampTable,
   resolveFrame,
   rippleDelete,
+  rippleTrim,
   setRamp,
   setSpeed,
   shapeRamp,
@@ -29,7 +32,9 @@ import {
   tracksOf,
   trimClips,
 } from '../src';
-import type { Clip, Edit, Marker, RampPoint, RampShape } from '../src';
+import type { Clip, Edit, Marker, RampChange, RampPoint, RampShape } from '../src';
+import { markerEdits, rippleFollower } from '../../../apps/editor/src/state/edits';
+import { speedRippleEdits } from '../../../apps/editor/src/state/timing';
 import { connect, overlaps } from './helpers';
 
 /**
@@ -1968,11 +1973,22 @@ describe('undo of a change of speed or ramp after someone else changed the ramp 
     const { in: from, out: to } = sourceSpan(p.clips[id], p);
     return p.clips[id].ramp ?? flatRamp(from, to, p.clips[id].speed)!;
   };
-  /** A shape on the stretch the clip plays now, as the chips of the inspector set it. */
-  const shaped = (s: ProjectStore, id: string, shape: RampShape): void => {
+  /** A shape on the stretch the clip plays now, as the chips of the inspector make it. */
+  const shapeOn = (s: ProjectStore, id: string, shape: RampShape): RampPoint[] | null => {
     const p = s.get();
     const { in: from, out: to } = sourceSpan(p.clips[id], p);
-    ramped(s, id, shapeRamp(shape, from, to, p.clips[id].reverse));
+    return shapeRamp(shape, from, to, p.clips[id].reverse);
+  };
+  const shaped = (s: ProjectStore, id: string, shape: RampShape): void =>
+    ramped(s, id, shapeOn(s, id, shape));
+  /**
+   * A change of speed or of ramp with ripple editing on, planned as the editor plans it: what
+   * follows the clips moves by as many frames as they grow or shrink, and the markers with it.
+   */
+  const rippled = (s: ProjectStore, ids: string[], change: number | RampChange): void => {
+    const p = s.get();
+    const r = speedRippleEdits(p, ids, change);
+    s.commit([...r.edits, ...markerEdits(p, r.edits, r.spans)]);
   };
   /** "Custom": a level ramp at the speed the clip has. It leaves the clip as long as it is. */
   const custom = (s: ProjectStore, id: string): void => ramped(s, id, rampOf(s, id));
@@ -2198,24 +2214,305 @@ describe('undo of a change of speed or ramp after someone else changed the ramp 
     expect(three.a.get().clips[third.picture.id].duration).toBe(118);
   });
 
-  it('takes back the rest of a step, and makes it again, around the clip it leaves alone', () => {
+  it('takes nothing of a step back, and makes none of it again, where one of the takes it retimed cannot go back', () => {
+    // A step is taken back whole or not at all. With ripple editing the rest of a step is what
+    // follows the clip, moved by the frames the clip grew or shrank, and that cannot go back
+    // around a clip that keeps its length. So of two takes far apart, one of which the other
+    // person has put on a ramp since, neither goes back to its speed: the step is passed over,
+    // and whoever made it is told so.
     const { a, b } = together();
     const one = pair(a);
     const two = pair(a, 600);
     speed(a, [...one.ids, ...two.ids], 1.25);
     custom(b, one.picture.id);
     const theirs = b.get().clips;
-    expect(a.undo()).toEqual(TAKEN);
+    expect(a.undo()).toEqual(PASSED);
     for (const s of [a, b]) {
-      for (const id of one.ids) expect(s.get().clips[id]).toEqual(theirs[id]);
-      for (const id of two.ids) expect(s.get().clips[id]).toMatchObject({ speed: 1, duration: 120 });
+      expect(s.get().clips).toEqual(theirs);
       expect(plays(s, [...one.ids, ...two.ids])).toEqual([...WHOLE, ...WHOLE]);
     }
-    expect(a.redo()).toEqual(TAKEN);
-    for (const s of [a, b]) expect(s.get().clips).toEqual(theirs);
-    expect(a.undo()).toEqual(TAKEN);
-    expect(b.get().clips[two.picture.id]).toMatchObject({ speed: 1, duration: 120 });
-    expect(b.get().clips[one.picture.id]).toEqual(theirs[one.picture.id]);
+    expect(a.canRedo).toBe(false);
+    // The ramp is still the other person's to take off, and leaves both takes at the speed.
+    expect(b.undo()).toEqual(TAKEN);
+    for (const id of [...one.ids, ...two.ids])
+      expect(a.get().clips[id]).toMatchObject({ speed: 1.25, ramp: null, duration: 96 });
+
+    // Made again, the same: neither take gets the speed.
+    const again = together();
+    const first = pair(again.a);
+    const second = pair(again.a, 600);
+    speed(again.a, [...first.ids, ...second.ids], 1.25);
+    expect(again.a.undo()).toEqual(TAKEN);
+    custom(again.b, first.picture.id);
+    const level = again.b.get().clips;
+    expect(again.a.redo()).toEqual(PASSED);
+    for (const s of [again.a, again.b]) expect(s.get().clips).toEqual(level);
+    expect(level[second.picture.id]).toMatchObject({ speed: 1, duration: 120 });
+    expect(again.a.canUndo).toBe(false);
+
+    // Only a step that also put a whole clip on the timeline, which no change of speed does, is
+    // still taken back around the clip that is kept: the clip it added goes, and comes back.
+    const mixed = together();
+    const take = pair(mixed.a);
+    const title = makeClip('solid', tracksOf(mixed.a.get()).video[1].id, { start: 0, duration: 50 });
+    mixed.a.commit([...setSpeed(mixed.a.get(), take.ids, 1.25), { op: 'addClip', clip: title }]);
+    custom(mixed.b, take.picture.id);
+    const kept = mixed.b.get().clips;
+    expect(mixed.a.undo()).toEqual(TAKEN);
+    for (const s of [mixed.a, mixed.b]) {
+      expect(s.get().clips[title.id]).toBeUndefined();
+      for (const id of take.ids) expect(s.get().clips[id]).toEqual(kept[id]);
+    }
+    expect(mixed.a.redo()).toEqual(TAKEN);
+    for (const s of [mixed.a, mixed.b]) expect(s.get().clips).toEqual(kept);
+  });
+
+  /** A take at frame 0, the next one right after it, and a marker 60 frames into that one. */
+  function sequence(s: ProjectStore) {
+    const first = pair(s);
+    const next = pair(s, 120);
+    s.commit([{ op: 'setMarker', marker: marker(180) }], { undoable: false });
+    return { first, next, lead: first.picture.id };
+  }
+  const RIPPLES = [
+    { change: 0.5, edit: 'custom', length: 240 },
+    { change: 1.25, edit: 'custom', length: 96 },
+    { change: 'bullet', edit: 'a point', length: 27 },
+  ] as const;
+  type Ripple = (typeof RIPPLES)[number];
+  /** The change, made to the first take with ripple editing on. */
+  const retimed = (s: ProjectStore, { first, lead }: ReturnType<typeof sequence>, { change }: Ripple): void =>
+    rippled(
+      s,
+      first.ids,
+      typeof change === 'number' ? change : { ramps: { [lead]: shapeOn(s, lead, change) } },
+    );
+  /** An edit of the ramp that leaves the clip as long as it is. */
+  const edited = (s: ProjectStore, id: string, { edit }: Ripple): void =>
+    edit === 'custom' ? custom(s, id) : addPoint(s, id);
+
+  it('with ripple editing leaves what follows the clip, and the marker on it, where the change put them', () => {
+    for (const ripple of RIPPLES) {
+      const { a, b } = together();
+      const takes = sequence(a);
+      const { first, next, lead } = takes;
+      const found = a.get();
+      retimed(a, takes, ripple);
+      const made = a.get();
+      const { length } = ripple;
+      for (const id of first.ids) expect(made.clips[id].duration).toBe(length);
+      // The next take begins where the clip now ends, and the marker is still 60 frames into it.
+      for (const id of next.ids) expect(made.clips[id].start).toBe(length);
+      expect(made.markers.m1.frame).toBe(length + 60);
+
+      // One person alone: the change and an edit of the ramp on top of it are taken back and made
+      // again exactly, what follows with them.
+      edited(a, lead, ripple);
+      const own = a.get();
+      for (const back of [made, found]) {
+        expect(a.undo()).toEqual(TAKEN);
+        for (const s of [a, b]) expect(s.get()).toEqual(back);
+      }
+      for (const again of [made, own]) {
+        expect(a.redo()).toEqual(TAKEN);
+        for (const s of [a, b]) expect(s.get()).toEqual(again);
+      }
+      expect(a.undo()).toEqual(TAKEN);
+
+      // The same edit made by someone else: the length is no longer the first person's to take
+      // back, and so nothing of the step is. Taken back around the clip, the next take would
+      // return to frame 120: onto the clip where it has grown, or leaving a hole where it shrank.
+      edited(b, lead, ripple);
+      const theirs = b.get();
+      expect(theirs.clips[lead].duration).toBe(length);
+      expect(a.undo(), String(ripple.change)).toEqual(PASSED);
+      for (const s of [a, b]) {
+        expect(s.get()).toEqual(theirs);
+        expect(overlaps(s.get())).toEqual([]);
+        for (const id of next.ids) expect(s.get().clips[id].start).toBe(length);
+        expect(s.get().markers.m1.frame).toBe(length + 60);
+      }
+      // Off the other person's ramp again, all is as the change left it.
+      expect(b.undo()).toEqual(TAKEN);
+      for (const s of [a, b]) expect(s.get()).toEqual(made);
+      expect(new ProjectStore(a.doc).get()).toEqual(b.get());
+    }
+  });
+
+  it('with ripple editing makes nothing of the change again under a ramp that someone else has set meanwhile', () => {
+    for (const ripple of RIPPLES) {
+      const { a, b } = together();
+      const takes = sequence(a);
+      const { next, lead } = takes;
+      retimed(a, takes, ripple);
+      expect(a.undo()).toEqual(TAKEN);
+      edited(b, lead, ripple);
+      const theirs = b.get();
+      expect(theirs.clips[lead]).toMatchObject({ speed: 1, duration: 120 });
+      // Made again around the clip, the next take would go where the change had put it: away
+      // from a clip that has not grown, or onto one that has not shrunk.
+      expect(a.redo(), String(ripple.change)).toEqual(PASSED);
+      for (const s of [a, b]) {
+        expect(s.get()).toEqual(theirs);
+        for (const id of next.ids) expect(s.get().clips[id].start).toBe(120);
+        expect(s.get().markers.m1.frame).toBe(180);
+      }
+      expect(a.canUndo).toBe(false);
+      expect(a.canRedo).toBe(false);
+    }
+  });
+
+  it('holds for three people with ripple editing: no undo moves what follows, or what the third has moved since', () => {
+    const { a, b } = together();
+    const c = new ProjectStore();
+    connect(a.doc, c.doc);
+    connect(b.doc, c.doc);
+    const takes = [pair(a), pair(a, 120), pair(a, 240)];
+    const at = (s: ProjectStore) =>
+      places(
+        s,
+        takes.map((take) => take.picture),
+      );
+    const lead = takes[0].picture.id;
+    rippled(a, takes[0].ids, 2);
+    custom(b, lead);
+    // The third person adds a point, and moves the last take further along.
+    addPoint(c, lead);
+    c.commit(
+      placeClips(
+        c.get(),
+        takes[2].ids.map((id) => ({ id, start: 400, trackId: c.get().clips[id].trackId })),
+      ),
+    );
+    const theirs = c.get();
+    const stands = [
+      [0, 60],
+      [60, 120],
+      [400, 120],
+    ];
+    expect(at(c)).toEqual(stands);
+    expect(a.undo()).toEqual(PASSED);
+    expect(b.undo()).toEqual(PASSED);
+    for (const s of [a, b, c]) expect(s.get()).toEqual(theirs);
+    // The third person's steps are theirs to take back: the move, then the point.
+    expect(c.undo()).toEqual(TAKEN);
+    expect(c.undo()).toEqual(TAKEN);
+    for (const s of [a, b, c]) {
+      expect(at(s)).toEqual([stands[0], stands[1], [180, 120]]);
+      expect(s.get().clips[lead].ramp).toHaveLength(2);
+      expect(plays(s, takes[0].ids)).toEqual(WHOLE);
+    }
+  });
+
+  it('leaves the steps around the one it passes over as they were: the one before a redo, the one after an undo', () => {
+    /** Three takes back to back, and a ripple trim that takes 30 frames off the first. */
+    const scene = () => {
+      const { a, b } = together();
+      const takes = [pair(a), pair(a, 120), pair(a, 240)];
+      const trim = (): void => a.commit(rippleTrim(a.get(), takes[0].ids, 'end', -30).edits);
+      const at = (s: ProjectStore) =>
+        places(
+          s,
+          takes.map((take) => take.picture),
+        );
+      return { a, b, takes, trim, at };
+    };
+    const SLOWED = [
+      [0, 90],
+      [90, 240],
+      [330, 120],
+    ];
+
+    // The trim, then the speed, which is taken back; someone else's ramp; the speed is not made
+    // again. The trim is still hers to take back, and all of it goes: the takes after the first
+    // move back out with its tail.
+    const one = scene();
+    one.trim();
+    rippled(one.a, one.takes[1].ids, 0.5);
+    expect(one.at(one.a)).toEqual(SLOWED);
+    expect(one.a.undo()).toEqual(TAKEN);
+    custom(one.b, one.takes[1].picture.id);
+    const theirs = one.b.get();
+    expect(one.a.redo()).toEqual(PASSED);
+    expect(one.a.undo()).toEqual(TAKEN);
+    for (const s of [one.a, one.b]) {
+      expect(one.at(s)).toEqual([
+        [0, 120],
+        [120, 120],
+        [240, 120],
+      ]);
+      expect(overlaps(s.get())).toEqual([]);
+    }
+    expect(one.a.redo()).toEqual(TAKEN);
+    for (const s of [one.a, one.b]) expect(s.get()).toEqual(theirs);
+
+    // The speed, then the trim; someone else's ramp; the trim is taken back and the speed passed
+    // over. The trim is then made again, all of it.
+    const two = scene();
+    rippled(two.a, two.takes[1].ids, 0.5);
+    two.trim();
+    custom(two.b, two.takes[1].picture.id);
+    const stands = two.b.get();
+    expect(two.at(two.b)).toEqual(SLOWED);
+    const untrimmed = [
+      [0, 120],
+      [120, 240],
+      [360, 120],
+    ];
+    expect(two.a.undo()).toEqual(TAKEN);
+    expect(two.at(two.b)).toEqual(untrimmed);
+    expect(two.a.undo()).toEqual(PASSED);
+    expect(two.at(two.b)).toEqual(untrimmed);
+    expect(two.a.redo()).toEqual(TAKEN);
+    for (const s of [two.a, two.b]) expect(s.get()).toEqual(stands);
+  });
+
+  it('leaves the comments on their shots as well: what a ripple took along stays with a step that is passed over', () => {
+    /** Two people, the comments of each beside their project, and one comment 60 frames into the second take. */
+    const scene = () => {
+      const { a, b } = together();
+      const [notes, theirNotes] = [new ReviewStore(), new ReviewStore()];
+      connect(notes.doc, theirNotes.doc);
+      const mover = new CommentMover(a, notes);
+      const takes = sequence(a);
+      notes.add({
+        authorId: 'u1',
+        authorName: 'Ana',
+        authorColor: '#ff5d5d',
+        frame: 180,
+        text: 'On the second take',
+        x: null,
+        y: null,
+      });
+      /** Half speed for the first take, as the editor commits a ripple: the comments go with it. */
+      const slow = (): void => {
+        const p = a.get();
+        const r = speedRippleEdits(p, takes.first.ids, 0.5);
+        mover.commit([...r.edits, ...markerEdits(p, r.edits, r.spans)], {
+          follow: rippleFollower(p, r.edits, r.spans),
+        });
+      };
+      const frames = (): number[] => [notes, theirNotes].map((r) => r.get()[0].frame);
+      return { a, b, ...takes, slow, frames };
+    };
+
+    const one = scene();
+    one.slow();
+    expect(one.frames()).toEqual([300, 300]);
+    custom(one.b, one.lead);
+    expect(one.a.undo()).toEqual(PASSED);
+    expect(one.b.get().clips[one.next.picture.id].start).toBe(240);
+    expect(one.b.get().markers.m1.frame).toBe(300);
+    expect(one.frames()).toEqual([300, 300]);
+
+    const two = scene();
+    two.slow();
+    expect(two.a.undo()).toEqual(TAKEN);
+    expect(two.frames()).toEqual([180, 180]);
+    custom(two.b, two.lead);
+    expect(two.a.redo()).toEqual(PASSED);
+    expect(two.b.get().clips[two.next.picture.id].start).toBe(120);
+    expect(two.frames()).toEqual([180, 180]);
   });
 
   it('goes on to the step before, as for any step of which nothing is left', () => {

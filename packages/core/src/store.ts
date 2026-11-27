@@ -733,8 +733,9 @@ export interface StepOutcome {
   changed: boolean;
   /**
    * How many steps were passed over on the way because nothing of them was left to take back:
-   * someone else has since changed or removed everything they had touched. They are gone from the
-   * history, and the step after them was taken instead.
+   * someone else has since changed or removed everything they had touched, or has changed a clip
+   * so that the speed the step gave it cannot go back, and then none of the step does (see
+   * `keepRetimes`). They are gone from the history, and the step after them was taken instead.
    */
   dropped: number;
 }
@@ -1448,7 +1449,7 @@ export class ProjectStore {
    * things to do:
    *
    * - `mend`: put back what it took away without putting anything in its place;
-   * - `keepRetimes`: leave a clip as it was where a ramp and a length would come apart;
+   * - `keepRetimes`: take nothing of the step back where a ramp and a length would come apart;
    * - `retime`: bring what the step wrote to the frame rate the document has by now;
    * - `keepInStep`: take a clip along that a ramp has placed by the one the step moved;
    * - `makeRoom`: move a clip that came back onto frames someone else's clip has taken since.
@@ -1483,6 +1484,19 @@ export class ProjectStore {
       // Nothing of the step was left to take back but what `keepRetimes` has kept as it was. All
       // is as the undo found it: the step counts as passed over, like one that someone else has
       // left nothing of, and what was written on the way is no step to take the other way.
+      // Each value the undo took away stands again, written anew. It is pointed at the one that
+      // stands for it, the way the undo manager notes its own restorations: this session's other
+      // steps, the ones still to be made again after an undo and the ones before a redo, then
+      // find their values where they left them.
+      this.doc.transact((tr) => {
+        eachValue(tr, filed.deletions, (was) => {
+          const now = (was.parent as ValueMap)._map.get(was.parentSub as string);
+          if (now && !now.deleted && was.redone === null) standsFor(now, was);
+        });
+      });
+      // Whoever else keeps notes on the step, to take back what went with it (the comments a
+      // ripple took along), is told after this and finds none: nothing of it was taken back.
+      step.meta.clear();
       stack.splice(stack.indexOf(filed));
       this.stepStood = false;
       return;
@@ -1659,17 +1673,26 @@ export class ProjectStore {
    * - a ramp, for the clip to be on, and not the length, must be of a step that had left the
    *   length as it was.
    *
-   * A clip for which that does not hold is left as the undo found it, in every field the undo
-   * wrote: what the step did to that clip is not taken back at all, as when someone has set
-   * another speed since. A clip that is on no ramp, and was on none for the step, is not looked
-   * at: a speed alone is taken back as it always was.
+   * A clip for which that does not hold is left as the undo found it, and with it all else the
+   * step did: every field of every clip and every marker that the undo wrote is written back as
+   * it was. A step is taken back whole or not at all. With ripple editing the step that gave the
+   * clip its length also moved what follows by as many frames, and those moves taken back around
+   * a clip that keeps its length would open a hole after it, or put the next clip on its frames.
+   * So nothing of the step is taken back, as when someone has set another speed since, and
+   * `settle` passes it over. A clip that is on no ramp, and was on none for the step, is not
+   * looked at: a speed alone is taken back as it always was.
+   *
+   * Only a step that also put whole clips there or took them away, which no change of speed or
+   * ramp does, is taken back around the clip that is kept: a clip that has gone or come back has
+   * no fields to write back. And a clip the undo wrote while it had no track to be on is not in
+   * `found`: it stays as the undo wrote it, and the step then counts as taken back.
    *
    * A trim and a move set neither a speed nor a ramp, and are taken back under any ramp. Returns
-   * whether a clip was kept as it was; those clips are no longer among `written`.
+   * whether anything was kept as it was; what was is no longer among `written`.
    */
   private keepRetimes(step: UndoStep, found: Project, written: StepWrites): boolean {
     let retimes: Map<ID, Retime> | undefined;
-    const kept = new Map<ID, Record<string, unknown>>();
+    const kept = new Set<ID>();
     for (const [id, fields] of written.clips) {
       const was = found.clips[id];
       const now = this.project.clips[id];
@@ -1683,15 +1706,25 @@ export class ProjectStore {
       const together = ramp
         ? !retime.length
         : retime.ramps.some((before) => this.sameStretch(now, conformRamp(before) ?? null));
-      if (together) continue;
-      kept.set(id, Object.fromEntries(Array.from(fields, (key) => [key, was[key as keyof Clip]])));
+      if (!together) kept.add(id);
     }
     if (!kept.size) return false;
+    const around = Array.from(written.clips.values()).includes(true);
     this.doc.transact(() => {
-      for (const [id, patch] of kept) {
+      for (const [id, fields] of written.clips) {
+        const was = found.clips[id];
+        if (fields === true || !was || (around && !kept.has(id))) continue;
+        const patch = Object.fromEntries(Array.from(fields, (key) => [key, was[key as keyof Clip]]));
         this.patchEntity(this.yClips, id, patch, CLIP_DEFAULTS);
         written.clips.delete(id);
       }
+      if (around) return;
+      for (const id of written.markers) {
+        if (!Object.hasOwn(found.markers, id)) this.yMarkers.delete(id);
+        else if (!deepEqual(this.project.markers[id], found.markers[id]))
+          this.yMarkers.set(id, found.markers[id]);
+      }
+      written.markers.clear();
     }, this.origin);
     return true;
   }
