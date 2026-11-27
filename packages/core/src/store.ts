@@ -36,7 +36,7 @@ import {
 import { getEffectDef, type ParamDef } from './effects';
 import { conformEasing } from './keyframes';
 import { overlappingPairs, roundedTogether, separateClips } from './overlaps';
-import { inStep } from './query';
+import { inStep, sourceTimeAt } from './query';
 import { conformRamp } from './ramp';
 import { clipAtRate, fpsOf, sameRate } from './time';
 import { getTransitionDef } from './transitions';
@@ -59,6 +59,7 @@ import type {
   ParamValue,
   Project,
   ProjectSettings,
+  RampPoint,
   ShapeKind,
   ToneMapOp,
   Track,
@@ -1641,19 +1642,20 @@ export class ProjectStore {
   }
 
   /**
-   * A change of speed or of ramp gives a clip another length, and the three belong together: a
-   * ramp on a length it did not give plays media the clip never held, or loses some of what it
-   * did, and so does a speed once the ramp over it is taken off. The undo manager takes back, of
-   * all a step wrote, each value that still stands as the step left it, and for such a step that
-   * can be one of them without the others. Someone else's edit of the ramp that left the clip as
-   * long as it was wrote the ramp and nothing more, so the length is still the step's to take
-   * back; someone else's trim wrote the length, so the ramp is.
+   * A change of speed or of ramp gives a clip another length, and the two belong together: a ramp
+   * on a length it did not give plays media the clip never held, or loses some of what it did.
+   * The undo manager takes back, of all a step wrote, each value that still stands as the step
+   * left it, and for such a step that can be one of the two without the other. Someone else's
+   * edit of the ramp that left the clip as long as it was wrote the ramp and nothing more, so the
+   * length is still the step's to take back; someone else's trim wrote the length, so the ramp is.
    *
-   * So what a change of speed or ramp gave a clip is taken back together wherever a ramp is in
-   * it. For a step that had set a clip's speed or its ramp, an undo or redo that has put back
+   * So the ramp and the length that a change of speed or ramp gave a clip are taken back together.
+   * For a step that had set a clip's speed or its ramp, an undo or redo that has put back
    *
-   * - the length, or the speed of a clip that is on a ramp, and not the ramp, must leave the clip
-   *   on the ramp the step had found it on (`retimesOf`): the one they belong to;
+   * - the length and not the ramp, must leave the clip playing, on the ramp it is on, the stretch
+   *   of media that this length was the length of: the one it plays on the ramp the step had found
+   *   it on (`retimesOf`). A ramp that someone set at the same moment, not having seen the step,
+   *   is such a ramp; one set since, on the length the step gave, is not;
    * - a ramp, for the clip to be on, and not the length, must be of a step that had left the
    *   length as it was.
    *
@@ -1673,14 +1675,14 @@ export class ProjectStore {
       const now = this.project.clips[id];
       if (fields === true || !was || !now) continue;
       const [ramp, length] = [fields.has('ramp'), fields.has('duration')];
-      // The ramp came back with the length, or nothing came back that a ramp has a say in.
-      if (ramp ? length || !now.ramp : !length && !(now.ramp && fields.has('speed'))) continue;
+      // Both came back, or neither; or the ramp was taken off, and the clip is at one speed.
+      if (ramp === length || (ramp && !now.ramp)) continue;
       retimes ??= this.retimesOf(step);
       const retime = retimes.get(id);
       if (!retime) continue;
       const together = ramp
         ? !retime.length
-        : retime.ramps.some((before) => deepEqual(conformRamp(before) ?? null, now.ramp));
+        : retime.ramps.some((before) => this.sameStretch(now, conformRamp(before) ?? null));
       if (together) continue;
       kept.set(id, Object.fromEntries(Array.from(fields, (key) => [key, was[key as keyof Clip]])));
     }
@@ -1692,6 +1694,24 @@ export class ProjectStore {
       }
     }, this.origin);
     return true;
+  }
+
+  /**
+   * Whether `clip` plays the same stretch of media on `ramp` as on the ramp it has, over the
+   * frames it has: from the same second to the same second, give or take what one frame plays at
+   * its end. A length is a whole number of frames, and two ramps that play one stretch seldom
+   * need the same number to the last fraction.
+   */
+  private sameStretch(clip: Clip, ramp: RampPoint[] | null): boolean {
+    if (deepEqual(ramp, clip.ramp)) return true;
+    const p = this.project;
+    const other = { ...clip, ramp };
+    const ends = (c: Clip): number[] => [sourceTimeAt(c, 0, p), sourceTimeAt(c, c.duration, p)];
+    const perFrame = (c: Clip): number =>
+      Math.abs(sourceTimeAt(c, c.duration, p) - sourceTimeAt(c, c.duration - 1, p));
+    const room = Math.max(perFrame(clip), perFrame(other)) + 1e-9;
+    const [here, there] = [ends(clip), ends(other)];
+    return here.every((second, i) => Math.abs(second - there[i]) <= room);
   }
 
   /**

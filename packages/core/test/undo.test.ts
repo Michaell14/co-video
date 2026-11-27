@@ -2115,26 +2115,46 @@ describe('undo of a change of speed or ramp after someone else changed the ramp 
     }
   });
 
-  it('leaves a speed under a ramp that changed the length, so that it is there when the ramp is taken off', () => {
-    for (const to of [0.5, 1.25]) {
-      const { a, b } = together();
-      const { picture, ids } = pair(a);
-      speed(a, ids, to);
-      shaped(b, picture.id, 'hero');
-      const theirs = b.get().clips;
-      expect(theirs[picture.id]).toMatchObject({ speed: to, duration: 121 });
-      // The speed is not what shows under the ramp. Taken back alone it would be what the clips
-      // play at once the ramp goes, on the length the other speed gave.
-      expect(a.undo()).toEqual(PASSED);
-      for (const s of [a, b]) expect(s.get().clips).toEqual(theirs);
-      expect(b.undo()).toEqual(TAKEN);
-      for (const s of [a, b]) {
-        for (const id of ids)
-          expect(s.get().clips[id]).toMatchObject({ speed: to, ramp: null, duration: 120 / to });
-        expect(plays(s, ids)).toEqual(WHOLE);
+  for (const winner of ['a', 'b'] as const) {
+    it(`gives the whole stretch back under a ramp that someone set at the same moment, not having seen the change (${winner} wins)`, () => {
+      // A shape against a level ramp: the level ramp writes no length, so where it wins the clip
+      // is on it at the length the shape gave, and plays the start of its stretch.
+      const one = apart(winner);
+      const first = pair(one.a);
+      one.sync();
+      shaped(one.a, first.picture.id, 'bullet');
+      custom(one.b, first.picture.id);
+      one.sync();
+      const level = one.b.get().clips[first.picture.id].ramp!.length === 2;
+      expect(level).toBe(winner === 'b');
+      for (const id of first.ids) expect(one.a.get().clips[id].duration).toBe(27);
+      // Whoever set the shape takes it back. Under the level ramp the length that comes back is
+      // the one that ramp was set on: the clip plays what it played before either of them.
+      expect(one.a.undo()).toEqual(TAKEN);
+      one.sync();
+      for (const s of [one.a, one.b]) {
+        for (const id of first.ids) expect(s.get().clips[id].duration).toBe(120);
+        expect(s.get().clips[first.picture.id].ramp).toEqual(level ? flatRamp(1, 5, 1) : null);
+        expect(plays(s, first.ids)).toEqual(WHOLE);
       }
-    }
-  });
+
+      // A speed against a level ramp at the speed the clip had: the same.
+      const two = apart(winner);
+      const second = pair(two.a);
+      two.sync();
+      speed(two.a, second.ids, 1.25);
+      custom(two.b, second.picture.id);
+      two.sync();
+      expect(two.b.get().clips[second.picture.id]).toMatchObject({ speed: 1.25, duration: 96 });
+      expect(two.b.get().clips[second.picture.id].ramp).toEqual(flatRamp(1, 5, 1));
+      expect(two.a.undo()).toEqual(TAKEN);
+      two.sync();
+      for (const s of [two.a, two.b]) {
+        for (const id of second.ids) expect(s.get().clips[id]).toMatchObject({ speed: 1, duration: 120 });
+        expect(plays(s, second.ids)).toEqual(WHOLE);
+      }
+    });
+  }
 
   it('does not put a ramp back on a length that someone else has set since', () => {
     // Made again after a trim of the head.
@@ -2283,7 +2303,7 @@ describe('undo of a change of speed or ramp after someone else changed the ramp 
     for (const s of [two.a, two.b]) expect(s.get().clips).toEqual(trimmed);
   });
 
-  it('is not held to it where no ramp is left to see: what stays as it was before there were ramps, and after "None"', () => {
+  it('is not held to it where the length is not what comes back, or no ramp is left to see: what stays as it was', () => {
     // A speed alone, with a trim by someone else since: the speed goes back and the length is
     // the trimmer's, as it always was. At 100 % those frames are twice the media the clip held.
     const one = together();
@@ -2293,6 +2313,19 @@ describe('undo of a change of speed or ramp after someone else changed the ramp 
     expect(one.a.undo()).toEqual(TAKEN);
     for (const id of first.ids) expect(one.b.get().clips[id]).toMatchObject({ speed: 1, duration: 235 });
     expect(plays(one.b, [first.picture.id])).toEqual([[1, 8.833]]);
+
+    // A speed under a ramp that someone else set and that changed the length: the speed goes
+    // back underneath, where it does not show, and is what the clip plays at once the ramp is
+    // taken off, on the length the other speed gave.
+    const three = together();
+    const third = pair(three.a);
+    speed(three.a, third.ids, 0.5);
+    shaped(three.b, third.picture.id, 'hero');
+    expect(three.a.undo()).toEqual(TAKEN);
+    expect(three.b.get().clips[third.picture.id]).toMatchObject({ speed: 1, duration: 121 });
+    expect(three.b.undo()).toEqual(TAKEN);
+    expect(three.a.get().clips[third.picture.id]).toMatchObject({ speed: 1, ramp: null, duration: 240 });
+    expect(plays(three.a, [third.picture.id])).toEqual([[1, 9]]);
 
     // "None" taken back after the speed under it was: the ramp comes back as it was, on the
     // length the clip has by now.
@@ -2399,27 +2432,24 @@ describe('keep pitch, switched on by a change of speed', () => {
     }
   });
 
-  it('stays on with the speed it was switched on by, under the ramp someone else has set since: a clip of an older project', () => {
+  it('stays on when what is left of the step is taken back: a speed set on a clip of an older project, with a ramp set on it since', () => {
     const { a, b } = together();
     const { sound } = pair(a, { speed: 2, duration: 60 });
     a.commit(setSpeed(a.get(), [sound.id], 1.5));
     expect(a.get().clips[sound.id]).toMatchObject({ speed: 1.5, duration: 80, keepPitch: true });
     ramped(b, sound.id, hero);
-    const theirs = b.get().clips;
-    // Under the ramp nothing of the change of speed is taken back: the speed would only show once
-    // the ramp is taken off, on a length it did not give.
-    expect(a.undo()).toEqual(PASSED);
-    for (const s of [a, b]) expect(s.get().clips).toEqual(theirs);
-    expect(a.canRedo).toBe(false);
-    // The ramp taken back leaves the clip as the change of speed left it, pitch kept.
+    expect(a.undo()).toEqual(TAKEN);
+    for (const s of [a, b])
+      expect(s.get().clips[sound.id]).toMatchObject({ speed: 2, ramp: hero, keepPitch: true });
+    expect(a.redo()).toEqual(TAKEN);
+    for (const s of [a, b])
+      expect(s.get().clips[sound.id]).toMatchObject({ speed: 1.5, ramp: hero, keepPitch: true });
+    // Left on, it is no step's to take back any more: it stays on when both have taken theirs
+    // back, at the speed the clip had before, where its pitch followed the speed.
+    expect(a.undo()).toEqual(TAKEN);
     expect(b.undo()).toEqual(TAKEN);
     for (const s of [a, b])
-      expect(s.get().clips[sound.id]).toMatchObject({
-        speed: 1.5,
-        duration: 80,
-        ramp: null,
-        keepPitch: true,
-      });
+      expect(s.get().clips[sound.id]).toMatchObject({ speed: 2, ramp: null, keepPitch: true });
   });
 
   it('stays on when it was switched on by hand and someone else has set a speed since, and its old value is not put back', () => {
@@ -2550,14 +2580,13 @@ describe('keep pitch, switched on by a change of speed', () => {
       if (theirs === 'speed') b.commit(setSpeed(b.get(), ids, 1.5));
       else ramped(b, picture.id, hero);
       const stands = b.get().clips;
-      if (mine === 'speed' && theirs === 'ramp') {
-        // Under a ramp nothing of a change of speed is taken back, Keep pitch among it.
-        expect(a.undo()).toEqual(PASSED);
-        for (const s of [a, b]) expect(s.get().clips).toEqual(stands);
-      } else {
-        expect(a.undo()).toEqual(TAKEN);
-        for (const s of [a, b])
-          expect(s.get().clips[sound.id]).toEqual({ ...stands[sound.id], keepPitch: null });
+      expect(a.undo()).toEqual(TAKEN);
+      for (const s of [a, b]) {
+        expect(s.get().clips[sound.id]).toMatchObject({
+          ramp: stands[sound.id].ramp,
+          duration: stands[sound.id].duration,
+          keepPitch: null,
+        });
       }
     }
   });
