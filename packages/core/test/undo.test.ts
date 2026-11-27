@@ -1532,7 +1532,9 @@ describe('undo after someone else changed the ramp of the clip more than once', 
     const found = a.get().clips;
     a.beginGesture();
     for (let step = 1; step <= 12; step++) {
-      const ramp = hero.map((q, i) => (i === 2 ? { ...q, v: Math.round((q.v + 0.07 * step) * 1e3) / 1e3 } : q));
+      const ramp = hero.map((q, i) =>
+        i === 2 ? { ...q, v: Math.round((q.v + 0.07 * step) * 1e3) / 1e3 } : q,
+      );
       // Each step from where the drag found the clips, in one edit for each clip, as the planner writes it.
       const from = applyEdits(
         a.get(),
@@ -1597,16 +1599,17 @@ describe('keep pitch, switched on by a change of speed', () => {
 
   it('stays on under the ramp someone else has set since, when the first change is taken back', () => {
     const { a, b } = together();
-    const { picture, sound } = pair(a);
+    const { picture, sound } = pair(b);
     ramped(a, picture.id, bullet);
     expect(a.get().clips[sound.id].keepPitch).toBe(true);
     ramped(b, picture.id, hero);
     const theirs = b.get().clips;
     expect(theirs[sound.id]).toMatchObject({ ramp: hero, keepPitch: true });
 
-    a.undo();
+    // What is left of the first change to take back are fields the second wrote again as they were.
+    expect(a.undo()).toEqual(TAKEN);
     for (const s of [a, b]) expect(s.get().clips).toEqual(theirs);
-    a.redo();
+    expect(a.redo()).toEqual(TAKEN);
     for (const s of [a, b]) expect(s.get().clips).toEqual(theirs);
     // The one who set the ramp that stands takes it back: the first ramp again, at its own pitch.
     expect(b.undo()).toEqual(TAKEN);
@@ -1616,11 +1619,14 @@ describe('keep pitch, switched on by a change of speed', () => {
 
   it('stays on under the speed someone else has set since', () => {
     const { a, b } = together();
-    const { sound } = pair(a);
+    const { sound } = pair(b);
     a.commit(setSpeed(a.get(), [sound.id], 1.25));
     b.commit(setSpeed(b.get(), [sound.id], 1.5));
-    a.undo();
+    // Nothing of the first change is left to take back, and the one who made it is told so.
+    expect(a.undo()).toEqual({ changed: false, dropped: 1 });
     for (const s of [a, b]) expect(s.get().clips[sound.id]).toMatchObject({ speed: 1.5, keepPitch: true });
+    expect(b.undo()).toEqual(TAKEN);
+    for (const s of [a, b]) expect(s.get().clips[sound.id]).toMatchObject({ speed: 1.25, keepPitch: true });
   });
 
   for (const winner of ['a', 'b'] as const) {
@@ -1634,7 +1640,7 @@ describe('keep pitch, switched on by a change of speed', () => {
       const [won, lost] = winner === 'a' ? [a, b] : [b, a];
       const stands = won.get().clips;
       expect(stands[sound.id]).toMatchObject({ ramp: winner === 'a' ? bullet : hero, keepPitch: true });
-      lost.undo();
+      expect(lost.undo()).toEqual(TAKEN);
       sync();
       for (const s of [a, b]) expect(s.get().clips).toEqual(stands);
       // Taken back by the one whose ramp it is, nothing is left of either.
@@ -1646,19 +1652,20 @@ describe('keep pitch, switched on by a change of speed', () => {
 
   it('goes off again with the change that switched it on while nobody else has changed the speed', () => {
     const { a, b } = together();
-    const { picture, sound } = pair(a);
+    const { picture, sound } = pair(b);
     ramped(a, picture.id, bullet);
     b.commit([{ op: 'updateClip', id: sound.id, patch: { volume: -6 } }]);
     ramped(a, picture.id, hero);
     expect(a.undo()).toEqual(TAKEN);
     expect(b.get().clips[sound.id]).toMatchObject({ ramp: bullet, keepPitch: true });
     expect(a.undo()).toEqual(TAKEN);
-    for (const s of [a, b]) expect(s.get().clips[sound.id]).toMatchObject({ ramp: null, keepPitch: null, volume: -6 });
+    for (const s of [a, b])
+      expect(s.get().clips[sound.id]).toMatchObject({ ramp: null, keepPitch: null, volume: -6 });
   });
 
   it('is left as it was switched by hand: off through a change of speed, and on again when the switch is taken back', () => {
     const { a, b } = together();
-    const { picture, sound } = pair(a);
+    const { picture, sound } = pair(b);
     ramped(a, picture.id, bullet);
     a.commit([{ op: 'updateClip', id: sound.id, patch: { keepPitch: false } }]);
     ramped(b, picture.id, hero);
