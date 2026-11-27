@@ -7,14 +7,11 @@
 import {
   useCallback,
   useEffect,
-  useImperativeHandle,
   useLayoutEffect,
   useMemo,
-  useReducer,
   useRef,
   type KeyboardEvent,
   type PointerEvent,
-  type Ref,
 } from 'react';
 import {
   clamp,
@@ -119,20 +116,14 @@ export interface RampGraphProps {
   onSet: (points: RampPoint[]) => void;
   /** Take the playhead to a frame of the timeline. */
   onSeek: (frame: number) => void;
+  /**
+   * A point to hand the keyboard to, by its place; a new object each time it is asked for. With
+   * `gone`, only once no point stands at that place any more: the point beside one that is being
+   * removed.
+   */
+  focus: { m: number; gone?: number } | null;
   /** Shown, and not to be worked. */
   inert: boolean;
-  ref?: Ref<RampGraphHandle>;
-}
-
-/** What whoever shows the graph can ask of it. */
-export interface RampGraphHandle {
-  /**
-   * Hand the keyboard to the point at second `m` of the media when the graph is drawn next: a
-   * point that has just been added. With `gone`, only if no point stands at that place any more:
-   * the point beside one that is being removed. The wish is for that drawing alone: a graph that
-   * comes back later, with its section unfolded or its clip selected again, takes no keyboard.
-   */
-  focusPoint: (m: number, gone?: number) => void;
 }
 
 /** A press that is under way: on a point, which a drag then moves, or beside them, which scrubs. */
@@ -155,7 +146,7 @@ type Held =
   | { on: 'graph' };
 
 export function RampGraph(props: RampGraphProps) {
-  const { clip, project, range, chosen, onChoose, onStart, onChange, onEnd, onSet, onSeek, inert, ref } =
+  const { clip, project, range, chosen, onChoose, onStart, onChange, onEnd, onSet, onSeek, focus, inert } =
     props;
   const player = usePlayer();
   const surface = useRef<HTMLDivElement>(null);
@@ -197,16 +188,11 @@ export function RampGraph(props: RampGraphProps) {
   useLayoutEffect(place);
 
   // The keyboard goes to a point that was asked for, once it is drawn: one that was added, or the
-  // one beside a point that is being removed, when that point is in fact gone. Asking has the
-  // graph drawn, also when nothing came of the change, and that drawing settles it: nothing is
-  // left asked for that a later one could act on.
+  // one beside a point that Delete was pressed on, when that point is in fact gone.
   const wanted = useRef<{ m: number; gone?: number } | null>(null);
-  const [, redraw] = useReducer((n: number) => n + 1, 0);
-  const focusPoint = useCallback((m: number, gone?: number) => {
-    wanted.current = { m, gone };
-    redraw();
-  }, []);
-  useImperativeHandle(ref, () => ({ focusPoint }), [focusPoint]);
+  useLayoutEffect(() => {
+    if (focus) wanted.current = focus;
+  }, [focus]);
   useLayoutEffect(() => {
     const want = wanted.current;
     if (!want) return;
@@ -321,13 +307,10 @@ export function RampGraph(props: RampGraphProps) {
       keepKey(e);
       const next = removePoint(points, s.index);
       if (!next) return;
-      const beside = besideOf(shown, s.index);
-      if (beside) focusPoint(beside.m, s.m);
-      // The point goes before the run of presses on it is ended, so that whoever hears of the end
-      // finds the ramp as it now is: what the run left behind is not said of a clip that has
-      // moved on.
-      onSet(next);
       run.rest();
+      const beside = besideOf(shown, s.index);
+      wanted.current = beside && { m: beside.m, gone: s.m };
+      onSet(next);
       return;
     }
     if (e.key === 'Enter') {
