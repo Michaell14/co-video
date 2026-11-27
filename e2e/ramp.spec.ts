@@ -751,9 +751,9 @@ test.describe('the ramp graph by keyboard', () => {
     // The first point is taken down to a quarter: the clip would run on into the next shot.
     await point(page, 1, 3).focus();
     await burst(page, ['PageDown', 'PageDown']);
+    expect(await said(page, offer)).toHaveLength(0);
     expect(await clip(page, fractal.id)).toMatchObject({ duration: 120 });
     expect((await clip(page, fractal.id)).ramp![0].v).toBe(0.25);
-    expect(await said(page, offer)).toHaveLength(0);
     // When the keys have rested the graph lets go of the stretch it held, and the last point lies
     // beyond what the clip now plays. That is when the panel says so, not a while after.
     await expect(points(page)).toHaveCount(2);

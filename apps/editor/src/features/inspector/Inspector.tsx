@@ -112,7 +112,7 @@ import {
 } from './controls';
 import { useLiveClips, useLiveSelect, usePlayheadTick } from './live';
 import { ProjectSettingsForm } from './ProjectSettings';
-import { RampChips, RampGraph } from './RampGraph';
+import { RampChips, RampGraph, type RampGraphHandle } from './RampGraph';
 import { besideOf, pointAt, rampRange, removePoint, shownPoints, type RampRange } from './rampPoints';
 import './inspector.css';
 
@@ -753,7 +753,7 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
   // stopped at the next one all the same, and the reason is said once, for where the gesture
   // ended. So is the reason why nothing changed at all: a clip that had to follow is on a locked
   // track.
-  const end = () => {
+  const end = (rested = false) => {
     const g = gesture.current;
     clearTimeout(offer.current);
     if (!g?.last) return;
@@ -762,7 +762,7 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
       const p = currentSession()?.store.get();
       if (!p) return;
       // What there is to say is about the clips as the gesture left them. Something else may have
-      // re-timed them while the keys rested (a point removed, a preset): that has said its own.
+      // re-timed them since (the point removed, a preset, an undo): that has said its own.
       const now = { ripple: !!g.ripple, markers: !!g.ripple?.from.markers, ramp: !!g.starts };
       if (speedGesture(g, p, g.ids, now) !== g) return;
       const locked = retimeRefusal(p, g.ids, last);
@@ -781,17 +781,18 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
       const { refused } = speedRippleEdits({ ...p, ...found.current }, g.ids, last);
       if (refused) toast(refused);
     };
-    // Every arrow key pressed in the number field is a gesture of its own: the offer waits until
-    // the keys have rested, as a run of them on the slider or on a point of the ramp does.
-    if (usingKeyboard()) offer.current = setTimeout(say, KEY_RUN_MS);
-    else say();
+    // With the keyboard the offer waits a moment: every arrow key pressed in the number field is a
+    // gesture of its own, and more may follow. A run of keys on a point of the ramp has rested by
+    // the time it ends, and a drag is over when the pointer lets go.
+    if (rested || !usingKeyboard()) say();
+    else offer.current = setTimeout(say, KEY_RUN_MS);
   };
   // On a ramp the clip has no one speed to set: the row shows what the ramp comes to over the
   // clip, and the points are where it is changed.
   const speed = ramp ? meanSpeed(lead, project) : first.speed;
   // The chosen point of the ramp, by its place in the media of the clip it was chosen on.
   const [chosen, setChosen] = useState<{ id: ID; m: number } | null>(null);
-  const [focus, setFocus] = useState<{ m: number; gone?: number } | null>(null);
+  const graph = useRef<RampGraphHandle>(null);
   // While a point is dragged or worked with the keys, the graph keeps to the stretch of media the
   // gesture found: every step rounds the clip to whole frames, and a graph that followed would
   // breathe under the pointer.
@@ -800,20 +801,25 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
   // The stretch a clip plays is a matter of the clip and of the frame rate alone.
   const plays = useMemo(() => rampRange(lead, project), [lead, project.settings]);
   const range = held?.id === lead.id ? held.range : plays;
-  const at = ramp && chosen?.id === lead.id ? pointAt(ramp, chosen.m) : -1;
+  // Only a point the graph shows is the chosen one. A point that has come to lie beyond what the
+  // clip plays (the clip was trimmed, or the next one cut it short) is out of reach, and is not
+  // removed unseen; it is the chosen one again when the clip plays that far once more.
+  const drawn = ramp ? shownPoints(ramp, range) : [];
+  const picked = chosen?.id === lead.id ? drawn[pointAt(drawn, chosen.m)] : undefined;
+  const at = picked?.index ?? -1;
   const addPoint = () => {
     const m = cmd.addRampPoint();
     if (m === null) return;
     setChosen({ id: lead.id, m });
-    if (usingKeyboard()) setFocus({ m });
+    if (usingKeyboard()) graph.current?.focusPoint(m);
   };
   const removePointAt = () => {
     const next = ramp && removePoint(ramp, at);
     if (!ramp || !next) return;
     // Someone working by keyboard goes on from the point beside it, once it is gone.
-    const beside = besideOf(shownPoints(ramp, range), at);
+    const beside = besideOf(drawn, at);
     cmd.setRampPoints(next);
-    if (usingKeyboard() && beside) setFocus({ m: beside.m, gone: ramp[at].m });
+    if (usingKeyboard() && beside) graph.current?.focusPoint(beside.m, ramp[at].m);
   };
   // Sound that keeps its pitch is stretched, and the stretch has its limits.
   let pitchNote: string | null = null;
@@ -878,6 +884,7 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
       {ramp && (
         <div className="ramp">
           <RampGraph
+            ref={graph}
             clip={lead}
             project={project}
             range={range}
@@ -890,11 +897,10 @@ function SpeedSection({ clips, settings }: { clips: Clip[]; settings: ProjectSet
             onChange={(points: RampPoint[]) => change({ ramps: { [lead.id]: points } })}
             onEnd={() => {
               setHeld(null);
-              end();
+              end(true);
             }}
             onSet={(points) => cmd.setRampPoints(points)}
             onSeek={(frame) => cmd.seek(frame)}
-            focus={focus}
             inert={several}
           />
           {several ? (
